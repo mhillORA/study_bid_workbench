@@ -11,7 +11,8 @@ const SHEET_ALIASES = {
     "RFP_Budget",
     "Budget",
     "Detailed Breakdown",
-    "Cost Breakdown"
+    "Cost Breakdown",
+    "CNGB-001 Cost Breakdown"
   ],
   "Exec Sum": ["Exec Sum", "Study Economics", "Study Economics (2)", "Executive Summary"],
   Key: ["Key"]
@@ -68,7 +69,24 @@ function opportunityFromFilename(name) {
   if (m) return `O-${m[1].padStart(5, "0")}`;
   m = String(name).match(/(?<![A-Za-z])0-(\d{4,5})/);
   if (m) return `O-${m[1].padStart(5, "0")}`;
+  m = String(name).match(/\b(O\d{4,5})\b/i);
+  if (m) {
+    const digits = m[1].replace(/^O/i, "");
+    return `O-${digits.padStart(5, "0")}`;
+  }
   return null;
+}
+
+function studyIdFromFilename(name) {
+  const opp = opportunityFromFilename(name);
+  if (opp) return opp;
+  const stem = String(name || "workbook")
+    .replace(/\.xlsx$/i, "")
+    .replace(/[^\w.\-]+/g, "_")
+    .replace(/_+/g, "_")
+    .replace(/^_|_$/g, "")
+    .slice(0, 72);
+  return stem ? `FILE-${stem}` : null;
 }
 
 function resolveSheets(names) {
@@ -237,22 +255,37 @@ async function parseWorkbookBuffer(buffer, fileName) {
   warnings.push(`Captured ${fieldCount} Input Tab fields, ${sites.length} sites, ${rates.length} key rates`);
 
   const fileOpp = opportunityFromFilename(fileName);
+  const fileStudyId = studyIdFromFilename(fileName);
   let opportunityId = "UNKNOWN";
   if (header.opportunityId && String(header.opportunityId).trim()) {
     opportunityId = String(header.opportunityId).trim();
-  } else if (fileOpp) {
-    opportunityId = fileOpp;
-    header.opportunityId = fileOpp;
-    header.opportunityIdSource = "filename";
-    warnings.push(`Filled opportunityId from filename: ${fileOpp}`);
+  } else if (fileStudyId) {
+    opportunityId = fileStudyId;
+    header.opportunityId = fileStudyId;
+    header.opportunityIdSource = fileOpp ? "filename_opp" : "filename_stem";
+    warnings.push(`Filled studyId from filename: ${fileStudyId}`);
     conf = Math.min(1, conf + 0.15);
   }
 
   const enoughLines = lineItems.length >= 20;
   const hasId = opportunityId !== "UNKNOWN";
-  let quarantine = !hasId || (conf < 0.45 && !enoughLines) || (!fp.matched && lineItems.length < 10);
+  // Quarantine only when the parse is basically empty / unusable.
+  // POC: prefer loading so users can open studies; weak maps still land in studies with warnings.
+  let quarantine =
+    (!hasId && lineItems.length === 0 && fieldCount < 3) ||
+    (lineItems.length === 0 && !resolved["Input Tab"] && !resolved["Internal Budget"] && fieldCount < 3);
 
-  if (hasId && lineItems.length >= 20) {
+  let quarantineReasons = [];
+  if (!hasId) quarantineReasons.push("no_study_id");
+  if (lineItems.length === 0) quarantineReasons.push("no_line_items");
+  if (!fp.matched) quarantineReasons.push(`missing_sheets:${missing.join("|") || "none"}`);
+  if (conf < 0.45) quarantineReasons.push("low_confidence");
+
+  if (hasId && (lineItems.length >= 1 || fieldCount >= 5 || resolved["Input Tab"] || resolved["Internal Budget"])) {
+    warnings.push("POC auto-load: usable study id + some captured content");
+    conf = Math.max(conf, 0.55);
+    quarantine = false;
+  } else if (hasId && lineItems.length >= 20) {
     warnings.push("POC auto-load: opportunity id + line items");
     conf = Math.max(conf, 0.7);
     quarantine = false;
@@ -264,6 +297,10 @@ async function parseWorkbookBuffer(buffer, fileName) {
     warnings.push("Loaded with sheet aliases / partial fingerprint");
     conf = Math.max(conf, 0.75);
     quarantine = false;
+  }
+
+  if (quarantine) {
+    warnings.push(`Quarantine reasons: ${quarantineReasons.join(", ") || "unusable parse"}`);
   }
 
   const coreSites = sites.reduce((sum, s) => sum + (typeof s.coreSites === "number" ? s.coreSites : 0), 0);
@@ -283,6 +320,7 @@ async function parseWorkbookBuffer(buffer, fileName) {
     confidence: Math.round(conf * 1000) / 1000,
     warnings,
     quarantine,
+    quarantineReasons,
     source: {
       fileName,
       sha256,

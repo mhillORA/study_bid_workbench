@@ -1,7 +1,7 @@
 const { app } = require("@azure/functions");
 const AdmZip = require("adm-zip");
 const { parseWorkbookBuffer } = require("./parseWorkbook");
-const { upsertCanonical, listStudies, getStudy, listVersions, getVersion, listLineItems, compareVersions, getDb } = require("./cosmosLoad");
+const { upsertCanonical, listStudies, getStudy, listVersions, getVersion, listLineItems, compareVersions, listQuarantine, getDb } = require("./cosmosLoad");
 const { askAi, getStudyContext, providerStatus } = require("./askClaude");
 
 function json(status, body) {
@@ -103,7 +103,9 @@ app.http("import", {
             studyId: canonical.study.studyId,
             confidence: canonical.confidence,
             lineItems: canonical.version.lineItemCount,
-            warnings: canonical.warnings
+            warnings: canonical.warnings,
+            quarantineReasons: canonical.quarantineReasons || [],
+            missingSheets: canonical.fingerprint?.missingSheets || []
           };
           if (dryRun) {
             entry.cosmosStatus = canonical.quarantine ? "quarantined" : "dry_run_ok";
@@ -292,6 +294,41 @@ app.http("health", {
       service: "study-bid-workbench-api",
       llm
     });
+  }
+});
+
+app.http("quarantine", {
+  methods: ["GET", "OPTIONS"],
+  authLevel: "anonymous",
+  route: "quarantine",
+  handler: async (request, context) => {
+    if (request.method === "OPTIONS") {
+      return {
+        status: 204,
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, OPTIONS",
+          "Access-Control-Allow-Headers": "content-type"
+        }
+      };
+    }
+    try {
+      const url = new URL(request.url);
+      const limit = Number(url.searchParams.get("limit") || 200);
+      const items = await listQuarantine(limit);
+      const reasonBuckets = {};
+      for (const q of items) {
+        const reasons = Array.isArray(q.reason) ? q.reason : [String(q.reason || "unknown")];
+        for (const r of reasons) {
+          const key = String(r).slice(0, 120);
+          reasonBuckets[key] = (reasonBuckets[key] || 0) + 1;
+        }
+      }
+      return json(200, { count: items.length, reasonBuckets, items });
+    } catch (err) {
+      context.error(err);
+      return json(500, { error: String(err.message || err) });
+    }
   }
 });
 

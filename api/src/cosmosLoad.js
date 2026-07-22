@@ -37,18 +37,25 @@ async function upsertCanonical(canonical, jobId) {
       id: `q-${version.sourceSha256.slice(0, 16)}`,
       jobId,
       studyId,
-      reason: canonical.warnings || ["low confidence"],
+      docType: "quarantine",
+      reason: canonical.quarantineReasons || canonical.warnings || ["low confidence"],
+      warnings: canonical.warnings || [],
+      confidence: canonical.confidence,
       source: canonical.source,
       fingerprint: canonical.fingerprint,
+      sheetInventory: canonical.sheetInventory || [],
       preview: {
         clientName: study.clientName,
         title: study.title,
         protocol: study.protocol,
-        lineItemCount: version.lineItemCount
+        lineItemCount: version.lineItemCount,
+        inputFieldCount: (study.inputFields || []).length,
+        siteCount: (study.sites || []).length
       },
       createdAt: now
     });
     summary.status = "quarantined";
+    summary.quarantineReasons = canonical.quarantineReasons || [];
     return summary;
   }
 
@@ -374,6 +381,30 @@ async function compareVersions(studyId, olderVersionId, newerVersionId) {
   };
 }
 
+async function listQuarantine(limit = 200) {
+  const database = getDb();
+  const lim = Math.min(Number(limit) || 200, 500);
+  const { resources } = await database.container("quarantine").items
+    .query({ query: "SELECT * FROM c" })
+    .fetchAll();
+  return resources
+    .sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")))
+    .slice(0, lim)
+    .map((q) => ({
+      id: q.id,
+      jobId: q.jobId,
+      studyId: q.studyId,
+      fileName: q.source?.fileName || null,
+      confidence: q.confidence,
+      reason: q.reason,
+      warnings: q.warnings || [],
+      missingSheets: q.fingerprint?.missingSheets || [],
+      resolvedSheets: q.fingerprint?.resolvedSheets || {},
+      preview: q.preview || {},
+      createdAt: q.createdAt
+    }));
+}
+
 module.exports = {
   upsertCanonical,
   listStudies,
@@ -382,5 +413,6 @@ module.exports = {
   getVersion,
   listLineItems,
   compareVersions,
+  listQuarantine,
   getDb
 };

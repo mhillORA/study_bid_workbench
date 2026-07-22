@@ -225,10 +225,55 @@
           </div>
         </div>
         <div class="card wide">
+          <h3>Quarantine queue</h3>
+          <p class="muted">Files that parsed too weakly to promote into studies. Refresh to see Cosmos quarantine docs + reason buckets.</p>
+          <div style="margin-top:0.75rem;display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap;">
+            <button type="button" class="btn btn-secondary" id="btnRefreshQuarantine">Refresh quarantine</button>
+            <span class="muted" id="quarantineStatus"></span>
+          </div>
+          <pre class="formula-box" id="quarantineReport" style="margin-top:0.75rem;">Click Refresh quarantine.</pre>
+        </div>
+        <div class="card wide">
           <h3>Last import report</h3>
           <pre class="formula-box" id="uploadReport">No upload yet.</pre>
         </div>
       </div>`;
+  }
+
+  async function refreshQuarantine() {
+    const status = document.getElementById("quarantineStatus");
+    const report = document.getElementById("quarantineReport");
+    if (status) status.textContent = "Loading…";
+    try {
+      const res = await fetch(apiUrl("/api/quarantine?limit=200"));
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || res.statusText);
+      const rows = (data.items || []).map((q) => ({
+        file: q.fileName,
+        studyId: q.studyId,
+        confidence: q.confidence,
+        missingSheets: q.missingSheets,
+        reason: q.reason,
+        preview: q.preview,
+        createdAt: q.createdAt
+      }));
+      if (status) status.textContent = `${data.count || 0} in quarantine`;
+      if (report) {
+        report.textContent = JSON.stringify(
+          {
+            count: data.count,
+            reasonBuckets: data.reasonBuckets,
+            tip: "Re-upload after deploy — loosened quarantine auto-loads most files with a filename-based study id. Remaining quarantine = nearly empty parse.",
+            sample: rows.slice(0, 40)
+          },
+          null,
+          2
+        );
+      }
+    } catch (err) {
+      if (status) status.textContent = "Failed";
+      if (report) report.textContent = String(err);
+    }
   }
 
   function setUploadProgress(pct, label) {
@@ -1200,6 +1245,11 @@
       }
       if (e.target.id === "btnStartUpload") {
         startUpload();
+        return;
+      }
+      if (e.target.id === "btnRefreshQuarantine") {
+        refreshQuarantine();
+        return;
       }
       if (e.target.id === "btnAsk") {
         sendAsk();

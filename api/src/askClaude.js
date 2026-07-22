@@ -23,10 +23,12 @@ function providerStatus() {
     Boolean(envSet("AZURE_OPENAI_API_KEY")) &&
     Boolean(envSet("AZURE_OPENAI_DEPLOYMENT"));
   const claude = Boolean(envSet("ANTHROPIC_API_KEY"));
+  // Prefer Claude when configured (current POC default).
   return {
     azureOpenAI: azure,
     claude,
-    active: azure ? "azure_openai" : claude ? "claude" : null
+    active: claude ? "claude" : azure ? "azure_openai" : null,
+    effort: envSet("ANTHROPIC_EFFORT") || "low"
   };
 }
 
@@ -181,11 +183,23 @@ async function askClaude({ question, context, history }) {
     throw new Error("ANTHROPIC_API_KEY not configured in SWA Application settings");
   }
   const model = envSet("ANTHROPIC_MODEL") || "claude-sonnet-4-5";
+  const effort = (envSet("ANTHROPIC_EFFORT") || "low").toLowerCase();
 
   const messages = [
     ...buildHistoryMessages(history),
     { role: "user", content: userBlock(question, context) }
   ];
+
+  const payload = {
+    model,
+    max_tokens: 1024,
+    system: SYSTEM_PROMPT,
+    messages
+  };
+  // Effort controls token spend / thoroughness (low = cheapest/fastest).
+  if (["low", "medium", "high", "max"].includes(effort)) {
+    payload.output_config = { effort };
+  }
 
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -194,12 +208,7 @@ async function askClaude({ question, context, history }) {
       "x-api-key": apiKey,
       "anthropic-version": "2023-06-01"
     },
-    body: JSON.stringify({
-      model,
-      max_tokens: 2048,
-      system: SYSTEM_PROMPT,
-      messages
-    })
+    body: JSON.stringify(payload)
   });
 
   const body = await res.json().catch(() => ({}));
@@ -218,11 +227,12 @@ async function askClaude({ question, context, history }) {
     answer: text || "(empty response)",
     model: body.model || model,
     provider: "claude",
+    effort,
     usage: body.usage || null
   };
 }
 
-/** Prefer Azure OpenAI (Copilot-style); fall back to Claude if only that is set. */
+/** Prefer Claude when ANTHROPIC_API_KEY is set; else Azure OpenAI. */
 async function askAi(opts) {
   const status = providerStatus();
   if (status.active === "azure_openai") return askAzureOpenAI(opts);
