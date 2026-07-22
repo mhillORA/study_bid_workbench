@@ -18,17 +18,24 @@ function envSet(name) {
 }
 
 function providerStatus() {
+  const endpoint = envSet("AZURE_OPENAI_ENDPOINT");
   const azure =
-    Boolean(envSet("AZURE_OPENAI_ENDPOINT")) &&
+    Boolean(endpoint) &&
     Boolean(envSet("AZURE_OPENAI_API_KEY")) &&
     Boolean(envSet("AZURE_OPENAI_DEPLOYMENT"));
   const claude = Boolean(envSet("ANTHROPIC_API_KEY"));
-  // Prefer Azure OpenAI (Ask Buddy default). Claude only if Azure is not configured.
   return {
     azureOpenAI: azure,
     claude,
     active: azure ? "azure_openai" : claude ? "claude" : null,
-    effort: envSet("ANTHROPIC_EFFORT") || "low"
+    effort: envSet("ANTHROPIC_EFFORT") || "low",
+    endpointKind: !endpoint
+      ? null
+      : isFoundryProjectEndpoint(endpoint)
+        ? "foundry_project"
+        : isOpenAiV1Endpoint(endpoint)
+          ? "openai_v1"
+          : "classic_azure_openai"
   };
 }
 
@@ -129,19 +136,33 @@ function userBlock(question, context) {
   ].join("\n");
 }
 
+function isFoundryProjectEndpoint(endpoint) {
+  const e = String(endpoint || "").toLowerCase();
+  return e.includes("services.ai.azure.com") || e.includes("/api/projects/");
+}
+
+function isOpenAiV1Endpoint(endpoint) {
+  const e = String(endpoint || "").toLowerCase();
+  return e.includes("/openai/v1");
+}
+
+/**
+ * Supports:
+ * - Classic Azure OpenAI: https://NAME.openai.azure.com
+ * - Foundry OpenAI v1:    https://NAME.openai.azure.com/openai/v1
+ * - Foundry project:      https://NAME.services.ai.azure.com/api/projects/PROJECT
+ */
 async function askAzureOpenAI({ question, context, history }) {
-  const endpoint = envSet("AZURE_OPENAI_ENDPOINT").replace(/\/$/, "");
+  let endpoint = envSet("AZURE_OPENAI_ENDPOINT").replace(/\/$/, "");
   const apiKey = envSet("AZURE_OPENAI_API_KEY");
   const deployment = envSet("AZURE_OPENAI_DEPLOYMENT");
   const apiVersion = envSet("AZURE_OPENAI_API_VERSION") || "2024-08-01-preview";
 
   if (!endpoint || !apiKey || !deployment) {
     throw new Error(
-      "Azure OpenAI not configured. Set AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT in SWA Application settings."
+      "Ask Buddy is not configured. Set AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT in SWA Application settings (Foundry project endpoint is OK)."
     );
   }
-
-  const url = `${endpoint}/openai/deployments/${encodeURIComponent(deployment)}/chat/completions?api-version=${encodeURIComponent(apiVersion)}`;
 
   const messages = [
     { role: "system", content: SYSTEM_PROMPT },
@@ -149,31 +170,60 @@ async function askAzureOpenAI({ question, context, history }) {
     { role: "user", content: userBlock(question, context) }
   ];
 
+  let url;
+  let body;
+  const foundry = isFoundryProjectEndpoint(endpoint) || isOpenAiV1Endpoint(endpoint);
+
+  if (foundry) {
+    // Foundry / OpenAI-compatible: model name goes in the JSON body
+    if (isFoundryProjectEndpoint(endpoint) && !endpoint.toLowerCase().includes("/openai/v1")) {
+      url = `${endpoint}/openai/v1/chat/completions`;
+    } else if (isOpenAiV1Endpoint(endpoint)) {
+      url = endpoint.endsWith("/chat/completions")
+        ? endpoint
+        : `${endpoint.replace(/\/$/, "")}/chat/completions`;
+    } else {
+      url = `${endpoint}/openai/v1/chat/completions`;
+    }
+    body = {
+      model: deployment,
+      messages,
+      max_tokens: 2048,
+      temperature: 0.2
+    };
+  } else {
+    // Classic Azure OpenAI resource endpoint
+    // Strip accidental /openai/v1 if someone pasted a hybrid URL incompletely
+    endpoint = endpoint.replace(/\/openai\/v1$/i, "");
+    url = `${endpoint}/openai/deployments/${encodeURIComponent(deployment)}/chat/completions?api-version=${encodeURIComponent(apiVersion)}`;
+    body = {
+      messages,
+      max_tokens: 2048,
+      temperature: 0.2
+    };
+  }
+
   const res = await fetch(url, {
     method: "POST",
     headers: {
       "content-type": "application/json",
       "api-key": apiKey
     },
-    body: JSON.stringify({
-      messages,
-      max_tokens: 2048,
-      temperature: 0.2
-    })
+    body: JSON.stringify(body)
   });
 
-  const body = await res.json().catch(() => ({}));
+  const respBody = await res.json().catch(() => ({}));
   if (!res.ok) {
-    const msg = body?.error?.message || JSON.stringify(body) || res.statusText;
-    throw new Error(`Azure OpenAI ${res.status}: ${msg}`);
+    const msg = respBody?.error?.message || JSON.stringify(respBody) || res.statusText;
+    throw new Error(`Azure AI ${res.status}: ${msg}`);
   }
 
-  const text = body?.choices?.[0]?.message?.content?.trim() || "";
+  const text = respBody?.choices?.[0]?.message?.content?.trim() || "";
   return {
     answer: text || "(empty response)",
-    model: body?.model || deployment,
-    provider: "azure_openai",
-    usage: body?.usage || null
+    model: respBody?.model || deployment,
+    provider: foundry ? "azure_foundry" : "azure_openai",
+    usage: respBody?.usage || null
   };
 }
 
