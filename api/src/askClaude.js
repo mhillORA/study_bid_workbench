@@ -19,11 +19,20 @@ function envSet(name) {
 
 function providerStatus() {
   const endpoint = envSet("AZURE_OPENAI_ENDPOINT");
-  const azure =
-    Boolean(endpoint) &&
-    Boolean(envSet("AZURE_OPENAI_API_KEY")) &&
-    Boolean(envSet("AZURE_OPENAI_DEPLOYMENT"));
+  const apiKey = envSet("AZURE_OPENAI_API_KEY");
+  const deployment = envSet("AZURE_OPENAI_DEPLOYMENT");
+  const azure = Boolean(endpoint) && Boolean(apiKey) && Boolean(deployment);
   const claude = Boolean(envSet("ANTHROPIC_API_KEY"));
+
+  // Presence only — never return secret values
+  const raw = (name) => {
+    const v = process.env[name];
+    if (v == null) return "missing";
+    if (!String(v).trim()) return "empty";
+    if (String(v).includes("SET_IN")) return "placeholder";
+    return "set";
+  };
+
   return {
     azureOpenAI: azure,
     claude,
@@ -35,7 +44,14 @@ function providerStatus() {
         ? "foundry_project"
         : isOpenAiV1Endpoint(endpoint)
           ? "openai_v1"
-          : "classic_azure_openai"
+          : "classic_azure_openai",
+    envCheck: {
+      AZURE_OPENAI_ENDPOINT: raw("AZURE_OPENAI_ENDPOINT"),
+      AZURE_OPENAI_API_KEY: raw("AZURE_OPENAI_API_KEY"),
+      AZURE_OPENAI_DEPLOYMENT: raw("AZURE_OPENAI_DEPLOYMENT"),
+      COSMOS_ENDPOINT: raw("COSMOS_ENDPOINT"),
+      COSMOS_KEY: raw("COSMOS_KEY")
+    }
   };
 }
 
