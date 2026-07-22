@@ -17,11 +17,59 @@ function envSet(name) {
   return v;
 }
 
+/** First non-empty env among aliases (for SWA naming mismatches). */
+function envSetAny(names) {
+  for (const name of names) {
+    const v = envSet(name);
+    if (v) return { value: v, from: name };
+  }
+  return { value: "", from: null };
+}
+
+const AZURE_KEY_ALIASES = [
+  "AZURE_OPENAI_API_KEY",
+  "AZURE_OPENAI_KEY",
+  "AZURE_AI_API_KEY",
+  "AZURE_AI_KEY",
+  "OPENAI_API_KEY",
+  "FOUNDRY_API_KEY",
+  "AI_API_KEY"
+];
+
+const AZURE_ENDPOINT_ALIASES = [
+  "AZURE_OPENAI_ENDPOINT",
+  "AZURE_AI_ENDPOINT",
+  "FOUNDRY_PROJECT_ENDPOINT",
+  "AZURE_AI_PROJECT_ENDPOINT"
+];
+
+const AZURE_DEPLOYMENT_ALIASES = [
+  "AZURE_OPENAI_DEPLOYMENT",
+  "AZURE_OPENAI_MODEL",
+  "AZURE_AI_DEPLOYMENT",
+  "FOUNDRY_DEPLOYMENT",
+  "OPENAI_DEPLOYMENT"
+];
+
+function azureConfig() {
+  const endpoint = envSetAny(AZURE_ENDPOINT_ALIASES);
+  const apiKey = envSetAny(AZURE_KEY_ALIASES);
+  const deployment = envSetAny(AZURE_DEPLOYMENT_ALIASES);
+  return {
+    endpoint: endpoint.value,
+    apiKey: apiKey.value,
+    deployment: deployment.value,
+    sources: {
+      endpoint: endpoint.from,
+      apiKey: apiKey.from,
+      deployment: deployment.from
+    }
+  };
+}
+
 function providerStatus() {
-  const endpoint = envSet("AZURE_OPENAI_ENDPOINT");
-  const apiKey = envSet("AZURE_OPENAI_API_KEY");
-  const deployment = envSet("AZURE_OPENAI_DEPLOYMENT");
-  const azure = Boolean(endpoint) && Boolean(apiKey) && Boolean(deployment);
+  const cfg = azureConfig();
+  const azure = Boolean(cfg.endpoint) && Boolean(cfg.apiKey) && Boolean(cfg.deployment);
   const claude = Boolean(envSet("ANTHROPIC_API_KEY"));
 
   // Presence only — never return secret values
@@ -33,16 +81,22 @@ function providerStatus() {
     return "set";
   };
 
+  const aliasScan = {};
+  for (const name of [...AZURE_KEY_ALIASES, ...AZURE_ENDPOINT_ALIASES, ...AZURE_DEPLOYMENT_ALIASES]) {
+    const status = raw(name);
+    if (status !== "missing") aliasScan[name] = status;
+  }
+
   return {
     azureOpenAI: azure,
     claude,
     active: azure ? "azure_openai" : claude ? "claude" : null,
     effort: envSet("ANTHROPIC_EFFORT") || "low",
-    endpointKind: !endpoint
+    endpointKind: !cfg.endpoint
       ? null
-      : isFoundryProjectEndpoint(endpoint)
+      : isFoundryProjectEndpoint(cfg.endpoint)
         ? "foundry_project"
-        : isOpenAiV1Endpoint(endpoint)
+        : isOpenAiV1Endpoint(cfg.endpoint)
           ? "openai_v1"
           : "classic_azure_openai",
     envCheck: {
@@ -51,7 +105,9 @@ function providerStatus() {
       AZURE_OPENAI_DEPLOYMENT: raw("AZURE_OPENAI_DEPLOYMENT"),
       COSMOS_ENDPOINT: raw("COSMOS_ENDPOINT"),
       COSMOS_KEY: raw("COSMOS_KEY")
-    }
+    },
+    resolvedFrom: cfg.sources,
+    otherAiSettingsFound: aliasScan
   };
 }
 
@@ -169,14 +225,16 @@ function isOpenAiV1Endpoint(endpoint) {
  * - Foundry project:      https://NAME.services.ai.azure.com/api/projects/PROJECT
  */
 async function askAzureOpenAI({ question, context, history }) {
-  let endpoint = envSet("AZURE_OPENAI_ENDPOINT").replace(/\/$/, "");
-  const apiKey = envSet("AZURE_OPENAI_API_KEY");
-  const deployment = envSet("AZURE_OPENAI_DEPLOYMENT");
+  const cfg = azureConfig();
+  let endpoint = cfg.endpoint.replace(/\/$/, "");
+  const apiKey = cfg.apiKey;
+  const deployment = cfg.deployment;
   const apiVersion = envSet("AZURE_OPENAI_API_VERSION") || "2024-08-01-preview";
 
   if (!endpoint || !apiKey || !deployment) {
     throw new Error(
-      "Ask Buddy is not configured. Set AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT in SWA Application settings (Foundry project endpoint is OK)."
+      "Ask Buddy is not configured. Need endpoint + API key + deployment on SWA. " +
+        `Key must be named AZURE_OPENAI_API_KEY (currently: endpoint=${cfg.sources.endpoint || "missing"}, key=${cfg.sources.apiKey || "missing"}, deployment=${cfg.sources.deployment || "missing"}).`
     );
   }
 
