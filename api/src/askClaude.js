@@ -92,6 +92,7 @@ function providerStatus() {
     claude,
     active: azure ? "azure_openai" : claude ? "claude" : null,
     effort: envSet("ANTHROPIC_EFFORT") || "low",
+    buildId: "2026-07-22T16:58-temp1",
     endpointKind: !cfg.endpoint
       ? null
       : isFoundryProjectEndpoint(cfg.endpoint)
@@ -246,7 +247,9 @@ function buildAzureChatAttempts(endpoint, deployment, apiVersion) {
       body: {
         model: deployment,
         messages: null, // filled later
-        max_completion_tokens: 2048
+        max_completion_tokens: 2048,
+        // GPT-5 only allows default temperature=1; Foundry may inject 0.2 otherwise
+        temperature: 1
       }
     });
   };
@@ -258,7 +261,8 @@ function buildAzureChatAttempts(endpoint, deployment, apiVersion) {
       url: `${root}/openai/deployments/${encodeURIComponent(deployment)}/chat/completions?api-version=${encodeURIComponent(apiVersion)}`,
       body: {
         messages: null,
-        max_completion_tokens: 2048
+        max_completion_tokens: 2048,
+        temperature: 1
       }
     });
   };
@@ -293,7 +297,8 @@ function buildAzureChatAttempts(endpoint, deployment, apiVersion) {
       body: {
         model: deployment,
         messages: null,
-        max_completion_tokens: 2048
+        max_completion_tokens: 2048,
+        temperature: 1
       }
     });
   }
