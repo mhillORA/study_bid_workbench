@@ -11,7 +11,6 @@ SBW.users = [
 
 SBW.sections = [
   { id: "hub", label: "Hub", department: null },
-  { id: "upload", label: "Upload budgets", department: "Analyst" },
   { id: "studies", label: "Studies (Cosmos)", department: null },
   { id: "overview", label: "Overview / Inputs", department: "Analyst" },
   { id: "recruitment", label: "Recruitment", department: "Recruitment" },
@@ -20,7 +19,8 @@ SBW.sections = [
   { id: "smo", label: "Block Enrollment / SMO", department: "SMO" },
   { id: "summary", label: "Exec Summary", department: null },
   { id: "reviews", label: "Reviews", department: null },
-  { id: "formulas", label: "Formulas", department: "Analyst" }
+  { id: "formulas", label: "Formulas", department: "Analyst" },
+  { id: "upload", label: "Upload budgets", department: "Analyst" }
 ];
 
 /** Set after Static Web App / API is deployed. Empty = same origin /api */

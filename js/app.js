@@ -132,8 +132,7 @@
           </div>
           <div style="margin-top:1rem;display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap;">
             <button type="button" class="btn btn-primary" id="btnStartUpload" ${dis}>Start upload</button>
-            <button type="button" class="btn btn-secondary" id="btnCheckApi">Check API</button>
-            <span class="muted" id="uploadStatus">Ready — posts to /api/import</span>
+            <span class="muted" id="uploadStatus">Ready</span>
           </div>
         </div>
         <div class="card wide">
@@ -167,21 +166,6 @@
           <div id="studiesPanel" style="margin-top:1rem;">${loadingHtml || "<p class=\"muted\">Loading…</p>"}</div>
         </div>
       </div>`;
-  }
-
-  async function checkApiHealth() {
-    const status = document.getElementById("uploadStatus");
-    const report = document.getElementById("uploadReport");
-    if (status) status.textContent = "Checking /api/health…";
-    try {
-      const res = await fetch(apiUrl("/api/health"));
-      const data = await res.json().catch(() => ({}));
-      if (status) status.textContent = res.ok ? "API online" : `API error (${res.status})`;
-      if (report) report.textContent = JSON.stringify(data, null, 2);
-    } catch (err) {
-      if (status) status.textContent = "API not reachable";
-      if (report) report.textContent = String(err);
-    }
   }
 
   async function startUpload() {
@@ -596,9 +580,6 @@
       }
       if (e.target.id === "btnStartUpload") {
         startUpload();
-      }
-      if (e.target.id === "btnCheckApi") {
-        checkApiHealth();
       }
       if (e.target.id === "btnRefreshStudies") {
         loadStudiesIntoPanel();
