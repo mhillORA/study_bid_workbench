@@ -1,0 +1,162 @@
+{
+  "profileId": "ora-budget-internal-v3",
+  "label": "Ora INTERNAL budget workbook (Input Tab + Internal Budget + Exec Sum + Key)",
+  "requiredSheets": [
+    "Input Tab",
+    "Internal Budget",
+    "Exec Sum",
+    "Key"
+  ],
+  "optionalSheets": [
+    "Rev Log",
+    "Reviewers",
+    "Client Budget",
+    "BlockEnroll-SMO"
+  ],
+  "fingerprint": {
+    "mustIncludeSheets": ["Input Tab", "Internal Budget", "Exec Sum"],
+    "inputHeaderLabels": [
+      "Client Name",
+      "Parent Opportunity ID#",
+      "Protocol Number"
+    ],
+    "internalBudgetHeaders": [
+      "Ora Mapping",
+      "Service",
+      "# Units",
+      "Hrs per Unit",
+      "Resource",
+      "Charge"
+    ]
+  },
+  "inputLabelMap": {
+    "Client Name": "clientName",
+    "Study Title/Description": "title",
+    "Protocol Number": "protocol",
+    "Parent Opportunity ID#": "opportunityId",
+    "Phase": "phase",
+    "BD Director": "bdDirector",
+    "BDO Lead": "bdoLead",
+    "Therapeutic Area": "therapeuticArea",
+    "Therapeutic Area Head": "therapeuticAreaHead",
+    "Indication": "indication",
+    "Is Indication a rare disease?": "rareDisease",
+    "Is IP gene therapy?": "geneTherapy",
+    "What is the patient population?": "patientPopulation",
+    "Client SOE or Ora SOE Assumptions?": "soeSource",
+    "Budget Version": "budgetVersion",
+    "Date Budget Due": "budgetDueDate",
+    "Enrollment Type": "enrollmentType",
+    "Budget Type": "budgetType",
+    "Level of Reviews Needed": "reviewLevel",
+    "Deliverable Type": "deliverableType",
+    "Standalone or Program": "standaloneOrProgram",
+    "Bid to Spec / Ora Assumptions": "bidToSpec",
+    "All Ora Systems? If not, what external systems?": "allOraSystems"
+  },
+  "driverCells": {
+    "screenedSubjects": { "sheet": "Input Tab", "labelCol": "A", "valueCol": "F", "label": "# Screened Subjects" },
+    "enrolledSubjects": { "sheet": "Input Tab", "labelCol": "A", "valueCol": "F", "label": "# Enrolled Subjects" },
+    "completedSubjects": { "sheet": "Input Tab", "labelCol": "A", "valueCol": "F", "label": "# Completed Subjects" },
+    "startupMonths": { "sheet": "Input Tab", "labelCol": "D", "valueCol": "F", "label": "Start-Up (Contract-FPFV) in Months" },
+    "enrollmentMonths": { "sheet": "Input Tab", "labelCol": "D", "valueCol": "F", "label": "Enrollment (FPFV-LPFV) in Months" },
+    "treatmentMonths": { "sheet": "Input Tab", "labelCol": "D", "valueCol": "F", "label": "Treatment incl. Screening (LPFV-LPLV) in Months" },
+    "dblMonths": { "sheet": "Input Tab", "labelCol": "D", "valueCol": "F", "label": "Database Lock (LP Out-DB Lock) in Months" },
+    "closeoutMonths": { "sheet": "Input Tab", "labelCol": "D", "valueCol": "F", "label": "Closeout (DB Lock-Delivery of TMF) in Months" }
+  },
+  "siteMix": {
+    "sheet": "Input Tab",
+    "headerRowContains": "Country",
+    "columns": {
+      "country": 0,
+      "region": 1,
+      "coreSites": 2,
+      "backupSites": 3,
+      "startupMonths": 4,
+      "enrolledPts": 5,
+      "screenedPts": 6,
+      "completedPts": 7,
+      "enrollmentMonths": 8,
+      "enrollmentRate": 9,
+      "notes": 13
+    }
+  },
+  "internalBudget": {
+    "sheet": "Internal Budget",
+    "headerRow": 1,
+    "columns": {
+      "oraCode": 0,
+      "clientMapping": 1,
+      "service": 2,
+      "netSuiteTask": 3,
+      "unitDescription": 4,
+      "oraTask": 5,
+      "units": 6,
+      "hoursPerUnit": 7,
+      "totalHours": 8,
+      "resourceCode": 9,
+      "hourlyRate": 10,
+      "charge": 11,
+      "hourlyCost": 12,
+      "directCost": 13,
+      "phase": 14
+    }
+  },
+  "execSum": {
+    "sheet": "Exec Sum",
+    "serviceAreaCol": 2,
+    "serviceFeesCol": 4,
+    "passThroughLabelCol": 10,
+    "passThroughValueCol": 12
+  },
+  "keyRates": {
+    "sheet": "Key",
+    "startRow": 2,
+    "columns": {
+      "region": 4,
+      "resourceCode": 5,
+      "resourceName": 6,
+      "costRate": 8,
+      "baseRate": 9,
+      "baseRateAdjusted": 10
+    }
+  },
+  "departmentByOraPrefix": {
+    "AA": "Recruitment",
+    "AB": "ClinOps",
+    "AC": "ClinOps",
+    "AD": "ClinOps",
+    "AE": "ClinOps",
+    "AF": "ClinOps",
+    "AG": "ClinOps",
+    "AH": "ClinOps",
+    "AI": "ClinOps",
+    "AJ": "ClinOps",
+    "AK": "ClinOps",
+    "AL": "ClinOps",
+    "AM": "ClinOps",
+    "AN": "Monitoring",
+    "AO": "Monitoring",
+    "AP": "ClinOps",
+    "AQ": "ClinOps",
+    "AR": "ClinOps",
+    "AS": "Medical",
+    "AT": "Medical",
+    "AX": "SMO",
+    "BR": "DataManagement",
+    "BS": "Biostatistics",
+    "BT": "IRT",
+    "BW": "IP",
+    "BX": "PassThrough"
+  },
+  "requiredCanonicalFields": [
+    "opportunityId",
+    "clientName",
+    "title",
+    "protocol"
+  ],
+  "confidence": {
+    "minLineItems": 50,
+    "minMatchedInputLabels": 8
+  }
+}
