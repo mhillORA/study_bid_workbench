@@ -40,15 +40,60 @@ def load_profile(path: Path | None = None) -> dict:
     return json.loads((path or PROFILE_PATH).read_text(encoding="utf-8"))
 
 
-def fingerprint_workbook(sheetnames: list[str], profile: dict) -> dict:
+def opportunity_from_filename(name: str) -> str | None:
+    """Pull O-##### from filename; fix common typo 0-5159 → O-05159."""
+    m = re.search(r"O-(\d{4,5})", name, re.I)
+    if m:
+        digits = m.group(1).zfill(5)
+        return f"O-{digits}"
+    m = re.search(r"(?<![A-Za-z])0-(\d{4,5})", name)
+    if m:
+        return f"O-{m.group(1).zfill(5)}"
+    return None
+
+
+def resolve_sheets(sheetnames: list[str], profile: dict) -> dict[str, str]:
+    """Map canonical sheet roles → actual workbook sheet names via aliases."""
+    aliases = profile.get("sheetAliases") or {}
+    has = set(sheetnames)
+    resolved: dict[str, str] = {}
+
+    for canon, options in aliases.items():
+        for opt in options:
+            if opt in has:
+                resolved[canon] = opt
+                break
+        if canon not in resolved:
+            # fuzzy: e.g. "CNGB-001 Cost Breakdown"
+            for s in sheetnames:
+                low = s.lower()
+                if canon == "Internal Budget" and ("cost breakdown" in low or "internal budget" in low):
+                    resolved[canon] = s
+                    break
+                if canon == "Exec Sum" and "econom" in low:
+                    resolved[canon] = s
+                    break
+
+    # Prefer Internal Budget sheet that looks like Ora mapping grid
+    candidates = []
+    for s in sheetnames:
+        low = s.lower()
+        if s == resolved.get("Internal Budget") or "budget" in low or "cost breakdown" in low:
+            candidates.append(s)
+    return resolved
+
+
+def fingerprint_workbook(sheetnames: list[str], profile: dict, resolved: dict[str, str] | None = None) -> dict:
     required = set(profile["fingerprint"]["mustIncludeSheets"])
-    present = set(sheetnames)
-    missing = sorted(required - present)
+    resolved = resolved or resolve_sheets(sheetnames, profile)
+    present_canon = set(resolved.keys())
+    missing = sorted(required - present_canon)
     score = 1.0 if not missing else max(0.0, 1.0 - len(missing) / max(len(required), 1))
     return {
         "profileId": profile["profileId"],
         "matched": not missing,
         "missingSheets": missing,
+        "resolvedSheets": resolved,
         "sheetCount": len(sheetnames),
         "score": score,
     }
@@ -296,12 +341,14 @@ def parse_workbook(path: Path, profile: dict | None = None) -> dict:
     path = Path(path)
     # data_only=True uses cached calculated values from last Excel open
     wb_values = load_workbook(path, data_only=True, read_only=True)
-    fp = fingerprint_workbook(wb_values.sheetnames, profile)
+    resolved = resolve_sheets(wb_values.sheetnames, profile)
+    fp = fingerprint_workbook(wb_values.sheetnames, profile, resolved)
 
-    def rows_for(name: str) -> list[list[Any]]:
-        if name not in wb_values.sheetnames:
+    def rows_for(canon: str) -> list[list[Any]]:
+        actual = resolved.get(canon)
+        if not actual or actual not in wb_values.sheetnames:
             return []
-        return _sheet_rows(wb_values[name])
+        return _sheet_rows(wb_values[actual])
 
     header, drivers, sites, matched_labels = parse_input_tab(rows_for("Input Tab"), profile)
     line_items = parse_internal_budget(rows_for("Internal Budget"), profile)
@@ -311,7 +358,32 @@ def parse_workbook(path: Path, profile: dict | None = None) -> dict:
 
     conf, warnings = confidence_score(profile, matched_labels, len(line_items), fp)
 
-    opportunity_id = str(header.get("opportunityId") or "UNKNOWN").strip()
+    file_opp = opportunity_from_filename(path.name)
+    sheet_opp = header.get("opportunityId")
+    if sheet_opp and str(sheet_opp).strip():
+        opportunity_id = str(sheet_opp).strip()
+        if file_opp and file_opp.upper() != opportunity_id.upper():
+            warnings.append(f"Filename opp {file_opp} differs from sheet {opportunity_id}; using sheet")
+    elif file_opp:
+        opportunity_id = file_opp
+        header["opportunityId"] = file_opp
+        header["opportunityIdSource"] = "filename"
+        warnings.append(f"Filled opportunityId from filename: {file_opp}")
+        conf = min(1.0, conf + 0.15)
+    else:
+        opportunity_id = "UNKNOWN"
+
+    # Soften quarantine: allow load if we have an ID + enough line items
+    has_id = opportunity_id != "UNKNOWN"
+    enough_lines = len(line_items) >= profile["confidence"]["minLineItems"]
+    quarantine = (not has_id) or (conf < 0.55 and not enough_lines) or (
+        not fp["matched"] and not enough_lines
+    )
+    if enough_lines and has_id and not fp["matched"]:
+        warnings.append("Loaded with sheet aliases / partial fingerprint")
+        conf = max(conf, 0.75)
+        quarantine = False
+
     study_id = opportunity_id
     version_label = str(header.get("budgetVersion") or "imported")
     imported_at = datetime.now(timezone.utc).isoformat()
@@ -326,9 +398,9 @@ def parse_workbook(path: Path, profile: dict | None = None) -> dict:
     canonical = {
         "schemaVersion": 1,
         "profileId": profile["profileId"],
-        "confidence": conf,
+        "confidence": round(conf, 3),
         "warnings": warnings,
-        "quarantine": conf < 0.7 or not fp["matched"] or not header.get("opportunityId"),
+        "quarantine": quarantine,
         "source": {
             "fileName": path.name,
             "filePath": str(path.resolve()),

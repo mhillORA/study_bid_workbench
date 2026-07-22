@@ -41,7 +41,7 @@ def get_client() -> CosmosClient:
 
 def ensure_database_and_containers() -> None:
     load_dotenv()
-    db_name = os.getenv("COSMOS_DATABASE", "study_bid_workbench").strip()
+    db_name = os.getenv("COSMOS_DATABASE", "bd-budgets").strip()
     client = get_client()
 
     try:

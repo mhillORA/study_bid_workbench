@@ -11,6 +11,7 @@ SBW.users = [
 
 SBW.sections = [
   { id: "hub", label: "Hub", department: null },
+  { id: "upload", label: "Upload budgets", department: "Analyst" },
   { id: "overview", label: "Overview / Inputs", department: "Analyst" },
   { id: "recruitment", label: "Recruitment", department: "Recruitment" },
   { id: "clinops", label: "ClinOps / SOE", department: "ClinOps" },
@@ -20,6 +21,9 @@ SBW.sections = [
   { id: "reviews", label: "Reviews", department: null },
   { id: "formulas", label: "Formulas", department: "Analyst" }
 ];
+
+/** Set after Static Web App / API is deployed. Empty = same origin /api */
+SBW.apiBase = "";
 
 SBW.defaultStudy = function () {
   return {

@@ -20,7 +20,7 @@ def _db():
     load_dotenv()
     endpoint = os.getenv("COSMOS_ENDPOINT", "").strip()
     key = os.getenv("COSMOS_KEY", "").strip()
-    db_name = os.getenv("COSMOS_DATABASE", "study_bid_workbench").strip()
+    db_name = os.getenv("COSMOS_DATABASE", "bd-budgets").strip()
     if not endpoint or not key or "YOUR_" in endpoint:
         print("Configure .env with COSMOS_ENDPOINT and COSMOS_KEY first.", file=sys.stderr)
         sys.exit(1)

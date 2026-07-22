@@ -13,6 +13,32 @@
     "Client Budget",
     "BlockEnroll-SMO"
   ],
+  "sheetAliases": {
+    "Input Tab": [
+      "Input Tab",
+      "Main Specifications Required"
+    ],
+    "Internal Budget": [
+      "Internal Budget",
+      "Ora Model Budget",
+      "Study Budget",
+      "RFP_Budget",
+      "Budget",
+      "Detailed Breakdown",
+      "Cost Breakdown"
+    ],
+    "Exec Sum": [
+      "Exec Sum",
+      "Study Economics",
+      "Study Economics (2)",
+      "Executive Summary"
+    ],
+    "Key": ["Key"],
+    "Client Budget": [
+      "Client Budget",
+      "Client Budget - Pricing Request"
+    ]
+  },
   "fingerprint": {
     "mustIncludeSheets": ["Input Tab", "Internal Budget", "Exec Sum"],
     "inputHeaderLabels": [

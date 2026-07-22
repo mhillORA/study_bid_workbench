@@ -100,6 +100,92 @@
     }).join("");
   }
 
+  function renderUpload() {
+    const locked = !canEdit("Analyst");
+    const dis = locked ? "disabled" : "";
+    return `
+      <div class="grid">
+        <div class="card wide">
+          <h3>Upload budgets into Cosmos</h3>
+          <p class="muted">
+            Drop one <code>.xlsx</code>, many files, or a <code>.zip</code> of active studies.
+            The API parses, normalizes, and loads into <strong>bd-budgets</strong>.
+            No hand-editing of Excel — aliases + filename opportunity IDs are applied automatically.
+          </p>
+          <div class="form-grid" style="margin-top:1rem;">
+            <div class="full">
+              <label class="field-label">Files</label>
+              <input id="uploadInput" class="input" type="file" accept=".xlsx,.zip" multiple ${dis} />
+            </div>
+            <div>
+              <label class="field-label">Mode</label>
+              <select id="uploadMode" class="select" ${dis}>
+                <option value="load">Parse + load to Cosmos</option>
+                <option value="dry">Parse only (report, no Cosmos write)</option>
+              </select>
+            </div>
+          </div>
+          <div style="margin-top:1rem;display:flex;gap:0.6rem;align-items:center;">
+            <button type="button" class="btn btn-primary" id="btnStartUpload" ${dis}>Start upload</button>
+            <span class="muted" id="uploadStatus">Waiting for API deploy — UI is ready.</span>
+          </div>
+        </div>
+        <div class="card wide">
+          <h3>Last import report</h3>
+          <pre class="formula-box" id="uploadReport">No upload yet.</pre>
+        </div>
+        <div class="card wide">
+          <h3>How others use this</h3>
+          <ol class="list">
+            <li>You host the app (Azure Static Web App) + import API.</li>
+            <li>Cosmos key stays in Azure App Settings — never in the browser.</li>
+            <li>Analysts open Upload, pick the zip/files, click Start.</li>
+            <li>Report shows loaded / quarantined / failed per file.</li>
+          </ol>
+        </div>
+      </div>`;
+  }
+
+  async function startUpload() {
+    const input = document.getElementById("uploadInput");
+    const mode = document.getElementById("uploadMode");
+    const status = document.getElementById("uploadStatus");
+    const report = document.getElementById("uploadReport");
+    if (!input || !input.files || !input.files.length) {
+      status.textContent = "Choose at least one .xlsx or .zip file.";
+      return;
+    }
+    const fd = new FormData();
+    [...input.files].forEach((f) => fd.append("files", f, f.name));
+    fd.append("mode", mode ? mode.value : "load");
+    fd.append("requestedBy", state.userId);
+
+    status.textContent = "Uploading…";
+    report.textContent = "Working…";
+    const base = (SBW.apiBase || "").replace(/\/$/, "");
+    try {
+      const res = await fetch(`${base}/api/import`, { method: "POST", body: fd });
+      const text = await res.text();
+      let data;
+      try { data = JSON.parse(text); } catch (_) { data = { raw: text }; }
+      if (!res.ok) {
+        status.textContent = `Failed (${res.status})`;
+        report.textContent = JSON.stringify(data, null, 2);
+        return;
+      }
+      status.textContent = "Done";
+      report.textContent = JSON.stringify(data, null, 2);
+    } catch (err) {
+      status.textContent = "API not reachable";
+      report.textContent = [
+        "Could not reach /api/import.",
+        "The upload UI is ready; the import API must be deployed (Static Web App + Function).",
+        "",
+        String(err)
+      ].join("\n");
+    }
+  }
+
   function renderHub() {
     const rows = SBW.sections
       .filter((s) => s.department)
@@ -374,6 +460,7 @@
     let html = "";
     switch (section.id) {
       case "hub": html = renderHub(); break;
+      case "upload": html = renderUpload(); break;
       case "overview": html = renderOverview(); break;
       case "recruitment": html = renderRecruitment(); break;
       case "clinops": html = renderDeptSimple("clinops", "clinops", "ClinOps / SOE assumptions"); break;
@@ -427,6 +514,9 @@
       }
       if (e.target.id === "btnExportInline") {
         exportJson();
+      }
+      if (e.target.id === "btnStartUpload") {
+        startUpload();
       }
     });
 
