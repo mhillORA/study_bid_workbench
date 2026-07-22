@@ -1,5 +1,8 @@
 name: Azure Static Web Apps CI/CD
 
+# Pattern matched to working NASA / CHAOS workflows on mhillORA.github.io
+# (reference only — those repos were not modified)
+
 on:
   push:
     branches:
@@ -25,11 +28,10 @@ jobs:
         uses: Azure/static-web-apps-deploy@v1
         with:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_WHITE_RIVER_0DE1AED0F }}
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
           action: "upload"
-          # Plain HTML/JS site — no Node/Python build step
           app_location: "/"
-          api_location: ""
-          output_location: ""
+          output_location: "/"
           skip_app_build: true
 
   close_pull_request_job:
@@ -42,4 +44,5 @@ jobs:
         uses: Azure/static-web-apps-deploy@v1
         with:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_WHITE_RIVER_0DE1AED0F }}
+          app_location: "/"
           action: "close"
