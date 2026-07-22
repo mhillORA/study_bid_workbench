@@ -729,42 +729,160 @@
   }
 
   function renderOverview() {
-    const d = state.study.drivers;
+    const d = state.study.drivers || {};
     const locked = !canEdit("Analyst");
     const dis = locked ? "disabled" : "";
+    const fields = state.study.inputFields || [];
+    const sites = state.study.sites || [];
+    const monitoring = state.study.monitoringInputs || {};
+    const vendors = state.study.vendors || [];
+    const leads = state.study.resourceLeads || [];
+    const payments = state.study.payments || {};
+
+    // Group editable/captured fields by section
+    const bySection = {};
+    fields.forEach((f, idx) => {
+      const sec = f.section || "Inputs";
+      if (!bySection[sec]) bySection[sec] = [];
+      bySection[sec].push({ ...f, idx });
+    });
+
+    const sectionBlocks = Object.keys(bySection).map((sec) => {
+      const items = bySection[sec]
+        .filter((f) => f.kind !== "section")
+        .map((f) => {
+          const raw = f.value;
+          const isNum = typeof raw === "number";
+          const val = raw == null ? "" : String(raw);
+          return `<div class="${f.note ? "full" : ""}">
+            <label class="field-label">${escapeHtml(f.label || f.key)}${f.sourceCols ? ` <span class="muted">· ${escapeHtml(f.sourceCols)}</span>` : ""}</label>
+            <input class="input" data-input-idx="${f.idx}" ${isNum ? 'type="number" step="any"' : ""} value="${escapeAttr(val)}" ${dis || f.editable === false ? "disabled" : ""} />
+            ${f.note ? `<div class="muted field-note">${escapeHtml(String(f.note).slice(0, 240))}</div>` : ""}
+          </div>`;
+        })
+        .join("");
+      if (!items) return "";
+      return `<div class="card wide">
+        <h3>${escapeHtml(sec)}</h3>
+        <div class="form-grid">${items}</div>
+      </div>`;
+    }).join("");
+
+    const driverEntries = Object.keys(d).sort();
+    const driverBlocks = driverEntries.map((key) => {
+      const val = d[key];
+      const isNum = typeof val === "number" || val === "" || val == null || !Number.isNaN(Number(val));
+      return `<div>
+        <label class="field-label">${escapeHtml(key)}</label>
+        <input class="input" data-driver="${escapeAttr(key)}" ${isNum ? 'type="number" step="any"' : ""} value="${escapeAttr(val == null ? "" : String(val))}" ${dis} />
+      </div>`;
+    }).join("");
+
+    const siteRows = sites.map((s, i) => `<tr>
+      <td><input class="input" data-site-idx="${i}" data-site-field="country" value="${escapeAttr(s.country || "")}" ${dis} /></td>
+      <td><input class="input" data-site-idx="${i}" data-site-field="region" value="${escapeAttr(s.region || "")}" ${dis} /></td>
+      <td><input class="input" type="number" step="any" data-site-idx="${i}" data-site-field="coreSites" value="${escapeAttr(s.coreSites ?? "")}" ${dis} /></td>
+      <td><input class="input" type="number" step="any" data-site-idx="${i}" data-site-field="backupSites" value="${escapeAttr(s.backupSites ?? "")}" ${dis} /></td>
+      <td><input class="input" type="number" step="any" data-site-idx="${i}" data-site-field="enrolledPts" value="${escapeAttr(s.enrolledPts ?? "")}" ${dis} /></td>
+      <td><input class="input" type="number" step="any" data-site-idx="${i}" data-site-field="screenedPts" value="${escapeAttr(s.screenedPts ?? "")}" ${dis} /></td>
+      <td><input class="input" type="number" step="any" data-site-idx="${i}" data-site-field="enrollmentMonths" value="${escapeAttr(s.enrollmentMonths ?? "")}" ${dis} /></td>
+      <td><input class="input" type="number" step="any" data-site-idx="${i}" data-site-field="enrollmentRate" value="${escapeAttr(s.enrollmentRate ?? "")}" ${dis} /></td>
+      <td><input class="input" data-site-idx="${i}" data-site-field="notes" value="${escapeAttr(s.notes || "")}" ${dis} /></td>
+    </tr>`).join("") || `<tr><td colspan="9" class="muted">No site rows — open a Cosmos study after upload.</td></tr>`;
+
+    const monEntries = Object.entries(monitoring);
+    const monBlocks = monEntries.map(([label, val], i) => `<div class="full">
+      <label class="field-label">${escapeHtml(label)}</label>
+      <input class="input" data-monitoring-key="${escapeAttr(label)}" value="${escapeAttr(val == null ? "" : String(val))}" ${dis} />
+    </div>`).join("") || `<p class="muted">No monitoring block loaded.</p>`;
+
+    const leadRows = leads.map((L) => {
+      const regions = Object.entries(L.regions || {}).map(([k, v]) => `${escapeHtml(k)}=${escapeHtml(v == null ? "" : String(v))}`).join(" · ");
+      return `<tr><td>${escapeHtml(L.role || "")}</td><td>${regions}</td><td>${escapeHtml(L.notes || "")}</td></tr>`;
+    }).join("") || `<tr><td colspan="3" class="muted">No resource leads loaded.</td></tr>`;
+
+    const vendorRows = vendors.map((v, i) => `<tr>
+      <td><input class="input" data-vendor-idx="${i}" data-vendor-field="vendorType" value="${escapeAttr(v.vendorType || "")}" ${dis} /></td>
+      <td><input class="input" data-vendor-idx="${i}" data-vendor-field="vendorName" value="${escapeAttr(v.vendorName || "")}" ${dis} /></td>
+      <td><input class="input" data-vendor-idx="${i}" data-vendor-field="oraResponsibility" value="${escapeAttr(v.oraResponsibility || "")}" ${dis} /></td>
+      <td><input class="input" data-vendor-idx="${i}" data-vendor-field="freqTransfers" value="${escapeAttr(v.freqTransfers || "")}" ${dis} /></td>
+    </tr>`).join("") || `<tr><td colspan="4" class="muted">No vendors loaded.</td></tr>`;
+
+    const payBlocks = Object.entries(payments).map(([k, v]) => `<div>
+      <label class="field-label">${escapeHtml(k)}</label>
+      <input class="input" data-payment-key="${escapeAttr(k)}" value="${escapeAttr(v == null ? "" : String(v))}" ${dis} />
+    </div>`).join("");
+
     return `
       <div class="grid">
         <div class="card half">
           <h3>Study identity</h3>
           <div class="form-grid">
-            <div><label class="field-label">Client</label><input class="input" data-study="clientName" value="${escapeAttr(state.study.clientName)}" ${dis} /></div>
-            <div><label class="field-label">Opportunity</label><input class="input" data-study="studyId" value="${escapeAttr(state.study.studyId)}" ${dis} /></div>
-            <div class="full"><label class="field-label">Title</label><input class="input" data-study="title" value="${escapeAttr(state.study.title)}" ${dis} /></div>
-            <div><label class="field-label">Protocol</label><input class="input" data-study="protocol" value="${escapeAttr(state.study.protocol)}" ${dis} /></div>
-            <div><label class="field-label">Version</label><input class="input" data-study="versionLabel" value="${escapeAttr(state.study.versionLabel)}" ${dis} /></div>
+            <div><label class="field-label">Client</label><input class="input" data-study="clientName" value="${escapeAttr(state.study.clientName || "")}" ${dis} /></div>
+            <div><label class="field-label">Opportunity</label><input class="input" data-study="studyId" value="${escapeAttr(state.study.studyId || "")}" ${dis} /></div>
+            <div class="full"><label class="field-label">Title</label><input class="input" data-study="title" value="${escapeAttr(state.study.title || "")}" ${dis} /></div>
+            <div><label class="field-label">Protocol</label><input class="input" data-study="protocol" value="${escapeAttr(state.study.protocol || "")}" ${dis} /></div>
+            <div><label class="field-label">Version</label><input class="input" data-study="versionLabel" value="${escapeAttr(state.study.versionLabel || "")}" ${dis} /></div>
+            <div><label class="field-label">Phase</label><input class="input" data-study="phase" value="${escapeAttr(state.study.phase || "")}" ${dis} /></div>
+            <div><label class="field-label">Therapeutic area</label><input class="input" data-study="therapeuticArea" value="${escapeAttr(state.study.therapeuticArea || "")}" ${dis} /></div>
+            <div><label class="field-label">Indication</label><input class="input" data-study="indication" value="${escapeAttr(state.study.indication || "")}" ${dis} /></div>
           </div>
         </div>
-        <div class="card half">
-          <h3>Computed</h3>
+        <div class="card half sticky-calc">
+          <h3>Calculated (nearby)</h3>
           <p><strong>Total duration:</strong> ${num(state.results["drivers.totalDuration"], 2)} months</p>
           <p><strong>Enrollment rate:</strong> ${num(state.results["drivers.enrollmentRate"], 3)} subjects/site/month</p>
-          <p class="muted">Driven by formula library — editable on Formulas page.</p>
+          <p><strong>Service fees (demo):</strong> ${money(state.results["summary.totalServiceFees"])}</p>
+          <p><strong>Grand total (demo):</strong> ${money(state.results["summary.grandTotal"])}</p>
+          <p class="muted">${fields.length} Input Tab fields · ${sites.length} sites · ${state.lineItems.length} line items in memory</p>
+          ${!fields.length ? "<p class=\"muted\">Open a Cosmos study (after upload) to populate every captured Input Tab cell.</p>" : ""}
         </div>
+
         <div class="card wide">
-          <h3>Core drivers</h3>
-          <div class="form-grid">
-            ${driverField("screenedSubjects", "Screened subjects", d.screenedSubjects, dis)}
-            ${driverField("enrolledSubjects", "Enrolled subjects", d.enrolledSubjects, dis)}
-            ${driverField("completedSubjects", "Completed subjects", d.completedSubjects, dis)}
-            ${driverField("coreSites", "Core sites", d.coreSites, dis)}
-            ${driverField("startupMonths", "Startup months", d.startupMonths, dis)}
-            ${driverField("enrollmentMonths", "Enrollment months", d.enrollmentMonths, dis)}
-            ${driverField("treatmentMonths", "Treatment months", d.treatmentMonths, dis)}
-            ${driverField("contingency", "Contingency $", d.contingency, dis)}
+          <h3>All drivers</h3>
+          <div class="form-grid">${driverBlocks || "<p class=\"muted\">No drivers</p>"}</div>
+        </div>
+
+        ${sectionBlocks}
+
+        <div class="card wide">
+          <h3>Site mix</h3>
+          <div style="overflow:auto;">
+            <table class="table">
+              <thead><tr><th>Country</th><th>Region</th><th>Core sites</th><th>Backup</th><th>Enrolled</th><th>Screened</th><th>Enroll mo</th><th>Rate</th><th>Notes</th></tr></thead>
+              <tbody>${siteRows}</tbody>
+            </table>
           </div>
-          <div style="margin-top:1rem;display:flex;gap:0.5rem;">
-            <button type="button" class="btn btn-secondary" data-status-section="overview" data-status="ready_for_review" ${dis}>Mark ready for review</button>
-          </div>
+        </div>
+
+        <div class="card wide">
+          <h3>Monitoring / IMV inputs</h3>
+          <div class="form-grid">${monBlocks}</div>
+        </div>
+
+        <div class="card wide">
+          <h3>Payments</h3>
+          <div class="form-grid">${payBlocks || "<p class=\"muted\">No payment fields</p>"}</div>
+        </div>
+
+        <div class="card wide">
+          <h3>Resource leads</h3>
+          <table class="table">
+            <thead><tr><th>Role</th><th>Regions</th><th>Notes</th></tr></thead>
+            <tbody>${leadRows}</tbody>
+          </table>
+        </div>
+
+        <div class="card wide">
+          <h3>Vendors</h3>
+          <table class="table">
+            <thead><tr><th>Type</th><th>Name</th><th>Ora responsibility</th><th>Freq / transfers</th></tr></thead>
+            <tbody>${vendorRows}</tbody>
+          </table>
+        </div>
+
+        <div class="card wide">
+          <button type="button" class="btn btn-secondary" data-status-section="overview" data-status="ready_for_review" ${dis}>Mark ready for review</button>
         </div>
       </div>`;
   }
@@ -774,6 +892,30 @@
       <label class="field-label">${label}</label>
       <input class="input" type="number" step="any" data-driver="${key}" value="${value}" ${dis} />
     </div>`;
+  }
+
+  function lineItemsForDept(deptName) {
+    const items = (state.lineItems || []).filter((li) => (li.department || "") === deptName);
+    if (!items.length) {
+      return `<p class="muted">No line items loaded for ${escapeHtml(deptName)}. Open a Cosmos study to pull Internal Budget rows.</p>`;
+    }
+    const rows = items.slice(0, 200).map((li) => `<tr>
+      <td><code>${escapeHtml(li.oraCode || "")}</code></td>
+      <td>${escapeHtml(li.service || "")}</td>
+      <td>${escapeHtml(li.units == null ? "" : String(li.units))}</td>
+      <td>${escapeHtml(li.totalHours == null ? "" : String(li.totalHours))}</td>
+      <td>${money(li.charge)}</td>
+      <td>${escapeHtml(li.phase || "")}</td>
+    </tr>`).join("");
+    const chargeSum = items.reduce((s, li) => s + (Number(li.charge) || 0), 0);
+    return `
+      <p class="muted">${items.length} lines · charge sum ${money(chargeSum)}</p>
+      <div style="overflow:auto;max-height:50vh;">
+        <table class="table">
+          <thead><tr><th>Ora</th><th>Service</th><th>Units</th><th>Hours</th><th>Charge</th><th>Phase</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
   }
 
   function renderRecruitment() {
@@ -820,6 +962,10 @@
           </table>
           <p class="muted">Units come from editable formulas, not a spreadsheet grid.</p>
         </div>
+        <div class="card wide">
+          <h3>Recruitment line items (from Cosmos version)</h3>
+          ${lineItemsForDept("Recruitment")}
+        </div>
       </div>`;
   }
 
@@ -857,20 +1003,38 @@
             <button type="button" class="btn btn-secondary" data-status-section="${sectionId}" data-status="ready_for_review" ${dis}>Mark ready for review</button>
           </div>
         </div>
+        <div class="card wide">
+          <h3>${escapeHtml(section.department || "")} line items</h3>
+          ${lineItemsForDept(section.department)}
+        </div>
       </div>`;
   }
 
   function renderSummary() {
+    const totals = state.study.totals || {};
+    const execAreas = (state.study.execSum && state.study.execSum.serviceAreas) || [];
+    const totalRows = Object.entries(totals).map(([k, v]) =>
+      `<tr><td>${escapeHtml(k)}</td><td>${typeof v === "number" ? money(v) : escapeHtml(String(v))}</td></tr>`
+    ).join("") || `<tr><td colspan="2" class="muted">No Exec Sum totals on this study yet.</td></tr>`;
+    const areaRows = execAreas.map((a) =>
+      `<tr><td>${escapeHtml(a.name || "")}</td><td>${money(a.serviceFees)}</td></tr>`
+    ).join("");
+
     return `
       <div class="grid">
-        <div class="card"><h3>Service fees subtotal</h3><div class="stat">${money(state.results["summary.serviceFeesSubtotal"])}</div></div>
-        <div class="card"><h3>Inflation</h3><div class="stat">${money(state.results["summary.inflation"])}</div></div>
-        <div class="card"><h3>Total service fees</h3><div class="stat">${money(state.results["summary.totalServiceFees"])}</div></div>
-        <div class="card half"><h3>Pass-throughs</h3><div class="stat">${money(state.results["summary.passThroughs"])}</div></div>
-        <div class="card half"><h3>Grand total</h3><div class="stat">${money(state.results["summary.grandTotal"])}</div></div>
+        <div class="card"><h3>Service fees (formula demo)</h3><div class="stat">${money(state.results["summary.totalServiceFees"])}</div></div>
+        <div class="card"><h3>Pass-throughs (formula demo)</h3><div class="stat">${money(state.results["summary.passThroughs"])}</div></div>
+        <div class="card"><h3>Grand total (formula demo)</h3><div class="stat">${money(state.results["summary.grandTotal"])}</div></div>
+        <div class="card half">
+          <h3>Exec Sum totals (from file)</h3>
+          <table class="table"><thead><tr><th>Label</th><th>Amount</th></tr></thead><tbody>${totalRows}</tbody></table>
+        </div>
+        <div class="card half">
+          <h3>Service areas (from file)</h3>
+          <table class="table"><thead><tr><th>Area</th><th>Fees</th></tr></thead><tbody>${areaRows || "<tr><td colspan=2 class=muted>None</td></tr>"}</tbody></table>
+        </div>
         <div class="card wide">
           <h3>Export</h3>
-          <p class="muted">This working model exports JSON. Excel/PDF exporters plug in here next.</p>
           <button type="button" class="btn btn-primary" id="btnExportInline">Download study JSON</button>
         </div>
       </div>`;
@@ -1059,13 +1223,71 @@
     els.viewRoot.addEventListener("input", (e) => {
       const t = e.target;
       if (t.dataset.driver) {
-        state.study.drivers[t.dataset.driver] = Number(t.value);
+        const raw = t.value;
+        state.study.drivers[t.dataset.driver] = raw === "" ? null : (t.type === "number" ? Number(raw) : raw);
         markDirty();
         recalc();
         return;
       }
       if (t.dataset.study) {
         state.study[t.dataset.study] = t.value;
+        markDirty();
+        return;
+      }
+      if (t.dataset.inputIdx != null) {
+        const idx = Number(t.dataset.inputIdx);
+        if (!state.study.inputFields) state.study.inputFields = [];
+        if (state.study.inputFields[idx]) {
+          const prev = state.study.inputFields[idx].value;
+          const next = t.type === "number" && t.value !== "" ? Number(t.value) : t.value;
+          state.study.inputFields[idx].value = next;
+          const key = state.study.inputFields[idx].key;
+          if (key && !String(key).startsWith("input:") && !String(key).startsWith("driver:") && !String(key).startsWith("side:") && !String(key).startsWith("section:")) {
+            if (!state.study.header) state.study.header = {};
+            state.study.header[key] = next;
+            if (["clientName", "title", "protocol", "phase", "therapeuticArea", "indication", "enrollmentType", "budgetType"].includes(key)) {
+              state.study[key] = next;
+            }
+          }
+          if (String(key || "").startsWith("driver.") || (typeof prev === "number" || t.type === "number")) {
+            const dkey = String(key || "").replace(/^driver\./, "");
+            if (state.study.drivers && dkey in state.study.drivers) {
+              state.study.drivers[dkey] = next;
+              recalc();
+            }
+          }
+        }
+        markDirty();
+        return;
+      }
+      if (t.dataset.siteIdx != null && t.dataset.siteField) {
+        const i = Number(t.dataset.siteIdx);
+        if (!state.study.sites) state.study.sites = [];
+        if (state.study.sites[i]) {
+          const field = t.dataset.siteField;
+          state.study.sites[i][field] = t.type === "number" && t.value !== "" ? Number(t.value) : t.value;
+        }
+        markDirty();
+        return;
+      }
+      if (t.dataset.monitoringKey) {
+        if (!state.study.monitoringInputs) state.study.monitoringInputs = {};
+        state.study.monitoringInputs[t.dataset.monitoringKey] = t.value;
+        markDirty();
+        return;
+      }
+      if (t.dataset.paymentKey) {
+        if (!state.study.payments) state.study.payments = {};
+        state.study.payments[t.dataset.paymentKey] = t.value;
+        markDirty();
+        return;
+      }
+      if (t.dataset.vendorIdx != null && t.dataset.vendorField) {
+        const i = Number(t.dataset.vendorIdx);
+        if (!state.study.vendors) state.study.vendors = [];
+        if (state.study.vendors[i]) {
+          state.study.vendors[i][t.dataset.vendorField] = t.value;
+        }
         markDirty();
         return;
       }

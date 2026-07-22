@@ -352,7 +352,21 @@ h1 {
   font-weight: 600;
 }
 
-.row-active td { background: var(--accent-soft); }
+.field-note {
+  font-size: 0.8rem;
+  margin-top: 0.25rem;
+}
+
+.sticky-calc {
+  position: sticky;
+  top: 0.75rem;
+  align-self: start;
+}
+
+.field-section h4 {
+  margin: 0.25rem 0 0;
+  font-size: 1rem;
+}
 
 .badge.added { background: var(--ok-soft); color: var(--ok); }
 .badge.removed { background: #f3d8d2; color: #8a3b2d; }
