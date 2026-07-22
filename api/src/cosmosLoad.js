@@ -64,7 +64,26 @@ async function upsertCanonical(canonical, jobId) {
     docType: "version",
     confidence: canonical.confidence,
     profileId: canonical.profileId,
-    source: canonical.source
+    source: canonical.source,
+    // Snapshot study inputs on the version so history/compare works after later uploads
+    snapshot: {
+      header: study.header || {},
+      drivers: study.drivers || {},
+      sites: study.sites || [],
+      inputFields: study.inputFields || [],
+      resourceLeads: study.resourceLeads || [],
+      monitoring: study.monitoring || {},
+      vendors: study.vendors || [],
+      payments: study.payments || {},
+      clientName: study.clientName,
+      title: study.title,
+      protocol: study.protocol,
+      phase: study.phase,
+      therapeuticArea: study.therapeuticArea,
+      indication: study.indication,
+      enrollmentType: study.enrollmentType,
+      budgetType: study.budgetType
+    }
   });
 
   const lineContainer = database.container("lineItems");
@@ -103,6 +122,18 @@ async function upsertCanonical(canonical, jobId) {
     )
   );
 
+  if (Array.isArray(canonical.rates) && canonical.rates.length) {
+    await database.container("rateCards").items.upsert({
+      id: `rates-${studyId}-${version.id}`,
+      rateCardId: `rates-${studyId}`,
+      studyId,
+      versionId: version.id,
+      docType: "rateCard",
+      rates: canonical.rates,
+      updatedAt: now
+    });
+  }
+
   await database.container("importJobs").items.upsert({
     id: jobId,
     jobId,
@@ -134,4 +165,222 @@ async function listStudies(limit = 100) {
     .slice(0, limit);
 }
 
-module.exports = { upsertCanonical, listStudies, getDb };
+async function getStudy(studyId) {
+  const database = getDb();
+  const { resources } = await database.container("studies").items
+    .query({
+      query: "SELECT * FROM c WHERE c.studyId = @id AND c.docType = @t",
+      parameters: [
+        { name: "@id", value: studyId },
+        { name: "@t", value: "study" }
+      ]
+    })
+    .fetchAll();
+  return resources[0] || null;
+}
+
+async function listVersions(studyId) {
+  const database = getDb();
+  const { resources } = await database.container("versions").items
+    .query({
+      query:
+        "SELECT c.id, c.studyId, c.label, c.sourceFileName, c.sourceSha256, c.lineItemCount, c.rateCount, c.totals, c.createdAt, c.confidence FROM c WHERE c.studyId = @id AND c.docType = @t",
+      parameters: [
+        { name: "@id", value: studyId },
+        { name: "@t", value: "version" }
+      ]
+    })
+    .fetchAll();
+  return resources.sort((a, b) => String(b.createdAt || "").localeCompare(String(a.createdAt || "")));
+}
+
+async function getVersion(studyId, versionId) {
+  const database = getDb();
+  try {
+    const { resource } = await database.container("versions").item(versionId, studyId).read();
+    return resource || null;
+  } catch (_) {
+    const { resources } = await database.container("versions").items
+      .query({
+        query: "SELECT * FROM c WHERE c.id = @vid AND c.studyId = @id",
+        parameters: [
+          { name: "@vid", value: versionId },
+          { name: "@id", value: studyId }
+        ]
+      })
+      .fetchAll();
+    return resources[0] || null;
+  }
+}
+
+async function listLineItems(studyId, versionId, { department, limit = 500 } = {}) {
+  const database = getDb();
+  let query;
+  let parameters;
+  if (department) {
+    query =
+      "SELECT TOP @lim c.oraCode, c.department, c.service, c.units, c.hoursPerUnit, c.totalHours, c.charge, c.directCost, c.phase, c.section FROM c WHERE c.studyId = @id AND c.versionId = @vid AND c.department = @dept";
+    parameters = [
+      { name: "@id", value: studyId },
+      { name: "@vid", value: versionId },
+      { name: "@dept", value: department },
+      { name: "@lim", value: limit }
+    ];
+  } else {
+    query =
+      "SELECT TOP @lim c.oraCode, c.department, c.service, c.units, c.hoursPerUnit, c.totalHours, c.charge, c.directCost, c.phase, c.section FROM c WHERE c.studyId = @id AND c.versionId = @vid";
+    parameters = [
+      { name: "@id", value: studyId },
+      { name: "@vid", value: versionId },
+      { name: "@lim", value: limit }
+    ];
+  }
+  const { resources } = await database.container("lineItems").items.query({ query, parameters }).fetchAll();
+  return resources;
+}
+
+function flattenForCompare(versionDoc, studyFallback) {
+  const snap = versionDoc?.snapshot || {};
+  const drivers = snap.drivers || studyFallback?.drivers || {};
+  const header = snap.header || studyFallback?.header || {};
+  const totals = versionDoc?.totals || versionDoc?.execSum?.totals || {};
+  const flat = {
+    clientName: snap.clientName || studyFallback?.clientName || null,
+    title: snap.title || studyFallback?.title || null,
+    protocol: snap.protocol || studyFallback?.protocol || null,
+    phase: snap.phase || studyFallback?.phase || null,
+    therapeuticArea: snap.therapeuticArea || studyFallback?.therapeuticArea || null,
+    indication: snap.indication || studyFallback?.indication || null,
+    enrollmentType: snap.enrollmentType || studyFallback?.enrollmentType || null,
+    budgetType: snap.budgetType || studyFallback?.budgetType || null,
+    versionLabel: versionDoc?.label || null,
+    lineItemCount: versionDoc?.lineItemCount ?? null,
+    sourceFileName: versionDoc?.sourceFileName || null
+  };
+  for (const [k, v] of Object.entries(header)) {
+    flat[`header.${k}`] = v;
+  }
+  for (const [k, v] of Object.entries(drivers)) {
+    flat[`driver.${k}`] = v;
+  }
+  for (const [k, v] of Object.entries(totals)) {
+    flat[`total.${k}`] = v;
+  }
+  return flat;
+}
+
+function valuesEqual(a, b) {
+  if (a == null && b == null) return true;
+  if (typeof a === "number" && typeof b === "number") {
+    return Math.abs(a - b) < 1e-9;
+  }
+  return String(a) === String(b);
+}
+
+async function compareVersions(studyId, olderVersionId, newerVersionId) {
+  const study = await getStudy(studyId);
+  const older = await getVersion(studyId, olderVersionId);
+  const newer = await getVersion(studyId, newerVersionId);
+  if (!older || !newer) {
+    throw new Error("One or both versions were not found");
+  }
+  const a = flattenForCompare(older, study);
+  const b = flattenForCompare(newer, study);
+  const keys = [...new Set([...Object.keys(a), ...Object.keys(b)])].sort();
+  const changes = [];
+  const unchanged = [];
+  for (const key of keys) {
+    const left = a[key];
+    const right = b[key];
+    if (valuesEqual(left, right)) {
+      unchanged.push({ key, value: right });
+    } else {
+      changes.push({ key, previous: left ?? null, current: right ?? null });
+    }
+  }
+
+  // Line-item rollup by department charge
+  const [oldLines, newLines] = await Promise.all([
+    listLineItems(studyId, olderVersionId, { limit: 2000 }),
+    listLineItems(studyId, newerVersionId, { limit: 2000 })
+  ]);
+  const roll = (items) => {
+    const m = {};
+    for (const li of items) {
+      const d = li.department || "Other";
+      if (!m[d]) m[d] = { department: d, count: 0, charge: 0, hours: 0 };
+      m[d].count += 1;
+      m[d].charge += Number(li.charge) || 0;
+      m[d].hours += Number(li.totalHours) || 0;
+    }
+    return m;
+  };
+  const oldR = roll(oldLines);
+  const newR = roll(newLines);
+  const deptKeys = [...new Set([...Object.keys(oldR), ...Object.keys(newR)])].sort();
+  const departmentDiffs = deptKeys.map((d) => ({
+    department: d,
+    previous: oldR[d] || { department: d, count: 0, charge: 0, hours: 0 },
+    current: newR[d] || { department: d, count: 0, charge: 0, hours: 0 },
+    changed:
+      !oldR[d] ||
+      !newR[d] ||
+      oldR[d].count !== newR[d].count ||
+      Math.abs((oldR[d].charge || 0) - (newR[d].charge || 0)) > 0.01
+  }));
+
+  // Ora-code level diffs (subset: changed/added/removed)
+  const byCode = (items) => {
+    const m = {};
+    for (const li of items) {
+      if (!li.oraCode) continue;
+      m[li.oraCode] = li;
+    }
+    return m;
+  };
+  const oldC = byCode(oldLines);
+  const newC = byCode(newLines);
+  const codeKeys = [...new Set([...Object.keys(oldC), ...Object.keys(newC)])];
+  const lineItemDiffs = [];
+  for (const code of codeKeys) {
+    const p = oldC[code];
+    const c = newC[code];
+    if (!p && c) {
+      lineItemDiffs.push({ oraCode: code, change: "added", previous: null, current: c });
+    } else if (p && !c) {
+      lineItemDiffs.push({ oraCode: code, change: "removed", previous: p, current: null });
+    } else if (
+      p &&
+      c &&
+      (!valuesEqual(p.units, c.units) ||
+        !valuesEqual(p.charge, c.charge) ||
+        !valuesEqual(p.totalHours, c.totalHours) ||
+        !valuesEqual(p.service, c.service))
+    ) {
+      lineItemDiffs.push({ oraCode: code, change: "changed", previous: p, current: c });
+    }
+  }
+
+  return {
+    studyId,
+    older: { id: older.id, label: older.label, createdAt: older.createdAt, sourceFileName: older.sourceFileName },
+    newer: { id: newer.id, label: newer.label, createdAt: newer.createdAt, sourceFileName: newer.sourceFileName },
+    fieldChanges: changes,
+    fieldUnchangedCount: unchanged.length,
+    departmentDiffs,
+    lineItemDiffs: lineItemDiffs.slice(0, 300),
+    lineItemDiffCount: lineItemDiffs.length,
+    notes: older.snapshot ? null : "Older version has no input snapshot (uploaded before versioning fix). Field compare may be limited to totals."
+  };
+}
+
+module.exports = {
+  upsertCanonical,
+  listStudies,
+  getStudy,
+  listVersions,
+  getVersion,
+  listLineItems,
+  compareVersions,
+  getDb
+};

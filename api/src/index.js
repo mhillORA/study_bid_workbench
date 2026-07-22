@@ -1,7 +1,7 @@
 const { app } = require("@azure/functions");
 const AdmZip = require("adm-zip");
 const { parseWorkbookBuffer } = require("./parseWorkbook");
-const { upsertCanonical, listStudies, getDb } = require("./cosmosLoad");
+const { upsertCanonical, listStudies, getStudy, listVersions, getVersion, listLineItems, compareVersions, getDb } = require("./cosmosLoad");
 const { askAi, getStudyContext, providerStatus } = require("./askClaude");
 
 function json(status, body) {
@@ -157,6 +157,123 @@ app.http("studies", {
     try {
       const studies = await listStudies(200);
       return json(200, { studies });
+    } catch (err) {
+      context.error(err);
+      return json(500, { error: String(err.message || err) });
+    }
+  }
+});
+
+app.http("studyById", {
+  methods: ["GET", "OPTIONS"],
+  authLevel: "anonymous",
+  route: "studies/{studyId}",
+  handler: async (request, context) => {
+    if (request.method === "OPTIONS") {
+      return {
+        status: 204,
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, OPTIONS"
+        }
+      };
+    }
+    try {
+      const studyId = request.params.studyId;
+      const study = await getStudy(studyId);
+      if (!study) return json(404, { error: `Study ${studyId} not found` });
+      const versions = await listVersions(studyId);
+      let version = null;
+      let lineItems = [];
+      const versionId = study.currentVersionId || (versions[0] && versions[0].id);
+      if (versionId) {
+        version = await getVersion(studyId, versionId);
+        lineItems = await listLineItems(studyId, versionId, { limit: 400 });
+      }
+      return json(200, { study, versions, version, lineItems });
+    } catch (err) {
+      context.error(err);
+      return json(500, { error: String(err.message || err) });
+    }
+  }
+});
+
+app.http("studyVersions", {
+  methods: ["GET", "OPTIONS"],
+  authLevel: "anonymous",
+  route: "studies/{studyId}/versions",
+  handler: async (request, context) => {
+    if (request.method === "OPTIONS") {
+      return {
+        status: 204,
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, OPTIONS"
+        }
+      };
+    }
+    try {
+      const studyId = request.params.studyId;
+      const versions = await listVersions(studyId);
+      return json(200, { studyId, versions });
+    } catch (err) {
+      context.error(err);
+      return json(500, { error: String(err.message || err) });
+    }
+  }
+});
+
+app.http("studyVersionById", {
+  methods: ["GET", "OPTIONS"],
+  authLevel: "anonymous",
+  route: "studies/{studyId}/versions/{versionId}",
+  handler: async (request, context) => {
+    if (request.method === "OPTIONS") {
+      return {
+        status: 204,
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, OPTIONS"
+        }
+      };
+    }
+    try {
+      const { studyId, versionId } = request.params;
+      const version = await getVersion(studyId, versionId);
+      if (!version) return json(404, { error: "Version not found" });
+      const lineItems = await listLineItems(studyId, versionId, { limit: 400 });
+      return json(200, { version, lineItems });
+    } catch (err) {
+      context.error(err);
+      return json(500, { error: String(err.message || err) });
+    }
+  }
+});
+
+app.http("studyCompare", {
+  methods: ["GET", "OPTIONS"],
+  authLevel: "anonymous",
+  route: "studies/{studyId}/compare",
+  handler: async (request, context) => {
+    if (request.method === "OPTIONS") {
+      return {
+        status: 204,
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, OPTIONS"
+        }
+      };
+    }
+    try {
+      const studyId = request.params.studyId;
+      const url = new URL(request.url);
+      const older = url.searchParams.get("older");
+      const newer = url.searchParams.get("newer");
+      if (!older || !newer) {
+        return json(400, { error: "Query params older & newer (version ids) are required" });
+      }
+      const diff = await compareVersions(studyId, older, newer);
+      return json(200, diff);
     } catch (err) {
       context.error(err);
       return json(500, { error: String(err.message || err) });

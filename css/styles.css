@@ -341,6 +341,23 @@ h1 {
 
 .ask-compose .btn { justify-self: start; }
 
+.diff-old {
+  color: #8a3b2d;
+  text-decoration: line-through;
+  text-decoration-thickness: 1px;
+}
+
+.diff-new {
+  color: #1f6b3a;
+  font-weight: 600;
+}
+
+.row-active td { background: var(--accent-soft); }
+
+.badge.added { background: var(--ok-soft); color: var(--ok); }
+.badge.removed { background: #f3d8d2; color: #8a3b2d; }
+.badge.changed { background: var(--warn-soft); color: var(--warn); }
+
 .upload-progress {
   margin-top: 1rem;
   display: grid;

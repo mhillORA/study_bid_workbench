@@ -8,7 +8,12 @@
     study: loadStudy(),
     dirty: false,
     results: {},
-    askHistory: []
+    askHistory: [],
+    source: "local", // local | cosmos
+    versions: [],
+    lineItems: [],
+    compare: null,
+    compareStatus: ""
   };
 
   const els = {
@@ -404,19 +409,82 @@
   }
 
   function renderStudies(loadingHtml) {
+    const openId = state.source === "cosmos" ? state.study.studyId : "";
     return `
       <div class="grid">
         <div class="card wide">
           <div style="display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap;">
             <div>
               <h3>Studies in Cosmos</h3>
-              <p class="muted">From <code>GET /api/studies</code> · database <strong>bd-budgets</strong></p>
+              <p class="muted">Open a study to swap into the workbench and edit it. Current: <strong>${escapeHtml(openId || "(local demo)")}</strong></p>
             </div>
             <button type="button" class="btn btn-secondary" id="btnRefreshStudies">Refresh</button>
           </div>
           <div id="studiesPanel" style="margin-top:1rem;">${loadingHtml || "<p class=\"muted\">Loading…</p>"}</div>
         </div>
       </div>`;
+  }
+
+  function cosmosStudyToWorkspace(payload) {
+    const s = payload.study || {};
+    const v = payload.version || {};
+    const snap = v.snapshot || {};
+    const base = SBW.defaultStudy();
+    const drivers = { ...base.drivers, ...(s.drivers || {}), ...(snap.drivers || {}) };
+    return {
+      ...base,
+      studyId: s.studyId,
+      clientName: s.clientName || snap.clientName || "",
+      title: s.title || snap.title || "",
+      protocol: s.protocol || snap.protocol || "",
+      phase: s.phase || snap.phase || "",
+      therapeuticArea: s.therapeuticArea || snap.therapeuticArea || "",
+      indication: s.indication || snap.indication || "",
+      enrollmentType: s.enrollmentType || snap.enrollmentType || "",
+      budgetType: s.budgetType || snap.budgetType || "",
+      versionLabel: v.label || "imported",
+      drivers,
+      header: snap.header || s.header || {},
+      inputFields: snap.inputFields || s.inputFields || [],
+      sites: snap.sites || s.sites || [],
+      resourceLeads: snap.resourceLeads || s.resourceLeads || [],
+      monitoringInputs: snap.monitoring || s.monitoring || {},
+      vendors: snap.vendors || s.vendors || [],
+      payments: snap.payments || s.payments || {},
+      totals: v.totals || {},
+      execSum: v.execSum || {},
+      currentVersionId: s.currentVersionId || v.id,
+      viewingVersionId: v.id,
+      sectionStatus: base.sectionStatus,
+      assumptions: base.assumptions,
+      requests: base.requests,
+      formulaOverrides: {}
+    };
+  }
+
+  async function openStudy(studyId) {
+    const panel = document.getElementById("studiesPanel");
+    if (panel) panel.innerHTML = `<p class="muted">Opening ${escapeHtml(studyId)}…</p>`;
+    try {
+      const res = await fetch(apiUrl(`/api/studies/${encodeURIComponent(studyId)}`));
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (panel) panel.innerHTML = `<pre class="formula-box">${escapeHtml(JSON.stringify(data, null, 2))}</pre>`;
+        return;
+      }
+      state.study = cosmosStudyToWorkspace(data);
+      state.versions = data.versions || [];
+      state.lineItems = data.lineItems || [];
+      state.source = "cosmos";
+      state.compare = null;
+      state.dirty = false;
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state.study));
+      state.sectionId = "overview";
+      render();
+      markSaved();
+    } catch (err) {
+      if (panel) panel.innerHTML = `<pre class="formula-box">${escapeHtml(String(err))}</pre>`;
+    }
   }
 
   async function loadStudiesIntoPanel() {
@@ -435,24 +503,186 @@
         panel.innerHTML = "<p class=\"muted\">No studies yet. Use Upload budgets to load workbooks.</p>";
         return;
       }
+      const openId = state.source === "cosmos" ? state.study.studyId : "";
       panel.innerHTML = `
         <table class="table">
           <thead>
-            <tr><th>Study</th><th>Client</th><th>Title</th><th>Phase</th><th>Status</th><th>Updated</th></tr>
+            <tr><th></th><th>Study</th><th>Client</th><th>Title</th><th>Phase</th><th>Status</th><th>Updated</th></tr>
           </thead>
           <tbody>
-            ${studies.map((s) => `<tr>
+            ${studies.map((s) => {
+              const active = s.studyId === openId;
+              return `<tr class="${active ? "row-active" : ""}">
+              <td><button type="button" class="btn btn-primary" data-open-study="${escapeAttr(s.studyId || "")}">${active ? "Opened" : "Open"}</button></td>
               <td><code>${escapeHtml(s.studyId || "")}</code></td>
               <td>${escapeHtml(s.clientName || "—")}</td>
               <td>${escapeHtml(s.title || "—")}</td>
               <td>${escapeHtml(s.phase || "—")}</td>
               <td>${escapeHtml(s.status || "—")}</td>
               <td class="muted">${escapeHtml((s.updatedAt || s.importedAt || "").slice(0, 19).replace("T", " "))}</td>
-            </tr>`).join("")}
+            </tr>`;
+            }).join("")}
           </tbody>
         </table>`;
     } catch (err) {
       panel.innerHTML = `<p class="muted">Could not reach /api/studies.</p><pre class="formula-box">${escapeHtml(String(err))}</pre>`;
+    }
+  }
+
+  function renderVersions() {
+    const versions = state.versions || [];
+    const opts = versions.map((v) =>
+      `<option value="${escapeAttr(v.id)}">${escapeHtml(v.label || v.id)} · ${(v.createdAt || "").slice(0, 10)} · ${v.lineItemCount || 0} lines</option>`
+    ).join("");
+
+    const diff = state.compare;
+    let diffHtml = "<p class=\"muted\">Pick an older version and compare to the newest. Differences show <span class=\"diff-old\">previous</span> → <span class=\"diff-new\">current</span>.</p>";
+    if (state.compareStatus) diffHtml = `<p class="muted">${escapeHtml(state.compareStatus)}</p>`;
+    if (diff) {
+      const fields = (diff.fieldChanges || []).map((c) =>
+        `<tr>
+          <td><code>${escapeHtml(c.key)}</code></td>
+          <td class="diff-old">${escapeHtml(c.previous == null ? "—" : String(c.previous))}</td>
+          <td class="diff-new">${escapeHtml(c.current == null ? "—" : String(c.current))}</td>
+        </tr>`
+      ).join("") || `<tr><td colspan="3">No field differences (or older upload lacked a snapshot).</td></tr>`;
+
+      const depts = (diff.departmentDiffs || []).filter((d) => d.changed).map((d) =>
+        `<tr>
+          <td>${escapeHtml(d.department)}</td>
+          <td>${d.previous.count} lines / ${money(d.previous.charge)}</td>
+          <td>${d.current.count} lines / ${money(d.current.charge)}</td>
+        </tr>`
+      ).join("") || `<tr><td colspan="3">No department rollup changes.</td></tr>`;
+
+      const lines = (diff.lineItemDiffs || []).slice(0, 80).map((d) =>
+        `<tr>
+          <td><code>${escapeHtml(d.oraCode)}</code> <span class="badge ${escapeAttr(d.change)}">${escapeHtml(d.change)}</span></td>
+          <td class="diff-old">${d.previous ? escapeHtml(`${d.previous.service || ""} · u=${d.previous.units} · ${d.previous.charge}`) : "—"}</td>
+          <td class="diff-new">${d.current ? escapeHtml(`${d.current.service || ""} · u=${d.current.units} · ${d.current.charge}`) : "—"}</td>
+        </tr>`
+      ).join("") || `<tr><td colspan="3">No line-item diffs in sample.</td></tr>`;
+
+      diffHtml = `
+        <p class="muted">${escapeHtml(diff.older?.label || diff.older?.id || "")} → <strong>${escapeHtml(diff.newer?.label || diff.newer?.id || "")}</strong>
+        · ${diff.fieldChanges?.length || 0} field changes · ${diff.lineItemDiffCount || 0} line-item changes
+        ${diff.notes ? ` · ${escapeHtml(diff.notes)}` : ""}</p>
+        <h3>Field changes (previous → current)</h3>
+        <table class="table">
+          <thead><tr><th>Field</th><th>Previous</th><th>Current</th></tr></thead>
+          <tbody>${fields}</tbody>
+        </table>
+        <h3 style="margin-top:1.2rem;">Department rollups</h3>
+        <table class="table">
+          <thead><tr><th>Dept</th><th>Previous</th><th>Current</th></tr></thead>
+          <tbody>${depts}</tbody>
+        </table>
+        <h3 style="margin-top:1.2rem;">Line items changed (sample)</h3>
+        <table class="table">
+          <thead><tr><th>Ora code</th><th>Previous</th><th>Current</th></tr></thead>
+          <tbody>${lines}</tbody>
+        </table>`;
+    }
+
+    return `
+      <div class="grid">
+        <div class="card wide">
+          <h3>Versions / Diff</h3>
+          <p class="muted">Study <code>${escapeHtml(state.study.studyId || "")}</code>
+            · ${state.source === "cosmos" ? "Cosmos" : "Local demo"} · ${versions.length} version(s)</p>
+          ${versions.length < 2 ? "<p class=\"muted\">Upload another workbook for the same opportunity ID to create a second version, then compare.</p>" : ""}
+          <div class="form-grid" style="margin-top:1rem;">
+            <div>
+              <label class="field-label">Older version</label>
+              <select id="compareOlder" class="select">${opts}</select>
+            </div>
+            <div>
+              <label class="field-label">Current / newer version</label>
+              <select id="compareNewer" class="select">${opts}</select>
+            </div>
+          </div>
+          <div style="margin-top:1rem;display:flex;gap:0.6rem;flex-wrap:wrap;">
+            <button type="button" class="btn btn-primary" id="btnRunCompare" ${versions.length < 2 ? "disabled" : ""}>Compare → show differences</button>
+            <button type="button" class="btn btn-secondary" id="btnOpenNewerVersion" ${versions.length ? "" : "disabled"}>Open newer in workspace</button>
+          </div>
+        </div>
+        <div class="card wide" id="comparePanel">${diffHtml}</div>
+      </div>`;
+  }
+
+  async function runCompare() {
+    const olderEl = document.getElementById("compareOlder");
+    const newerEl = document.getElementById("compareNewer");
+    if (!olderEl || !newerEl) return;
+    const older = olderEl.value;
+    const newer = newerEl.value;
+    if (!older || !newer) return;
+    if (older === newer) {
+      state.compareStatus = "Pick two different versions.";
+      state.compare = null;
+      render();
+      return;
+    }
+    state.compareStatus = "Comparing…";
+    state.compare = null;
+    render();
+    try {
+      const res = await fetch(
+        apiUrl(`/api/studies/${encodeURIComponent(state.study.studyId)}/compare?older=${encodeURIComponent(older)}&newer=${encodeURIComponent(newer)}`)
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        state.compareStatus = data.error || `Compare failed (${res.status})`;
+        state.compare = null;
+      } else {
+        state.compare = data;
+        state.compareStatus = "";
+      }
+    } catch (err) {
+      state.compareStatus = String(err);
+      state.compare = null;
+    }
+    render();
+  }
+
+  async function openVersionInWorkspace(versionId) {
+    if (!versionId || !state.study.studyId) return;
+    try {
+      const res = await fetch(
+        apiUrl(`/api/studies/${encodeURIComponent(state.study.studyId)}/versions/${encodeURIComponent(versionId)}`)
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        state.compareStatus = data.error || "Could not open version";
+        render();
+        return;
+      }
+      const fakePayload = {
+        study: {
+          studyId: state.study.studyId,
+          currentVersionId: state.study.currentVersionId,
+          clientName: data.version?.snapshot?.clientName || state.study.clientName,
+          title: data.version?.snapshot?.title || state.study.title,
+          protocol: data.version?.snapshot?.protocol || state.study.protocol,
+          phase: data.version?.snapshot?.phase || state.study.phase,
+          drivers: data.version?.snapshot?.drivers || state.study.drivers,
+          header: data.version?.snapshot?.header || state.study.header,
+          sites: data.version?.snapshot?.sites || state.study.sites,
+          inputFields: data.version?.snapshot?.inputFields || state.study.inputFields
+        },
+        version: data.version,
+        versions: state.versions,
+        lineItems: data.lineItems || []
+      };
+      state.study = cosmosStudyToWorkspace(fakePayload);
+      state.lineItems = data.lineItems || [];
+      state.source = "cosmos";
+      state.sectionId = "overview";
+      render();
+      markSaved();
+    } catch (err) {
+      state.compareStatus = String(err);
+      render();
     }
   }
 
@@ -719,7 +949,7 @@
     const user = currentUser();
     const section = SBW.sections.find((s) => s.id === state.sectionId) || SBW.sections[0];
 
-    els.studyMeta.textContent = `${state.study.studyId} · ${state.study.clientName} · ${state.study.versionLabel}`;
+    els.studyMeta.textContent = `${state.study.studyId} · ${state.study.clientName || "—"} · ${state.study.versionLabel}${state.source === "cosmos" ? " · Cosmos" : " · Local"}`;
     els.pageTitle.textContent = section.label;
     els.pageSubtitle.textContent = section.department
       ? `Editable by ${section.department}${canEdit(section.department) ? "" : " (view only for you)"}`
@@ -733,6 +963,7 @@
       case "ask": html = renderAsk(); break;
       case "upload": html = renderUpload(); break;
       case "studies": html = renderStudies(); break;
+      case "versions": html = renderVersions(); break;
       case "overview": html = renderOverview(); break;
       case "recruitment": html = renderRecruitment(); break;
       case "clinops": html = renderDeptSimple("clinops", "clinops", "ClinOps / SOE assumptions"); break;
@@ -746,6 +977,14 @@
     els.viewRoot.innerHTML = html;
     if (section.id === "studies") {
       loadStudiesIntoPanel();
+    }
+    if (section.id === "versions") {
+      const older = document.getElementById("compareOlder");
+      const newer = document.getElementById("compareNewer");
+      if (older && newer && older.options.length >= 2) {
+        newer.selectedIndex = 0;
+        older.selectedIndex = 1;
+      }
     }
   }
 
@@ -803,6 +1042,17 @@
       }
       if (e.target.id === "btnRefreshStudies") {
         loadStudiesIntoPanel();
+      }
+      if (e.target.id === "btnRunCompare") {
+        runCompare();
+      }
+      if (e.target.id === "btnOpenNewerVersion") {
+        const newerEl = document.getElementById("compareNewer");
+        if (newerEl && newerEl.value) openVersionInWorkspace(newerEl.value);
+      }
+      const openStudyBtn = e.target.closest("[data-open-study]");
+      if (openStudyBtn) {
+        openStudy(openStudyBtn.getAttribute("data-open-study"));
       }
     });
 

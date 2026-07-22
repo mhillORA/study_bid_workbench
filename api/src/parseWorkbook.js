@@ -1,9 +1,9 @@
 const ExcelJS = require("exceljs");
 const crypto = require("crypto");
-const path = require("path");
+const { parseInputFull, parseKeyRates } = require("./parseInputFull");
 
 const SHEET_ALIASES = {
-  "Input Tab": ["Input Tab", "Main Specifications Required"],
+  "Input Tab": ["Input Tab", "Main Specifications Required", "Study Specs"],
   "Internal Budget": [
     "Internal Budget",
     "Ora Model Budget",
@@ -15,19 +15,6 @@ const SHEET_ALIASES = {
   ],
   "Exec Sum": ["Exec Sum", "Study Economics", "Study Economics (2)", "Executive Summary"],
   Key: ["Key"]
-};
-
-const INPUT_LABEL_MAP = {
-  "Client Name": "clientName",
-  "Study Title/Description": "title",
-  "Protocol Number": "protocol",
-  "Parent Opportunity ID#": "opportunityId",
-  Phase: "phase",
-  "Therapeutic Area": "therapeuticArea",
-  Indication: "indication",
-  "Enrollment Type": "enrollmentType",
-  "Budget Type": "budgetType",
-  "Budget Version": "budgetVersion"
 };
 
 const DEPT_BY_PREFIX = {
@@ -121,88 +108,6 @@ function sheetMatrix(worksheet) {
     rows.push(vals);
   });
   return rows;
-}
-
-function findLabelValue(rows, label, valueCol = 1) {
-  const target = normLabel(label).toLowerCase();
-  for (const row of rows) {
-    if (!row || row[0] == null) continue;
-    const left = normLabel(row[0]).toLowerCase();
-    if (left === target || left.startsWith(target) || target.includes(left) || left.includes(target)) {
-      return row[valueCol] != null ? row[valueCol] : null;
-    }
-  }
-  return null;
-}
-
-function findNearby(rows, label, valueCol) {
-  const target = normLabel(label).toLowerCase();
-  for (const row of rows) {
-    if (!row) continue;
-    for (let i = 0; i < row.length; i++) {
-      if (normLabel(row[i]).toLowerCase() === target) {
-        if (row[valueCol] != null) return row[valueCol];
-        if (row[i + 1] != null) return row[i + 1];
-      }
-    }
-  }
-  return null;
-}
-
-function parseInput(rows) {
-  const header = {};
-  let matched = 0;
-  for (const [label, field] of Object.entries(INPUT_LABEL_MAP)) {
-    const val = findLabelValue(rows, label, 1);
-    if (val != null && val !== "") {
-      header[field] = val;
-      matched += 1;
-    }
-  }
-  const drivers = {
-    screenedSubjects: findNearby(rows, "# Screened Subjects", 5),
-    enrolledSubjects: findNearby(rows, "# Enrolled Subjects", 5),
-    completedSubjects: findNearby(rows, "# Completed Subjects", 5),
-    startupMonths: findNearby(rows, "Start-Up (Contract-FPFV) in Months", 5),
-    enrollmentMonths: findNearby(rows, "Enrollment (FPFV-LPFV) in Months", 5),
-    treatmentMonths: findNearby(rows, "Treatment incl. Screening (LPFV-LPLV) in Months", 5),
-    dblMonths: findNearby(rows, "Database Lock (LP Out-DB Lock) in Months", 5),
-    closeoutMonths: findNearby(rows, "Closeout (DB Lock-Delivery of TMF) in Months", 5)
-  };
-
-  let siteHeader = -1;
-  for (let i = 0; i < rows.length; i++) {
-    const r = rows[i];
-    if (r && normLabel(r[0]).toLowerCase() === "country" && r[2] && String(r[2]).toLowerCase().includes("site")) {
-      siteHeader = i;
-      break;
-    }
-  }
-  const sites = [];
-  if (siteHeader >= 0) {
-    for (let i = siteHeader + 1; i < rows.length; i++) {
-      const r = rows[i];
-      if (!r || r[0] == null) continue;
-      const country = String(r[0]).trim();
-      if (country.toLowerCase() === "totals") break;
-      const core = r[2];
-      if ((core == null || core === "" || core === 0) && !r[13]) continue;
-      sites.push({
-        country,
-        region: r[1] ?? null,
-        coreSites: core ?? null,
-        backupSites: r[3] ?? null,
-        startupMonths: r[4] ?? null,
-        enrolledPts: r[5] ?? null,
-        screenedPts: r[6] ?? null,
-        completedPts: r[7] ?? null,
-        enrollmentMonths: r[8] ?? null,
-        enrollmentRate: r[9] ?? null,
-        notes: r[13] ?? null
-      });
-    }
-  }
-  return { header, drivers, sites, matched };
 }
 
 function oraPrefix(code) {
@@ -299,22 +204,37 @@ async function parseWorkbookBuffer(buffer, fileName) {
     ? sheetMatrix(wb.getWorksheet(resolved["Internal Budget"]))
     : [];
   const execRows = resolved["Exec Sum"] ? sheetMatrix(wb.getWorksheet(resolved["Exec Sum"])) : [];
+  const keyRows = resolved.Key ? sheetMatrix(wb.getWorksheet(resolved.Key)) : [];
 
-  const { header, drivers, sites, matched } = parseInput(inputRows);
+  const input = parseInputFull(inputRows);
+  const { header, drivers, sites, fields, resourceLeads, monitoring, vendors, payments, matchedKnown, fieldCount } =
+    input;
   const lineItems = parseInternalBudget(budgetRows);
   const execSum = parseExecSum(execRows);
+  const rates = parseKeyRates(keyRows);
+
+  const sheetInventory = sheetNames.map((name) => {
+    const ws = wb.getWorksheet(name);
+    let rows = 0;
+    try {
+      rows = ws && ws.rowCount ? ws.rowCount : 0;
+    } catch (_) {}
+    return { name, rowCount: rows, captured: Boolean(Object.values(resolved).includes(name)) };
+  });
 
   const warnings = [];
   let conf = fp.score;
+  const matched = matchedKnown;
   if (matched < 8) {
     conf *= 0.6;
-    warnings.push(`Only matched ${matched} input labels`);
+    warnings.push(`Only matched ${matched} known header labels (${fieldCount} total input fields captured)`);
   } else conf = Math.min(1, conf + 0.1);
   if (lineItems.length < 50) {
     conf *= 0.5;
     warnings.push(`Only ${lineItems.length} line items`);
   }
   if (!fp.matched) warnings.push(`Missing sheets: ${missing.join(", ")}`);
+  warnings.push(`Captured ${fieldCount} Input Tab fields, ${sites.length} sites, ${rates.length} key rates`);
 
   const fileOpp = opportunityFromFilename(fileName);
   let opportunityId = "UNKNOWN";
@@ -332,7 +252,6 @@ async function parseWorkbookBuffer(buffer, fileName) {
   const hasId = opportunityId !== "UNKNOWN";
   let quarantine = !hasId || (conf < 0.45 && !enoughLines) || (!fp.matched && lineItems.length < 10);
 
-  // POC auto-load: opportunity id (sheet or filename) + usable internal rows
   if (hasId && lineItems.length >= 20) {
     warnings.push("POC auto-load: opportunity id + line items");
     conf = Math.max(conf, 0.7);
@@ -350,11 +269,16 @@ async function parseWorkbookBuffer(buffer, fileName) {
   const coreSites = sites.reduce((sum, s) => sum + (typeof s.coreSites === "number" ? s.coreSites : 0), 0);
   drivers.coreSites = coreSites || drivers.coreSites;
 
+  // Defaults used by UI formula demo if missing
+  if (drivers.contingency == null) drivers.contingency = 0;
+  if (drivers.inflationRate == null) drivers.inflationRate = 0;
+  if (drivers.discount == null) drivers.discount = 0;
+
   const importedAt = new Date().toISOString();
   const studyId = opportunityId;
 
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     profileId: "ora-budget-internal-v3",
     confidence: Math.round(conf * 1000) / 1000,
     warnings,
@@ -366,6 +290,8 @@ async function parseWorkbookBuffer(buffer, fileName) {
       storedIn: "not-persisted-bytes"
     },
     fingerprint: fp,
+    sheetInventory,
+    rates,
     study: {
       id: `study-${studyId}`,
       studyId,
@@ -382,7 +308,13 @@ async function parseWorkbookBuffer(buffer, fileName) {
       importedAt,
       header,
       drivers,
-      sites
+      sites,
+      inputFields: fields,
+      resourceLeads,
+      monitoring,
+      vendors,
+      payments,
+      fieldCount
     },
     version: {
       id: `ver-${studyId}-${sha256.slice(0, 10)}`,
@@ -393,6 +325,8 @@ async function parseWorkbookBuffer(buffer, fileName) {
       totals: execSum.totals || {},
       execSum,
       lineItemCount: lineItems.length,
+      rateCount: rates.length,
+      sheetInventory,
       createdAt: importedAt
     },
     lineItems,
