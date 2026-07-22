@@ -341,6 +341,26 @@ h1 {
 
 .ask-compose .btn { justify-self: start; }
 
+.upload-progress {
+  margin-top: 1rem;
+  display: grid;
+  gap: 0.4rem;
+}
+
+.upload-progress-track {
+  height: 10px;
+  border-radius: 999px;
+  background: #e4dfd4;
+  overflow: hidden;
+}
+
+.upload-progress-bar {
+  height: 100%;
+  width: 0%;
+  background: var(--accent);
+  transition: width 0.2s ease;
+}
+
 .dialog {
   border: 1px solid var(--line);
   border-radius: 16px;

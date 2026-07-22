@@ -191,9 +191,9 @@
         <div class="card wide">
           <h3>Upload budgets into Cosmos</h3>
           <p class="muted">
-            Drop one <code>.xlsx</code>, many files, or a <code>.zip</code> of active studies.
-            The API parses, normalizes, and loads into <strong>bd-budgets</strong>.
-            Aliases + filename opportunity IDs (<code>O-#####</code>) are applied automatically.
+            Drop one <code>.xlsx</code>, many files, or a <code>.zip</code>.
+            Large zips are unzipped in the browser and uploaded <strong>one workbook at a time</strong>
+            (avoids HTTP 413 payload limits).
           </p>
           <div class="form-grid" style="margin-top:1rem;">
             <div class="full">
@@ -212,12 +212,175 @@
             <button type="button" class="btn btn-primary" id="btnStartUpload" ${dis}>Start upload</button>
             <span class="muted" id="uploadStatus">Ready</span>
           </div>
+          <div class="upload-progress" id="uploadProgressWrap" hidden>
+            <div class="upload-progress-track">
+              <div class="upload-progress-bar" id="uploadProgressBar" style="width:0%"></div>
+            </div>
+            <div class="muted" id="uploadProgressLabel">0%</div>
+          </div>
         </div>
         <div class="card wide">
           <h3>Last import report</h3>
           <pre class="formula-box" id="uploadReport">No upload yet.</pre>
         </div>
       </div>`;
+  }
+
+  function setUploadProgress(pct, label) {
+    const wrap = document.getElementById("uploadProgressWrap");
+    const bar = document.getElementById("uploadProgressBar");
+    const lab = document.getElementById("uploadProgressLabel");
+    const status = document.getElementById("uploadStatus");
+    if (wrap) wrap.hidden = false;
+    if (bar) bar.style.width = `${Math.max(0, Math.min(100, pct))}%`;
+    if (lab) lab.textContent = label || `${Math.round(pct)}%`;
+    if (status) status.textContent = label || "Working…";
+  }
+
+  async function expandUploadFiles(fileList) {
+    const workbooks = [];
+    for (const file of fileList) {
+      const name = file.name || "upload";
+      const lower = name.toLowerCase();
+      if (lower.endsWith(".zip")) {
+        if (typeof JSZip === "undefined") {
+          throw new Error("JSZip failed to load — refresh the page and try again.");
+        }
+        const zip = await JSZip.loadAsync(file);
+        const entries = Object.keys(zip.files);
+        for (const entryName of entries) {
+          const entry = zip.files[entryName];
+          if (!entry || entry.dir) continue;
+          const base = entryName.split("/").pop();
+          if (!base || base.startsWith("~$")) continue;
+          if (!base.toLowerCase().endsWith(".xlsx")) continue;
+          const buf = await entry.async("blob");
+          workbooks.push({ name: base, blob: buf });
+        }
+      } else if (lower.endsWith(".xlsx")) {
+        workbooks.push({ name, blob: file });
+      }
+    }
+    return workbooks;
+  }
+
+  async function postOneWorkbook(wb, mode) {
+    const fd = new FormData();
+    fd.append("files", wb.blob, wb.name);
+    fd.append("mode", mode);
+    fd.append("requestedBy", state.userId);
+    const res = await fetch(apiUrl("/api/import"), { method: "POST", body: fd });
+    const text = await res.text();
+    let data;
+    try { data = JSON.parse(text); } catch (_) { data = { raw: text }; }
+    if (!res.ok) {
+      return {
+        ok: false,
+        status: res.status,
+        file: wb.name,
+        error: data.error || data.raw || `HTTP ${res.status}`,
+        data
+      };
+    }
+    return { ok: true, status: res.status, file: wb.name, data };
+  }
+
+  async function startUpload() {
+    const input = document.getElementById("uploadInput");
+    const modeEl = document.getElementById("uploadMode");
+    const status = document.getElementById("uploadStatus");
+    const report = document.getElementById("uploadReport");
+    const btn = document.getElementById("btnStartUpload");
+    if (!input || !input.files || !input.files.length) {
+      status.textContent = "Choose at least one .xlsx or .zip file.";
+      return;
+    }
+
+    const mode = modeEl ? modeEl.value : "load";
+    if (btn) btn.disabled = true;
+    report.textContent = "Preparing…";
+    setUploadProgress(0, "Reading files…");
+
+    const aggregate = {
+      mode,
+      loaded: [],
+      quarantined: [],
+      failed: [],
+      perFile: []
+    };
+
+    try {
+      const workbooks = await expandUploadFiles([...input.files]);
+      if (!workbooks.length) {
+        status.textContent = "No .xlsx workbooks found.";
+        report.textContent = "Zip/files contained no .xlsx budgets.";
+        setUploadProgress(0, "Nothing to upload");
+        return;
+      }
+
+      const total = workbooks.length;
+      report.textContent = `Uploading ${total} workbook(s) one at a time…\n`;
+
+      for (let i = 0; i < total; i++) {
+        const wb = workbooks[i];
+        const pct = (i / total) * 100;
+        setUploadProgress(pct, `${i + 1} / ${total} — ${wb.name}`);
+        try {
+          const result = await postOneWorkbook(wb, mode);
+          aggregate.perFile.push(result);
+          if (!result.ok) {
+            aggregate.failed.push({ file: wb.name, error: result.error, status: result.status });
+          } else {
+            const d = result.data || {};
+            (d.loaded || []).forEach((x) => aggregate.loaded.push(x));
+            (d.quarantined || []).forEach((x) => aggregate.quarantined.push(x));
+            (d.failed || []).forEach((x) => aggregate.failed.push(x));
+            if (!d.loaded && !d.quarantined && !d.failed) {
+              // unexpected shape — still count as ok payload
+            }
+          }
+        } catch (err) {
+          aggregate.failed.push({ file: wb.name, error: String(err) });
+        }
+        report.textContent = JSON.stringify(
+          {
+            progress: `${i + 1}/${total}`,
+            counts: {
+              loaded: aggregate.loaded.length,
+              quarantined: aggregate.quarantined.length,
+              failed: aggregate.failed.length
+            },
+            lastFile: wb.name
+          },
+          null,
+          2
+        );
+      }
+
+      setUploadProgress(100, `Done — ${aggregate.loaded.length} loaded, ${aggregate.quarantined.length} quarantined, ${aggregate.failed.length} failed`);
+      status.textContent = `Done — loaded ${aggregate.loaded.length}, quarantined ${aggregate.quarantined.length}, failed ${aggregate.failed.length} (of ${total})`;
+      report.textContent = JSON.stringify(
+        {
+          files: total,
+          counts: {
+            loaded: aggregate.loaded.length,
+            quarantined: aggregate.quarantined.length,
+            failed: aggregate.failed.length
+          },
+          loaded: aggregate.loaded,
+          quarantined: aggregate.quarantined,
+          failed: aggregate.failed
+        },
+        null,
+        2
+      );
+    } catch (err) {
+      status.textContent = "Upload failed";
+      setUploadProgress(0, "Failed");
+      report.textContent = String(err);
+    } finally {
+      if (btn) btn.disabled = false;
+    }
   }
 
   function renderStudies(loadingHtml) {
@@ -234,46 +397,6 @@
           <div id="studiesPanel" style="margin-top:1rem;">${loadingHtml || "<p class=\"muted\">Loading…</p>"}</div>
         </div>
       </div>`;
-  }
-
-  async function startUpload() {
-    const input = document.getElementById("uploadInput");
-    const mode = document.getElementById("uploadMode");
-    const status = document.getElementById("uploadStatus");
-    const report = document.getElementById("uploadReport");
-    if (!input || !input.files || !input.files.length) {
-      status.textContent = "Choose at least one .xlsx or .zip file.";
-      return;
-    }
-    const fd = new FormData();
-    [...input.files].forEach((f) => fd.append("files", f, f.name));
-    fd.append("mode", mode ? mode.value : "load");
-    fd.append("requestedBy", state.userId);
-
-    status.textContent = "Uploading…";
-    report.textContent = "Working…";
-    try {
-      const res = await fetch(apiUrl("/api/import"), { method: "POST", body: fd });
-      const text = await res.text();
-      let data;
-      try { data = JSON.parse(text); } catch (_) { data = { raw: text }; }
-      if (!res.ok) {
-        status.textContent = `Failed (${res.status})`;
-        report.textContent = JSON.stringify(data, null, 2);
-        return;
-      }
-      const c = data.counts || {};
-      status.textContent = `Done — loaded ${c.loaded || 0}, quarantined ${c.quarantined || 0}, failed ${c.failed || 0}`;
-      report.textContent = JSON.stringify(data, null, 2);
-    } catch (err) {
-      status.textContent = "API not reachable";
-      report.textContent = [
-        "Could not reach /api/import.",
-        "Confirm the SWA API is deployed and Cosmos App Settings are set.",
-        "",
-        String(err)
-      ].join("\n");
-    }
   }
 
   async function loadStudiesIntoPanel() {
