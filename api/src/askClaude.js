@@ -1,9 +1,9 @@
 /**
- * Study context + LLM ask (Azure OpenAI / Copilot-style first, Claude optional).
+ * Ask Buddy — study context + LLM (Azure OpenAI preferred; Claude optional fallback).
  */
 
 const SYSTEM_PROMPT = [
-  "You are the Study Bid Workbench assistant for Ora Clinical BD / operations.",
+  "You are Ask Buddy, the Study Bid Workbench assistant for Ora Clinical BD / operations.",
   "Answer questions about clinical study budgets, drivers, departments, line items, and formulas.",
   "Be concise and practical. Prefer numbers and Ora codes when present in context.",
   "If context is missing or incomplete, say what you need.",
@@ -23,11 +23,11 @@ function providerStatus() {
     Boolean(envSet("AZURE_OPENAI_API_KEY")) &&
     Boolean(envSet("AZURE_OPENAI_DEPLOYMENT"));
   const claude = Boolean(envSet("ANTHROPIC_API_KEY"));
-  // Prefer Claude when configured (current POC default).
+  // Prefer Azure OpenAI (Ask Buddy default). Claude only if Azure is not configured.
   return {
     azureOpenAI: azure,
     claude,
-    active: claude ? "claude" : azure ? "azure_openai" : null,
+    active: azure ? "azure_openai" : claude ? "claude" : null,
     effort: envSet("ANTHROPIC_EFFORT") || "low"
   };
 }
@@ -232,13 +232,13 @@ async function askClaude({ question, context, history }) {
   };
 }
 
-/** Prefer Claude when ANTHROPIC_API_KEY is set; else Azure OpenAI. */
+/** Prefer Azure OpenAI (Ask Buddy); fall back to Claude only if Azure is unset. */
 async function askAi(opts) {
   const status = providerStatus();
   if (status.active === "azure_openai") return askAzureOpenAI(opts);
   if (status.active === "claude") return askClaude(opts);
   throw new Error(
-    "No LLM configured. Set Azure OpenAI (AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT) or ANTHROPIC_API_KEY in SWA Application settings."
+    "Ask Buddy is not configured. Set Azure OpenAI (AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT) in SWA Application settings."
   );
 }
 

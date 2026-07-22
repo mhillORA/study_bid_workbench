@@ -13,7 +13,16 @@
     versions: [],
     lineItems: [],
     compare: null,
-    compareStatus: ""
+    compareStatus: "",
+    studyCompare: {
+      open: false,
+      selected: [],
+      leftId: null,
+      rightId: null,
+      left: null,
+      right: null,
+      status: ""
+    }
   };
 
   const els = {
@@ -27,6 +36,7 @@
     btnSave: document.getElementById("btnSave"),
     btnExport: document.getElementById("btnExport"),
     btnRequestFill: document.getElementById("btnRequestFill"),
+    compareOverlay: document.getElementById("compareOverlay"),
     requestDialog: document.getElementById("requestDialog"),
     requestForm: document.getElementById("requestForm"),
     requestDept: document.getElementById("requestDept"),
@@ -123,19 +133,19 @@
   function renderAsk() {
     const turns = state.askHistory
       .map((t) => {
-        const who = t.role === "user" ? "You" : "Copilot";
+        const who = t.role === "user" ? "You" : "Buddy";
         return `<div class="chat-turn ${t.role}"><div class="chat-who">${who}</div><div class="chat-body">${escapeHtml(t.content)}</div></div>`;
       })
       .join("");
     return `
       <div class="grid">
         <div class="card wide">
-          <h3>Ask about this study</h3>
-          <p class="muted">POC — Azure OpenAI (Copilot-style). Uses the working study here, plus Cosmos when loaded.</p>
+          <h3>Ask Buddy</h3>
+          <p class="muted">Study bid helper powered by Azure AI. Uses the working study here, plus Cosmos when loaded.</p>
           <div class="chat-log" id="askLog">${turns || "<p class=\"muted\">Try: “What are the enrollment drivers?” or “Summarize ClinOps assumptions.”</p>"}</div>
           <div class="ask-compose">
-            <textarea id="askInput" class="textarea" rows="3" placeholder="Ask a question…"></textarea>
-            <button type="button" class="btn btn-primary" id="btnAsk">Ask</button>
+            <textarea id="askInput" class="textarea" rows="3" placeholder="Ask Buddy a question…"></textarea>
+            <button type="button" class="btn btn-primary" id="btnAsk">Ask Buddy</button>
             <span class="muted" id="askStatus"></span>
           </div>
         </div>
@@ -466,19 +476,222 @@
 
   function renderStudies(loadingHtml) {
     const openId = state.source === "cosmos" ? state.study.studyId : "";
+    const sel = state.studyCompare.selected || [];
     return `
       <div class="grid">
         <div class="card wide">
           <div style="display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap;">
             <div>
               <h3>Studies in Cosmos</h3>
-              <p class="muted">Open a study to swap into the workbench and edit it. Current: <strong>${escapeHtml(openId || "(local demo)")}</strong></p>
+              <p class="muted">Open a study into the workbench, or check two and compare side by side. Current: <strong>${escapeHtml(openId || "(local demo)")}</strong></p>
             </div>
-            <button type="button" class="btn btn-secondary" id="btnRefreshStudies">Refresh</button>
+            <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+              <button type="button" class="btn btn-primary" id="btnOpenStudyCompare" ${sel.length === 2 ? "" : "disabled"}>Compare selected (${sel.length}/2)</button>
+              <button type="button" class="btn btn-secondary" id="btnRefreshStudies">Refresh</button>
+            </div>
           </div>
           <div id="studiesPanel" style="margin-top:1rem;">${loadingHtml || "<p class=\"muted\">Loading…</p>"}</div>
         </div>
       </div>`;
+  }
+
+  function studySnapshotFromPayload(payload) {
+    const s = payload.study || {};
+    const v = payload.version || {};
+    const snap = v.snapshot || {};
+    const drivers = { ...(s.drivers || {}), ...(snap.drivers || {}) };
+    const sites = snap.sites || s.sites || [];
+    const coreSites =
+      Number(drivers.coreSites) ||
+      sites.reduce((sum, x) => sum + (Number(x.coreSites) || 0), 0);
+    const enrolled =
+      Number(drivers.enrolledSubjects) ||
+      Number(drivers.patients) ||
+      sites.reduce((sum, x) => sum + (Number(x.enrolledPts) || 0), 0);
+    const screened =
+      Number(drivers.screenedSubjects) ||
+      sites.reduce((sum, x) => sum + (Number(x.screenedPts) || 0), 0);
+    const totals = v.totals || {};
+    const billed =
+      totals.grandTotal ??
+      totals.totalServiceFees ??
+      totals["Total Service Fees"] ??
+      totals.serviceFees ??
+      null;
+    return {
+      studyId: s.studyId,
+      clientName: s.clientName || snap.clientName || "",
+      title: s.title || snap.title || "",
+      protocol: s.protocol || snap.protocol || "",
+      phase: s.phase || snap.phase || "",
+      therapeuticArea: s.therapeuticArea || snap.therapeuticArea || "",
+      indication: s.indication || snap.indication || "",
+      versionLabel: v.label || "",
+      sourceFileName: v.sourceFileName || "",
+      lineItemCount: v.lineItemCount || (payload.lineItems || []).length || 0,
+      coreSites,
+      enrolled,
+      screened,
+      siteRows: sites.length,
+      drivers,
+      totals,
+      billed,
+      inputFieldCount: (snap.inputFields || s.inputFields || []).length
+    };
+  }
+
+  function compareVal(left, right, key) {
+    const a = left == null ? "" : String(left[key] ?? "");
+    const b = right == null ? "" : String(right[key] ?? "");
+    return a !== b && a !== "" && b !== "";
+  }
+
+  function renderComparePane(side, snap, other) {
+    if (!snap) {
+      return `<p class="muted">Loading…</p>`;
+    }
+    const row = (label, key, format) => {
+      const raw = snap[key];
+      const display = format ? format(raw) : (raw == null || raw === "" ? "—" : String(raw));
+      const mismatch = other && compareVal(snap, other, key);
+      return `<dt>${escapeHtml(label)}</dt><dd class="${mismatch ? "diff-mismatch" : ""}">${escapeHtml(display)}</dd>`;
+    };
+    const moneyOrDash = (n) => (n == null || n === "" || Number.isNaN(Number(n)) ? "—" : money(Number(n)));
+    const totalEntries = Object.entries(snap.totals || {}).slice(0, 12);
+    const totalRows = totalEntries
+      .map(([k, v]) => {
+        const ov = other && other.totals ? other.totals[k] : undefined;
+        const mismatch = other && String(v) !== String(ov);
+        return `<dt>${escapeHtml(k)}</dt><dd class="${mismatch ? "diff-mismatch" : ""}">${escapeHtml(
+          typeof v === "number" ? money(v) : String(v ?? "—")
+        )}</dd>`;
+      })
+      .join("");
+
+    return `
+      <p class="compare-section-title">Identity</p>
+      <dl class="compare-kv">
+        ${row("Study", "studyId")}
+        ${row("Client", "clientName")}
+        ${row("Title", "title")}
+        ${row("Protocol", "protocol")}
+        ${row("Phase", "phase")}
+        ${row("Therapeutic area", "therapeuticArea")}
+        ${row("Indication", "indication")}
+        ${row("Version", "versionLabel")}
+        ${row("Source file", "sourceFileName")}
+      </dl>
+      <p class="compare-section-title">Enrollment / sites</p>
+      <dl class="compare-kv">
+        ${row("Core sites", "coreSites")}
+        ${row("Site rows", "siteRows")}
+        ${row("Enrolled patients", "enrolled")}
+        ${row("Screened", "screened")}
+        ${row("Input fields", "inputFieldCount")}
+        ${row("Line items", "lineItemCount")}
+      </dl>
+      <p class="compare-section-title">Billed / Exec Sum</p>
+      <dl class="compare-kv">
+        <dt>Primary billed</dt>
+        <dd class="${other && compareVal(snap, other, "billed") ? "diff-mismatch" : ""}">${escapeHtml(moneyOrDash(snap.billed))}</dd>
+        ${totalRows || "<dt colspan></dt><dd class=\"muted\">No Exec Sum totals on this version</dd>"}
+      </dl>
+      <div style="margin-top:1rem;">
+        <button type="button" class="btn btn-secondary" data-compare-open-workbench="${escapeAttr(snap.studyId)}">Open in workbench</button>
+      </div>
+    `;
+  }
+
+  function renderStudyCompareOverlay() {
+    const ov = els.compareOverlay;
+    if (!ov) return;
+    const sc = state.studyCompare;
+    if (!sc.open) {
+      ov.hidden = true;
+      ov.classList.remove("is-open");
+      ov.setAttribute("aria-hidden", "true");
+      ov.innerHTML = "";
+      return;
+    }
+    ov.hidden = false;
+    ov.classList.add("is-open");
+    ov.setAttribute("aria-hidden", "false");
+    const left = sc.left;
+    const right = sc.right;
+    ov.innerHTML = `
+      <div class="compare-shell" role="dialog" aria-modal="true" aria-label="Compare studies">
+        <div class="compare-toolbar">
+          <h2>Compare studies</h2>
+          <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;">
+            <span class="muted">${escapeHtml(sc.status || "")}</span>
+            <button type="button" class="btn btn-ghost" id="btnCloseStudyCompare">Close</button>
+          </div>
+        </div>
+        <div class="compare-windows">
+          <section class="compare-window">
+            <div class="compare-window-head">
+              <h3>A · ${escapeHtml(left?.studyId || sc.leftId || "…")}</h3>
+              <span class="muted">${escapeHtml(left?.clientName || "")}</span>
+            </div>
+            <div class="compare-window-body">${renderComparePane("left", left, right)}</div>
+          </section>
+          <section class="compare-window">
+            <div class="compare-window-head">
+              <h3>B · ${escapeHtml(right?.studyId || sc.rightId || "…")}</h3>
+              <span class="muted">${escapeHtml(right?.clientName || "")}</span>
+            </div>
+            <div class="compare-window-body">${renderComparePane("right", right, left)}</div>
+          </section>
+        </div>
+      </div>`;
+  }
+
+  function closeStudyCompare() {
+    state.studyCompare.open = false;
+    state.studyCompare.status = "";
+    renderStudyCompareOverlay();
+  }
+
+  async function fetchStudyPayload(studyId) {
+    const res = await fetch(apiUrl(`/api/studies/${encodeURIComponent(studyId)}`));
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || `Failed to load ${studyId}`);
+    return data;
+  }
+
+  async function openStudyCompare(leftId, rightId) {
+    if (!leftId || !rightId || leftId === rightId) {
+      state.studyCompare.status = "Pick two different studies.";
+      return;
+    }
+    state.studyCompare.open = true;
+    state.studyCompare.leftId = leftId;
+    state.studyCompare.rightId = rightId;
+    state.studyCompare.left = null;
+    state.studyCompare.right = null;
+    state.studyCompare.status = "Loading…";
+    renderStudyCompareOverlay();
+    try {
+      const [a, b] = await Promise.all([fetchStudyPayload(leftId), fetchStudyPayload(rightId)]);
+      state.studyCompare.left = studySnapshotFromPayload(a);
+      state.studyCompare.right = studySnapshotFromPayload(b);
+      state.studyCompare.status = "Mismatched values highlighted";
+      renderStudyCompareOverlay();
+    } catch (err) {
+      state.studyCompare.status = String(err.message || err);
+      renderStudyCompareOverlay();
+    }
+  }
+
+  function syncCompareSelectedFromDom() {
+    const boxes = els.viewRoot.querySelectorAll("[data-compare-pick]:checked");
+    state.studyCompare.selected = [...boxes].map((el) => el.getAttribute("data-compare-pick")).filter(Boolean).slice(0, 2);
+    const btn = document.getElementById("btnOpenStudyCompare");
+    if (btn) {
+      const n = state.studyCompare.selected.length;
+      btn.disabled = n !== 2;
+      btn.textContent = `Compare selected (${n}/2)`;
+    }
   }
 
   function cosmosStudyToWorkspace(payload) {
@@ -560,17 +773,21 @@
         return;
       }
       const openId = state.source === "cosmos" ? state.study.studyId : "";
+      const selected = new Set(state.studyCompare.selected || []);
       panel.innerHTML = `
         <table class="table">
           <thead>
-            <tr><th></th><th>Study</th><th>Client</th><th>Title</th><th>Phase</th><th>Status</th><th>Updated</th></tr>
+            <tr><th>Compare</th><th></th><th>Study</th><th>Client</th><th>Title</th><th>Phase</th><th>Status</th><th>Updated</th></tr>
           </thead>
           <tbody>
             ${studies.map((s) => {
-              const active = s.studyId === openId;
+              const id = s.studyId || "";
+              const active = id === openId;
+              const checked = selected.has(id) ? "checked" : "";
               return `<tr class="${active ? "row-active" : ""}">
-              <td><button type="button" class="btn btn-primary" data-open-study="${escapeAttr(s.studyId || "")}">${active ? "Opened" : "Open"}</button></td>
-              <td><code>${escapeHtml(s.studyId || "")}</code></td>
+              <td><input type="checkbox" data-compare-pick="${escapeAttr(id)}" ${checked} /></td>
+              <td><button type="button" class="btn btn-primary" data-open-study="${escapeAttr(id)}">${active ? "Opened" : "Open"}</button></td>
+              <td><code>${escapeHtml(id)}</code></td>
               <td>${escapeHtml(s.clientName || "—")}</td>
               <td>${escapeHtml(s.title || "—")}</td>
               <td>${escapeHtml(s.phase || "—")}</td>
@@ -580,6 +797,7 @@
             }).join("")}
           </tbody>
         </table>`;
+      syncCompareSelectedFromDom();
     } catch (err) {
       panel.innerHTML = `<p class="muted">Could not reach /api/studies.</p><pre class="formula-box">${escapeHtml(String(err))}</pre>`;
     }
@@ -1267,18 +1485,62 @@
       }
       if (e.target.id === "btnRefreshStudies") {
         loadStudiesIntoPanel();
+        return;
+      }
+      if (e.target.id === "btnOpenStudyCompare") {
+        const sel = state.studyCompare.selected || [];
+        if (sel.length === 2) openStudyCompare(sel[0], sel[1]);
+        return;
+      }
+      if (e.target.matches && e.target.matches("[data-compare-pick]")) {
+        const id = e.target.getAttribute("data-compare-pick");
+        let sel = [...(state.studyCompare.selected || [])];
+        if (e.target.checked) {
+          if (!sel.includes(id)) sel.push(id);
+          if (sel.length > 2) {
+            const drop = sel.shift();
+            const prev = els.viewRoot.querySelector(`[data-compare-pick="${CSS.escape(drop)}"]`);
+            if (prev) prev.checked = false;
+          }
+        } else {
+          sel = sel.filter((x) => x !== id);
+        }
+        state.studyCompare.selected = sel.slice(0, 2);
+        syncCompareSelectedFromDom();
+        return;
       }
       if (e.target.id === "btnRunCompare") {
         runCompare();
+        return;
       }
       if (e.target.id === "btnOpenNewerVersion") {
         const newerEl = document.getElementById("compareNewer");
         if (newerEl && newerEl.value) openVersionInWorkspace(newerEl.value);
+        return;
       }
       const openStudyBtn = e.target.closest("[data-open-study]");
       if (openStudyBtn) {
         openStudy(openStudyBtn.getAttribute("data-open-study"));
       }
+    });
+
+    if (els.compareOverlay) {
+      els.compareOverlay.addEventListener("click", (e) => {
+        if (e.target.id === "btnCloseStudyCompare" || e.target === els.compareOverlay) {
+          closeStudyCompare();
+          return;
+        }
+        const openWb = e.target.closest("[data-compare-open-workbench]");
+        if (openWb) {
+          const id = openWb.getAttribute("data-compare-open-workbench");
+          closeStudyCompare();
+          openStudy(id);
+        }
+      });
+    }
+
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && state.studyCompare.open) closeStudyCompare();
     });
 
     els.viewRoot.addEventListener("input", (e) => {
