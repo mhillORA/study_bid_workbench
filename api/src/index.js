@@ -2,7 +2,7 @@ const { app } = require("@azure/functions");
 const AdmZip = require("adm-zip");
 const { parseWorkbookBuffer } = require("./parseWorkbook");
 const { upsertCanonical, listStudies, getDb } = require("./cosmosLoad");
-const { askClaude, getStudyContext } = require("./askClaude");
+const { askAi, getStudyContext, providerStatus } = require("./askClaude");
 
 function json(status, body) {
   return {
@@ -168,15 +168,14 @@ app.http("health", {
   methods: ["GET"],
   authLevel: "anonymous",
   route: "health",
-  handler: async () =>
-    json(200, {
+  handler: async () => {
+    const llm = providerStatus();
+    return json(200, {
       ok: true,
       service: "study-bid-workbench-api",
-      claudeConfigured: Boolean(
-        (process.env.ANTHROPIC_API_KEY || "").trim() &&
-          !(process.env.ANTHROPIC_API_KEY || "").includes("SET_IN")
-      )
-    })
+      llm
+    });
+  }
 });
 
 app.http("ask", {
@@ -228,10 +227,11 @@ app.http("ask", {
           : null
       };
 
-      const result = await askClaude({ question, context: contextPayload, history });
+      const result = await askAi({ question, context: contextPayload, history });
       return json(200, {
         answer: result.answer,
         model: result.model,
+        provider: result.provider,
         usage: result.usage,
         studyId: studyId || clientStudy?.studyId || null
       });

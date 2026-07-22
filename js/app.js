@@ -118,7 +118,7 @@
   function renderAsk() {
     const turns = state.askHistory
       .map((t) => {
-        const who = t.role === "user" ? "You" : "Claude";
+        const who = t.role === "user" ? "You" : "Copilot";
         return `<div class="chat-turn ${t.role}"><div class="chat-who">${who}</div><div class="chat-body">${escapeHtml(t.content)}</div></div>`;
       })
       .join("");
@@ -126,7 +126,7 @@
       <div class="grid">
         <div class="card wide">
           <h3>Ask about this study</h3>
-          <p class="muted">POC — Claude sees the working study on this device, plus Cosmos when that study is loaded.</p>
+          <p class="muted">POC — Azure OpenAI (Copilot-style). Uses the working study here, plus Cosmos when loaded.</p>
           <div class="chat-log" id="askLog">${turns || "<p class=\"muted\">Try: “What are the enrollment drivers?” or “Summarize ClinOps assumptions.”</p>"}</div>
           <div class="ask-compose">
             <textarea id="askInput" class="textarea" rows="3" placeholder="Ask a question…"></textarea>

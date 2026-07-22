@@ -1,7 +1,34 @@
 /**
- * Build a compact context blob for Claude from Cosmos (when configured)
- * and/or a client-provided study snapshot (POC localStorage).
+ * Study context + LLM ask (Azure OpenAI / Copilot-style first, Claude optional).
  */
+
+const SYSTEM_PROMPT = [
+  "You are the Study Bid Workbench assistant for Ora Clinical BD / operations.",
+  "Answer questions about clinical study budgets, drivers, departments, line items, and formulas.",
+  "Be concise and practical. Prefer numbers and Ora codes when present in context.",
+  "If context is missing or incomplete, say what you need.",
+  "Do not invent Cosmos data that is not in the provided context.",
+  "This is a proof-of-concept — keep answers short unless asked for detail."
+].join(" ");
+
+function envSet(name) {
+  const v = (process.env[name] || "").trim();
+  if (!v || v.includes("SET_IN")) return "";
+  return v;
+}
+
+function providerStatus() {
+  const azure =
+    Boolean(envSet("AZURE_OPENAI_ENDPOINT")) &&
+    Boolean(envSet("AZURE_OPENAI_API_KEY")) &&
+    Boolean(envSet("AZURE_OPENAI_DEPLOYMENT"));
+  const claude = Boolean(envSet("ANTHROPIC_API_KEY"));
+  return {
+    azureOpenAI: azure,
+    claude,
+    active: azure ? "azure_openai" : claude ? "claude" : null
+  };
+}
 
 async function getStudyContext(studyId, { getDb }) {
   if (!studyId) return null;
@@ -30,7 +57,6 @@ async function getStudyContext(studyId, { getDb }) {
       } catch (_) {}
     }
 
-    // Sample of line items by department (not full 2k+ rows)
     const { resources: lineSample } = await database.container("lineItems").items
       .query({
         query:
@@ -80,40 +106,86 @@ async function getStudyContext(studyId, { getDb }) {
   }
 }
 
-async function askClaude({ question, context, history }) {
-  const apiKey = (process.env.ANTHROPIC_API_KEY || "").trim();
-  if (!apiKey || apiKey.includes("SET_IN")) {
-    throw new Error("ANTHROPIC_API_KEY not configured in SWA Application settings");
-  }
-  const model = (process.env.ANTHROPIC_MODEL || "claude-sonnet-4-5").trim();
-
-  const system = [
-    "You are the Study Bid Workbench assistant for Ora Clinical BD / operations.",
-    "Answer questions about clinical study budgets, drivers, departments, line items, and formulas.",
-    "Be concise and practical. Prefer numbers and Ora codes when present in context.",
-    "If context is missing or incomplete, say what you need.",
-    "Do not invent Cosmos data that is not in the provided context.",
-    "This is a proof-of-concept — keep answers short unless asked for detail."
-  ].join(" ");
-
+function buildHistoryMessages(history) {
   const messages = [];
-  if (Array.isArray(history)) {
-    for (const turn of history.slice(-8)) {
-      if (!turn || !turn.role || !turn.content) continue;
-      if (turn.role !== "user" && turn.role !== "assistant") continue;
-      messages.push({ role: turn.role, content: String(turn.content).slice(0, 8000) });
-    }
+  if (!Array.isArray(history)) return messages;
+  for (const turn of history.slice(-8)) {
+    if (!turn || !turn.role || !turn.content) continue;
+    if (turn.role !== "user" && turn.role !== "assistant") continue;
+    messages.push({ role: turn.role, content: String(turn.content).slice(0, 8000) });
   }
+  return messages;
+}
 
-  const userBlock = [
+function userBlock(question, context) {
+  return [
     "### Question",
     question,
     "",
     "### Context (JSON)",
     JSON.stringify(context || {}, null, 2).slice(0, 100000)
   ].join("\n");
+}
 
-  messages.push({ role: "user", content: userBlock });
+async function askAzureOpenAI({ question, context, history }) {
+  const endpoint = envSet("AZURE_OPENAI_ENDPOINT").replace(/\/$/, "");
+  const apiKey = envSet("AZURE_OPENAI_API_KEY");
+  const deployment = envSet("AZURE_OPENAI_DEPLOYMENT");
+  const apiVersion = envSet("AZURE_OPENAI_API_VERSION") || "2024-08-01-preview";
+
+  if (!endpoint || !apiKey || !deployment) {
+    throw new Error(
+      "Azure OpenAI not configured. Set AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT in SWA Application settings."
+    );
+  }
+
+  const url = `${endpoint}/openai/deployments/${encodeURIComponent(deployment)}/chat/completions?api-version=${encodeURIComponent(apiVersion)}`;
+
+  const messages = [
+    { role: "system", content: SYSTEM_PROMPT },
+    ...buildHistoryMessages(history),
+    { role: "user", content: userBlock(question, context) }
+  ];
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "api-key": apiKey
+    },
+    body: JSON.stringify({
+      messages,
+      max_tokens: 2048,
+      temperature: 0.2
+    })
+  });
+
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const msg = body?.error?.message || JSON.stringify(body) || res.statusText;
+    throw new Error(`Azure OpenAI ${res.status}: ${msg}`);
+  }
+
+  const text = body?.choices?.[0]?.message?.content?.trim() || "";
+  return {
+    answer: text || "(empty response)",
+    model: body?.model || deployment,
+    provider: "azure_openai",
+    usage: body?.usage || null
+  };
+}
+
+async function askClaude({ question, context, history }) {
+  const apiKey = envSet("ANTHROPIC_API_KEY");
+  if (!apiKey) {
+    throw new Error("ANTHROPIC_API_KEY not configured in SWA Application settings");
+  }
+  const model = envSet("ANTHROPIC_MODEL") || "claude-sonnet-4-5";
+
+  const messages = [
+    ...buildHistoryMessages(history),
+    { role: "user", content: userBlock(question, context) }
+  ];
 
   const res = await fetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
@@ -125,7 +197,7 @@ async function askClaude({ question, context, history }) {
     body: JSON.stringify({
       model,
       max_tokens: 2048,
-      system,
+      system: SYSTEM_PROMPT,
       messages
     })
   });
@@ -145,8 +217,25 @@ async function askClaude({ question, context, history }) {
   return {
     answer: text || "(empty response)",
     model: body.model || model,
+    provider: "claude",
     usage: body.usage || null
   };
 }
 
-module.exports = { askClaude, getStudyContext };
+/** Prefer Azure OpenAI (Copilot-style); fall back to Claude if only that is set. */
+async function askAi(opts) {
+  const status = providerStatus();
+  if (status.active === "azure_openai") return askAzureOpenAI(opts);
+  if (status.active === "claude") return askClaude(opts);
+  throw new Error(
+    "No LLM configured. Set Azure OpenAI (AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT) or ANTHROPIC_API_KEY in SWA Application settings."
+  );
+}
+
+module.exports = {
+  askAi,
+  askClaude,
+  askAzureOpenAI,
+  getStudyContext,
+  providerStatus
+};

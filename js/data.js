@@ -12,7 +12,7 @@ SBW.users = [
 
 SBW.sections = [
   { id: "hub", label: "Hub", department: null },
-  { id: "ask", label: "Ask Claude", department: null },
+  { id: "ask", label: "Ask Copilot", department: null },
   { id: "studies", label: "Studies (Cosmos)", department: null },
   { id: "overview", label: "Overview / Inputs", department: "Analyst" },
   { id: "recruitment", label: "Recruitment", department: "Recruitment" },

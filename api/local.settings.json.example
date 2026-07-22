@@ -6,8 +6,10 @@
     "COSMOS_ENDPOINT": "https://bd-budgets.documents.azure.com:443/",
     "COSMOS_KEY": "SET_IN_SWA_APP_SETTINGS",
     "COSMOS_DATABASE": "bd-budgets",
-    "ANTHROPIC_API_KEY": "SET_IN_SWA_APP_SETTINGS",
-    "ANTHROPIC_MODEL": "claude-sonnet-4-5"
+    "AZURE_OPENAI_ENDPOINT": "https://YOUR_RESOURCE.openai.azure.com",
+    "AZURE_OPENAI_API_KEY": "SET_IN_SWA_APP_SETTINGS",
+    "AZURE_OPENAI_DEPLOYMENT": "gpt-4o",
+    "AZURE_OPENAI_API_VERSION": "2024-08-01-preview"
   },
   "Host": {
     "CORS": "*"
