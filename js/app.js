@@ -407,6 +407,15 @@
         );
       }
 
+      // Summarize why files quarantined (from this upload batch)
+      const quarantineWhy = {};
+      for (const q of aggregate.quarantined) {
+        const key = (q.studyId === "UNKNOWN" || !q.studyId)
+          ? "no_O_number_in_filename"
+          : (q.lineItems === 0 ? "zero_line_items" : "other");
+        quarantineWhy[key] = (quarantineWhy[key] || 0) + 1;
+      }
+
       setUploadProgress(100, `Done — ${aggregate.loaded.length} loaded, ${aggregate.quarantined.length} quarantined, ${aggregate.failed.length} failed`);
       status.textContent = `Done — loaded ${aggregate.loaded.length}, quarantined ${aggregate.quarantined.length}, failed ${aggregate.failed.length} (of ${total})`;
 
@@ -430,11 +439,13 @@
             quarantined: aggregate.quarantined.length,
             failed: aggregate.failed.length
           },
+          quarantineWhy,
           meaning: {
             loaded: "Parsed OK and written to Cosmos studies/versions/lineItems",
-            quarantined: "Parsed but needs review (or low confidence) — in quarantine container if Cosmos allowed the write",
-            failed: "Exception (Cosmos firewall, bad/corrupt xlsx, unsupported layout, etc.)"
+            quarantined: "Near-empty parse only (after latest deploy, missing O-##### uses FILE-… id and still loads)",
+            failed: "Exception (Cosmos firewall, bad/corrupt xlsx, timeout, etc.)"
           },
+          tip: "Re-upload after deploy to promote former UNKNOWN quarantines. Studies without O-##### get ids like FILE-INTERNAL_Client_…. ",
           topErrors: errorBuckets,
           failedSample: aggregate.failed.slice(0, 8),
           loaded: aggregate.loaded,

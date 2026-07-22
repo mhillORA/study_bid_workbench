@@ -123,7 +123,15 @@ app.http("import", {
           if (/firewall|blocked by your Cosmos|through public internet/i.test(msg)) {
             msg = "COSMOS_FIREWALL: Azure blocked the API IP. Cosmos → Networking → allow Azure datacenters (or All networks).";
           }
-          report.failed.push({ file: wb.name, error: msg });
+          if (/Entity with the specified id already exists|Request size is too large|Timeout|timed out/i.test(msg)) {
+            msg = `COSMOS_WRITE: ${msg.slice(0, 300)}`;
+          }
+          report.failed.push({
+            file: wb.name,
+            error: msg,
+            errorName: err.name || null,
+            stack: String(err.stack || "").split("\n").slice(0, 4)
+          });
         }
       }
 

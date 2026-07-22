@@ -65,15 +65,15 @@ function cellValue(v) {
 }
 
 function opportunityFromFilename(name) {
-  let m = String(name).match(/O-(\d{4,5})/i);
+  const s = String(name || "");
+  // Prefer explicit Ora opportunity tokens: O-12345 / O12345
+  let m = s.match(/(?:^|[^A-Za-z0-9])O-(\d{4,5})(?!\d)/i);
   if (m) return `O-${m[1].padStart(5, "0")}`;
-  m = String(name).match(/(?<![A-Za-z])0-(\d{4,5})/);
+  m = s.match(/(?:^|[^A-Za-z0-9])O(\d{4,5})(?!\d)/i);
   if (m) return `O-${m[1].padStart(5, "0")}`;
-  m = String(name).match(/\b(O\d{4,5})\b/i);
-  if (m) {
-    const digits = m[1].replace(/^O/i, "");
-    return `O-${digits.padStart(5, "0")}`;
-  }
+  // Typo form INTERNAL_0-12345_… — do NOT match inside protocol ids like VSJ-110-2201
+  m = s.match(/(?:^|INTERNAL_|NO_CO_|BUDGET_|_)0-(\d{4,5})(?!\d)/i);
+  if (m) return `O-${m[1].padStart(5, "0")}`;
   return null;
 }
 
@@ -86,7 +86,7 @@ function studyIdFromFilename(name) {
     .replace(/_+/g, "_")
     .replace(/^_|_$/g, "")
     .slice(0, 72);
-  return stem ? `FILE-${stem}` : null;
+  return stem ? `FILE-${stem}` : `FILE-UNKNOWN`;
 }
 
 function resolveSheets(names) {
@@ -256,42 +256,53 @@ async function parseWorkbookBuffer(buffer, fileName) {
 
   const fileOpp = opportunityFromFilename(fileName);
   const fileStudyId = studyIdFromFilename(fileName);
-  let opportunityId = "UNKNOWN";
-  if (header.opportunityId && String(header.opportunityId).trim()) {
-    opportunityId = String(header.opportunityId).trim();
-  } else if (fileStudyId) {
-    opportunityId = fileStudyId;
-    header.opportunityId = fileStudyId;
-    header.opportunityIdSource = fileOpp ? "filename_opp" : "filename_stem";
-    warnings.push(`Filled studyId from filename: ${fileStudyId}`);
+  const headerOpp = header.opportunityId && String(header.opportunityId).trim()
+    ? String(header.opportunityId).trim()
+    : null;
+
+  // Filename O-xxxxx wins over header (avoids wrong opp when workbook reused/copied).
+  let opportunityId = fileOpp || headerOpp || fileStudyId || "UNKNOWN";
+  if (fileOpp) {
+    header.opportunityId = fileOpp;
+    header.opportunityIdSource = "filename_opp";
+    if (headerOpp && headerOpp !== fileOpp) {
+      warnings.push(`Header opportunityId ${headerOpp} overridden by filename ${fileOpp}`);
+    } else {
+      warnings.push(`Filled studyId from filename: ${fileOpp}`);
+    }
     conf = Math.min(1, conf + 0.15);
+  } else if (!headerOpp && fileStudyId) {
+    header.opportunityId = fileStudyId;
+    header.opportunityIdSource = "filename_stem";
+    warnings.push(`No O-##### in name — using studyId ${fileStudyId}`);
+    conf = Math.min(1, conf + 0.1);
   }
 
   const enoughLines = lineItems.length >= 20;
   const hasId = opportunityId !== "UNKNOWN";
-  // Quarantine only when the parse is basically empty / unusable.
-  // POC: prefer loading so users can open studies; weak maps still land in studies with warnings.
-  let quarantine =
-    (!hasId && lineItems.length === 0 && fieldCount < 3) ||
-    (lineItems.length === 0 && !resolved["Input Tab"] && !resolved["Internal Budget"] && fieldCount < 3);
+  const hasContent =
+    lineItems.length >= 1 ||
+    fieldCount >= 5 ||
+    Boolean(resolved["Input Tab"]) ||
+    Boolean(resolved["Internal Budget"]);
 
   let quarantineReasons = [];
   if (!hasId) quarantineReasons.push("no_study_id");
   if (lineItems.length === 0) quarantineReasons.push("no_line_items");
+  if (fieldCount === 0) quarantineReasons.push("no_input_fields");
   if (!fp.matched) quarantineReasons.push(`missing_sheets:${missing.join("|") || "none"}`);
   if (conf < 0.45) quarantineReasons.push("low_confidence");
 
-  if (hasId && (lineItems.length >= 1 || fieldCount >= 5 || resolved["Input Tab"] || resolved["Internal Budget"])) {
-    warnings.push("POC auto-load: usable study id + some captured content");
-    conf = Math.max(conf, 0.55);
-    quarantine = false;
-  } else if (hasId && lineItems.length >= 20) {
-    warnings.push("POC auto-load: opportunity id + line items");
-    conf = Math.max(conf, 0.7);
-    quarantine = false;
-  } else if (hasId && resolved["Internal Budget"] && lineItems.length >= 10) {
-    warnings.push("POC auto-load: aliased Internal Budget sheet");
-    conf = Math.max(conf, 0.65);
+  // POC: load anything with an id + any captured content. Quarantine only empty shells.
+  let quarantine = !(hasId && hasContent);
+
+  if (hasId && hasContent) {
+    warnings.push(
+      lineItems.length >= 20
+        ? "POC auto-load: study id + line items"
+        : "POC auto-load: study id + captured inputs (filename stem OK if no O-#####)"
+    );
+    conf = Math.max(conf, lineItems.length >= 20 ? 0.7 : 0.55);
     quarantine = false;
   } else if (enoughLines && hasId && !fp.matched) {
     warnings.push("Loaded with sheet aliases / partial fingerprint");
@@ -374,5 +385,6 @@ async function parseWorkbookBuffer(buffer, fileName) {
 
 module.exports = {
   parseWorkbookBuffer,
-  opportunityFromFilename
+  opportunityFromFilename,
+  studyIdFromFilename
 };
