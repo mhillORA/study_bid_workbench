@@ -246,7 +246,7 @@ function buildAzureChatAttempts(endpoint, deployment, apiVersion) {
       body: {
         model: deployment,
         messages: null, // filled later
-        max_tokens: 2048,
+        max_completion_tokens: 2048,
         temperature: 0.2
       }
     });
@@ -259,7 +259,7 @@ function buildAzureChatAttempts(endpoint, deployment, apiVersion) {
       url: `${root}/openai/deployments/${encodeURIComponent(deployment)}/chat/completions?api-version=${encodeURIComponent(apiVersion)}`,
       body: {
         messages: null,
-        max_tokens: 2048,
+        max_completion_tokens: 2048,
         temperature: 0.2
       }
     });
@@ -285,13 +285,17 @@ function buildAzureChatAttempts(endpoint, deployment, apiVersion) {
 
   // 3) Project endpoint path (sometimes works; often 404 for plain chat)
   if (isFoundryProjectEndpoint(base)) {
+    // Prefer resource-level Foundry OpenAI route (no /api/projects/...)
+    if (resource) {
+      pushV1(`https://${resource}.services.ai.azure.com`, "foundry_services_v1");
+    }
     attempts.push({
       label: "foundry_project_openai_v1",
       url: `${base}/openai/v1/chat/completions`,
       body: {
         model: deployment,
         messages: null,
-        max_tokens: 2048,
+        max_completion_tokens: 2048,
         temperature: 0.2
       }
     });
@@ -368,8 +372,8 @@ async function askAzureOpenAI({ question, context, history }) {
       (Object.keys(respBody || {}).length ? JSON.stringify(respBody).slice(0, 200) : res.statusText);
     failures.push(`${attempt.label} → ${res.status} ${msg}`);
 
-    // Only keep trying on 404 / not found; other errors (401, 429) are final
-    if (res.status !== 404 && res.status !== 400) {
+    // Retry other hosts only when the route itself is missing
+    if (res.status !== 404) {
       break;
     }
   }
