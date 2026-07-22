@@ -100,6 +100,11 @@
     }).join("");
   }
 
+  function apiUrl(path) {
+    const base = (SBW.apiBase || "").replace(/\/$/, "");
+    return `${base}${path}`;
+  }
+
   function renderUpload() {
     const locked = !canEdit("Analyst");
     const dis = locked ? "disabled" : "";
@@ -110,7 +115,7 @@
           <p class="muted">
             Drop one <code>.xlsx</code>, many files, or a <code>.zip</code> of active studies.
             The API parses, normalizes, and loads into <strong>bd-budgets</strong>.
-            No hand-editing of Excel — aliases + filename opportunity IDs are applied automatically.
+            Aliases + filename opportunity IDs (<code>O-#####</code>) are applied automatically.
           </p>
           <div class="form-grid" style="margin-top:1rem;">
             <div class="full">
@@ -125,9 +130,10 @@
               </select>
             </div>
           </div>
-          <div style="margin-top:1rem;display:flex;gap:0.6rem;align-items:center;">
+          <div style="margin-top:1rem;display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap;">
             <button type="button" class="btn btn-primary" id="btnStartUpload" ${dis}>Start upload</button>
-            <span class="muted" id="uploadStatus">Waiting for API deploy — UI is ready.</span>
+            <button type="button" class="btn btn-secondary" id="btnCheckApi">Check API</button>
+            <span class="muted" id="uploadStatus">Ready — posts to /api/import</span>
           </div>
         </div>
         <div class="card wide">
@@ -141,9 +147,41 @@
             <li>Cosmos key stays in Azure App Settings — never in the browser.</li>
             <li>Analysts open Upload, pick the zip/files, click Start.</li>
             <li>Report shows loaded / quarantined / failed per file.</li>
+            <li>See <strong>Studies (Cosmos)</strong> for what landed.</li>
           </ol>
         </div>
       </div>`;
+  }
+
+  function renderStudies(loadingHtml) {
+    return `
+      <div class="grid">
+        <div class="card wide">
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap;">
+            <div>
+              <h3>Studies in Cosmos</h3>
+              <p class="muted">From <code>GET /api/studies</code> · database <strong>bd-budgets</strong></p>
+            </div>
+            <button type="button" class="btn btn-secondary" id="btnRefreshStudies">Refresh</button>
+          </div>
+          <div id="studiesPanel" style="margin-top:1rem;">${loadingHtml || "<p class=\"muted\">Loading…</p>"}</div>
+        </div>
+      </div>`;
+  }
+
+  async function checkApiHealth() {
+    const status = document.getElementById("uploadStatus");
+    const report = document.getElementById("uploadReport");
+    if (status) status.textContent = "Checking /api/health…";
+    try {
+      const res = await fetch(apiUrl("/api/health"));
+      const data = await res.json().catch(() => ({}));
+      if (status) status.textContent = res.ok ? "API online" : `API error (${res.status})`;
+      if (report) report.textContent = JSON.stringify(data, null, 2);
+    } catch (err) {
+      if (status) status.textContent = "API not reachable";
+      if (report) report.textContent = String(err);
+    }
   }
 
   async function startUpload() {
@@ -162,9 +200,8 @@
 
     status.textContent = "Uploading…";
     report.textContent = "Working…";
-    const base = (SBW.apiBase || "").replace(/\/$/, "");
     try {
-      const res = await fetch(`${base}/api/import`, { method: "POST", body: fd });
+      const res = await fetch(apiUrl("/api/import"), { method: "POST", body: fd });
       const text = await res.text();
       let data;
       try { data = JSON.parse(text); } catch (_) { data = { raw: text }; }
@@ -173,16 +210,54 @@
         report.textContent = JSON.stringify(data, null, 2);
         return;
       }
-      status.textContent = "Done";
+      const c = data.counts || {};
+      status.textContent = `Done — loaded ${c.loaded || 0}, quarantined ${c.quarantined || 0}, failed ${c.failed || 0}`;
       report.textContent = JSON.stringify(data, null, 2);
     } catch (err) {
       status.textContent = "API not reachable";
       report.textContent = [
         "Could not reach /api/import.",
-        "The upload UI is ready; the import API must be deployed (Static Web App + Function).",
+        "Confirm the SWA API is deployed and Cosmos App Settings are set.",
         "",
         String(err)
       ].join("\n");
+    }
+  }
+
+  async function loadStudiesIntoPanel() {
+    const panel = document.getElementById("studiesPanel");
+    if (!panel) return;
+    panel.innerHTML = "<p class=\"muted\">Loading…</p>";
+    try {
+      const res = await fetch(apiUrl("/api/studies"));
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        panel.innerHTML = `<pre class="formula-box">${escapeHtml(JSON.stringify(data, null, 2))}</pre>`;
+        return;
+      }
+      const studies = data.studies || [];
+      if (!studies.length) {
+        panel.innerHTML = "<p class=\"muted\">No studies yet. Use Upload budgets to load workbooks.</p>";
+        return;
+      }
+      panel.innerHTML = `
+        <table class="table">
+          <thead>
+            <tr><th>Study</th><th>Client</th><th>Title</th><th>Phase</th><th>Status</th><th>Updated</th></tr>
+          </thead>
+          <tbody>
+            ${studies.map((s) => `<tr>
+              <td><code>${escapeHtml(s.studyId || "")}</code></td>
+              <td>${escapeHtml(s.clientName || "—")}</td>
+              <td>${escapeHtml(s.title || "—")}</td>
+              <td>${escapeHtml(s.phase || "—")}</td>
+              <td>${escapeHtml(s.status || "—")}</td>
+              <td class="muted">${escapeHtml((s.updatedAt || s.importedAt || "").slice(0, 19).replace("T", " "))}</td>
+            </tr>`).join("")}
+          </tbody>
+        </table>`;
+    } catch (err) {
+      panel.innerHTML = `<p class="muted">Could not reach /api/studies.</p><pre class="formula-box">${escapeHtml(String(err))}</pre>`;
     }
   }
 
@@ -461,6 +536,7 @@
     switch (section.id) {
       case "hub": html = renderHub(); break;
       case "upload": html = renderUpload(); break;
+      case "studies": html = renderStudies(); break;
       case "overview": html = renderOverview(); break;
       case "recruitment": html = renderRecruitment(); break;
       case "clinops": html = renderDeptSimple("clinops", "clinops", "ClinOps / SOE assumptions"); break;
@@ -472,6 +548,9 @@
       default: html = renderHub();
     }
     els.viewRoot.innerHTML = html;
+    if (section.id === "studies") {
+      loadStudiesIntoPanel();
+    }
   }
 
   function bind() {
@@ -517,6 +596,12 @@
       }
       if (e.target.id === "btnStartUpload") {
         startUpload();
+      }
+      if (e.target.id === "btnCheckApi") {
+        checkApiHealth();
+      }
+      if (e.target.id === "btnRefreshStudies") {
+        loadStudiesIntoPanel();
       }
     });
 

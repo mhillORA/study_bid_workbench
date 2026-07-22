@@ -1,10 +1,10 @@
 {
   "IsEncrypted": false,
   "Values": {
-    "AzureWebJobsStorage": "UseDevelopmentStorage=true",
-    "FUNCTIONS_WORKER_RUNTIME": "python",
+    "AzureWebJobsStorage": "",
+    "FUNCTIONS_WORKER_RUNTIME": "node",
     "COSMOS_ENDPOINT": "https://bd-budgets.documents.azure.com:443/",
-    "COSMOS_KEY": "SET_IN_AZURE_APP_SETTINGS_NOT_HERE",
+    "COSMOS_KEY": "SET_IN_SWA_APP_SETTINGS",
     "COSMOS_DATABASE": "bd-budgets"
   },
   "Host": {
