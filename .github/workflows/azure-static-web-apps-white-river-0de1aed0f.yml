@@ -1,13 +1,9 @@
 name: Azure Static Web Apps CI/CD
 
-# Aligned with NASA (orange-hill) / CHAOS (salmon-forest) / ARTEMIS (calm-desert).
-# Reference only — those repos were not modified.
-
 on:
   push:
     branches:
       - main
-  workflow_dispatch:
   pull_request:
     types: [opened, synchronize, reopened, closed]
     branches:
@@ -15,76 +11,27 @@ on:
 
 jobs:
   build_and_deploy_job:
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch' || (github.event_name == 'pull_request' && github.event.action != 'closed')
+    if: github.event_name == 'push' || (github.event_name == 'pull_request' && github.event.action != 'closed')
     runs-on: ubuntu-latest
     name: Build and Deploy Job
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v3
         with:
           submodules: true
           lfs: false
-
       - name: Build And Deploy
         id: builddeploy
-        continue-on-error: true
         uses: Azure/static-web-apps-deploy@v1
         with:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_WHITE_RIVER_0DE1AED0F }}
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          repo_token: ${{ secrets.GITHUB_TOKEN }} # Used for Github integrations (i.e. PR comments)
           action: "upload"
-          app_location: "/"
-          api_location: "api"
-          output_location: "/"
-          skip_app_build: true
-          skip_api_build: false
-        env:
-          NODE_VERSION: "20"
-
-      - name: Deploy via SWA CLI fallback
-        id: clifallback
-        if: steps.builddeploy.outcome != 'success'
-        env:
-          SWA_CLI_DEPLOYMENT_TOKEN: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_WHITE_RIVER_0DE1AED0F }}
-        run: |
-          set -euo pipefail
-          echo "Primary action failed — trying SWA CLI. Token length: ${#SWA_CLI_DEPLOYMENT_TOKEN}"
-          if [ "${#SWA_CLI_DEPLOYMENT_TOKEN}" -lt 20 ]; then
-            echo "::error::Deployment token secret is empty or too short. Reset it from Azure Portal → Static Web App → Manage deployment token."
-            exit 1
-          fi
-          cd api
-          npm install --omit=dev
-          cd ..
-          # Do NOT pass both a positional path and --output-location (CLI rejects that).
-          set +e
-          npx -y @azure/static-web-apps-cli@2.0.2 deploy \
-            --app-location "." \
-            --api-location "api" \
-            --output-location "." \
-            --api-language "node" \
-            --api-version "20" \
-            --deployment-token "$SWA_CLI_DEPLOYMENT_TOKEN" \
-            --env production \
-            --verbose 2>&1 | tee /tmp/swa-deploy.log
-          cli_rc=${PIPESTATUS[0]}
-          set -e
-          if grep -qiE 'api key was invalid|No matching Static Web App|BadRequest|Deployment Failed' /tmp/swa-deploy.log; then
-            echo "::error::SWA CLI reported a deploy rejection (see log above)."
-            exit 1
-          fi
-          if [ "$cli_rc" -ne 0 ]; then
-            echo "::error::SWA CLI exited with code $cli_rc"
-            exit 1
-          fi
-          echo "SWA CLI deploy finished without rejection errors."
-
-      - name: Fail if neither deploy path succeeded
-        if: always() && steps.builddeploy.outcome != 'success' && steps.clifallback.outcome != 'success'
-        run: |
-          echo "::error::Deploy failed. Primary Azure/static-web-apps-deploy and SWA CLI both failed."
-          echo "Almost always this means the GitHub secret AZURE_STATIC_WEB_APPS_API_TOKEN_WHITE_RIVER_0DE1AED0F does not match the token for SWA white-river-0de1aed0f (bd-budgets)."
-          echo "Fix: Azure Portal → bd-budgets → Manage deployment token → copy → GitHub repo Settings → Secrets → update that secret → re-run this workflow."
-          exit 1
+          ###### Repository/Build Configurations - These values can be configured to match your app requirements. ######
+          # For more information regarding Static Web App workflow configurations, please visit: https://aka.ms/swaworkflowconfig
+          app_location: "/" # App source code path
+          api_location: "" # Api source code path - optional
+          output_location: "." # Built app content directory - optional
+          ###### End of Repository/Build Configurations ######
 
   close_pull_request_job:
     if: github.event_name == 'pull_request' && github.event.action == 'closed'
@@ -92,9 +39,8 @@ jobs:
     name: Close Pull Request Job
     steps:
       - name: Close Pull Request
-        id: closepullquest
+        id: closepullrequest
         uses: Azure/static-web-apps-deploy@v1
         with:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_WHITE_RIVER_0DE1AED0F }}
-          app_location: "/"
           action: "close"
