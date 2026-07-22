@@ -1,7 +1,8 @@
 const { app } = require("@azure/functions");
 const AdmZip = require("adm-zip");
 const { parseWorkbookBuffer } = require("./parseWorkbook");
-const { upsertCanonical, listStudies } = require("./cosmosLoad");
+const { upsertCanonical, listStudies, getDb } = require("./cosmosLoad");
+const { askClaude, getStudyContext } = require("./askClaude");
 
 function json(status, body) {
   return {
@@ -163,5 +164,78 @@ app.http("health", {
   methods: ["GET"],
   authLevel: "anonymous",
   route: "health",
-  handler: async () => json(200, { ok: true, service: "study-bid-workbench-api" })
+  handler: async () =>
+    json(200, {
+      ok: true,
+      service: "study-bid-workbench-api",
+      claudeConfigured: Boolean(
+        (process.env.ANTHROPIC_API_KEY || "").trim() &&
+          !(process.env.ANTHROPIC_API_KEY || "").includes("SET_IN")
+      )
+    })
+});
+
+app.http("ask", {
+  methods: ["POST", "OPTIONS"],
+  authLevel: "anonymous",
+  route: "ask",
+  handler: async (request, context) => {
+    if (request.method === "OPTIONS") {
+      return {
+        status: 204,
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "POST, OPTIONS",
+          "Access-Control-Allow-Headers": "content-type"
+        }
+      };
+    }
+
+    try {
+      const body = await request.json();
+      const question = String(body.question || "").trim();
+      if (!question) return json(400, { error: "question is required" });
+
+      const studyId = body.studyId ? String(body.studyId).trim() : null;
+      const clientStudy = body.studySnapshot || null;
+      const history = body.history || [];
+
+      let cosmosContext = null;
+      if (studyId) {
+        cosmosContext = await getStudyContext(studyId, { getDb });
+      }
+
+      const contextPayload = {
+        askedAt: new Date().toISOString(),
+        cosmos: cosmosContext,
+        workingStudy: clientStudy
+          ? {
+              source: "browser_working_copy",
+              studyId: clientStudy.studyId,
+              clientName: clientStudy.clientName,
+              title: clientStudy.title,
+              protocol: clientStudy.protocol,
+              phase: clientStudy.phase,
+              versionLabel: clientStudy.versionLabel,
+              drivers: clientStudy.drivers,
+              sectionStatus: clientStudy.sectionStatus,
+              assumptions: clientStudy.assumptions
+            }
+          : null
+      };
+
+      const result = await askClaude({ question, context: contextPayload, history });
+      return json(200, {
+        answer: result.answer,
+        model: result.model,
+        usage: result.usage,
+        studyId: studyId || clientStudy?.studyId || null
+      });
+    } catch (err) {
+      context.error(err);
+      const msg = String(err.message || err);
+      const status = msg.includes("not configured") ? 503 : 500;
+      return json(status, { error: msg });
+    }
+  }
 });

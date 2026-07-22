@@ -7,7 +7,8 @@
     sectionId: "hub",
     study: loadStudy(),
     dirty: false,
-    results: {}
+    results: {},
+    askHistory: []
   };
 
   const els = {
@@ -112,6 +113,74 @@
   function apiUrl(path) {
     const base = (SBW.apiBase || "").replace(/\/$/, "");
     return `${base}${path}`;
+  }
+
+  function renderAsk() {
+    const turns = state.askHistory
+      .map((t) => {
+        const who = t.role === "user" ? "You" : "Claude";
+        return `<div class="chat-turn ${t.role}"><div class="chat-who">${who}</div><div class="chat-body">${escapeHtml(t.content)}</div></div>`;
+      })
+      .join("");
+    return `
+      <div class="grid">
+        <div class="card wide">
+          <h3>Ask about this study</h3>
+          <p class="muted">POC — Claude sees the working study on this device, plus Cosmos when that study is loaded.</p>
+          <div class="chat-log" id="askLog">${turns || "<p class=\"muted\">Try: “What are the enrollment drivers?” or “Summarize ClinOps assumptions.”</p>"}</div>
+          <div class="ask-compose">
+            <textarea id="askInput" class="textarea" rows="3" placeholder="Ask a question…"></textarea>
+            <button type="button" class="btn btn-primary" id="btnAsk">Ask</button>
+            <span class="muted" id="askStatus"></span>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  async function sendAsk() {
+    const input = document.getElementById("askInput");
+    const status = document.getElementById("askStatus");
+    const question = (input && input.value || "").trim();
+    if (!question) {
+      if (status) status.textContent = "Type a question first.";
+      return;
+    }
+    state.askHistory.push({ role: "user", content: question });
+    if (input) input.value = "";
+    if (status) status.textContent = "Thinking…";
+    render();
+    const statusAfter = document.getElementById("askStatus");
+    try {
+      const res = await fetch(apiUrl("/api/ask"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          question,
+          studyId: state.study.studyId,
+          studySnapshot: state.study,
+          history: state.askHistory.slice(0, -1).map((t) => ({
+            role: t.role,
+            content: t.content
+          }))
+        })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        state.askHistory.push({
+          role: "assistant",
+          content: data.error || `Request failed (${res.status})`
+        });
+      } else {
+        state.askHistory.push({ role: "assistant", content: data.answer || "(no answer)" });
+      }
+    } catch (err) {
+      state.askHistory.push({
+        role: "assistant",
+        content: `Could not reach /api/ask. ${String(err)}`
+      });
+    }
+    render();
+    if (statusAfter) statusAfter.textContent = "";
   }
 
   function renderUpload() {
@@ -518,6 +587,7 @@
     let html = "";
     switch (section.id) {
       case "hub": html = renderHub(); break;
+      case "ask": html = renderAsk(); break;
       case "upload": html = renderUpload(); break;
       case "studies": html = renderStudies(); break;
       case "overview": html = renderOverview(); break;
@@ -584,6 +654,9 @@
       }
       if (e.target.id === "btnStartUpload") {
         startUpload();
+      }
+      if (e.target.id === "btnAsk") {
+        sendAsk();
       }
       if (e.target.id === "btnRefreshStudies") {
         loadStudiesIntoPanel();
