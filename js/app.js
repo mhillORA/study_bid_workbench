@@ -3,7 +3,7 @@
   const USER_KEY = "sbw.user.v1";
 
   const state = {
-    userId: localStorage.getItem(USER_KEY) || "u-analyst",
+    userId: localStorage.getItem(USER_KEY) || "u-admin",
     sectionId: "hub",
     study: loadStudy(),
     dirty: false,
@@ -83,8 +83,17 @@
   function canEdit(department) {
     if (!department) return true;
     const user = currentUser();
+    if (user.department === "Admin") return true;
     if (user.department === "Analyst" || user.department === "TAH") return true;
     return user.department === department;
+  }
+
+  function canSeeSection(section) {
+    const user = currentUser();
+    if (user.department === "Admin") return true;
+    if (!section.department) return true;
+    if (user.department === "Analyst" || user.department === "TAH") return true;
+    return section.department === user.department;
   }
 
   function statusLabel(s) {
@@ -92,7 +101,7 @@
   }
 
   function renderNav() {
-    els.sectionNav.innerHTML = SBW.sections.map((s) => {
+    els.sectionNav.innerHTML = SBW.sections.filter(canSeeSection).map((s) => {
       const st = state.study.sectionStatus[s.id];
       const active = s.id === state.sectionId ? "active" : "";
       const dot = st ? `<span class="status-dot ${st}"></span>` : "";
@@ -138,16 +147,6 @@
         <div class="card wide">
           <h3>Last import report</h3>
           <pre class="formula-box" id="uploadReport">No upload yet.</pre>
-        </div>
-        <div class="card wide">
-          <h3>How others use this</h3>
-          <ol class="list">
-            <li>You host the app (Azure Static Web App) + import API.</li>
-            <li>Cosmos key stays in Azure App Settings — never in the browser.</li>
-            <li>Analysts open Upload, pick the zip/files, click Start.</li>
-            <li>Report shows loaded / quarantined / failed per file.</li>
-            <li>See <strong>Studies (Cosmos)</strong> for what landed.</li>
-          </ol>
         </div>
       </div>`;
   }
@@ -539,20 +538,25 @@
 
   function bind() {
     els.userSelect.innerHTML = SBW.users.map(
-      (u) => `<option value="${u.id}" ${u.id === state.userId ? "selected" : ""}>${u.name}</option>`
+      (u) => `<option value="${u.id}" ${u.id === state.userId ? "selected" : ""}>${u.department}</option>`
     ).join("");
 
     const depts = [...new Set(SBW.sections.filter((s) => s.department).map((s) => s.department))];
     els.requestDept.innerHTML = depts.map((d) => `<option value="${d}">${d}</option>`).join("");
-    els.requestUser.innerHTML = SBW.users.map((u) => `<option value="${u.id}">${u.name}</option>`).join("");
+    els.requestUser.innerHTML = SBW.users.map(
+      (u) => `<option value="${u.id}">${u.department}</option>`
+    ).join("");
 
     els.userSelect.addEventListener("change", () => {
       state.userId = els.userSelect.value;
       localStorage.setItem(USER_KEY, state.userId);
       const user = currentUser();
-      const home = SBW.sections.find((s) => s.department === user.department);
-      if (home) state.sectionId = home.id;
-      else state.sectionId = "hub";
+      if (user.department === "Admin") {
+        state.sectionId = "hub";
+      } else {
+        const home = SBW.sections.find((s) => s.department === user.department);
+        state.sectionId = home ? home.id : "hub";
+      }
       render();
     });
 
@@ -659,10 +663,12 @@
     URL.revokeObjectURL(url);
   }
 
-  // Land user on their department page on first load
+  // Land user on their department page on first load (Admin stays on Hub)
   const user = currentUser();
-  const home = SBW.sections.find((s) => s.department === user.department);
-  if (home) state.sectionId = home.id;
+  if (user.department !== "Admin") {
+    const home = SBW.sections.find((s) => s.department === user.department);
+    if (home) state.sectionId = home.id;
+  }
 
   bind();
   render();

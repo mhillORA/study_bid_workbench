@@ -1,12 +1,13 @@
 window.SBW = window.SBW || {};
 
 SBW.users = [
-  { id: "u-analyst", name: "Louise (BDO / Analyst)", department: "Analyst" },
-  { id: "u-recruit", name: "Alex Rivera (Recruitment)", department: "Recruitment" },
-  { id: "u-clinops", name: "Caitlin Pearson (ClinOps)", department: "ClinOps" },
-  { id: "u-monitor", name: "Laura Lazzari (Monitoring)", department: "Monitoring" },
-  { id: "u-smo", name: "Tom Reese (SMO)", department: "SMO" },
-  { id: "u-tah", name: "Paul Gomes (TAH)", department: "TAH" }
+  { id: "u-admin", name: "Admin", department: "Admin" },
+  { id: "u-analyst", name: "Analyst", department: "Analyst" },
+  { id: "u-recruit", name: "Recruitment", department: "Recruitment" },
+  { id: "u-clinops", name: "ClinOps", department: "ClinOps" },
+  { id: "u-monitor", name: "Monitoring", department: "Monitoring" },
+  { id: "u-smo", name: "SMO", department: "SMO" },
+  { id: "u-tah", name: "TAH", department: "TAH" }
 ];
 
 SBW.sections = [
