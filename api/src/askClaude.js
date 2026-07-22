@@ -246,8 +246,7 @@ function buildAzureChatAttempts(endpoint, deployment, apiVersion) {
       body: {
         model: deployment,
         messages: null, // filled later
-        max_completion_tokens: 2048,
-        temperature: 0.2
+        max_completion_tokens: 2048
       }
     });
   };
@@ -259,8 +258,7 @@ function buildAzureChatAttempts(endpoint, deployment, apiVersion) {
       url: `${root}/openai/deployments/${encodeURIComponent(deployment)}/chat/completions?api-version=${encodeURIComponent(apiVersion)}`,
       body: {
         messages: null,
-        max_completion_tokens: 2048,
-        temperature: 0.2
+        max_completion_tokens: 2048
       }
     });
   };
@@ -295,8 +293,7 @@ function buildAzureChatAttempts(endpoint, deployment, apiVersion) {
       body: {
         model: deployment,
         messages: null,
-        max_completion_tokens: 2048,
-        temperature: 0.2
+        max_completion_tokens: 2048
       }
     });
   }
