@@ -158,18 +158,18 @@ async function upsertCanonical(canonical, jobId) {
   return summary;
 }
 
-async function listStudies(limit = 100) {
+async function listStudies(limit = 200) {
   const database = getDb();
   const { resources } = await database.container("studies").items
     .query({
       query:
-        "SELECT c.studyId, c.clientName, c.title, c.protocol, c.phase, c.status, c.currentVersionId, c.importedAt, c.updatedAt FROM c WHERE c.docType = @t",
+        "SELECT c.studyId, c.clientName, c.title, c.protocol, c.phase, c.therapeuticArea, c.indication, c.status, c.currentVersionId, c.importedAt, c.updatedAt FROM c WHERE c.docType = @t",
       parameters: [{ name: "@t", value: "study" }]
     })
     .fetchAll();
   return resources
     .sort((a, b) => String(b.updatedAt || b.importedAt || "").localeCompare(String(a.updatedAt || a.importedAt || "")))
-    .slice(0, limit);
+    .slice(0, Math.min(Number(limit) || 200, 500));
 }
 
 async function getStudy(studyId) {

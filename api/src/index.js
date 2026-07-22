@@ -165,7 +165,7 @@ app.http("studies", {
       };
     }
     try {
-      const studies = await listStudies(200);
+      const studies = await listStudies(Number(new URL(request.url).searchParams.get("limit") || 500));
       return json(200, { studies });
     } catch (err) {
       context.error(err);

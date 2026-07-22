@@ -14,6 +14,9 @@
     lineItems: [],
     compare: null,
     compareStatus: "",
+    studiesList: [],
+    studiesGroupBy: localStorage.getItem("sbw.studiesGroupBy") || "client",
+    studiesCollapsed: {},
     studyCompare: {
       open: false,
       selected: [],
@@ -477,6 +480,7 @@
   function renderStudies(loadingHtml) {
     const openId = state.source === "cosmos" ? state.study.studyId : "";
     const sel = state.studyCompare.selected || [];
+    const groupBy = state.studiesGroupBy || "client";
     return `
       <div class="grid">
         <div class="card wide">
@@ -485,7 +489,16 @@
               <h3>Studies in Cosmos</h3>
               <p class="muted">Open a study into the workbench, or check two and compare side by side. Current: <strong>${escapeHtml(openId || "(local demo)")}</strong></p>
             </div>
-            <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+            <div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;">
+              <label class="field-label" style="margin:0;" for="studiesGroupBy">Group by</label>
+              <select id="studiesGroupBy" class="select" style="width:auto;min-width:11rem;">
+                <option value="client" ${groupBy === "client" ? "selected" : ""}>Client</option>
+                <option value="therapeuticArea" ${groupBy === "therapeuticArea" ? "selected" : ""}>Therapeutic area</option>
+                <option value="year" ${groupBy === "year" ? "selected" : ""}>Year</option>
+                <option value="none" ${groupBy === "none" ? "selected" : ""}>None (flat list)</option>
+              </select>
+              <button type="button" class="btn btn-ghost" id="btnExpandAllGroups">Expand all</button>
+              <button type="button" class="btn btn-ghost" id="btnCollapseAllGroups">Collapse all</button>
               <button type="button" class="btn btn-primary" id="btnOpenStudyCompare" ${sel.length === 2 ? "" : "disabled"}>Compare selected (${sel.length}/2)</button>
               <button type="button" class="btn btn-secondary" id="btnRefreshStudies">Refresh</button>
             </div>
@@ -493,6 +506,116 @@
           <div id="studiesPanel" style="margin-top:1rem;">${loadingHtml || "<p class=\"muted\">Loading…</p>"}</div>
         </div>
       </div>`;
+  }
+
+  function studyYear(s) {
+    const raw = s.updatedAt || s.importedAt || "";
+    const m = String(raw).match(/^(\d{4})/);
+    if (m) return m[1];
+    const titleYear = String(s.title || s.protocol || "").match(/\b(20\d{2})\b/);
+    return titleYear ? titleYear[1] : "Unknown year";
+  }
+
+  function normalizeTa(ta) {
+    const t = String(ta || "").trim();
+    if (!t) return "(No therapeutic area)";
+    return t;
+  }
+
+  function groupKeyForStudy(s, groupBy) {
+    if (groupBy === "therapeuticArea") return normalizeTa(s.therapeuticArea);
+    if (groupBy === "year") return studyYear(s);
+    if (groupBy === "client") return String(s.clientName || "").trim() || "(No client)";
+    return "All studies";
+  }
+
+  function sortGroupKeys(keys, groupBy) {
+    return keys.sort((a, b) => {
+      if (groupBy === "year") {
+        if (a === "Unknown year") return 1;
+        if (b === "Unknown year") return -1;
+        return String(b).localeCompare(String(a));
+      }
+      if (a.startsWith("(")) return 1;
+      if (b.startsWith("(")) return -1;
+      return a.localeCompare(b, undefined, { sensitivity: "base" });
+    });
+  }
+
+  function studyRowHtml(s, openId) {
+    const id = s.studyId || "";
+    const active = id === openId;
+    const selected = new Set(state.studyCompare.selected || []);
+    const checked = selected.has(id) ? "checked" : "";
+    return `<tr class="${active ? "row-active" : ""}">
+      <td><input type="checkbox" data-compare-pick="${escapeAttr(id)}" ${checked} /></td>
+      <td><button type="button" class="btn btn-primary" data-open-study="${escapeAttr(id)}">${active ? "Opened" : "Open"}</button></td>
+      <td><code>${escapeHtml(id)}</code></td>
+      <td>${escapeHtml(s.clientName || "—")}</td>
+      <td>${escapeHtml(s.therapeuticArea || "—")}</td>
+      <td>${escapeHtml(s.title || "—")}</td>
+      <td>${escapeHtml(s.phase || "—")}</td>
+      <td>${escapeHtml(studyYear(s))}</td>
+      <td>${escapeHtml(s.status || "—")}</td>
+      <td class="muted">${escapeHtml((s.updatedAt || s.importedAt || "").slice(0, 19).replace("T", " "))}</td>
+    </tr>`;
+  }
+
+  function renderStudiesTable(studies) {
+    const openId = state.source === "cosmos" ? state.study.studyId : "";
+    const groupBy = state.studiesGroupBy || "client";
+    if (!studies.length) {
+      return "<p class=\"muted\">No studies yet. Use Upload budgets to load workbooks.</p>";
+    }
+
+    const head = `<thead>
+      <tr><th>Compare</th><th></th><th>Study</th><th>Client</th><th>TA</th><th>Title</th><th>Phase</th><th>Year</th><th>Status</th><th>Updated</th></tr>
+    </thead>`;
+
+    if (groupBy === "none") {
+      const sorted = [...studies].sort((a, b) =>
+        String(a.clientName || "").localeCompare(String(b.clientName || ""), undefined, { sensitivity: "base" }) ||
+        String(a.studyId || "").localeCompare(String(b.studyId || ""))
+      );
+      return `<table class="table">${head}<tbody>${sorted.map((s) => studyRowHtml(s, openId)).join("")}</tbody></table>`;
+    }
+
+    const buckets = {};
+    for (const s of studies) {
+      const key = groupKeyForStudy(s, groupBy);
+      if (!buckets[key]) buckets[key] = [];
+      buckets[key].push(s);
+    }
+    for (const key of Object.keys(buckets)) {
+      buckets[key].sort((a, b) =>
+        String(a.studyId || "").localeCompare(String(b.studyId || ""))
+      );
+    }
+
+    const keys = sortGroupKeys(Object.keys(buckets), groupBy);
+    const collapsed = state.studiesCollapsed || {};
+
+    return keys.map((key) => {
+      const rows = buckets[key];
+      const isCollapsed = Boolean(collapsed[`${groupBy}::${key}`]);
+      return `<div class="study-group ${isCollapsed ? "is-collapsed" : ""}" data-group-key="${escapeAttr(key)}">
+        <button type="button" class="study-group-toggle" data-toggle-group="${escapeAttr(`${groupBy}::${key}`)}" aria-expanded="${isCollapsed ? "false" : "true"}">
+          <span class="study-group-chevron">${isCollapsed ? "▸" : "▾"}</span>
+          <strong>${escapeHtml(key)}</strong>
+          <span class="muted">${rows.length} stud${rows.length === 1 ? "y" : "ies"}</span>
+        </button>
+        <div class="study-group-body" ${isCollapsed ? "hidden" : ""}>
+          <table class="table">${head}<tbody>${rows.map((s) => studyRowHtml(s, openId)).join("")}</tbody></table>
+        </div>
+      </div>`;
+    }).join("");
+  }
+
+  function paintStudiesPanel() {
+    const panel = document.getElementById("studiesPanel");
+    if (!panel) return;
+    panel.innerHTML = renderStudiesTable(state.studiesList || []);
+    syncCompareSelectedFromDom();
   }
 
   function studySnapshotFromPayload(payload) {
@@ -761,43 +884,14 @@
     if (!panel) return;
     panel.innerHTML = "<p class=\"muted\">Loading…</p>";
     try {
-      const res = await fetch(apiUrl("/api/studies"));
+      const res = await fetch(apiUrl("/api/studies?limit=500"));
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         panel.innerHTML = `<pre class="formula-box">${escapeHtml(JSON.stringify(data, null, 2))}</pre>`;
         return;
       }
-      const studies = data.studies || [];
-      if (!studies.length) {
-        panel.innerHTML = "<p class=\"muted\">No studies yet. Use Upload budgets to load workbooks.</p>";
-        return;
-      }
-      const openId = state.source === "cosmos" ? state.study.studyId : "";
-      const selected = new Set(state.studyCompare.selected || []);
-      panel.innerHTML = `
-        <table class="table">
-          <thead>
-            <tr><th>Compare</th><th></th><th>Study</th><th>Client</th><th>Title</th><th>Phase</th><th>Status</th><th>Updated</th></tr>
-          </thead>
-          <tbody>
-            ${studies.map((s) => {
-              const id = s.studyId || "";
-              const active = id === openId;
-              const checked = selected.has(id) ? "checked" : "";
-              return `<tr class="${active ? "row-active" : ""}">
-              <td><input type="checkbox" data-compare-pick="${escapeAttr(id)}" ${checked} /></td>
-              <td><button type="button" class="btn btn-primary" data-open-study="${escapeAttr(id)}">${active ? "Opened" : "Open"}</button></td>
-              <td><code>${escapeHtml(id)}</code></td>
-              <td>${escapeHtml(s.clientName || "—")}</td>
-              <td>${escapeHtml(s.title || "—")}</td>
-              <td>${escapeHtml(s.phase || "—")}</td>
-              <td>${escapeHtml(s.status || "—")}</td>
-              <td class="muted">${escapeHtml((s.updatedAt || s.importedAt || "").slice(0, 19).replace("T", " "))}</td>
-            </tr>`;
-            }).join("")}
-          </tbody>
-        </table>`;
-      syncCompareSelectedFromDom();
+      state.studiesList = data.studies || [];
+      paintStudiesPanel();
     } catch (err) {
       panel.innerHTML = `<p class="muted">Could not reach /api/studies.</p><pre class="formula-box">${escapeHtml(String(err))}</pre>`;
     }
@@ -1487,6 +1581,29 @@
         loadStudiesIntoPanel();
         return;
       }
+      if (e.target.id === "btnExpandAllGroups") {
+        state.studiesCollapsed = {};
+        paintStudiesPanel();
+        return;
+      }
+      if (e.target.id === "btnCollapseAllGroups") {
+        const groupBy = state.studiesGroupBy || "client";
+        const next = {};
+        for (const s of state.studiesList || []) {
+          next[`${groupBy}::${groupKeyForStudy(s, groupBy)}`] = true;
+        }
+        state.studiesCollapsed = next;
+        paintStudiesPanel();
+        return;
+      }
+      const toggleGroup = e.target.closest("[data-toggle-group]");
+      if (toggleGroup) {
+        const key = toggleGroup.getAttribute("data-toggle-group");
+        state.studiesCollapsed = { ...(state.studiesCollapsed || {}) };
+        state.studiesCollapsed[key] = !state.studiesCollapsed[key];
+        paintStudiesPanel();
+        return;
+      }
       if (e.target.id === "btnOpenStudyCompare") {
         const sel = state.studyCompare.selected || [];
         if (sel.length === 2) openStudyCompare(sel[0], sel[1]);
@@ -1541,6 +1658,15 @@
 
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape" && state.studyCompare.open) closeStudyCompare();
+    });
+
+    els.viewRoot.addEventListener("change", (e) => {
+      if (e.target.id === "studiesGroupBy") {
+        state.studiesGroupBy = e.target.value || "client";
+        localStorage.setItem("sbw.studiesGroupBy", state.studiesGroupBy);
+        state.studiesCollapsed = {};
+        paintStudiesPanel();
+      }
     });
 
     els.viewRoot.addEventListener("input", (e) => {
