@@ -218,15 +218,101 @@ function isOpenAiV1Endpoint(endpoint) {
   return e.includes("/openai/v1");
 }
 
+function resourceNameFromEndpoint(endpoint) {
+  const e = String(endpoint || "");
+  let m = e.match(/^https:\/\/([^.]+)\.services\.ai\.azure\.com/i);
+  if (m) return m[1];
+  m = e.match(/^https:\/\/([^.]+)\.openai\.azure\.com/i);
+  if (m) return m[1];
+  m = e.match(/^https:\/\/([^.]+)\.cognitiveservices\.azure\.com/i);
+  if (m) return m[1];
+  return null;
+}
+
 /**
- * Supports:
- * - Classic Azure OpenAI: https://NAME.openai.azure.com
- * - Foundry OpenAI v1:    https://NAME.openai.azure.com/openai/v1
- * - Foundry project:      https://NAME.services.ai.azure.com/api/projects/PROJECT
+ * Build candidate chat-completion URLs. Foundry "project" URLs often 404 for
+ * chat completions with api-key — prefer *.openai.azure.com/openai/v1.
+ */
+function buildAzureChatAttempts(endpoint, deployment, apiVersion) {
+  const base = String(endpoint || "").replace(/\/$/, "");
+  const resource = resourceNameFromEndpoint(base);
+  const attempts = [];
+
+  const pushV1 = (hostBase, label) => {
+    const root = hostBase.replace(/\/$/, "").replace(/\/openai\/v1$/i, "");
+    attempts.push({
+      label,
+      url: `${root}/openai/v1/chat/completions`,
+      body: {
+        model: deployment,
+        messages: null, // filled later
+        max_tokens: 2048,
+        temperature: 0.2
+      }
+    });
+  };
+
+  const pushClassic = (hostBase, label) => {
+    const root = hostBase.replace(/\/$/, "").replace(/\/openai\/v1$/i, "");
+    attempts.push({
+      label,
+      url: `${root}/openai/deployments/${encodeURIComponent(deployment)}/chat/completions?api-version=${encodeURIComponent(apiVersion)}`,
+      body: {
+        messages: null,
+        max_tokens: 2048,
+        temperature: 0.2
+      }
+    });
+  };
+
+  // 1) Preferred: OpenAI v1 on openai.azure.com (works with Foundry deployments + api-key)
+  if (resource) {
+    pushV1(`https://${resource}.openai.azure.com`, "openai_v1_host");
+    pushClassic(`https://${resource}.openai.azure.com`, "classic_deployments_host");
+    pushV1(`https://${resource}.cognitiveservices.azure.com`, "cognitive_v1_host");
+    pushClassic(`https://${resource}.cognitiveservices.azure.com`, "cognitive_classic_host");
+  }
+
+  // 2) If user already pasted openai.azure.com (/openai/v1 or bare)
+  if (/openai\.azure\.com/i.test(base)) {
+    if (isOpenAiV1Endpoint(base) || /\/openai\/v1/i.test(base)) {
+      pushV1(base, "user_openai_v1");
+    } else {
+      pushV1(base, "user_openai_as_v1");
+      pushClassic(base, "user_classic");
+    }
+  }
+
+  // 3) Project endpoint path (sometimes works; often 404 for plain chat)
+  if (isFoundryProjectEndpoint(base)) {
+    attempts.push({
+      label: "foundry_project_openai_v1",
+      url: `${base}/openai/v1/chat/completions`,
+      body: {
+        model: deployment,
+        messages: null,
+        max_tokens: 2048,
+        temperature: 0.2
+      }
+    });
+  }
+
+  // Dedupe by URL
+  const seen = new Set();
+  return attempts.filter((a) => {
+    if (seen.has(a.url)) return false;
+    seen.add(a.url);
+    return true;
+  });
+}
+
+/**
+ * Supports Foundry project endpoints and classic Azure OpenAI.
+ * Tries multiple URL shapes because Foundry project URLs often 404 for chat.
  */
 async function askAzureOpenAI({ question, context, history }) {
   const cfg = azureConfig();
-  let endpoint = cfg.endpoint.replace(/\/$/, "");
+  const endpoint = cfg.endpoint.replace(/\/$/, "");
   const apiKey = cfg.apiKey;
   const deployment = cfg.deployment;
   const apiVersion = envSet("AZURE_OPENAI_API_VERSION") || "2024-08-01-preview";
@@ -244,61 +330,54 @@ async function askAzureOpenAI({ question, context, history }) {
     { role: "user", content: userBlock(question, context) }
   ];
 
-  let url;
-  let body;
-  const foundry = isFoundryProjectEndpoint(endpoint) || isOpenAiV1Endpoint(endpoint);
+  const attempts = buildAzureChatAttempts(endpoint, deployment, apiVersion);
+  if (!attempts.length) {
+    throw new Error(`Could not build Azure chat URL from endpoint: ${endpoint}`);
+  }
 
-  if (foundry) {
-    // Foundry / OpenAI-compatible: model name goes in the JSON body
-    if (isFoundryProjectEndpoint(endpoint) && !endpoint.toLowerCase().includes("/openai/v1")) {
-      url = `${endpoint}/openai/v1/chat/completions`;
-    } else if (isOpenAiV1Endpoint(endpoint)) {
-      url = endpoint.endsWith("/chat/completions")
-        ? endpoint
-        : `${endpoint.replace(/\/$/, "")}/chat/completions`;
-    } else {
-      url = `${endpoint}/openai/v1/chat/completions`;
+  const failures = [];
+  for (const attempt of attempts) {
+    const body = { ...attempt.body, messages };
+    // classic body has no model field
+    if (!("model" in attempt.body)) delete body.model;
+
+    const res = await fetch(attempt.url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "api-key": apiKey
+      },
+      body: JSON.stringify(body)
+    });
+
+    const respBody = await res.json().catch(() => ({}));
+    if (res.ok) {
+      const text = respBody?.choices?.[0]?.message?.content?.trim() || "";
+      return {
+        answer: text || "(empty response)",
+        model: respBody?.model || deployment,
+        provider: "azure_openai",
+        via: attempt.label,
+        usage: respBody?.usage || null
+      };
     }
-    body = {
-      model: deployment,
-      messages,
-      max_tokens: 2048,
-      temperature: 0.2
-    };
-  } else {
-    // Classic Azure OpenAI resource endpoint
-    // Strip accidental /openai/v1 if someone pasted a hybrid URL incompletely
-    endpoint = endpoint.replace(/\/openai\/v1$/i, "");
-    url = `${endpoint}/openai/deployments/${encodeURIComponent(deployment)}/chat/completions?api-version=${encodeURIComponent(apiVersion)}`;
-    body = {
-      messages,
-      max_tokens: 2048,
-      temperature: 0.2
-    };
+
+    const msg =
+      respBody?.error?.message ||
+      respBody?.error?.code ||
+      (Object.keys(respBody || {}).length ? JSON.stringify(respBody).slice(0, 200) : res.statusText);
+    failures.push(`${attempt.label} → ${res.status} ${msg}`);
+
+    // Only keep trying on 404 / not found; other errors (401, 429) are final
+    if (res.status !== 404 && res.status !== 400) {
+      break;
+    }
   }
 
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "api-key": apiKey
-    },
-    body: JSON.stringify(body)
-  });
-
-  const respBody = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    const msg = respBody?.error?.message || JSON.stringify(respBody) || res.statusText;
-    throw new Error(`Azure AI ${res.status}: ${msg}`);
-  }
-
-  const text = respBody?.choices?.[0]?.message?.content?.trim() || "";
-  return {
-    answer: text || "(empty response)",
-    model: respBody?.model || deployment,
-    provider: foundry ? "azure_foundry" : "azure_openai",
-    usage: respBody?.usage || null
-  };
+  throw new Error(
+    `Azure AI chat failed for deployment "${deployment}". ` +
+      `Check deployment name matches Foundry exactly. Tried: ${failures.join(" | ")}`
+  );
 }
 
 async function askClaude({ question, context, history }) {
