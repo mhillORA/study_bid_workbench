@@ -55,14 +55,15 @@ jobs:
           cd api
           npm install --omit=dev
           cd ..
+          # Do NOT pass both a positional path and --output-location (CLI rejects that).
           set +e
-          npx -y @azure/static-web-apps-cli@2.0.2 deploy . \
-            --deployment-token "$SWA_CLI_DEPLOYMENT_TOKEN" \
-            --app-location "/" \
+          npx -y @azure/static-web-apps-cli@2.0.2 deploy \
+            --app-location "." \
             --api-location "api" \
-            --output-location "/" \
-            --api-language node \
+            --output-location "." \
+            --api-language "node" \
             --api-version "20" \
+            --deployment-token "$SWA_CLI_DEPLOYMENT_TOKEN" \
             --env production \
             --verbose 2>&1 | tee /tmp/swa-deploy.log
           cli_rc=${PIPESTATUS[0]}
