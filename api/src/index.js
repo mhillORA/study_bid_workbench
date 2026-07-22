@@ -117,7 +117,11 @@ app.http("import", {
           context.log(`OK ${wb.name} -> ${entry.studyId} (${entry.cosmosStatus})`);
         } catch (err) {
           context.error(`FAIL ${wb.name}`, err);
-          report.failed.push({ file: wb.name, error: String(err.message || err) });
+          let msg = String(err.message || err);
+          if (/firewall|blocked by your Cosmos|through public internet/i.test(msg)) {
+            msg = "COSMOS_FIREWALL: Azure blocked the API IP. Cosmos → Networking → allow Azure datacenters (or All networks).";
+          }
+          report.failed.push({ file: wb.name, error: msg });
         }
       }
 

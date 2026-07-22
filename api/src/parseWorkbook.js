@@ -328,10 +328,20 @@ async function parseWorkbookBuffer(buffer, fileName) {
     conf = Math.min(1, conf + 0.15);
   }
 
-  const enoughLines = lineItems.length >= 50;
+  const enoughLines = lineItems.length >= 20;
   const hasId = opportunityId !== "UNKNOWN";
-  let quarantine = !hasId || (conf < 0.55 && !enoughLines) || (!fp.matched && !enoughLines);
-  if (enoughLines && hasId && !fp.matched) {
+  let quarantine = !hasId || (conf < 0.45 && !enoughLines) || (!fp.matched && lineItems.length < 10);
+
+  // POC auto-load: opportunity id (sheet or filename) + usable internal rows
+  if (hasId && lineItems.length >= 20) {
+    warnings.push("POC auto-load: opportunity id + line items");
+    conf = Math.max(conf, 0.7);
+    quarantine = false;
+  } else if (hasId && resolved["Internal Budget"] && lineItems.length >= 10) {
+    warnings.push("POC auto-load: aliased Internal Budget sheet");
+    conf = Math.max(conf, 0.65);
+    quarantine = false;
+  } else if (enoughLines && hasId && !fp.matched) {
     warnings.push("Loaded with sheet aliases / partial fingerprint");
     conf = Math.max(conf, 0.75);
     quarantine = false;

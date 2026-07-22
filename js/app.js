@@ -359,6 +359,19 @@
 
       setUploadProgress(100, `Done — ${aggregate.loaded.length} loaded, ${aggregate.quarantined.length} quarantined, ${aggregate.failed.length} failed`);
       status.textContent = `Done — loaded ${aggregate.loaded.length}, quarantined ${aggregate.quarantined.length}, failed ${aggregate.failed.length} (of ${total})`;
+
+      const errorBuckets = {};
+      for (const f of aggregate.failed) {
+        const key = String(f.error || "unknown").split("\n")[0].slice(0, 160);
+        errorBuckets[key] = (errorBuckets[key] || 0) + 1;
+      }
+      const firewallHits = aggregate.failed.filter((f) =>
+        /COSMOS_FIREWALL|firewall|public internet/i.test(String(f.error || ""))
+      ).length;
+      if (firewallHits > 0) {
+        status.textContent = `Cosmos firewall blocked ${firewallHits} write(s). Fix Networking, then re-upload.`;
+      }
+
       report.textContent = JSON.stringify(
         {
           files: total,
@@ -367,6 +380,13 @@
             quarantined: aggregate.quarantined.length,
             failed: aggregate.failed.length
           },
+          meaning: {
+            loaded: "Parsed OK and written to Cosmos studies/versions/lineItems",
+            quarantined: "Parsed but needs review (or low confidence) — in quarantine container if Cosmos allowed the write",
+            failed: "Exception (Cosmos firewall, bad/corrupt xlsx, unsupported layout, etc.)"
+          },
+          topErrors: errorBuckets,
+          failedSample: aggregate.failed.slice(0, 8),
           loaded: aggregate.loaded,
           quarantined: aggregate.quarantined,
           failed: aggregate.failed
