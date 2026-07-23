@@ -6,7 +6,15 @@
   <title>Study Bid Workbench · Ora</title>
   <link rel="icon" type="image/png" href="img/ora-logo.png" />
   <link rel="stylesheet" href="css/styles.css" />
-  <!-- deploy-bust: 2026-07-23T11:10:00-04:00 -->
+  <!-- deploy-bust: 2026-07-23T11:20:00-04:00 -->
+  <script>
+    (function () {
+      var key = "sbw.theme";
+      var saved = localStorage.getItem(key);
+      var theme = saved || (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+      document.documentElement.setAttribute("data-theme", theme);
+    })();
+  </script>
 </head>
 <body>
   <div id="compareOverlay" class="compare-overlay" hidden aria-hidden="true"></div>
@@ -16,8 +24,12 @@
         <img class="brand-logo" src="img/ora-logo.png" alt="Ora" />
         <div>
           <strong>Study Bid Workbench</strong>
-          <small>The Ophthalmology Research Company</small>
         </div>
+      </div>
+
+      <div class="theme-toggle" role="group" aria-label="Color theme">
+        <button type="button" id="themeLight" data-theme-set="light">Light</button>
+        <button type="button" id="themeDark" data-theme-set="dark">Dark</button>
       </div>
 
       <label class="field-label" for="userSelect">Acting as</label>

@@ -1946,7 +1946,27 @@
     if (home) state.sectionId = home.id;
   }
 
+  function bindTheme() {
+    const THEME_KEY = "sbw.theme";
+    const root = document.documentElement;
+    const lightBtn = document.getElementById("themeLight");
+    const darkBtn = document.getElementById("themeDark");
+
+    function applyTheme(theme) {
+      const next = theme === "dark" ? "dark" : "light";
+      root.setAttribute("data-theme", next);
+      localStorage.setItem(THEME_KEY, next);
+      if (lightBtn) lightBtn.classList.toggle("active", next === "light");
+      if (darkBtn) darkBtn.classList.toggle("active", next === "dark");
+    }
+
+    applyTheme(root.getAttribute("data-theme") || localStorage.getItem(THEME_KEY) || "light");
+    if (lightBtn) lightBtn.addEventListener("click", () => applyTheme("light"));
+    if (darkBtn) darkBtn.addEventListener("click", () => applyTheme("dark"));
+  }
+
   bind();
+  bindTheme();
   render();
   markSaved();
   loadEntraUser();
