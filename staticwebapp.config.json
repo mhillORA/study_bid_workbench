@@ -46,12 +46,6 @@
       "allowedRoles": ["authenticated"]
     }
   ],
-  "responseOverrides": {
-    "401": {
-      "redirect": "/.auth/login/aad",
-      "statusCode": 302
-    }
-  },
   "navigationFallback": {
     "rewrite": "/index.html",
     "exclude": ["/api/*", "/css/*", "/js/*", "/.auth/*", "/*.{json,png,jpg,jpeg,gif,svg,ico,webp}"]
