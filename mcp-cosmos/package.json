@@ -1,0 +1,20 @@
+{
+  "name": "sbw-cosmos-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Read-only Azure Cosmos DB MCP for Claude Desktop (key-based, no az login).",
+  "bin": {
+    "sbw-cosmos-mcp": "./index.js"
+  },
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@azure/cosmos": "^4.10.0",
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  }
+}
