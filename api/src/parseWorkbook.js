@@ -66,6 +66,17 @@ function cellValue(v) {
   return v;
 }
 
+/** Coerce Excel currency / percent / string cells to a finite number. */
+function toMoneyNumber(v) {
+  const raw = cellValue(v);
+  if (raw == null || raw === "") return null;
+  if (typeof raw === "number") return Number.isFinite(raw) ? raw : null;
+  const s = String(raw).trim().replace(/[$,%\s]/g, "").replace(/\((.*)\)/, "-$1");
+  if (!s || s === "-") return null;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+}
+
 function opportunityFromFilename(name) {
   const s = String(name || "");
   // Prefer explicit Ora opportunity tokens: O-12345 / O12345
@@ -183,20 +194,31 @@ function parseExecSum(rows) {
   for (const r of rows) {
     if (!r) continue;
     const area = r[2];
-    const fees = r[4];
+    const fees = toMoneyNumber(r[4]);
     if (area && typeof area === "string" && area.trim() && fees != null) {
       const label = area.trim();
       const low = label.toLowerCase();
-      if (["subtotal service fees", "contingency budget", "inflation", "discount", "total service fees"].includes(low)) {
+      if (
+        [
+          "subtotal service fees",
+          "contingency budget",
+          "inflation",
+          "discount",
+          "total service fees"
+        ].includes(low)
+      ) {
         totals[label] = fees;
       } else if (!["service areas", "cost per patient"].includes(low)) {
         serviceAreas.push({ name: label, serviceFees: fees });
       }
     }
     const ptLabel = r[10];
-    const ptVal = r[12];
+    const ptVal = toMoneyNumber(r[12]);
     if (ptLabel && typeof ptLabel === "string" && ptLabel.trim() && ptVal != null) {
-      if (ptLabel.trim().toLowerCase() === "total") totals.passThroughTotal = ptVal;
+      const ptLow = ptLabel.trim().toLowerCase();
+      if (ptLow === "total" || (ptLow.includes("pass") && ptLow.includes("through"))) {
+        totals.passThroughTotal = ptVal;
+      }
     }
   }
   return { totals, serviceAreas };

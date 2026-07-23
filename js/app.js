@@ -80,17 +80,21 @@
   }
 
   function money(n) {
-    if (n == null || Number.isNaN(n)) return "—";
+    if (n == null || n === "") return "—";
+    const x = typeof n === "number" ? n : Number(String(n).replace(/[$,%\s]/g, "").replace(/\((.*)\)/, "-$1"));
+    if (!Number.isFinite(x)) return "—";
     return new Intl.NumberFormat("en-US", {
       style: "currency",
       currency: "USD",
       maximumFractionDigits: 0
-    }).format(n);
+    }).format(x);
   }
 
   function num(n, digits = 2) {
-    if (n == null || Number.isNaN(n)) return "—";
-    return Number(n).toLocaleString("en-US", { maximumFractionDigits: digits });
+    if (n == null || n === "") return "—";
+    const x = typeof n === "number" ? n : Number(n);
+    if (!Number.isFinite(x)) return "—";
+    return x.toLocaleString("en-US", { maximumFractionDigits: digits });
   }
 
   function markDirty() {
@@ -2093,7 +2097,7 @@
     const totals = state.study.totals || {};
     const execAreas = (state.study.execSum && state.study.execSum.serviceAreas) || [];
     const totalRows = Object.entries(totals).map(([k, v]) =>
-      `<tr><td>${escapeHtml(k)}</td><td>${typeof v === "number" ? money(v) : escapeHtml(String(v))}</td></tr>`
+      `<tr><td>${escapeHtml(k)}</td><td>${money(v)}</td></tr>`
     ).join("") || `<tr><td colspan="2" class="muted">No Exec Sum totals on this study yet.</td></tr>`;
     const areaRows = execAreas.map((a) =>
       `<tr><td>${escapeHtml(a.name || "")}</td><td>${money(a.serviceFees)}</td></tr>`

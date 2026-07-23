@@ -179,13 +179,86 @@ async function listStudiesWithDrivers(limit = 500) {
   const { resources } = await database.container("studies").items
     .query({
       query:
-        "SELECT c.studyId, c.clientName, c.title, c.protocol, c.phase, c.therapeuticArea, c.indication, c.status, c.drivers, c.importedAt, c.updatedAt FROM c WHERE c.docType = @t",
+        "SELECT c.studyId, c.clientName, c.title, c.protocol, c.phase, c.therapeuticArea, c.indication, c.status, c.drivers, c.currentVersionId, c.importedAt, c.updatedAt FROM c WHERE c.docType = @t",
       parameters: [{ name: "@t", value: "study" }]
     })
     .fetchAll();
   return resources
     .sort((a, b) => String(b.updatedAt || b.importedAt || "").localeCompare(String(a.updatedAt || a.importedAt || "")))
     .slice(0, Math.min(Number(limit) || 500, 800));
+}
+
+/** Map version id → money fields from Exec Sum totals on version docs. */
+async function loadVersionMoneyById(versionIds) {
+  const ids = [...new Set((versionIds || []).filter(Boolean))];
+  const map = {};
+  if (!ids.length) return map;
+  const database = getDb();
+  // Pull recent versions with totals; join in memory (Cosmos has no efficient large IN for all tenants).
+  const { resources } = await database.container("versions").items
+    .query({
+      query:
+        "SELECT c.id, c.studyId, c.totals, c.lineItemCount, c.label FROM c WHERE c.docType = @t",
+      parameters: [{ name: "@t", value: "version" }]
+    })
+    .fetchAll();
+  const want = new Set(ids);
+  for (const v of resources) {
+    if (!want.has(v.id)) continue;
+    map[v.id] = extractMoneyFromTotals(v.totals, v.lineItemCount, v.label);
+  }
+  return map;
+}
+
+function extractMoneyFromTotals(totals, lineItemCount, versionLabel) {
+  const raw = totals && typeof totals === "object" ? totals : {};
+  let serviceFees = null;
+  let subtotalServiceFees = null;
+  let contingency = null;
+  let inflation = null;
+  let discount = null;
+  let passThroughs = numOrNull(raw.passThroughTotal);
+
+  for (const [k, v] of Object.entries(raw)) {
+    const low = String(k).toLowerCase().trim();
+    const n = numOrNull(v);
+    if (n == null) continue;
+    if (low === "total service fees" || low.includes("total service fee")) serviceFees = n;
+    else if (low === "subtotal service fees" || low.includes("subtotal service")) subtotalServiceFees = n;
+    else if (low.includes("contingency")) contingency = n;
+    else if (low === "inflation" || low.includes("inflation")) inflation = n;
+    else if (low === "discount" || low.includes("discount")) discount = n;
+    else if ((low.includes("pass") && low.includes("through")) || low === "passthroughtotal") {
+      passThroughs = n;
+    }
+  }
+
+  if (serviceFees == null && subtotalServiceFees != null) {
+    // Fall back to subtotal + inflation - discount + contingency when total missing
+    serviceFees =
+      subtotalServiceFees +
+      (typeof contingency === "number" ? contingency : 0) +
+      (typeof inflation === "number" ? inflation : 0) -
+      (typeof discount === "number" ? discount : 0);
+  }
+
+  const grandTotal =
+    serviceFees != null
+      ? serviceFees + (typeof passThroughs === "number" ? passThroughs : 0)
+      : null;
+
+  return {
+    subtotalServiceFees,
+    serviceFees,
+    passThroughs,
+    contingency,
+    inflation,
+    discount,
+    grandTotal,
+    lineItemCount: lineItemCount ?? null,
+    versionLabel: versionLabel || null,
+    rawTotals: Object.keys(raw).length ? raw : null
+  };
 }
 
 function studyYear(s) {
@@ -203,11 +276,14 @@ function numOrNull(v) {
 /**
  * Portfolio rollup for Copilot / Buddy cross-study questions.
  * Filters: clientName (substring, case-insensitive), year (from updatedAt/importedAt).
+ * Includes Exec Sum money from each study's current version when available.
  */
 async function buildPortfolioContext({ clientName = null, year = null, limit = 500 } = {}) {
   const all = await listStudiesWithDrivers(limit);
   const clientNeedle = clientName ? String(clientName).trim().toLowerCase() : "";
   const yearNum = year != null && year !== "" ? Number(year) : null;
+
+  const moneyByVersion = await loadVersionMoneyById(all.map((s) => s.currentVersionId));
 
   const rows = [];
   for (const s of all) {
@@ -218,6 +294,7 @@ async function buildPortfolioContext({ clientName = null, year = null, limit = 5
     const y = studyYear(s);
     if (yearNum && y !== yearNum) continue;
     const d = s.drivers || {};
+    const money = (s.currentVersionId && moneyByVersion[s.currentVersionId]) || {};
     rows.push({
       studyId: s.studyId,
       clientName: s.clientName || null,
@@ -232,6 +309,15 @@ async function buildPortfolioContext({ clientName = null, year = null, limit = 5
       screenedSubjects: numOrNull(d.screenedSubjects),
       completedSubjects: numOrNull(d.completedSubjects),
       coreSites: numOrNull(d.coreSites),
+      serviceFees: money.serviceFees ?? null,
+      subtotalServiceFees: money.subtotalServiceFees ?? null,
+      passThroughs: money.passThroughs ?? null,
+      grandTotal: money.grandTotal ?? null,
+      contingency: money.contingency ?? null,
+      inflation: money.inflation ?? null,
+      discount: money.discount ?? null,
+      lineItemCount: money.lineItemCount ?? null,
+      versionLabel: money.versionLabel ?? null,
       updatedAt: s.updatedAt || s.importedAt || null
     });
   }
@@ -249,7 +335,11 @@ async function buildPortfolioContext({ clientName = null, year = null, limit = 5
         enrolledSubjects: 0,
         screenedSubjects: 0,
         completedSubjects: 0,
-        coreSites: 0
+        coreSites: 0,
+        serviceFees: 0,
+        passThroughs: 0,
+        grandTotal: 0,
+        studiesWithMoney: 0
       };
     }
     const b = byClientMap[key];
@@ -258,11 +348,22 @@ async function buildPortfolioContext({ clientName = null, year = null, limit = 5
     b.screenedSubjects += typeof r.screenedSubjects === "number" ? r.screenedSubjects : 0;
     b.completedSubjects += typeof r.completedSubjects === "number" ? r.completedSubjects : 0;
     b.coreSites += typeof r.coreSites === "number" ? r.coreSites : 0;
+    if (typeof r.serviceFees === "number" || typeof r.grandTotal === "number") {
+      b.studiesWithMoney += 1;
+      b.serviceFees += typeof r.serviceFees === "number" ? r.serviceFees : 0;
+      b.passThroughs += typeof r.passThroughs === "number" ? r.passThroughs : 0;
+      b.grandTotal += typeof r.grandTotal === "number" ? r.grandTotal : 0;
+    }
   }
 
   const byClient = Object.values(byClientMap).sort(
-    (a, b) => b.enrolledSubjects - a.enrolledSubjects || b.studyCount - a.studyCount
+    (a, b) => b.grandTotal - a.grandTotal || b.serviceFees - a.serviceFees || b.studyCount - a.studyCount
   );
+
+  const withMoney = rows.filter((r) => typeof r.grandTotal === "number" || typeof r.serviceFees === "number");
+  const mostExpensive = [...withMoney].sort(
+    (a, b) => (b.grandTotal ?? b.serviceFees ?? 0) - (a.grandTotal ?? a.serviceFees ?? 0)
+  ).slice(0, 15);
 
   const clientNames = [
     ...new Set(all.map((s) => s.clientName).filter(Boolean))
@@ -276,19 +377,34 @@ async function buildPortfolioContext({ clientName = null, year = null, limit = 5
     },
     databaseStudyCount: all.length,
     matchedStudyCount: rows.length,
+    studiesWithMoneyCount: withMoney.length,
     totals: {
       enrolledSubjects: sum("enrolledSubjects"),
       screenedSubjects: sum("screenedSubjects"),
       completedSubjects: sum("completedSubjects"),
-      coreSites: sum("coreSites")
+      coreSites: sum("coreSites"),
+      serviceFees: sum("serviceFees"),
+      passThroughs: sum("passThroughs"),
+      grandTotal: sum("grandTotal")
     },
     byClient: byClient.slice(0, 40),
+    highestBudgetStudies: mostExpensive.map((r) => ({
+      studyId: r.studyId,
+      clientName: r.clientName,
+      title: r.title,
+      serviceFees: r.serviceFees,
+      passThroughs: r.passThroughs,
+      grandTotal: r.grandTotal,
+      enrolledSubjects: r.enrolledSubjects
+    })),
     clientNamesInDatabase: clientNames.slice(0, 100),
     studies: rows.slice(0, 100),
     notes: [
-      "Totals sum drivers.enrolledSubjects / screened / completed / coreSites from study documents.",
-      "Year filter uses updatedAt/importedAt calendar year when present.",
-      "If a driver is missing on a study, it contributes 0 to that total."
+      "Money fields come from Exec Sum totals on each study's current version (Total Service Fees, pass-throughs).",
+      "grandTotal ≈ serviceFees + passThroughs when both exist; otherwise serviceFees alone.",
+      "We do not have true profit/GM% in this portfolio extract — 'most profitable' should be answered as highest grandTotal/serviceFees unless margin fields appear in a single-study cosmos context.",
+      "Totals sum drivers and money; missing drivers/money on a study contribute 0.",
+      "Year filter uses updatedAt/importedAt calendar year when present."
     ]
   };
 }
