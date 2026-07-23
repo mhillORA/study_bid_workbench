@@ -1,0 +1,70 @@
+{
+  "openapi": "3.0.1",
+  "info": {
+    "title": "Study Bid Buddy (Copilot)",
+    "description": "Ask Buddy with the same study context as the Study Bid Workbench. Pass studyId (opportunity id) and question.",
+    "version": "1.0.0"
+  },
+  "servers": [
+    {
+      "url": "https://white-river-0de1aed0f.7.azurestaticapps.net"
+    }
+  ],
+  "paths": {
+    "/api/copilot/ask": {
+      "post": {
+        "operationId": "AskBuddy",
+        "summary": "Ask Buddy about a study",
+        "description": "Sends a question to Ask Buddy for a Cosmos study. Use when the user asks about budget drivers, assumptions, enrollment, notes, or other study bid details. Requires a studyId (opportunity id).",
+        "parameters": [
+          {
+            "name": "x-copilot-key",
+            "in": "header",
+            "required": true,
+            "schema": { "type": "string" },
+            "description": "Shared secret from SWA setting COPILOT_ASK_KEY"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["question"],
+                "properties": {
+                  "question": {
+                    "type": "string",
+                    "description": "The user's question about the study"
+                  },
+                  "studyId": {
+                    "type": "string",
+                    "description": "Study / opportunity id in Cosmos, e.g. O-12345"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Buddy answer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "answer": { "type": "string" },
+                    "studyId": { "type": "string" },
+                    "model": { "type": "string" },
+                    "provider": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
