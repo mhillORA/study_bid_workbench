@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Study Bid Workbench</title>
   <link rel="stylesheet" href="css/styles.css" />
-  <!-- deploy-bust: 2026-07-23T08:50:00-04:00 -->
+  <!-- deploy-bust: 2026-07-23T09:05:00-04:00 -->
 </head>
 <body>
   <div id="compareOverlay" class="compare-overlay" hidden aria-hidden="true"></div>
@@ -25,6 +25,8 @@
       <nav class="nav" id="sectionNav" aria-label="Study sections"></nav>
 
       <div class="sidebar-foot">
+        <p class="muted auth-user" id="authUser" hidden></p>
+        <a class="btn btn-ghost" id="btnSignOut" href="/.auth/logout" hidden>Sign out</a>
         <button type="button" class="btn btn-ghost" id="btnSave">Save</button>
         <button type="button" class="btn btn-primary" id="btnExport">Export JSON</button>
       </div>

@@ -1893,6 +1893,30 @@
     URL.revokeObjectURL(url);
   }
 
+  async function loadEntraUser() {
+    const el = document.getElementById("authUser");
+    const btn = document.getElementById("btnSignOut");
+    try {
+      const res = await fetch("/.auth/me");
+      if (!res.ok) return;
+      const payload = await res.json();
+      const principal = Array.isArray(payload) ? payload[0] : payload?.clientPrincipal;
+      if (!principal) return;
+      const name =
+        principal.userDetails ||
+        principal.claims?.find((c) => c.typ === "name" || c.typ?.endsWith("/name"))?.val ||
+        principal.userId ||
+        "Signed in";
+      if (el) {
+        el.textContent = name;
+        el.hidden = false;
+      }
+      if (btn) btn.hidden = false;
+    } catch {
+      /* local / unauthenticated preview */
+    }
+  }
+
   // Land user on their department page on first load (Admin stays on Hub)
   const user = currentUser();
   if (user.department !== "Admin") {
@@ -1903,4 +1927,5 @@
   bind();
   render();
   markSaved();
+  loadEntraUser();
 })();
