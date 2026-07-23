@@ -2,7 +2,7 @@
  * Ask Buddy — study context + LLM (Azure OpenAI preferred; Claude optional fallback).
  */
 
-const SYSTEM_PROMPT_BASE = [
+const SYSTEM_PROMPT_DEFAULT = [
   "You are Ask Buddy, the Study Bid Workbench assistant for Ora Clinical BD / operations.",
   "Answer questions about clinical study budgets, drivers, departments, line items, and formulas.",
   "Be concise and practical. Prefer numbers and Ora codes when present in context.",
@@ -12,17 +12,30 @@ const SYSTEM_PROMPT_BASE = [
   "When context.user has a firstName (or displayName), greet them by first name when they say hi/hello or on the first reply of a chat — then skip greetings on follow-ups unless they greet you again."
 ].join(" ");
 
+/** Prefer Foundry agent instructions pasted into SWA settings; else built-in default. */
+function buddyInstructionsBase() {
+  return (
+    envSet("BUDDY_SYSTEM_PROMPT") ||
+    envSet("FOUNDRY_AGENT_INSTRUCTIONS") ||
+    envSet("AGENT_INSTRUCTIONS") ||
+    envSet("SYSTEM_PROMPT") ||
+    SYSTEM_PROMPT_DEFAULT
+  );
+}
+
 function systemPromptFor(context) {
+  const base = buddyInstructionsBase();
   const user = context?.user;
   if (!user?.firstName && !user?.displayName && !user?.email) {
-    return SYSTEM_PROMPT_BASE;
+    return base;
   }
   const label = user.firstName
     ? `${user.firstName}${user.email ? ` (${user.email})` : ""}`
     : user.displayName || user.email;
   return (
-    SYSTEM_PROMPT_BASE +
-    ` The signed-in user is ${label}. Prefer addressing them as ${user.firstName || "their first name"}.`
+    base +
+    ` The signed-in user is ${label}. Prefer addressing them as ${user.firstName || "their first name"}.` +
+    " Always prefer study data in the provided Context JSON over general knowledge."
   );
 }
 
@@ -107,7 +120,7 @@ function providerStatus() {
     claude,
     active: azure ? "azure_openai" : claude ? "claude" : null,
     effort: envSet("ANTHROPIC_EFFORT") || "low",
-    buildId: "2026-07-23T09:10-entra-user",
+    buildId: "2026-07-23T11:10-ora-brand-prompt",
     endpointKind: !cfg.endpoint
       ? null
       : isFoundryProjectEndpoint(cfg.endpoint)
@@ -119,6 +132,8 @@ function providerStatus() {
       AZURE_OPENAI_ENDPOINT: raw("AZURE_OPENAI_ENDPOINT"),
       AZURE_OPENAI_API_KEY: raw("AZURE_OPENAI_API_KEY"),
       AZURE_OPENAI_DEPLOYMENT: raw("AZURE_OPENAI_DEPLOYMENT"),
+      BUDDY_SYSTEM_PROMPT: raw("BUDDY_SYSTEM_PROMPT"),
+      FOUNDRY_AGENT_INSTRUCTIONS: raw("FOUNDRY_AGENT_INSTRUCTIONS"),
       COSMOS_ENDPOINT: raw("COSMOS_ENDPOINT"),
       COSMOS_KEY: raw("COSMOS_KEY")
     },

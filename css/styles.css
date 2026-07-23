@@ -1,19 +1,19 @@
 :root {
-  --bg: #f3f1ec;
-  --surface: #fffcf7;
-  --ink: #1c1a16;
-  --muted: #6b655c;
-  --line: #ddd6c8;
-  --accent: #0f5c4c;
-  --accent-soft: #d8ebe4;
+  --bg: #f2f4f6;
+  --surface: #ffffff;
+  --ink: #0a1f2e;
+  --muted: #5a6b78;
+  --line: #d5dde3;
+  --accent: #003a5d;
+  --accent-soft: #d8e6ef;
   --warn: #8a5a10;
   --warn-soft: #f3e4c8;
   --ok: #1f6b3a;
   --ok-soft: #d8eedf;
-  --sidebar: #17241f;
-  --sidebar-ink: #e8efe9;
+  --sidebar: #000000;
+  --sidebar-ink: #e8eef2;
   --radius: 12px;
-  --shadow: 0 10px 30px rgba(28, 26, 22, 0.08);
+  --shadow: 0 10px 30px rgba(10, 31, 46, 0.08);
   --font: "Segoe UI", "Helvetica Neue", sans-serif;
 }
 
@@ -25,8 +25,8 @@ html, body {
   font-family: var(--font);
   color: var(--ink);
   background:
-    radial-gradient(circle at top left, rgba(15, 92, 76, 0.08), transparent 28%),
-    linear-gradient(180deg, #efebe3 0%, var(--bg) 40%, #ebe7df 100%);
+    radial-gradient(circle at top left, rgba(0, 58, 93, 0.08), transparent 28%),
+    linear-gradient(180deg, #e9eef2 0%, var(--bg) 40%, #e4eaef 100%);
 }
 
 button, select, input, textarea { font: inherit; }
@@ -54,7 +54,16 @@ button, select, input, textarea { font: inherit; }
 }
 
 .brand strong { display: block; font-size: 0.95rem; }
-.brand small { color: #a7b5ad; }
+.brand small { color: #9eb0bd; }
+
+.brand-logo {
+  width: 52px;
+  height: 52px;
+  object-fit: contain;
+  border-radius: 8px;
+  background: #000;
+  flex-shrink: 0;
+}
 
 .brand-mark {
   width: 42px;
