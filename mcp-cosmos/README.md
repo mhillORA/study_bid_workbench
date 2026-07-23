@@ -1,30 +1,32 @@
 # SBW Cosmos MCP (Claude Desktop)
 
-Read-only Cosmos access for someone **without** Azure portal / `az login`.  
-They put **your** Cosmos endpoint + key in their Claude config.
+## Easiest (Windows) — for the other person
 
-## Give the other person
-
-1. Node.js 20+ installed  
-2. A copy of this `mcp-cosmos` folder (or a zip / git clone of the repo)  
-3. In that folder, run once:
+1. Install [Node.js 20+](https://nodejs.org)
+2. Get this `mcp-cosmos` folder (zip from Matt)
+3. Run:
    ```powershell
-   cd mcp-cosmos
-   npm install
+   powershell -ExecutionPolicy Bypass -File .\install-for-claude.ps1
    ```
-4. Edit `%APPDATA%\Claude\claude_desktop_config.json`:
+4. Paste the Cosmos URI + key when asked
+5. Fully quit Claude Desktop → reopen
+6. Ask: “List studies in Cosmos”
+
+No hand-editing JSON paths.
+
+## Manual config (optional)
+
+`%APPDATA%\Claude\claude_desktop_config.json`:
 
 ```json
 {
   "mcpServers": {
     "sbw-cosmos": {
       "command": "node",
-      "args": [
-        "C:\\FULL\\PATH\\TO\\study_bid_workbench\\mcp-cosmos\\index.js"
-      ],
+      "args": ["C:\\FULL\\PATH\\TO\\mcp-cosmos\\index.js"],
       "env": {
         "COSMOS_ENDPOINT": "https://YOUR-ACCOUNT.documents.azure.com:443/",
-        "COSMOS_KEY": "PASTE_PRIMARY_OR_READONLY_KEY",
+        "COSMOS_KEY": "PASTE_KEY",
         "COSMOS_DATABASE": "bd-budgets"
       }
     }
@@ -32,17 +34,14 @@ They put **your** Cosmos endpoint + key in their Claude config.
 }
 ```
 
-5. Fully quit and reopen Claude Desktop.  
-6. Ask: “List studies in Cosmos” or “Query the studies container”.
+Then `npm install` once in this folder.
+
+## What Matt sends them
+
+- This folder (zip)
+- Cosmos **URI** + **key** (Azure → Cosmos → Keys)
+- Note: their IP may need allowlisting on Cosmos **Networking**
 
 ## Security
 
-- Prefer a **read-only** key if Cosmos supports it for your account, or a dedicated key you can rotate.  
-- This puts secrets on their laptop — treat like a password.  
-- Firewall: their home/office IP must be allowed on Cosmos **Networking**, or allow Azure public access carefully. Key auth still fails if the firewall blocks them.
-
-## What you copy from Azure
-
-Cosmos DB account → **Keys**:
-- URI → `COSMOS_ENDPOINT`  
-- Primary or secondary key → `COSMOS_KEY`
+Keys on their laptop = treat like a password. Prefer a rotatable key. MCP is read-only (SELECT only).
