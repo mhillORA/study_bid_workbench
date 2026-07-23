@@ -507,85 +507,103 @@ app.http("ask", {
   methods: ["POST", "OPTIONS"],
   authLevel: "anonymous",
   route: "ask",
-  handler: async (request, context) => {
-    if (request.method === "OPTIONS") {
-      return {
-        status: 204,
-        headers: {
-          "Access-Control-Allow-Origin": "*",
-          "Access-Control-Allow-Methods": "POST, OPTIONS",
-          "Access-Control-Allow-Headers": "content-type"
-        }
-      };
-    }
-
-    try {
-      const body = await request.json();
-      const question = String(body.question || "").trim();
-      if (!question) return json(400, { error: "question is required" });
-
-      const studyId = body.studyId ? String(body.studyId).trim() : null;
-      const clientStudy = body.studySnapshot || null;
-      const history = body.history || [];
-      const user = signedInUserFromRequest(request, body.user || null);
-      const activeTab = body.activeTab ? String(body.activeTab) : null;
-      const activeTabLabel = body.activeTabLabel ? String(body.activeTabLabel) : null;
-      const editableFields = Array.isArray(body.editableFields) ? body.editableFields : null;
-      const fieldsByTab = body.fieldsByTab && typeof body.fieldsByTab === "object" ? body.fieldsByTab : null;
-
-      let cosmosContext = null;
-      if (studyId) {
-        cosmosContext = await getStudyContext(studyId, { getDb });
-      }
-
-      const contextPayload = {
-        askedAt: new Date().toISOString(),
-        user,
-        activeTab,
-        activeTabLabel,
-        cosmos: cosmosContext,
-        workingStudy: clientStudy
-          ? {
-              source: "browser_working_copy",
-              studyId: clientStudy.studyId,
-              clientName: clientStudy.clientName,
-              title: clientStudy.title,
-              protocol: clientStudy.protocol,
-              phase: clientStudy.phase,
-              versionLabel: clientStudy.versionLabel,
-              drivers: clientStudy.drivers,
-              sectionStatus: clientStudy.sectionStatus,
-              assumptions: clientStudy.assumptions
-            }
-          : null,
-        // Prefer client catalog (clean labels + tab). Keep compact for the model.
-        editableFields: (editableFields || [])
-          .slice(0, 200)
-          .map((f) => ({
-            path: f.path,
-            label: f.label,
-            tab: f.tab,
-            tabLabel: f.tabLabel,
-            group: f.group,
-            value: f.value
-          })),
-        fieldsByTab
-      };
-
-      const result = await askAi({ question, context: contextPayload, history });
-      return json(200, {
-        answer: result.answer,
-        model: result.model,
-        provider: result.provider,
-        usage: result.usage,
-        studyId: studyId || clientStudy?.studyId || null,
-        greetedAs: user?.firstName || user?.displayName || null
-      });
-    } catch (err) {
-      context.error(err);
-      const msg = String(err.message || err);
-      const status = msg.includes("not configured") ? 503 : 500;
-      return json(status, { error: msg });
-    }
-  }
+  handler: async (request, context) => handleAskRequest(request, context, { requireCopilotKey: false })
 });
+
+/** Copilot Studio entry — same Buddy context builder; requires x-copilot-key. */
+app.http("copilotAsk", {
+  methods: ["POST", "OPTIONS"],
+  authLevel: "anonymous",
+  route: "copilot/ask",
+  handler: async (request, context) => handleAskRequest(request, context, { requireCopilotKey: true })
+});
+
+async function handleAskRequest(request, context, { requireCopilotKey }) {
+  if (request.method === "OPTIONS") {
+    return {
+      status: 204,
+      headers: {
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "content-type, x-copilot-key"
+      }
+    };
+  }
+
+  try {
+    if (requireCopilotKey) {
+      const expected = String(process.env.COPILOT_ASK_KEY || "").trim();
+      const got = String(headerGet(request, "x-copilot-key") || "").trim();
+      if (!expected || expected.includes("SET_IN") || got !== expected) {
+        return json(401, { error: "Invalid or missing x-copilot-key" });
+      }
+    }
+
+    const body = await request.json();
+    const question = String(body.question || "").trim();
+    if (!question) return json(400, { error: "question is required" });
+
+    const studyId = body.studyId ? String(body.studyId).trim() : null;
+    const clientStudy = body.studySnapshot || null;
+    const history = body.history || [];
+    const user = signedInUserFromRequest(request, body.user || null);
+    const activeTab = body.activeTab ? String(body.activeTab) : null;
+    const activeTabLabel = body.activeTabLabel ? String(body.activeTabLabel) : null;
+    const editableFields = Array.isArray(body.editableFields) ? body.editableFields : null;
+    const fieldsByTab = body.fieldsByTab && typeof body.fieldsByTab === "object" ? body.fieldsByTab : null;
+
+    let cosmosContext = null;
+    if (studyId) {
+      cosmosContext = await getStudyContext(studyId, { getDb });
+    }
+
+    const contextPayload = {
+      askedAt: new Date().toISOString(),
+      source: requireCopilotKey ? "copilot_studio" : "workbench",
+      user,
+      activeTab,
+      activeTabLabel,
+      cosmos: cosmosContext,
+      workingStudy: clientStudy
+        ? {
+            source: "browser_working_copy",
+            studyId: clientStudy.studyId,
+            clientName: clientStudy.clientName,
+            title: clientStudy.title,
+            protocol: clientStudy.protocol,
+            phase: clientStudy.phase,
+            versionLabel: clientStudy.versionLabel,
+            drivers: clientStudy.drivers,
+            sectionStatus: clientStudy.sectionStatus,
+            assumptions: clientStudy.assumptions
+          }
+        : null,
+      editableFields: (editableFields || [])
+        .slice(0, 200)
+        .map((f) => ({
+          path: f.path,
+          label: f.label,
+          tab: f.tab,
+          tabLabel: f.tabLabel,
+          group: f.group,
+          value: f.value
+        })),
+      fieldsByTab
+    };
+
+    const result = await askAi({ question, context: contextPayload, history });
+    return json(200, {
+      answer: result.answer,
+      model: result.model,
+      provider: result.provider,
+      usage: result.usage,
+      studyId: studyId || clientStudy?.studyId || null,
+      greetedAs: user?.firstName || user?.displayName || null
+    });
+  } catch (err) {
+    context.error(err);
+    const msg = String(err.message || err);
+    const status = msg.includes("not configured") ? 503 : 500;
+    return json(status, { error: msg });
+  }
+}
