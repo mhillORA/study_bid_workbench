@@ -426,6 +426,34 @@ app.http("budgetsCompare", {
   }
 });
 
+app.http("GetRoles", {
+  methods: ["POST", "GET", "OPTIONS"],
+  authLevel: "anonymous",
+  route: "GetRoles",
+  handler: async (request) => {
+    if (request.method === "OPTIONS") {
+      return {
+        status: 204,
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
+          "Access-Control-Allow-Headers": "content-type"
+        }
+      };
+    }
+    // SWA calls this after Entra login to assign custom roles.
+    // Returning "reader" for any successful auth; Entra group assignment still gates who can sign in.
+    try {
+      if (request.method === "POST") {
+        await request.json().catch(() => ({}));
+      }
+    } catch (_) {
+      /* ignore body parse errors */
+    }
+    return json(200, { roles: ["reader"] });
+  }
+});
+
 app.http("health", {
   methods: ["GET"],
   authLevel: "anonymous",

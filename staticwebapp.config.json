@@ -1,5 +1,6 @@
 {
   "auth": {
+    "rolesSource": "/api/GetRoles",
     "identityProviders": {
       "customOpenIdConnectProviders": {
         "aad": {
@@ -28,6 +29,14 @@
     {
       "route": "/login",
       "rewrite": "/.auth/login/aad"
+    },
+    {
+      "route": "/api/GetRoles",
+      "allowedRoles": ["anonymous"]
+    },
+    {
+      "route": "/api/health",
+      "allowedRoles": ["anonymous", "authenticated"]
     },
     {
       "route": "/api/*",
