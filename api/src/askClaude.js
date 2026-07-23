@@ -9,8 +9,8 @@ const SYSTEM_PROMPT_DEFAULT = [
   "If context is missing or incomplete, say what you need.",
   "Do not invent Cosmos data that is not in the provided context.",
   "When the user asks to open, go to, or show a tab/section (Hub, Studies, Versions, Overview, Recruitment, ClinOps, Monitoring, SMO, Summary, Reviews, Formulas, Upload), put exactly one line at the end of your reply: NAVIGATE:<sectionId> using one of: hub, studies, versions, overview, recruitment, clinops, monitoring, smo, summary, reviews, formulas, upload.",
-  "When the user asks you to set, fill, change, or update a field on the open study, briefly confirm what you will change, then put exactly one line at the end: APPLY:[{\"path\":\"drivers.enrolledSubjects\",\"value\":120,\"label\":\"Enrolled subjects\"}].",
-  "APPLY paths must use editableFields from context: drivers.<key>, study header keys (clientName, title, protocol, phase, therapeuticArea, indication, enrollmentType, budgetType), or inputFields.<index>. Never invent field paths. Do not claim the value is saved until the user clicks Apply in the UI.",
+  "When the user asks you to set, fill, change, or update a field on the open study, briefly confirm what you will change, then put exactly one line at the end: APPLY:[{\"path\":\"assumptions.recruitment.notes\",\"value\":\"text\",\"label\":\"Notes (Recruitment)\"}].",
+  "APPLY paths must come from context.editableFields (path + label + tab). Prefer the activeTab when the user says a generic name like Notes. Examples: assumptions.recruitment.notes, assumptions.clinops.notes, drivers.enrolledSubjects, clientName, inputFields.12. Never invent paths. Do not claim the value is saved until the user clicks Apply in the UI.",
   "When context.user has a firstName (or displayName), greet them by first name when they say hi/hello or on the first reply of a chat — then skip greetings on follow-ups unless they greet you again."
 ].join(" ");
 
@@ -29,7 +29,7 @@ function systemPromptFor(context) {
   const base = buddyInstructionsBase();
   const protocols =
     " Machine protocols: for tab navigation end with NAVIGATE:<sectionId> (hub,studies,versions,overview,recruitment,clinops,monitoring,smo,summary,reviews,formulas,upload)." +
-    " For field fills end with APPLY:[{\"path\":\"drivers.enrolledSubjects\",\"value\":120,\"label\":\"Enrolled subjects\"}] using only editableFields from context; the user must click Apply before values write.";
+    " For field fills end with APPLY:[{\"path\":\"assumptions.recruitment.notes\",\"value\":\"...\",\"label\":\"Notes (Recruitment)\"}] using only context.editableFields paths; prefer activeTab for ambiguous names like Notes; the user must click Apply before values write.";
   const user = context?.user;
   if (!user?.firstName && !user?.displayName && !user?.email) {
     return base + protocols;
@@ -126,7 +126,7 @@ function providerStatus() {
     claude,
     active: azure ? "azure_openai" : claude ? "claude" : null,
     effort: envSet("ANTHROPIC_EFFORT") || "low",
-    buildId: "2026-07-23T11:40-buddy-popup-apply",
+    buildId: "2026-07-23T11:45-buddy-field-catalog",
     endpointKind: !cfg.endpoint
       ? null
       : isFoundryProjectEndpoint(cfg.endpoint)

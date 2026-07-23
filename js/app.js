@@ -214,35 +214,69 @@
     return `${base}${path}`;
   }
 
-  const STUDY_HEADER_KEYS = [
-    "clientName", "title", "protocol", "phase", "therapeuticArea",
-    "indication", "enrollmentType", "budgetType"
+  const STUDY_HEADER_FIELDS = [
+    { key: "clientName", label: "Client" },
+    { key: "studyId", label: "Opportunity" },
+    { key: "title", label: "Title" },
+    { key: "protocol", label: "Protocol" },
+    { key: "versionLabel", label: "Version" },
+    { key: "phase", label: "Phase" },
+    { key: "therapeuticArea", label: "Therapeutic area" },
+    { key: "indication", label: "Indication" },
+    { key: "enrollmentType", label: "Enrollment type" },
+    { key: "budgetType", label: "Budget type" }
   ];
 
-  const DRIVER_LABEL_ALIASES = {
-    "enrolled subjects": "enrolledSubjects",
-    enrolled: "enrolledSubjects",
-    patients: "enrolledSubjects",
-    "screened subjects": "screenedSubjects",
-    screened: "screenedSubjects",
-    "completed subjects": "completedSubjects",
-    completed: "completedSubjects",
-    "core sites": "coreSites",
-    sites: "coreSites",
-    "startup months": "startupMonths",
-    "enrollment months": "enrollmentMonths",
-    "treatment months": "treatmentMonths",
-    "dbl months": "dblMonths",
-    "closeout months": "closeoutMonths",
-    "screen fail rate": "screenFailRate",
-    "drop out rate": "dropOutRate",
-    "dropout rate": "dropOutRate",
-    "sdv percent": "sdvPercent",
-    "sdv %": "sdvPercent",
-    contingency: "contingency",
-    inflation: "inflationRate",
-    "inflation rate": "inflationRate",
-    discount: "discount"
+  const DRIVER_FIELDS = [
+    { key: "screenedSubjects", label: "Screened subjects" },
+    { key: "enrolledSubjects", label: "Enrolled subjects", aliases: ["enrolled", "patients"] },
+    { key: "completedSubjects", label: "Completed subjects", aliases: ["completed"] },
+    { key: "coreSites", label: "Core sites", aliases: ["sites"] },
+    { key: "startupMonths", label: "Startup months" },
+    { key: "enrollmentMonths", label: "Enrollment months" },
+    { key: "treatmentMonths", label: "Treatment months" },
+    { key: "dblMonths", label: "DBL months" },
+    { key: "closeoutMonths", label: "Closeout months" },
+    { key: "screenFailRate", label: "Screen fail rate" },
+    { key: "dropOutRate", label: "Drop-out rate", aliases: ["dropout rate"] },
+    { key: "sdvPercent", label: "SDV percent", aliases: ["sdv %"] },
+    { key: "contingency", label: "Contingency" },
+    { key: "inflationRate", label: "Inflation rate", aliases: ["inflation"] },
+    { key: "discount", label: "Discount" }
+  ];
+
+  const ASSUMPTION_FIELDS = {
+    recruitment: [
+      { key: "contactCenterOn", label: "Contact center", type: "boolean" },
+      { key: "advertisingOn", label: "Advertising", type: "boolean" },
+      { key: "materialsOn", label: "Materials", type: "boolean" },
+      { key: "recruiterTrainingAttendees", label: "Training attendees", type: "number" },
+      { key: "notes", label: "Notes", type: "text", aliases: ["recruitment notes", "notes field"] }
+    ],
+    clinops: [
+      { key: "soeSource", label: "SOE source" },
+      { key: "patientPopulation", label: "Patient population" },
+      { key: "notes", label: "Notes", type: "text", aliases: ["clinops notes", "notes field"] }
+    ],
+    monitoring: [
+      { key: "strategy", label: "Strategy" },
+      { key: "rbqmFrequency", label: "RBQM frequency" },
+      { key: "maskedTeams", label: "Masked teams", type: "boolean" },
+      { key: "notes", label: "Notes", type: "text", aliases: ["monitoring notes", "notes field"] }
+    ],
+    smo: [
+      { key: "blockEnrollmentOn", label: "Block enrollment", type: "boolean" },
+      { key: "fixedSitePtComp", label: "Fixed site patient compensation", type: "boolean" },
+      { key: "notes", label: "Notes", type: "text", aliases: ["smo notes", "notes field"] }
+    ]
+  };
+
+  const TAB_META = {
+    overview: { label: "Overview / Inputs" },
+    recruitment: { label: "Recruitment" },
+    clinops: { label: "ClinOps / SOE" },
+    monitoring: { label: "Clinical Monitoring" },
+    smo: { label: "Block Enrollment / SMO" }
   };
 
   const SECTION_NAV_ALIASES = {
@@ -259,6 +293,134 @@
     formulas: ["formulas", "formula"],
     upload: ["upload", "upload budgets"]
   };
+
+  function humanizeKey(key) {
+    return String(key || "")
+      .replace(/([a-z])([A-Z])/g, "$1 $2")
+      .replace(/[_./]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .replace(/^./, (c) => c.toUpperCase());
+  }
+
+  /** Full editable catalog with clean names + tab context for Buddy. */
+  function buildEditableFieldCatalog() {
+    const study = state.study || {};
+    const fields = [];
+
+    for (const f of STUDY_HEADER_FIELDS) {
+      fields.push({
+        path: f.key,
+        label: f.label,
+        tab: "overview",
+        tabLabel: TAB_META.overview.label,
+        group: "Study header",
+        value: study[f.key] ?? null,
+        aliases: [f.key, humanizeKey(f.key)].filter(Boolean)
+      });
+    }
+
+    const drivers = study.drivers || {};
+    const knownDriverKeys = new Set(DRIVER_FIELDS.map((d) => d.key));
+    for (const f of DRIVER_FIELDS) {
+      fields.push({
+        path: `drivers.${f.key}`,
+        label: f.label,
+        tab: "overview",
+        tabLabel: TAB_META.overview.label,
+        group: "Drivers",
+        value: drivers[f.key] ?? null,
+        aliases: [...(f.aliases || []), f.key, humanizeKey(f.key)]
+      });
+    }
+    for (const key of Object.keys(drivers)) {
+      if (knownDriverKeys.has(key)) continue;
+      fields.push({
+        path: `drivers.${key}`,
+        label: humanizeKey(key),
+        tab: "overview",
+        tabLabel: TAB_META.overview.label,
+        group: "Drivers",
+        value: drivers[key] ?? null,
+        aliases: [key, humanizeKey(key)]
+      });
+    }
+
+    for (const [group, defs] of Object.entries(ASSUMPTION_FIELDS)) {
+      const tabLabel = (TAB_META[group] || {}).label || humanizeKey(group);
+      const bucket = (study.assumptions && study.assumptions[group]) || {};
+      for (const f of defs) {
+        fields.push({
+          path: `assumptions.${group}.${f.key}`,
+          label: f.label,
+          tab: group,
+          tabLabel,
+          group: `${tabLabel} assumptions`,
+          value: bucket[f.key] ?? null,
+          type: f.type || "text",
+          aliases: [
+            ...(f.aliases || []),
+            f.key,
+            humanizeKey(f.key),
+            `${group} ${f.label}`,
+            `${tabLabel} ${f.label}`,
+            `${f.label} (${tabLabel})`
+          ]
+        });
+      }
+      for (const key of Object.keys(bucket)) {
+        if (defs.some((d) => d.key === key)) continue;
+        fields.push({
+          path: `assumptions.${group}.${key}`,
+          label: humanizeKey(key),
+          tab: group,
+          tabLabel,
+          group: `${tabLabel} assumptions`,
+          value: bucket[key] ?? null,
+          aliases: [key, humanizeKey(key), `${group} ${humanizeKey(key)}`]
+        });
+      }
+    }
+
+    (study.inputFields || []).forEach((f, index) => {
+      if (!f || f.kind === "section") return;
+      const label = f.label || f.key || `Input ${index + 1}`;
+      fields.push({
+        path: `inputFields.${index}`,
+        label,
+        tab: "overview",
+        tabLabel: TAB_META.overview.label,
+        group: f.section || "Workbook inputs",
+        value: f.value ?? null,
+        inputIdx: index,
+        aliases: [f.key, f.label, humanizeKey(f.key)].filter(Boolean)
+      });
+    });
+
+    return fields;
+  }
+
+  function catalogByTab(catalog) {
+    const byTab = {};
+    for (const f of catalog) {
+      const tab = f.tab || "overview";
+      if (!byTab[tab]) {
+        byTab[tab] = {
+          tab,
+          tabLabel: f.tabLabel || tab,
+          fields: []
+        };
+      }
+      byTab[tab].fields.push({
+        path: f.path,
+        label: f.label,
+        group: f.group,
+        value: f.value,
+        aliases: f.aliases
+      });
+    }
+    return byTab;
+  }
 
   function openBuddy() {
     state.buddyOpen = true;
@@ -316,7 +478,7 @@
       })
       .join("");
     els.askLog.innerHTML = turns ||
-      "<p class=\"muted\">Ask about drivers, or try “set enrolled subjects to 120” — I’ll propose the change for you to Apply.</p>";
+      "<p class=\"muted\">Try “set notes to …” on a department tab, or “set enrolled subjects to 120”. I’ll propose the change for you to Apply.</p>";
     els.askLog.scrollTop = els.askLog.scrollHeight;
     if (els.askStatus) {
       els.askStatus.textContent = state.buddyBusy ? "Thinking…" : "";
@@ -359,7 +521,7 @@
   function normalizeFieldToken(s) {
     return String(s || "")
       .toLowerCase()
-      .replace(/[_./]+/g, " ")
+      .replace(/[_./()-]+/g, " ")
       .replace(/\s+/g, " ")
       .trim();
   }
@@ -368,68 +530,71 @@
     const s = String(raw ?? "").trim();
     if (s === "") return "";
     if (/^(true|false)$/i.test(s)) return /^true$/i.test(s);
+    if (/^(on|yes)$/i.test(s)) return true;
+    if (/^(off|no)$/i.test(s)) return false;
     if (/^-?\d+(\.\d+)?$/.test(s)) return Number(s);
     return s.replace(/^["']|["']$/g, "");
   }
 
-  function resolveFieldPath(token) {
+  function scoreFieldMatch(token, field, activeTab) {
     const t = normalizeFieldToken(token);
-    if (!t) return null;
+    if (!t) return 0;
+    const label = normalizeFieldToken(field.label);
+    const path = normalizeFieldToken(field.path);
+    const aliases = (field.aliases || []).map(normalizeFieldToken);
+    let score = 0;
 
-    if (t.startsWith("drivers ")) {
-      const key = t.slice(8).replace(/\s+/g, "");
-      const camel = Object.keys(state.study.drivers || {}).find(
-        (k) => k.toLowerCase() === key.toLowerCase()
-      );
-      if (camel) return { path: `drivers.${camel}`, label: camel };
+    if (t === label || t === path || aliases.includes(t)) score = 100;
+    else if (aliases.some((a) => a === t || a.endsWith(` ${t}`) || t.endsWith(` ${a}`))) score = 90;
+    else if (label && (label.includes(t) || t.includes(label)) && t.length >= 3) score = 70;
+    else if (aliases.some((a) => a.includes(t) || t.includes(a)) && t.length >= 4) score = 55;
+    else return 0;
+
+    if (field.tab === activeTab) score += 25;
+    if (t === "notes" || t === "notes field") {
+      if (field.tab === activeTab && String(field.path).endsWith(".notes")) score += 40;
+      else if (String(field.path).endsWith(".notes")) score += 5;
     }
+    return score;
+  }
 
-    const alias = DRIVER_LABEL_ALIASES[t];
-    if (alias && state.study.drivers && alias in state.study.drivers) {
-      return { path: `drivers.${alias}`, label: alias };
-    }
-
-    for (const [label, key] of Object.entries(DRIVER_LABEL_ALIASES)) {
-      if (t.includes(label) && state.study.drivers && key in state.study.drivers) {
-        return { path: `drivers.${key}`, label: key };
+  function resolveFieldPath(token) {
+    const catalog = buildEditableFieldCatalog();
+    const activeTab = state.sectionId;
+    let best = null;
+    let bestScore = 0;
+    for (const field of catalog) {
+      const score = scoreFieldMatch(token, field, activeTab);
+      if (score > bestScore) {
+        bestScore = score;
+        best = field;
       }
     }
-
-    for (const key of Object.keys(state.study.drivers || {})) {
-      if (normalizeFieldToken(key) === t) {
-        return { path: `drivers.${key}`, label: key };
-      }
-    }
-
-    for (const key of STUDY_HEADER_KEYS) {
-      if (normalizeFieldToken(key) === t || t === key.toLowerCase()) {
-        return { path: key, label: key };
-      }
-    }
-
-    const fields = state.study.inputFields || [];
-    for (let i = 0; i < fields.length; i++) {
-      const f = fields[i];
-      const label = normalizeFieldToken(f.label);
-      const key = normalizeFieldToken(f.key);
-      if (t === label || t === key || (label && label.includes(t)) || (t && label.includes(t) && t.length > 3)) {
-        return {
-          path: `inputFields.${i}`,
-          label: f.label || f.key || `inputFields[${i}]`,
-          inputIdx: i
-        };
-      }
-    }
-
-    return null;
+    if (!best || bestScore < 50) return null;
+    return {
+      path: best.path,
+      label: `${best.label} (${best.tabLabel})`,
+      tab: best.tab,
+      inputIdx: best.inputIdx
+    };
   }
 
   function readFieldValue(path, inputIdx) {
     if (inputIdx != null && state.study.inputFields?.[inputIdx]) {
       return state.study.inputFields[inputIdx].value;
     }
+    if (path.startsWith("inputFields.")) {
+      const idx = Number(path.split(".")[1]);
+      return state.study.inputFields?.[idx]?.value;
+    }
     if (path.startsWith("drivers.")) {
       return state.study.drivers?.[path.slice(8)];
+    }
+    if (path.startsWith("assumptions.")) {
+      const parts = path.split(".");
+      const group = parts[1];
+      const key = parts.slice(2).join(".");
+      return state.study.assumptions?.[group]?.[key];
     }
     return state.study[path];
   }
@@ -448,7 +613,7 @@
       if (key && !String(key).startsWith("input:") && !String(key).startsWith("driver:")) {
         if (!state.study.header) state.study.header = {};
         state.study.header[key] = value;
-        if (STUDY_HEADER_KEYS.includes(key)) state.study[key] = value;
+        if (STUDY_HEADER_FIELDS.some((f) => f.key === key)) state.study[key] = value;
       }
       if (String(key || "").startsWith("driver.")) {
         const dkey = String(key).replace(/^driver\./, "");
@@ -464,7 +629,17 @@
       state.study.drivers[key] = value;
       return true;
     }
-    if (STUDY_HEADER_KEYS.includes(path)) {
+    if (path.startsWith("assumptions.")) {
+      const parts = path.split(".");
+      const group = parts[1];
+      const key = parts.slice(2).join(".");
+      if (!group || !key) return false;
+      if (!state.study.assumptions) state.study.assumptions = {};
+      if (!state.study.assumptions[group]) state.study.assumptions[group] = {};
+      state.study.assumptions[group][key] = value;
+      return true;
+    }
+    if (STUDY_HEADER_FIELDS.some((f) => f.key === path) || path === "studyId" || path === "versionLabel") {
       state.study[path] = value;
       if (!state.study.header) state.study.header = {};
       state.study.header[path] = value;
@@ -481,27 +656,44 @@
       let path = String(raw.path || "").trim();
       let label = raw.label || path;
       let inputIdx = raw.inputIdx;
-      if (!path && raw.field) {
-        const resolved = resolveFieldPath(raw.field);
+      let tab = raw.tab;
+      if (!path && (raw.field || raw.label)) {
+        const resolved = resolveFieldPath(raw.field || raw.label);
         if (resolved) {
           path = resolved.path;
           label = resolved.label;
           inputIdx = resolved.inputIdx;
+          tab = resolved.tab;
         }
       }
       if (path.startsWith("driver.")) path = `drivers.${path.slice(7)}`;
-      if (!path.includes(".") && !STUDY_HEADER_KEYS.includes(path) && state.study.drivers && path in state.study.drivers) {
+      if (path.startsWith("assumption.")) path = `assumptions.${path.slice(11)}`;
+      if (path && !path.includes(".") && !STUDY_HEADER_FIELDS.some((f) => f.key === path)) {
+        const resolved = resolveFieldPath(path);
+        if (resolved) {
+          path = resolved.path;
+          label = label === path || !raw.label ? resolved.label : label;
+          inputIdx = resolved.inputIdx;
+          tab = resolved.tab;
+        }
+      }
+      if (!path.includes(".") && state.study.drivers && path in state.study.drivers) {
         path = `drivers.${path}`;
       }
       if (path.startsWith("inputFields.") && inputIdx == null) {
         inputIdx = Number(path.split(".")[1]);
       }
       if (!path) continue;
+      if (!tab) {
+        if (path.startsWith("assumptions.")) tab = path.split(".")[1];
+        else if (path.startsWith("drivers.") || STUDY_HEADER_FIELDS.some((f) => f.key === path)) tab = "overview";
+      }
       out.push({
         path,
         label,
         value: raw.value,
         inputIdx,
+        tab,
         from: readFieldValue(path, inputIdx)
       });
     }
@@ -512,7 +704,7 @@
   function matchFillOnly(question) {
     const q = String(question || "").replace(/[?.!]+$/g, "").trim();
     const m = q.match(
-      /^(?:please\s+)?(?:set|fill(?:\s+in)?|change|update)\s+(.+?)\s+(?:to|with|=)\s+(.+)$/i
+      /^(?:please\s+)?(?:set|fill(?:\s+in)?|change|update|write)\s+(?:the\s+)?(.+?)(?:\s+field)?\s+(?:to|with|=|:)\s+([\s\S]+)$/i
     );
     if (!m) return null;
     const resolved = resolveFieldPath(m[1]);
@@ -521,7 +713,8 @@
       path: resolved.path,
       label: resolved.label,
       value: coercePatchValue(m[2]),
-      inputIdx: resolved.inputIdx
+      inputIdx: resolved.inputIdx,
+      tab: resolved.tab
     }]);
   }
 
@@ -591,13 +784,20 @@
     const proposal = findProposal(id);
     if (!proposal || proposal.status !== "pending") return;
     let applied = 0;
+    let jumpTab = null;
     for (const patch of proposal.patches) {
-      if (writeFieldValue(patch)) applied += 1;
+      if (writeFieldValue(patch)) {
+        applied += 1;
+        if (!jumpTab && patch.tab) jumpTab = patch.tab;
+      }
     }
     proposal.status = "applied";
     if (applied) {
       markDirty();
       recalc();
+      if (jumpTab && jumpTab !== state.sectionId && SBW.sections.some((s) => s.id === jumpTab)) {
+        state.sectionId = jumpTab;
+      }
       render();
     }
     pushAssistant(
@@ -653,6 +853,7 @@
 
     state.buddyBusy = true;
     paintBuddyChat();
+    const catalog = buildEditableFieldCatalog();
     try {
       const res = await fetch(apiUrl("/api/ask"), {
         method: "POST",
@@ -661,6 +862,10 @@
           question,
           studyId: state.study.studyId,
           studySnapshot: state.study,
+          activeTab: state.sectionId,
+          activeTabLabel: (SBW.sections.find((s) => s.id === state.sectionId) || {}).label || state.sectionId,
+          editableFields: catalog,
+          fieldsByTab: catalogByTab(catalog),
           user: state.entraUser || undefined,
           history: state.askHistory.slice(0, -1).map((t) => ({
             role: t.role,

@@ -528,6 +528,10 @@ app.http("ask", {
       const clientStudy = body.studySnapshot || null;
       const history = body.history || [];
       const user = signedInUserFromRequest(request, body.user || null);
+      const activeTab = body.activeTab ? String(body.activeTab) : null;
+      const activeTabLabel = body.activeTabLabel ? String(body.activeTabLabel) : null;
+      const editableFields = Array.isArray(body.editableFields) ? body.editableFields : null;
+      const fieldsByTab = body.fieldsByTab && typeof body.fieldsByTab === "object" ? body.fieldsByTab : null;
 
       let cosmosContext = null;
       if (studyId) {
@@ -537,6 +541,8 @@ app.http("ask", {
       const contextPayload = {
         askedAt: new Date().toISOString(),
         user,
+        activeTab,
+        activeTabLabel,
         cosmos: cosmosContext,
         workingStudy: clientStudy
           ? {
@@ -549,32 +555,21 @@ app.http("ask", {
               versionLabel: clientStudy.versionLabel,
               drivers: clientStudy.drivers,
               sectionStatus: clientStudy.sectionStatus,
-              assumptions: clientStudy.assumptions,
-              editableFields: {
-                drivers: Object.keys(clientStudy.drivers || {}),
-                studyHeader: [
-                  "clientName",
-                  "title",
-                  "protocol",
-                  "phase",
-                  "therapeuticArea",
-                  "indication",
-                  "enrollmentType",
-                  "budgetType"
-                ],
-                inputFields: (clientStudy.inputFields || [])
-                  .slice(0, 120)
-                  .map((f, index) => ({
-                    index,
-                    key: f.key || null,
-                    label: f.label || null,
-                    section: f.section || null,
-                    value: f.value ?? null,
-                    path: `inputFields.${index}`
-                  }))
-              }
+              assumptions: clientStudy.assumptions
             }
-          : null
+          : null,
+        // Prefer client catalog (clean labels + tab). Keep compact for the model.
+        editableFields: (editableFields || [])
+          .slice(0, 200)
+          .map((f) => ({
+            path: f.path,
+            label: f.label,
+            tab: f.tab,
+            tabLabel: f.tabLabel,
+            group: f.group,
+            value: f.value
+          })),
+        fieldsByTab
       };
 
       const result = await askAi({ question, context: contextPayload, history });
