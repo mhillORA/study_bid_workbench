@@ -6,7 +6,8 @@
           "openIdIssuer": "https://login.microsoftonline.com/2f298692-acc9-4632-b71b-841d51376914/v2.0",
           "clientIdSettingName": "AZURE_CLIENT_ID",
           "clientSecretSettingName": "AZURE_CLIENT_SECRET"
-        }
+        },
+        "userDetailsClaim": "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name"
       }
     }
   },
@@ -16,22 +17,28 @@
       "allowedRoles": ["anonymous", "authenticated"]
     },
     {
+      "route": "/login",
+      "rewrite": "/.auth/login/aad"
+    },
+    {
       "route": "/api/*",
       "allowedRoles": ["authenticated"]
+    },
+    {
+      "route": "/css/*",
+      "allowedRoles": ["anonymous", "authenticated"]
+    },
+    {
+      "route": "/js/*",
+      "allowedRoles": ["anonymous", "authenticated"]
     },
     {
       "route": "/*",
       "allowedRoles": ["authenticated"]
     }
   ],
-  "responseOverrides": {
-    "401": {
-      "redirect": "/.auth/login/aad",
-      "statusCode": 302
-    }
-  },
   "navigationFallback": {
     "rewrite": "/index.html",
-    "exclude": ["/api/*", "/css/*", "/js/*", "/*.{json}"]
+    "exclude": ["/api/*", "/css/*", "/js/*", "/.auth/*", "/*.{json,png,jpg,jpeg,gif,svg,ico,webp}"]
   }
 }
