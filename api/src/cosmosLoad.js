@@ -173,6 +173,126 @@ async function listStudies(limit = 200) {
     .slice(0, Math.min(Number(limit) || 200, 500));
 }
 
+/** Studies with drivers for portfolio / Copilot cross-study questions. */
+async function listStudiesWithDrivers(limit = 500) {
+  const database = getDb();
+  const { resources } = await database.container("studies").items
+    .query({
+      query:
+        "SELECT c.studyId, c.clientName, c.title, c.protocol, c.phase, c.therapeuticArea, c.indication, c.status, c.drivers, c.importedAt, c.updatedAt FROM c WHERE c.docType = @t",
+      parameters: [{ name: "@t", value: "study" }]
+    })
+    .fetchAll();
+  return resources
+    .sort((a, b) => String(b.updatedAt || b.importedAt || "").localeCompare(String(a.updatedAt || a.importedAt || "")))
+    .slice(0, Math.min(Number(limit) || 500, 800));
+}
+
+function studyYear(s) {
+  const raw = s.updatedAt || s.importedAt || "";
+  const m = String(raw).match(/^(20\d{2})/);
+  return m ? Number(m[1]) : null;
+}
+
+function numOrNull(v) {
+  if (v == null || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Portfolio rollup for Copilot / Buddy cross-study questions.
+ * Filters: clientName (substring, case-insensitive), year (from updatedAt/importedAt).
+ */
+async function buildPortfolioContext({ clientName = null, year = null, limit = 500 } = {}) {
+  const all = await listStudiesWithDrivers(limit);
+  const clientNeedle = clientName ? String(clientName).trim().toLowerCase() : "";
+  const yearNum = year != null && year !== "" ? Number(year) : null;
+
+  const rows = [];
+  for (const s of all) {
+    if (clientNeedle) {
+      const cn = String(s.clientName || "").toLowerCase();
+      if (!cn.includes(clientNeedle)) continue;
+    }
+    const y = studyYear(s);
+    if (yearNum && y !== yearNum) continue;
+    const d = s.drivers || {};
+    rows.push({
+      studyId: s.studyId,
+      clientName: s.clientName || null,
+      title: s.title || null,
+      protocol: s.protocol || null,
+      phase: s.phase || null,
+      therapeuticArea: s.therapeuticArea || null,
+      indication: s.indication || null,
+      status: s.status || null,
+      year: y,
+      enrolledSubjects: numOrNull(d.enrolledSubjects ?? d.patients),
+      screenedSubjects: numOrNull(d.screenedSubjects),
+      completedSubjects: numOrNull(d.completedSubjects),
+      coreSites: numOrNull(d.coreSites),
+      updatedAt: s.updatedAt || s.importedAt || null
+    });
+  }
+
+  const sum = (key) =>
+    rows.reduce((acc, r) => acc + (typeof r[key] === "number" ? r[key] : 0), 0);
+
+  const byClientMap = {};
+  for (const r of rows) {
+    const key = r.clientName || "(unknown)";
+    if (!byClientMap[key]) {
+      byClientMap[key] = {
+        clientName: key,
+        studyCount: 0,
+        enrolledSubjects: 0,
+        screenedSubjects: 0,
+        completedSubjects: 0,
+        coreSites: 0
+      };
+    }
+    const b = byClientMap[key];
+    b.studyCount += 1;
+    b.enrolledSubjects += typeof r.enrolledSubjects === "number" ? r.enrolledSubjects : 0;
+    b.screenedSubjects += typeof r.screenedSubjects === "number" ? r.screenedSubjects : 0;
+    b.completedSubjects += typeof r.completedSubjects === "number" ? r.completedSubjects : 0;
+    b.coreSites += typeof r.coreSites === "number" ? r.coreSites : 0;
+  }
+
+  const byClient = Object.values(byClientMap).sort(
+    (a, b) => b.enrolledSubjects - a.enrolledSubjects || b.studyCount - a.studyCount
+  );
+
+  const clientNames = [
+    ...new Set(all.map((s) => s.clientName).filter(Boolean))
+  ].sort((a, b) => a.localeCompare(b));
+
+  return {
+    source: "cosmos_portfolio",
+    filters: {
+      clientName: clientName || null,
+      year: yearNum || null
+    },
+    databaseStudyCount: all.length,
+    matchedStudyCount: rows.length,
+    totals: {
+      enrolledSubjects: sum("enrolledSubjects"),
+      screenedSubjects: sum("screenedSubjects"),
+      completedSubjects: sum("completedSubjects"),
+      coreSites: sum("coreSites")
+    },
+    byClient: byClient.slice(0, 40),
+    clientNamesInDatabase: clientNames.slice(0, 100),
+    studies: rows.slice(0, 100),
+    notes: [
+      "Totals sum drivers.enrolledSubjects / screened / completed / coreSites from study documents.",
+      "Year filter uses updatedAt/importedAt calendar year when present.",
+      "If a driver is missing on a study, it contributes 0 to that total."
+    ]
+  };
+}
+
 async function getStudy(studyId) {
   const database = getDb();
   const { resources } = await database.container("studies").items
@@ -460,6 +580,8 @@ async function listQuarantine(limit = 200) {
 module.exports = {
   upsertCanonical,
   listStudies,
+  listStudiesWithDrivers,
+  buildPortfolioContext,
   getStudy,
   listVersions,
   getVersion,

@@ -2,8 +2,8 @@
   "openapi": "3.0.1",
   "info": {
     "title": "Study Bid Buddy (Copilot)",
-    "description": "Ask Buddy with the same study context as the Study Bid Workbench. Pass studyId (opportunity id) and question.",
-    "version": "1.0.0"
+    "description": "Ask Buddy with full Cosmos portfolio context (all studies) plus optional single-study detail. Use for client rollups (e.g. Alcon patients last year), study lists, and budget questions. Always call this tool for Ora bid/study questions; return the answer field.",
+    "version": "1.1.0"
   },
   "servers": [
     {
@@ -14,8 +14,8 @@
     "/api/copilot/ask": {
       "post": {
         "operationId": "AskBuddy",
-        "summary": "Ask Buddy about a study",
-        "description": "Sends a question to Ask Buddy for a Cosmos study. Use when the user asks about budget drivers, assumptions, enrollment, notes, or other study bid details. Requires a studyId (opportunity id).",
+        "summary": "Ask Buddy about studies or the full portfolio",
+        "description": "Answers questions using Cosmos study data. Supports cross-study queries by client name and year (portfolio totals) and single-study detail when studyId is known. Examples: 'How many enrolled patients with Alcon last year?', 'List studies for Regeneron', 'What are enrollment drivers on O-12345?'",
         "parameters": [
           {
             "name": "x-copilot-key",
@@ -35,11 +35,19 @@
                 "properties": {
                   "question": {
                     "type": "string",
-                    "description": "The user's question about the study"
+                    "description": "The user's question about studies, clients, enrollment, or budgets"
                   },
                   "studyId": {
                     "type": "string",
-                    "description": "Study / opportunity id in Cosmos, e.g. O-12345"
+                    "description": "Optional opportunity/study id for single-study detail, e.g. O-12345"
+                  },
+                  "clientName": {
+                    "type": "string",
+                    "description": "Optional client/sponsor filter for portfolio rollup, e.g. Alcon"
+                  },
+                  "year": {
+                    "type": "integer",
+                    "description": "Optional calendar year filter for portfolio (from study updated/imported dates), e.g. 2025"
                   }
                 }
               }
@@ -54,8 +62,11 @@
                 "schema": {
                   "type": "object",
                   "properties": {
-                    "answer": { "type": "string" },
+                    "answer": { "type": "string", "description": "Buddy reply to show the user" },
                     "studyId": { "type": "string" },
+                    "clientName": { "type": "string" },
+                    "year": { "type": "integer" },
+                    "portfolioMatched": { "type": "integer" },
                     "model": { "type": "string" },
                     "provider": { "type": "string" }
                   }

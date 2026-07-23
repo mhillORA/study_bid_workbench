@@ -1,7 +1,7 @@
 const { app } = require("@azure/functions");
 const AdmZip = require("adm-zip");
 const { parseWorkbookBuffer } = require("./parseWorkbook");
-const { upsertCanonical, listStudies, getStudy, listVersions, getVersion, listLineItems, compareVersions, compareStudies, listQuarantine, getDb } = require("./cosmosLoad");
+const { upsertCanonical, listStudies, getStudy, listVersions, getVersion, listLineItems, compareVersions, compareStudies, listQuarantine, getDb, buildPortfolioContext } = require("./cosmosLoad");
 const { askAi, getStudyContext, providerStatus } = require("./askClaude");
 
 function json(status, body) {
@@ -22,6 +22,48 @@ function headerGet(request, name) {
     request.headers.get(name.toUpperCase()) ||
     ""
   );
+}
+
+/** Infer studyId / client / year from the question + known client list. */
+function inferAskHints(question, body, clientNames) {
+  const q = String(question || "");
+  let studyId = body.studyId ? String(body.studyId).trim() : null;
+  let clientName = body.clientName ? String(body.clientName).trim() : null;
+  let year = body.year != null && body.year !== "" ? Number(body.year) : null;
+
+  if (!studyId) {
+    const m = q.match(/\b(O-\d{3,})\b/i) || q.match(/\b([A-Z]{1,3}-\d{4,})\b/);
+    if (m) studyId = m[1];
+  }
+
+  if (!year || Number.isNaN(year)) {
+    if (/\blast\s+year\b/i.test(q)) year = new Date().getFullYear() - 1;
+    else {
+      const ym = q.match(/\b(20\d{2})\b/);
+      if (ym) year = Number(ym[1]);
+      else year = null;
+    }
+  }
+
+  if (!clientName && Array.isArray(clientNames) && clientNames.length) {
+    const lower = q.toLowerCase();
+    const sorted = [...clientNames].sort((a, b) => String(b).length - String(a).length);
+    for (const name of sorted) {
+      if (name && lower.includes(String(name).toLowerCase())) {
+        clientName = name;
+        break;
+      }
+    }
+  }
+
+  if (!clientName) {
+    const m = q.match(
+      /\b(?:with|for|client|sponsor|customer)\s+([A-Za-z][A-Za-z0-9 .&'-]{1,40?}?)(?:\s+last|\s+in\s+20|\s+studies|\s+patients|\s+enrollment|\?|$)/i
+    );
+    if (m) clientName = m[1].trim();
+  }
+
+  return { studyId, clientName, year };
 }
 
 function claimMap(claims) {
@@ -543,7 +585,17 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
     const question = String(body.question || "").trim();
     if (!question) return json(400, { error: "question is required" });
 
-    const studyId = body.studyId ? String(body.studyId).trim() : null;
+    // Lightweight client directory for name matching (Copilot portfolio questions)
+    let clientDirectory = [];
+    try {
+      const preview = await buildPortfolioContext({ limit: 500 });
+      clientDirectory = preview.clientNamesInDatabase || [];
+    } catch (_) {
+      clientDirectory = [];
+    }
+
+    const hints = inferAskHints(question, body, clientDirectory);
+    const studyId = hints.studyId;
     const clientStudy = body.studySnapshot || null;
     const history = body.history || [];
     const user = signedInUserFromRequest(request, body.user || null);
@@ -557,13 +609,48 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       cosmosContext = await getStudyContext(studyId, { getDb });
     }
 
+    // Always attach portfolio for Copilot; for workbench when no single study snapshot
+    let portfolio = null;
+    const wantPortfolio =
+      requireCopilotKey ||
+      body.portfolio === true ||
+      (!clientStudy && !studyId) ||
+      hints.clientName ||
+      hints.year;
+    if (wantPortfolio) {
+      try {
+        portfolio = await buildPortfolioContext({
+          clientName: hints.clientName,
+          year: hints.year,
+          limit: 500
+        });
+        // If filter matched nothing but we have a client hint, still send unfiltered rollup top clients
+        if (hints.clientName && portfolio.matchedStudyCount === 0) {
+          const fallback = await buildPortfolioContext({ year: hints.year, limit: 500 });
+          portfolio = {
+            ...fallback,
+            filters: { ...fallback.filters, clientNameRequested: hints.clientName, matched: false },
+            note: `No studies matched client filter "${hints.clientName}". Showing full portfolio rollup; clientNamesInDatabase lists valid names.`
+          };
+        }
+      } catch (err) {
+        portfolio = { source: "cosmos_portfolio_error", error: String(err.message || err) };
+      }
+    }
+
     const contextPayload = {
       askedAt: new Date().toISOString(),
       source: requireCopilotKey ? "copilot_studio" : "workbench",
       user,
       activeTab,
       activeTabLabel,
+      queryHints: {
+        studyId: studyId || null,
+        clientName: hints.clientName || null,
+        year: hints.year || null
+      },
       cosmos: cosmosContext,
+      portfolio,
       workingStudy: clientStudy
         ? {
             source: "browser_working_copy",
@@ -598,6 +685,9 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       provider: result.provider,
       usage: result.usage,
       studyId: studyId || clientStudy?.studyId || null,
+      clientName: hints.clientName || null,
+      year: hints.year || null,
+      portfolioMatched: portfolio?.matchedStudyCount ?? null,
       greetedAs: user?.firstName || user?.displayName || null
     });
   } catch (err) {

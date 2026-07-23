@@ -8,6 +8,8 @@ const SYSTEM_PROMPT_DEFAULT = [
   "Be concise and practical. Prefer numbers and Ora codes when present in context.",
   "If context is missing or incomplete, say what you need.",
   "Do not invent Cosmos data that is not in the provided context.",
+  "For portfolio / cross-study questions (clients like Alcon, totals, how many patients/studies last year), use context.portfolio: totals, byClient, and studies. Prefer portfolio.totals when filters match. If portfolio.note says no match, say which client names exist in clientNamesInDatabase.",
+  "When context.cosmos is present, answer about that single study. When both exist, use cosmos for study-specific detail and portfolio for rollups.",
   "When the user asks to open, go to, or show a tab/section (Hub, Studies, Versions, Overview, Recruitment, ClinOps, Monitoring, SMO, Summary, Reviews, Formulas, Upload), put exactly one line at the end of your reply: NAVIGATE:<sectionId> using one of: hub, studies, versions, overview, recruitment, clinops, monitoring, smo, summary, reviews, formulas, upload.",
   "When the user asks you to set, fill, change, or update a field on the open study, briefly confirm what you will change, then put exactly one line at the end: APPLY:[{\"path\":\"assumptions.recruitment.notes\",\"value\":\"text\",\"label\":\"Notes (Recruitment)\"}].",
   "APPLY paths must come from context.editableFields (path + label + tab). Prefer the activeTab when the user says a generic name like Notes. Examples: assumptions.recruitment.notes, assumptions.clinops.notes, drivers.enrolledSubjects, clientName, inputFields.12. Never invent paths. Do not claim the value is saved until the user clicks Apply in the UI.",
@@ -29,7 +31,8 @@ function systemPromptFor(context) {
   const base = buddyInstructionsBase();
   const protocols =
     " Machine protocols: for tab navigation end with NAVIGATE:<sectionId> (hub,studies,versions,overview,recruitment,clinops,monitoring,smo,summary,reviews,formulas,upload)." +
-    " For field fills end with APPLY:[{\"path\":\"assumptions.recruitment.notes\",\"value\":\"...\",\"label\":\"Notes (Recruitment)\"}] using only context.editableFields paths; prefer activeTab for ambiguous names like Notes; the user must click Apply before values write.";
+    " For field fills end with APPLY:[{\"path\":\"assumptions.recruitment.notes\",\"value\":\"...\",\"label\":\"Notes (Recruitment)\"}] using only context.editableFields paths; prefer activeTab for ambiguous names like Notes; the user must click Apply before values write." +
+    " For cross-study / client / year questions use context.portfolio totals and byClient; cite matchedStudyCount and study ids when helpful.";
   const user = context?.user;
   if (!user?.firstName && !user?.displayName && !user?.email) {
     return base + protocols;
