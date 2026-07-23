@@ -1,6 +1,8 @@
 const ExcelJS = require("exceljs");
 const crypto = require("crypto");
 const { parseInputFull, parseKeyRates } = require("./parseInputFull");
+const { enrichInputFields, applyCanonicalToBags } = require("./fieldRegistry");
+const { harvestAllSheets } = require("./parseSheetHarvest");
 
 const SHEET_ALIASES = {
   "Input Tab": ["Input Tab", "Main Specifications Required", "Study Specs"],
@@ -225,19 +227,33 @@ async function parseWorkbookBuffer(buffer, fileName) {
   const keyRows = resolved.Key ? sheetMatrix(wb.getWorksheet(resolved.Key)) : [];
 
   const input = parseInputFull(inputRows);
-  const { header, drivers, sites, fields, resourceLeads, monitoring, vendors, payments, matchedKnown, fieldCount } =
+  let { header, drivers, sites, fields, resourceLeads, monitoring, vendors, payments, matchedKnown, fieldCount } =
     input;
+  fields = enrichInputFields(fields);
+  const bags = applyCanonicalToBags(header, drivers, fields);
+  header = bags.header;
+  drivers = bags.drivers;
+  const normalizedCount = fields.filter((f) => f.normalized).length;
+
   const lineItems = parseInternalBudget(budgetRows);
   const execSum = parseExecSum(execRows);
   const rates = parseKeyRates(keyRows);
 
+  const sheetHarvest = harvestAllSheets(wb, resolved);
   const sheetInventory = sheetNames.map((name) => {
     const ws = wb.getWorksheet(name);
     let rows = 0;
     try {
       rows = ws && ws.rowCount ? ws.rowCount : 0;
     } catch (_) {}
-    return { name, rowCount: rows, captured: Boolean(Object.values(resolved).includes(name)) };
+    const harvested = (sheetHarvest.sheets || []).find((s) => s.name === name);
+    return {
+      name,
+      rowCount: rows,
+      captured: Boolean(Object.values(resolved).includes(name)),
+      labelValueCount: harvested ? (harvested.labelValues || []).length : 0,
+      cellDumpCount: harvested ? (harvested.cells || []).length : 0
+    };
   });
 
   const warnings = [];
@@ -252,7 +268,12 @@ async function parseWorkbookBuffer(buffer, fileName) {
     warnings.push(`Only ${lineItems.length} line items`);
   }
   if (!fp.matched) warnings.push(`Missing sheets: ${missing.join(", ")}`);
-  warnings.push(`Captured ${fieldCount} Input Tab fields, ${sites.length} sites, ${rates.length} key rates`);
+  warnings.push(
+    `Captured ${fieldCount} Input Tab fields (${normalizedCount} canonical), ${sites.length} sites, ${rates.length} key rates`
+  );
+  warnings.push(
+    `Sheet harvest: ${sheetHarvest.sheetCount} sheets (${sheetHarvest.unstructuredCount} unstructured dumps)`
+  );
 
   const fileOpp = opportunityFromFilename(fileName);
   const fileStudyId = studyIdFromFilename(fileName);
@@ -363,7 +384,21 @@ async function parseWorkbookBuffer(buffer, fileName) {
       monitoring,
       vendors,
       payments,
-      fieldCount
+      fieldCount,
+      normalizedFieldCount: normalizedCount,
+      sheetHarvestSummary: {
+        sheetCount: sheetHarvest.sheetCount,
+        structuredCount: sheetHarvest.structuredCount,
+        unstructuredCount: sheetHarvest.unstructuredCount,
+        sheets: (sheetHarvest.sheets || []).map((s) => ({
+          name: s.name,
+          role: s.role,
+          structured: s.structured,
+          rowCount: s.rowCount,
+          labelValueCount: (s.labelValues || []).length,
+          cellCount: (s.cells || []).length
+        }))
+      }
     },
     version: {
       id: `ver-${studyId}-${sha256.slice(0, 10)}`,
@@ -376,6 +411,7 @@ async function parseWorkbookBuffer(buffer, fileName) {
       lineItemCount: lineItems.length,
       rateCount: rates.length,
       sheetInventory,
+      sheetHarvest,
       createdAt: importedAt
     },
     lineItems,

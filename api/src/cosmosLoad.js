@@ -82,6 +82,7 @@ async function upsertCanonical(canonical, jobId) {
       monitoring: study.monitoring || {},
       vendors: study.vendors || [],
       payments: study.payments || {},
+      sheetHarvestSummary: study.sheetHarvestSummary || null,
       clientName: study.clientName,
       title: study.title,
       protocol: study.protocol,
@@ -284,15 +285,12 @@ function valuesEqual(a, b) {
   return String(a) === String(b);
 }
 
-async function compareVersions(studyId, olderVersionId, newerVersionId) {
-  const study = await getStudy(studyId);
-  const older = await getVersion(studyId, olderVersionId);
-  const newer = await getVersion(studyId, newerVersionId);
-  if (!older || !newer) {
-    throw new Error("One or both versions were not found");
+async function compareBudgetPair(leftStudy, leftVersion, rightStudy, rightVersion) {
+  if (!leftVersion || !rightVersion) {
+    throw new Error("One or both budget versions were not found");
   }
-  const a = flattenForCompare(older, study);
-  const b = flattenForCompare(newer, study);
+  const a = flattenForCompare(leftVersion, leftStudy);
+  const b = flattenForCompare(rightVersion, rightStudy);
   const keys = [...new Set([...Object.keys(a), ...Object.keys(b)])].sort();
   const changes = [];
   const unchanged = [];
@@ -306,10 +304,9 @@ async function compareVersions(studyId, olderVersionId, newerVersionId) {
     }
   }
 
-  // Line-item rollup by department charge
   const [oldLines, newLines] = await Promise.all([
-    listLineItems(studyId, olderVersionId, { limit: 2000 }),
-    listLineItems(studyId, newerVersionId, { limit: 2000 })
+    listLineItems(leftStudy.studyId, leftVersion.id, { limit: 2000 }),
+    listLineItems(rightStudy.studyId, rightVersion.id, { limit: 2000 })
   ]);
   const roll = (items) => {
     const m = {};
@@ -336,7 +333,6 @@ async function compareVersions(studyId, olderVersionId, newerVersionId) {
       Math.abs((oldR[d].charge || 0) - (newR[d].charge || 0)) > 0.01
   }));
 
-  // Ora-code level diffs (subset: changed/added/removed)
   const byCode = (items) => {
     const m = {};
     for (const li of items) {
@@ -368,17 +364,73 @@ async function compareVersions(studyId, olderVersionId, newerVersionId) {
     }
   }
 
+  const sameStudy = leftStudy.studyId === rightStudy.studyId;
   return {
-    studyId,
-    older: { id: older.id, label: older.label, createdAt: older.createdAt, sourceFileName: older.sourceFileName },
-    newer: { id: newer.id, label: newer.label, createdAt: newer.createdAt, sourceFileName: newer.sourceFileName },
+    mode: sameStudy ? "versions" : "studies",
+    studyId: sameStudy ? leftStudy.studyId : null,
+    leftStudyId: leftStudy.studyId,
+    rightStudyId: rightStudy.studyId,
+    older: {
+      id: leftVersion.id,
+      studyId: leftStudy.studyId,
+      label: leftVersion.label,
+      clientName: leftStudy.clientName,
+      createdAt: leftVersion.createdAt,
+      sourceFileName: leftVersion.sourceFileName
+    },
+    newer: {
+      id: rightVersion.id,
+      studyId: rightStudy.studyId,
+      label: rightVersion.label,
+      clientName: rightStudy.clientName,
+      createdAt: rightVersion.createdAt,
+      sourceFileName: rightVersion.sourceFileName
+    },
     fieldChanges: changes,
     fieldUnchangedCount: unchanged.length,
     departmentDiffs,
     lineItemDiffs: lineItemDiffs.slice(0, 300),
     lineItemDiffCount: lineItemDiffs.length,
-    notes: older.snapshot ? null : "Older version has no input snapshot (uploaded before versioning fix). Field compare may be limited to totals."
+    notes: leftVersion.snapshot
+      ? null
+      : "Left budget has no input snapshot (uploaded before versioning fix). Field compare may be limited to totals."
   };
+}
+
+async function compareVersions(studyId, olderVersionId, newerVersionId) {
+  const study = await getStudy(studyId);
+  if (!study) throw new Error(`Study ${studyId} not found`);
+  const older = await getVersion(studyId, olderVersionId);
+  const newer = await getVersion(studyId, newerVersionId);
+  return compareBudgetPair(study, older, study, newer);
+}
+
+async function compareStudies(leftStudyId, rightStudyId, leftVersionId, rightVersionId) {
+  const leftStudy = await getStudy(leftStudyId);
+  const rightStudy = await getStudy(rightStudyId);
+  if (!leftStudy) throw new Error(`Study ${leftStudyId} not found`);
+  if (!rightStudy) throw new Error(`Study ${rightStudyId} not found`);
+
+  const [leftVersions, rightVersions] = await Promise.all([
+    listVersions(leftStudyId),
+    listVersions(rightStudyId)
+  ]);
+
+  const leftVid =
+    leftVersionId ||
+    leftStudy.currentVersionId ||
+    (leftVersions[0] && leftVersions[0].id);
+  const rightVid =
+    rightVersionId ||
+    rightStudy.currentVersionId ||
+    (rightVersions[0] && rightVersions[0].id);
+
+  const [leftVersion, rightVersion] = await Promise.all([
+    getVersion(leftStudyId, leftVid),
+    getVersion(rightStudyId, rightVid)
+  ]);
+
+  return compareBudgetPair(leftStudy, leftVersion, rightStudy, rightVersion);
 }
 
 async function listQuarantine(limit = 200) {
@@ -413,6 +465,7 @@ module.exports = {
   getVersion,
   listLineItems,
   compareVersions,
+  compareStudies,
   listQuarantine,
   getDb
 };

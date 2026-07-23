@@ -17,6 +17,15 @@
     studiesList: [],
     studiesGroupBy: localStorage.getItem("sbw.studiesGroupBy") || "client",
     studiesCollapsed: {},
+    budgetCompare: {
+      mode: localStorage.getItem("sbw.budgetCompareMode") || "studies", // studies | versions
+      leftStudyId: "",
+      rightStudyId: "",
+      leftVersions: [],
+      rightVersions: [],
+      leftVersionId: "",
+      rightVersionId: ""
+    },
     studyCompare: {
       open: false,
       selected: [],
@@ -97,6 +106,67 @@
   function setSection(sectionId) {
     state.sectionId = sectionId;
     render();
+    if (sectionId === "versions" || sectionId === "studies") {
+      ensureStudiesLoaded().then(() => {
+        if (sectionId === "versions") {
+          hydrateBudgetCompareDefaults();
+          render();
+        }
+      });
+    }
+  }
+
+  async function ensureStudiesLoaded() {
+    if ((state.studiesList || []).length) return state.studiesList;
+    try {
+      const res = await fetch(apiUrl("/api/studies?limit=500"));
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) state.studiesList = data.studies || [];
+    } catch (_) {}
+    return state.studiesList || [];
+  }
+
+  function hydrateBudgetCompareDefaults() {
+    const bc = state.budgetCompare;
+    const list = state.studiesList || [];
+    if (!list.length) return;
+    if (!bc.leftStudyId) {
+      bc.leftStudyId =
+        state.source === "cosmos" && state.study.studyId
+          ? state.study.studyId
+          : list[0].studyId;
+    }
+    if (!bc.rightStudyId) {
+      const other = list.find((s) => s.studyId !== bc.leftStudyId);
+      bc.rightStudyId = other ? other.studyId : bc.leftStudyId;
+    }
+    loadBudgetCompareVersions("left");
+    loadBudgetCompareVersions("right");
+  }
+
+  async function loadBudgetCompareVersions(side) {
+    const bc = state.budgetCompare;
+    const studyId = side === "left" ? bc.leftStudyId : bc.rightStudyId;
+    if (!studyId) return;
+    try {
+      const res = await fetch(apiUrl(`/api/studies/${encodeURIComponent(studyId)}/versions`));
+      const data = await res.json().catch(() => ({}));
+      const versions = data.versions || [];
+      if (side === "left") {
+        bc.leftVersions = versions;
+        if (!bc.leftVersionId || !versions.some((v) => v.id === bc.leftVersionId)) {
+          bc.leftVersionId = versions[0] ? versions[0].id : "";
+        }
+      } else {
+        bc.rightVersions = versions;
+        if (!bc.rightVersionId || !versions.some((v) => v.id === bc.rightVersionId)) {
+          bc.rightVersionId = versions[0] ? versions[0].id : "";
+        }
+      }
+    } catch (_) {
+      if (side === "left") bc.leftVersions = [];
+      else bc.rightVersions = [];
+    }
   }
 
   function canEdit(department) {
@@ -843,6 +913,7 @@
       monitoringInputs: snap.monitoring || s.monitoring || {},
       vendors: snap.vendors || s.vendors || [],
       payments: snap.payments || s.payments || {},
+      sheetHarvestSummary: s.sheetHarvestSummary || snap.sheetHarvestSummary || v.sheetHarvestSummary || null,
       totals: v.totals || {},
       execSum: v.execSum || {},
       currentVersionId: s.currentVersionId || v.id,
@@ -1205,6 +1276,28 @@
           <p class="muted">${fields.length} Input Tab fields · ${sites.length} sites · ${state.lineItems.length} line items in memory</p>
           ${!fields.length ? "<p class=\"muted\">Open a Cosmos study (after upload) to populate every captured Input Tab cell.</p>" : ""}
         </div>
+
+        ${(() => {
+          const harvest = state.study.sheetHarvestSummary;
+          if (!harvest || !harvest.sheets || !harvest.sheets.length) return "";
+          const rows = harvest.sheets.map((s) => `<tr>
+            <td>${escapeHtml(s.name || "")}</td>
+            <td>${s.structured ? "Structured" : "Harvested"}</td>
+            <td>${escapeHtml(String(s.rowCount ?? "—"))}</td>
+            <td>${escapeHtml(String(s.labelValueCount ?? 0))}</td>
+            <td>${escapeHtml(String(s.cellCount ?? 0))}</td>
+          </tr>`).join("");
+          return `<div class="card wide">
+            <h3>All workbook sheets</h3>
+            <p class="muted">${harvest.sheetCount || harvest.sheets.length} sheets · ${harvest.structuredCount || 0} fully mapped · ${harvest.unstructuredCount || 0} harvested for Ask Buddy / later adapters. Re-upload to refresh.</p>
+            <div style="overflow:auto;">
+              <table class="table">
+                <thead><tr><th>Sheet</th><th>Status</th><th>Rows</th><th>Label/values</th><th>Cell dump</th></tr></thead>
+                <tbody>${rows}</tbody>
+              </table>
+            </div>
+          </div>`;
+        })()}
 
         <div class="card wide">
           <h3>All drivers</h3>

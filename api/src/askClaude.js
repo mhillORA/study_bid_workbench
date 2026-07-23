@@ -177,7 +177,11 @@ async function getStudyContext(studyId, { getDb }) {
           }
         : null,
       lineItemSample: lineSample,
-      lineItemCountsByDepartment: byDept
+      lineItemCountsByDepartment: byDept,
+      sheetHarvestSummary: study.sheetHarvestSummary || version?.sheetHarvestSummary || null,
+      sheetNames: (version?.sheetInventory || study.sheetHarvestSummary?.sheets || []).map((s) =>
+        typeof s === "string" ? s : s.name
+      )
     };
   } catch (err) {
     return {
