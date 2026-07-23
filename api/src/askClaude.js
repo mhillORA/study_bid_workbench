@@ -8,7 +8,9 @@ const SYSTEM_PROMPT_DEFAULT = [
   "Be concise and practical. Prefer numbers and Ora codes when present in context.",
   "If context is missing or incomplete, say what you need.",
   "Do not invent Cosmos data that is not in the provided context.",
-  "This is a proof-of-concept — keep answers short unless asked for detail.",
+  "When the user asks to open, go to, or show a tab/section (Hub, Studies, Versions, Overview, Recruitment, ClinOps, Monitoring, SMO, Summary, Reviews, Formulas, Upload), put exactly one line at the end of your reply: NAVIGATE:<sectionId> using one of: hub, studies, versions, overview, recruitment, clinops, monitoring, smo, summary, reviews, formulas, upload.",
+  "When the user asks you to set, fill, change, or update a field on the open study, briefly confirm what you will change, then put exactly one line at the end: APPLY:[{\"path\":\"drivers.enrolledSubjects\",\"value\":120,\"label\":\"Enrolled subjects\"}].",
+  "APPLY paths must use editableFields from context: drivers.<key>, study header keys (clientName, title, protocol, phase, therapeuticArea, indication, enrollmentType, budgetType), or inputFields.<index>. Never invent field paths. Do not claim the value is saved until the user clicks Apply in the UI.",
   "When context.user has a firstName (or displayName), greet them by first name when they say hi/hello or on the first reply of a chat — then skip greetings on follow-ups unless they greet you again."
 ].join(" ");
 
@@ -25,15 +27,19 @@ function buddyInstructionsBase() {
 
 function systemPromptFor(context) {
   const base = buddyInstructionsBase();
+  const protocols =
+    " Machine protocols: for tab navigation end with NAVIGATE:<sectionId> (hub,studies,versions,overview,recruitment,clinops,monitoring,smo,summary,reviews,formulas,upload)." +
+    " For field fills end with APPLY:[{\"path\":\"drivers.enrolledSubjects\",\"value\":120,\"label\":\"Enrolled subjects\"}] using only editableFields from context; the user must click Apply before values write.";
   const user = context?.user;
   if (!user?.firstName && !user?.displayName && !user?.email) {
-    return base;
+    return base + protocols;
   }
   const label = user.firstName
     ? `${user.firstName}${user.email ? ` (${user.email})` : ""}`
     : user.displayName || user.email;
   return (
     base +
+    protocols +
     ` The signed-in user is ${label}. Prefer addressing them as ${user.firstName || "their first name"}.` +
     " Always prefer study data in the provided Context JSON over general knowledge."
   );
@@ -120,7 +126,7 @@ function providerStatus() {
     claude,
     active: azure ? "azure_openai" : claude ? "claude" : null,
     effort: envSet("ANTHROPIC_EFFORT") || "low",
-    buildId: "2026-07-23T11:10-ora-brand-prompt",
+    buildId: "2026-07-23T11:40-buddy-popup-apply",
     endpointKind: !cfg.endpoint
       ? null
       : isFoundryProjectEndpoint(cfg.endpoint)
@@ -392,9 +398,9 @@ async function askAzureOpenAI({ question, context, history }) {
 
     const respBody = await res.json().catch(() => ({}));
     if (res.ok) {
-      const text = respBody?.choices?.[0]?.message?.content?.trim() || "";
+      const text = extractAzureMessageText(respBody);
       return {
-        answer: text || "(empty response)",
+        answer: text || "I did not return any text that time — try asking again.",
         model: respBody?.model || deployment,
         provider: "azure_openai",
         via: attempt.label,
@@ -467,12 +473,31 @@ async function askClaude({ question, context, history }) {
     .trim();
 
   return {
-    answer: text || "(empty response)",
+    answer: text || "I did not return any text that time — try asking again.",
     model: body.model || model,
     provider: "claude",
     effort,
     usage: body.usage || null
   };
+}
+
+/** Normalize Azure chat message content (string or multipart). */
+function extractAzureMessageText(respBody) {
+  const msg = respBody?.choices?.[0]?.message;
+  if (!msg) return "";
+  const raw = msg.content;
+  if (typeof raw === "string") return raw.trim();
+  if (Array.isArray(raw)) {
+    return raw
+      .map((part) => {
+        if (typeof part === "string") return part;
+        if (part?.type === "text" && part.text) return part.text;
+        return part?.text || "";
+      })
+      .join("\n")
+      .trim();
+  }
+  return String(msg.refusal || "").trim();
 }
 
 /** Prefer Azure OpenAI (Ask Buddy); fall back to Claude only if Azure is unset. */

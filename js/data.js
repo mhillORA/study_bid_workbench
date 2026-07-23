@@ -12,8 +12,7 @@ SBW.users = [
 
 SBW.sections = [
   { id: "hub", label: "Hub", department: null },
-  { id: "ask", label: "Ask Buddy", department: null },
-  { id: "studies", label: "Studies (Cosmos)", department: null },
+  { id: "studies", label: "Studies", department: null },
   { id: "versions", label: "Versions / Diff", department: null },
   { id: "overview", label: "Overview / Inputs", department: "Analyst" },
   { id: "recruitment", label: "Recruitment", department: "Recruitment" },
@@ -26,83 +25,74 @@ SBW.sections = [
   { id: "upload", label: "Upload budgets", department: "Analyst" }
 ];
 
-/** Set after Static Web App / API is deployed. Empty = same origin /api */
+/** Empty = same origin /api (Static Web App) */
 SBW.apiBase = "";
 
+/** Empty workspace until a Cosmos study is opened or a file is uploaded. */
 SBW.defaultStudy = function () {
   return {
-    studyId: "O-06087",
-    clientName: "Regeneron",
-    title: "CAT Allergy Global Expansion",
-    protocol: "Ph3 - Cat - US Only",
-    versionLabel: "V3",
-    phase: "3",
-    therapeuticArea: "Allergy",
-    indication: "Cat Allergy",
-    enrollmentType: "Block Enrollment",
-    budgetType: "Ballpark Budget",
+    studyId: "",
+    clientName: "",
+    title: "",
+    protocol: "",
+    versionLabel: "",
+    phase: "",
+    therapeuticArea: "",
+    indication: "",
+    enrollmentType: "",
+    budgetType: "",
     drivers: {
-      screenedSubjects: 1000,
-      enrolledSubjects: 570,
-      completedSubjects: 542,
-      coreSites: 55,
-      startupMonths: 1.85,
-      enrollmentMonths: 15,
-      treatmentMonths: 5,
-      dblMonths: 1,
-      closeoutMonths: 9,
-      screenFailRate: 0.43,
-      dropOutRate: 0.05,
-      sdvPercent: 1,
-      contingency: 150000,
-      inflationRate: 0.02915,
-      discount: 0
+      screenedSubjects: null,
+      enrolledSubjects: null,
+      completedSubjects: null,
+      coreSites: null,
+      startupMonths: null,
+      enrollmentMonths: null,
+      treatmentMonths: null,
+      dblMonths: null,
+      closeoutMonths: null,
+      screenFailRate: null,
+      dropOutRate: null,
+      sdvPercent: null,
+      contingency: null,
+      inflationRate: null,
+      discount: null
     },
     sectionStatus: {
-      overview: "in_progress",
+      overview: "not_started",
       recruitment: "not_started",
       clinops: "not_started",
       monitoring: "not_started",
-      smo: "ready_for_review",
+      smo: "not_started",
       summary: "not_started",
-      formulas: "in_progress"
+      formulas: "not_started"
     },
     assumptions: {
       recruitment: {
-        contactCenterOn: true,
+        contactCenterOn: false,
         advertisingOn: false,
-        materialsOn: true,
-        recruiterTrainingAttendees: 15,
-        notes: "SMO support focus. Media buying off for this scenario."
+        materialsOn: false,
+        recruiterTrainingAttendees: null,
+        notes: ""
       },
       monitoring: {
-        strategy: "Traditional",
-        rbqmFrequency: "monthly",
+        strategy: "",
+        rbqmFrequency: "",
         maskedTeams: false,
         notes: ""
       },
       clinops: {
-        soeSource: "Sponsor SOE",
-        patientPopulation: "Adult and Pediatric",
-        notes: "V3: +20 paediatric patients per Regeneron."
+        soeSource: "",
+        patientPopulation: "",
+        notes: ""
       },
       smo: {
-        blockEnrollmentOn: true,
+        blockEnrollmentOn: false,
         fixedSitePtComp: false,
-        notes: "Efficiencies added per SMO team on V3."
+        notes: ""
       }
     },
-    requests: [
-      {
-        id: "req-1",
-        department: "SMO",
-        assigneeId: "u-smo",
-        requestedBy: "u-analyst",
-        note: "Confirm block enrollment efficiencies for US-only 55 sites.",
-        status: "completed",
-        createdAt: "2026-03-16T14:00:00.000Z"
-      }
-    ],
+    requests: [],
     formulaOverrides: {}
   };
 };

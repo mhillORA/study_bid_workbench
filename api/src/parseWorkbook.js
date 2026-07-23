@@ -338,7 +338,7 @@ async function parseWorkbookBuffer(buffer, fileName) {
   const coreSites = sites.reduce((sum, s) => sum + (typeof s.coreSites === "number" ? s.coreSites : 0), 0);
   drivers.coreSites = coreSites || drivers.coreSites;
 
-  // Defaults used by UI formula demo if missing
+  // Defaults used by UI formulas if missing
   if (drivers.contingency == null) drivers.contingency = 0;
   if (drivers.inflationRate == null) drivers.inflationRate = 0;
   if (drivers.discount == null) drivers.discount = 0;

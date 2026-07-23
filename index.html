@@ -6,7 +6,7 @@
   <title>Study Bid Workbench · Ora</title>
   <link rel="icon" type="image/png" href="img/ora-logo.png" />
   <link rel="stylesheet" href="css/styles.css" />
-  <!-- deploy-bust: 2026-07-23T11:20:00-04:00 -->
+  <!-- deploy-bust: 2026-07-23T11:40:00-04:00 -->
   <script>
     (function () {
       var key = "sbw.theme";
@@ -48,12 +48,13 @@
     <main class="main">
       <header class="topbar">
         <div>
-          <p class="eyebrow" id="studyMeta">O-06087 · Regeneron · V3</p>
+          <p class="eyebrow" id="studyMeta">No study open</p>
           <h1 id="pageTitle">Hub</h1>
           <p class="subtitle" id="pageSubtitle">Department status and hand-offs</p>
         </div>
         <div class="topbar-actions">
-          <span class="pill" id="saveStatus">Unsaved</span>
+          <span class="pill" id="saveStatus">Saved</span>
+          <button type="button" class="btn btn-secondary" id="btnBuddyOpen">Buddy</button>
           <button type="button" class="btn btn-secondary" id="btnRequestFill">Request fill</button>
         </div>
       </header>
@@ -62,10 +63,32 @@
     </main>
   </div>
 
+  <button type="button" class="buddy-fab" id="buddyFab" aria-controls="buddyPanel" aria-expanded="false" title="Ask Buddy">
+    Buddy
+  </button>
+
+  <aside class="buddy-panel" id="buddyPanel" hidden aria-hidden="true" role="dialog" aria-label="Ask Buddy">
+    <header class="buddy-panel-head">
+      <div>
+        <strong>Ask Buddy</strong>
+        <p class="muted">Study bid helper · proposes field changes for you to Apply</p>
+      </div>
+      <button type="button" class="btn btn-ghost buddy-close" id="buddyClose" aria-label="Close Buddy">×</button>
+    </header>
+    <div class="chat-log buddy-chat-log" id="askLog"></div>
+    <div class="ask-compose buddy-compose">
+      <textarea id="askInput" class="textarea" rows="3" placeholder="Ask Buddy… e.g. set enrolled subjects to 120"></textarea>
+      <div class="buddy-compose-row">
+        <button type="button" class="btn btn-primary" id="btnAsk">Send</button>
+        <span class="muted" id="askStatus"></span>
+      </div>
+    </div>
+  </aside>
+
   <dialog id="requestDialog" class="dialog">
     <form method="dialog" id="requestForm">
       <h2>Request someone to fill out</h2>
-      <p class="muted">Creates a live assignment on this study. No email yet — stub only.</p>
+      <p class="muted">Creates an assignment on this study.</p>
       <label class="field-label" for="requestDept">Department</label>
       <select id="requestDept" class="select" required></select>
       <label class="field-label" for="requestUser">Assign to</label>

@@ -549,7 +549,30 @@ app.http("ask", {
               versionLabel: clientStudy.versionLabel,
               drivers: clientStudy.drivers,
               sectionStatus: clientStudy.sectionStatus,
-              assumptions: clientStudy.assumptions
+              assumptions: clientStudy.assumptions,
+              editableFields: {
+                drivers: Object.keys(clientStudy.drivers || {}),
+                studyHeader: [
+                  "clientName",
+                  "title",
+                  "protocol",
+                  "phase",
+                  "therapeuticArea",
+                  "indication",
+                  "enrollmentType",
+                  "budgetType"
+                ],
+                inputFields: (clientStudy.inputFields || [])
+                  .slice(0, 120)
+                  .map((f, index) => ({
+                    index,
+                    key: f.key || null,
+                    label: f.label || null,
+                    section: f.section || null,
+                    value: f.value ?? null,
+                    path: `inputFields.${index}`
+                  }))
+              }
             }
           : null
       };

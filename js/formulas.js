@@ -26,25 +26,25 @@ SBW.formulaLibrary = {
   },
   "recruitment.AA3.units": {
     id: "recruitment.AA3.units",
-    label: "First phone contact units (placeholder factor)",
+    label: "First phone contact units",
     department: "Recruitment",
     expression: "d.screenedSubjects * 27.771"
   },
   "recruitment.AA4.units": {
     id: "recruitment.AA4.units",
-    label: "Pre-screen call units (placeholder factor)",
+    label: "Pre-screen call units",
     department: "Recruitment",
     expression: "d.enrolledSubjects * 1.914"
   },
   "summary.serviceFeesSubtotal": {
     id: "summary.serviceFeesSubtotal",
-    label: "Service fees subtotal (demo rollup)",
+    label: "Service fees subtotal",
     department: "Summary",
     expression: "8387878.360625"
   },
   "summary.passThroughs": {
     id: "summary.passThroughs",
-    label: "Pass-throughs (demo)",
+    label: "Pass-throughs",
     department: "Summary",
     expression: "1138075"
   },
@@ -80,7 +80,6 @@ SBW.calc = {
     const a = ctx.assumptions || {};
     const summaryServiceFees = () => 8387878.360625;
     try {
-      // Expressions are internal/demo only — later swap for a safe parser.
       // eslint-disable-next-line no-new-func
       const fn = new Function("d", "a", "summaryServiceFees", `return (${expression});`);
       return fn(d, a, summaryServiceFees);

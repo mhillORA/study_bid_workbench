@@ -10,6 +10,8 @@
     dirty: false,
     results: {},
     askHistory: [],
+    buddyOpen: false,
+    buddyBusy: false,
     source: "local", // local | cosmos
     versions: [],
     lineItems: [],
@@ -49,6 +51,14 @@
     btnSave: document.getElementById("btnSave"),
     btnExport: document.getElementById("btnExport"),
     btnRequestFill: document.getElementById("btnRequestFill"),
+    btnBuddyOpen: document.getElementById("btnBuddyOpen"),
+    buddyFab: document.getElementById("buddyFab"),
+    buddyPanel: document.getElementById("buddyPanel"),
+    buddyClose: document.getElementById("buddyClose"),
+    askLog: document.getElementById("askLog"),
+    askInput: document.getElementById("askInput"),
+    btnAsk: document.getElementById("btnAsk"),
+    askStatus: document.getElementById("askStatus"),
     compareOverlay: document.getElementById("compareOverlay"),
     requestDialog: document.getElementById("requestDialog"),
     requestForm: document.getElementById("requestForm"),
@@ -204,41 +214,445 @@
     return `${base}${path}`;
   }
 
-  function renderAsk() {
+  const STUDY_HEADER_KEYS = [
+    "clientName", "title", "protocol", "phase", "therapeuticArea",
+    "indication", "enrollmentType", "budgetType"
+  ];
+
+  const DRIVER_LABEL_ALIASES = {
+    "enrolled subjects": "enrolledSubjects",
+    enrolled: "enrolledSubjects",
+    patients: "enrolledSubjects",
+    "screened subjects": "screenedSubjects",
+    screened: "screenedSubjects",
+    "completed subjects": "completedSubjects",
+    completed: "completedSubjects",
+    "core sites": "coreSites",
+    sites: "coreSites",
+    "startup months": "startupMonths",
+    "enrollment months": "enrollmentMonths",
+    "treatment months": "treatmentMonths",
+    "dbl months": "dblMonths",
+    "closeout months": "closeoutMonths",
+    "screen fail rate": "screenFailRate",
+    "drop out rate": "dropOutRate",
+    "dropout rate": "dropOutRate",
+    "sdv percent": "sdvPercent",
+    "sdv %": "sdvPercent",
+    contingency: "contingency",
+    inflation: "inflationRate",
+    "inflation rate": "inflationRate",
+    discount: "discount"
+  };
+
+  const SECTION_NAV_ALIASES = {
+    hub: ["hub", "home"],
+    studies: ["studies", "study list"],
+    versions: ["versions", "diff", "versions / diff"],
+    overview: ["overview", "inputs", "overview / inputs"],
+    recruitment: ["recruitment", "recruit"],
+    clinops: ["clinops", "clin ops", "soe", "clinops / soe"],
+    monitoring: ["monitoring", "clinical monitoring"],
+    smo: ["smo", "block enrollment", "block enrollment / smo"],
+    summary: ["summary", "exec summary", "exec sum"],
+    reviews: ["reviews", "review"],
+    formulas: ["formulas", "formula"],
+    upload: ["upload", "upload budgets"]
+  };
+
+  function openBuddy() {
+    state.buddyOpen = true;
+    if (els.buddyPanel) {
+      els.buddyPanel.hidden = false;
+      els.buddyPanel.setAttribute("aria-hidden", "false");
+    }
+    if (els.buddyFab) els.buddyFab.setAttribute("aria-expanded", "true");
+    paintBuddyChat();
+    if (els.askInput) els.askInput.focus();
+  }
+
+  function closeBuddy() {
+    state.buddyOpen = false;
+    if (els.buddyPanel) {
+      els.buddyPanel.hidden = true;
+      els.buddyPanel.setAttribute("aria-hidden", "true");
+    }
+    if (els.buddyFab) els.buddyFab.setAttribute("aria-expanded", "false");
+  }
+
+  function toggleBuddy() {
+    if (state.buddyOpen) closeBuddy();
+    else openBuddy();
+  }
+
+  function paintBuddyChat() {
+    if (!els.askLog) return;
     const turns = state.askHistory
-      .map((t) => {
+      .map((t, idx) => {
         const who = t.role === "user" ? "You" : "Buddy";
-        return `<div class="chat-turn ${t.role}"><div class="chat-who">${who}</div><div class="chat-body">${escapeHtml(t.content)}</div></div>`;
+        let proposalHtml = "";
+        if (t.proposal && t.proposal.patches && t.proposal.patches.length) {
+          const st = t.proposal.status || "pending";
+          const rows = t.proposal.patches
+            .map((p) => `<li><strong>${escapeHtml(p.label || p.path)}</strong> → ${escapeHtml(formatPatchValue(p.value))}</li>`)
+            .join("");
+          const actions = st === "pending"
+            ? `<div class="buddy-proposal-actions">
+                <button type="button" class="btn btn-primary" data-buddy-apply="${t.proposal.id}">Apply</button>
+                <button type="button" class="btn btn-ghost" data-buddy-reject="${t.proposal.id}">Reject</button>
+              </div>`
+            : `<p class="muted">${st === "applied" ? "Applied to the open study (Save when ready)." : "Rejected."}</p>`;
+          proposalHtml = `<div class="buddy-proposal ${escapeAttr(st)}">
+            <div class="chat-who">Proposed changes</div>
+            <ul>${rows}</ul>
+            ${actions}
+          </div>`;
+        }
+        return `<div class="chat-turn ${t.role}" data-ask-idx="${idx}">
+          <div class="chat-who">${who}</div>
+          <div class="chat-body">${escapeHtml(t.content)}</div>
+          ${proposalHtml}
+        </div>`;
       })
       .join("");
-    return `
-      <div class="grid">
-        <div class="card wide">
-          <h3>Ask Buddy</h3>
-          <p class="muted">Study bid helper powered by Azure AI. Uses the working study here, plus Cosmos when loaded.</p>
-          <div class="chat-log" id="askLog">${turns || "<p class=\"muted\">Try: “What are the enrollment drivers?” or “Summarize ClinOps assumptions.”</p>"}</div>
-          <div class="ask-compose">
-            <textarea id="askInput" class="textarea" rows="3" placeholder="Ask Buddy a question…"></textarea>
-            <button type="button" class="btn btn-primary" id="btnAsk">Ask Buddy</button>
-            <span class="muted" id="askStatus"></span>
-          </div>
-        </div>
-      </div>`;
+    els.askLog.innerHTML = turns ||
+      "<p class=\"muted\">Ask about drivers, or try “set enrolled subjects to 120” — I’ll propose the change for you to Apply.</p>";
+    els.askLog.scrollTop = els.askLog.scrollHeight;
+    if (els.askStatus) {
+      els.askStatus.textContent = state.buddyBusy ? "Thinking…" : "";
+    }
+    if (els.btnAsk) els.btnAsk.disabled = !!state.buddyBusy;
+  }
+
+  function formatPatchValue(v) {
+    if (v == null) return "—";
+    if (typeof v === "object") return JSON.stringify(v);
+    return String(v);
+  }
+
+  function resolveSectionId(target) {
+    const t = String(target || "").toLowerCase().trim();
+    if (!t) return null;
+    if (["ask", "ask buddy", "buddy", "chat"].includes(t)) return "__buddy__";
+    for (const s of SBW.sections) {
+      if (s.id === t || s.label.toLowerCase() === t) return s.id;
+    }
+    for (const [id, aliases] of Object.entries(SECTION_NAV_ALIASES)) {
+      if (aliases.some((a) => t === a || t.includes(a))) return id;
+    }
+    return null;
+  }
+
+  /** Pure “open/go to …” intents — navigate without waiting on the model. */
+  function matchNavigateOnly(question) {
+    const q = String(question || "")
+      .toLowerCase()
+      .replace(/[?.!]+$/g, "")
+      .trim();
+    const m = q.match(
+      /^(?:please\s+)?(?:open|go to|show|switch to|navigate to|take me to)\s+(.+)$/i
+    );
+    if (!m) return null;
+    return resolveSectionId(m[1]);
+  }
+
+  function normalizeFieldToken(s) {
+    return String(s || "")
+      .toLowerCase()
+      .replace(/[_./]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  function coercePatchValue(raw) {
+    const s = String(raw ?? "").trim();
+    if (s === "") return "";
+    if (/^(true|false)$/i.test(s)) return /^true$/i.test(s);
+    if (/^-?\d+(\.\d+)?$/.test(s)) return Number(s);
+    return s.replace(/^["']|["']$/g, "");
+  }
+
+  function resolveFieldPath(token) {
+    const t = normalizeFieldToken(token);
+    if (!t) return null;
+
+    if (t.startsWith("drivers ")) {
+      const key = t.slice(8).replace(/\s+/g, "");
+      const camel = Object.keys(state.study.drivers || {}).find(
+        (k) => k.toLowerCase() === key.toLowerCase()
+      );
+      if (camel) return { path: `drivers.${camel}`, label: camel };
+    }
+
+    const alias = DRIVER_LABEL_ALIASES[t];
+    if (alias && state.study.drivers && alias in state.study.drivers) {
+      return { path: `drivers.${alias}`, label: alias };
+    }
+
+    for (const [label, key] of Object.entries(DRIVER_LABEL_ALIASES)) {
+      if (t.includes(label) && state.study.drivers && key in state.study.drivers) {
+        return { path: `drivers.${key}`, label: key };
+      }
+    }
+
+    for (const key of Object.keys(state.study.drivers || {})) {
+      if (normalizeFieldToken(key) === t) {
+        return { path: `drivers.${key}`, label: key };
+      }
+    }
+
+    for (const key of STUDY_HEADER_KEYS) {
+      if (normalizeFieldToken(key) === t || t === key.toLowerCase()) {
+        return { path: key, label: key };
+      }
+    }
+
+    const fields = state.study.inputFields || [];
+    for (let i = 0; i < fields.length; i++) {
+      const f = fields[i];
+      const label = normalizeFieldToken(f.label);
+      const key = normalizeFieldToken(f.key);
+      if (t === label || t === key || (label && label.includes(t)) || (t && label.includes(t) && t.length > 3)) {
+        return {
+          path: `inputFields.${i}`,
+          label: f.label || f.key || `inputFields[${i}]`,
+          inputIdx: i
+        };
+      }
+    }
+
+    return null;
+  }
+
+  function readFieldValue(path, inputIdx) {
+    if (inputIdx != null && state.study.inputFields?.[inputIdx]) {
+      return state.study.inputFields[inputIdx].value;
+    }
+    if (path.startsWith("drivers.")) {
+      return state.study.drivers?.[path.slice(8)];
+    }
+    return state.study[path];
+  }
+
+  function writeFieldValue(patch) {
+    const path = patch.path;
+    const value = patch.value;
+    if (patch.inputIdx != null || path.startsWith("inputFields.")) {
+      const idx = patch.inputIdx != null
+        ? patch.inputIdx
+        : Number(String(path).split(".")[1]);
+      if (!state.study.inputFields) state.study.inputFields = [];
+      if (!state.study.inputFields[idx]) return false;
+      state.study.inputFields[idx].value = value;
+      const key = state.study.inputFields[idx].key;
+      if (key && !String(key).startsWith("input:") && !String(key).startsWith("driver:")) {
+        if (!state.study.header) state.study.header = {};
+        state.study.header[key] = value;
+        if (STUDY_HEADER_KEYS.includes(key)) state.study[key] = value;
+      }
+      if (String(key || "").startsWith("driver.")) {
+        const dkey = String(key).replace(/^driver\./, "");
+        if (state.study.drivers && dkey in state.study.drivers) {
+          state.study.drivers[dkey] = value;
+        }
+      }
+      return true;
+    }
+    if (path.startsWith("drivers.")) {
+      const key = path.slice(8);
+      if (!state.study.drivers) state.study.drivers = {};
+      state.study.drivers[key] = value;
+      return true;
+    }
+    if (STUDY_HEADER_KEYS.includes(path)) {
+      state.study[path] = value;
+      if (!state.study.header) state.study.header = {};
+      state.study.header[path] = value;
+      return true;
+    }
+    return false;
+  }
+
+  function normalizePatches(rawPatches) {
+    if (!Array.isArray(rawPatches)) return [];
+    const out = [];
+    for (const raw of rawPatches) {
+      if (!raw || typeof raw !== "object") continue;
+      let path = String(raw.path || "").trim();
+      let label = raw.label || path;
+      let inputIdx = raw.inputIdx;
+      if (!path && raw.field) {
+        const resolved = resolveFieldPath(raw.field);
+        if (resolved) {
+          path = resolved.path;
+          label = resolved.label;
+          inputIdx = resolved.inputIdx;
+        }
+      }
+      if (path.startsWith("driver.")) path = `drivers.${path.slice(7)}`;
+      if (!path.includes(".") && !STUDY_HEADER_KEYS.includes(path) && state.study.drivers && path in state.study.drivers) {
+        path = `drivers.${path}`;
+      }
+      if (path.startsWith("inputFields.") && inputIdx == null) {
+        inputIdx = Number(path.split(".")[1]);
+      }
+      if (!path) continue;
+      out.push({
+        path,
+        label,
+        value: raw.value,
+        inputIdx,
+        from: readFieldValue(path, inputIdx)
+      });
+    }
+    return out;
+  }
+
+  /** Pure “set X to Y” — propose without waiting on the model. */
+  function matchFillOnly(question) {
+    const q = String(question || "").replace(/[?.!]+$/g, "").trim();
+    const m = q.match(
+      /^(?:please\s+)?(?:set|fill(?:\s+in)?|change|update)\s+(.+?)\s+(?:to|with|=)\s+(.+)$/i
+    );
+    if (!m) return null;
+    const resolved = resolveFieldPath(m[1]);
+    if (!resolved) return null;
+    return normalizePatches([{
+      path: resolved.path,
+      label: resolved.label,
+      value: coercePatchValue(m[2]),
+      inputIdx: resolved.inputIdx
+    }]);
+  }
+
+  function extractApplyPatches(text) {
+    const src = String(text || "");
+    const re = /\bAPPLY:\s*(\[[\s\S]*?\])/gi;
+    let match;
+    let cleaned = src;
+    const patches = [];
+    while ((match = re.exec(src)) !== null) {
+      try {
+        const parsed = JSON.parse(match[1]);
+        patches.push(...normalizePatches(parsed));
+      } catch (_) {}
+      cleaned = cleaned.replace(match[0], "\n");
+    }
+    return { text: cleaned.trim(), patches };
+  }
+
+  function pushAssistant(content, patches) {
+    const turn = { role: "assistant", content };
+    if (patches && patches.length) {
+      turn.proposal = {
+        id: `p-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        status: "pending",
+        patches
+      };
+    }
+    state.askHistory.push(turn);
+  }
+
+  function applyBuddyAnswer(raw) {
+    let text = String(raw || "").trim();
+    const navMatch = text.match(/\bNAVIGATE:([a-z0-9_-]+)\b/i);
+    let sectionId = null;
+    if (navMatch) {
+      sectionId = resolveSectionId(navMatch[1]);
+      text = text.replace(/\s*NAVIGATE:[a-z0-9_-]+\s*/gi, "\n").trim();
+    }
+    const extracted = extractApplyPatches(text);
+    text = extracted.text;
+    if (!text) {
+      if (extracted.patches.length) {
+        text = "Proposed field updates — Apply to write them into the open study.";
+      } else if (sectionId === "__buddy__") {
+        text = "Buddy is already open.";
+      } else if (sectionId) {
+        text = `Opened ${(SBW.sections.find((s) => s.id === sectionId) || {}).label || sectionId}.`;
+      } else {
+        text = "I did not return any text that time — try asking again.";
+      }
+    }
+    pushAssistant(text, extracted.patches);
+    if (sectionId === "__buddy__") openBuddy();
+    else if (sectionId) setSection(sectionId);
+    paintBuddyChat();
+  }
+
+  function findProposal(id) {
+    for (const turn of state.askHistory) {
+      if (turn.proposal && turn.proposal.id === id) return turn.proposal;
+    }
+    return null;
+  }
+
+  function applyProposal(id) {
+    const proposal = findProposal(id);
+    if (!proposal || proposal.status !== "pending") return;
+    let applied = 0;
+    for (const patch of proposal.patches) {
+      if (writeFieldValue(patch)) applied += 1;
+    }
+    proposal.status = "applied";
+    if (applied) {
+      markDirty();
+      recalc();
+      render();
+    }
+    pushAssistant(
+      applied
+        ? `Applied ${applied} field update${applied === 1 ? "" : "s"}. Save when you’re ready to keep them.`
+        : "Could not apply those fields — check the path labels and try again."
+    );
+    paintBuddyChat();
+  }
+
+  function rejectProposal(id) {
+    const proposal = findProposal(id);
+    if (!proposal || proposal.status !== "pending") return;
+    proposal.status = "rejected";
+    pushAssistant("Okay — left those fields unchanged.");
+    paintBuddyChat();
   }
 
   async function sendAsk() {
-    const input = document.getElementById("askInput");
-    const status = document.getElementById("askStatus");
+    const input = els.askInput;
     const question = (input && input.value || "").trim();
     if (!question) {
-      if (status) status.textContent = "Type a question first.";
+      if (els.askStatus) els.askStatus.textContent = "Type a question first.";
       return;
     }
+    if (!state.buddyOpen) openBuddy();
     state.askHistory.push({ role: "user", content: question });
     if (input) input.value = "";
-    if (status) status.textContent = "Thinking…";
-    render();
-    const statusAfter = document.getElementById("askStatus");
+
+    const navOnly = matchNavigateOnly(question);
+    if (navOnly) {
+      if (navOnly === "__buddy__") {
+        pushAssistant("Buddy is open — ask me anything about this study.");
+        paintBuddyChat();
+        return;
+      }
+      const label = (SBW.sections.find((s) => s.id === navOnly) || {}).label || navOnly;
+      pushAssistant(`Opened ${label}.`);
+      setSection(navOnly);
+      paintBuddyChat();
+      return;
+    }
+
+    const fillOnly = matchFillOnly(question);
+    if (fillOnly && fillOnly.length) {
+      pushAssistant(
+        "Proposed field update — click Apply to write it into the open study.",
+        fillOnly
+      );
+      paintBuddyChat();
+      return;
+    }
+
+    state.buddyBusy = true;
+    paintBuddyChat();
     try {
       const res = await fetch(apiUrl("/api/ask"), {
         method: "POST",
@@ -256,21 +670,18 @@
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        state.askHistory.push({
-          role: "assistant",
-          content: data.error || `Request failed (${res.status})`
-        });
+        pushAssistant(data.error || `Request failed (${res.status})`);
       } else {
-        state.askHistory.push({ role: "assistant", content: data.answer || "(no answer)" });
+        applyBuddyAnswer(data.answer);
+        state.buddyBusy = false;
+        paintBuddyChat();
+        return;
       }
     } catch (err) {
-      state.askHistory.push({
-        role: "assistant",
-        content: `Could not reach /api/ask. ${String(err)}`
-      });
+      pushAssistant(`Could not reach /api/ask. ${String(err)}`);
     }
-    render();
-    if (statusAfter) statusAfter.textContent = "";
+    state.buddyBusy = false;
+    paintBuddyChat();
   }
 
   function renderUpload() {
@@ -559,7 +970,7 @@
           <div style="display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap;">
             <div>
               <h3>Studies in Cosmos</h3>
-              <p class="muted">Open a study into the workbench, or check two and compare side by side. Current: <strong>${escapeHtml(openId || "(local demo)")}</strong></p>
+              <p class="muted">Open a study into the workbench, or check two and compare side by side. Current: <strong>${escapeHtml(openId || "(none)")}</strong></p>
             </div>
             <div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;">
               <label class="field-label" style="margin:0;" for="studiesGroupBy">Group by</label>
@@ -1030,7 +1441,7 @@
         <div class="card wide">
           <h3>Versions / Diff</h3>
           <p class="muted">Study <code>${escapeHtml(state.study.studyId || "")}</code>
-            · ${state.source === "cosmos" ? "Cosmos" : "Local demo"} · ${versions.length} version(s)</p>
+            · ${state.source === "cosmos" ? "Cosmos" : "Workbench"} · ${versions.length} version(s)</p>
           ${versions.length < 2 ? "<p class=\"muted\">Upload another workbook for the same opportunity ID to create a second version, then compare.</p>" : ""}
           <div class="form-grid" style="margin-top:1rem;">
             <div>
@@ -1098,7 +1509,7 @@
         render();
         return;
       }
-      const fakePayload = {
+      const versionPayload = {
         study: {
           studyId: state.study.studyId,
           currentVersionId: state.study.currentVersionId,
@@ -1115,7 +1526,7 @@
         versions: state.versions,
         lineItems: data.lineItems || []
       };
-      state.study = cosmosStudyToWorkspace(fakePayload);
+      state.study = cosmosStudyToWorkspace(versionPayload);
       state.lineItems = data.lineItems || [];
       state.source = "cosmos";
       state.sectionId = "overview";
@@ -1148,7 +1559,7 @@
         <div class="card">
           <h3>Service fees</h3>
           <div class="stat">${money(state.results["summary.totalServiceFees"])}</div>
-          <p class="muted">Includes contingency + inflation (demo formulas)</p>
+          <p class="muted">Includes contingency + inflation</p>
         </div>
         <div class="card">
           <h3>Pass-throughs</h3>
@@ -1273,8 +1684,8 @@
           <h3>Calculated (nearby)</h3>
           <p><strong>Total duration:</strong> ${num(state.results["drivers.totalDuration"], 2)} months</p>
           <p><strong>Enrollment rate:</strong> ${num(state.results["drivers.enrollmentRate"], 3)} subjects/site/month</p>
-          <p><strong>Service fees (demo):</strong> ${money(state.results["summary.totalServiceFees"])}</p>
-          <p><strong>Grand total (demo):</strong> ${money(state.results["summary.grandTotal"])}</p>
+          <p><strong>Service fees:</strong> ${money(state.results["summary.totalServiceFees"])}</p>
+          <p><strong>Grand total:</strong> ${money(state.results["summary.grandTotal"])}</p>
           <p class="muted">${fields.length} Input Tab fields · ${sites.length} sites · ${state.lineItems.length} line items in memory</p>
           ${!fields.length ? "<p class=\"muted\">Open a Cosmos study (after upload) to populate every captured Input Tab cell.</p>" : ""}
         </div>
@@ -1485,9 +1896,9 @@
 
     return `
       <div class="grid">
-        <div class="card"><h3>Service fees (formula demo)</h3><div class="stat">${money(state.results["summary.totalServiceFees"])}</div></div>
-        <div class="card"><h3>Pass-throughs (formula demo)</h3><div class="stat">${money(state.results["summary.passThroughs"])}</div></div>
-        <div class="card"><h3>Grand total (formula demo)</h3><div class="stat">${money(state.results["summary.grandTotal"])}</div></div>
+        <div class="card"><h3>Service fees</h3><div class="stat">${money(state.results["summary.totalServiceFees"])}</div></div>
+        <div class="card"><h3>Pass-throughs</h3><div class="stat">${money(state.results["summary.passThroughs"])}</div></div>
+        <div class="card"><h3>Grand total</h3><div class="stat">${money(state.results["summary.grandTotal"])}</div></div>
         <div class="card half">
           <h3>Exec Sum totals (from file)</h3>
           <table class="table"><thead><tr><th>Label</th><th>Amount</th></tr></thead><tbody>${totalRows}</tbody></table>
@@ -1576,7 +1987,9 @@
     const user = currentUser();
     const section = SBW.sections.find((s) => s.id === state.sectionId) || SBW.sections[0];
 
-    els.studyMeta.textContent = `${state.study.studyId} · ${state.study.clientName || "—"} · ${state.study.versionLabel}${state.source === "cosmos" ? " · Cosmos" : " · Local"}`;
+    els.studyMeta.textContent = state.study.studyId
+      ? `${state.study.studyId} · ${state.study.clientName || "—"} · ${state.study.versionLabel || "—"}${state.source === "cosmos" ? " · Cosmos" : ""}`
+      : "No study open";
     els.pageTitle.textContent = section.label;
     els.pageSubtitle.textContent = section.department
       ? `Editable by ${section.department}${canEdit(section.department) ? "" : " (view only for you)"}`
@@ -1587,7 +2000,6 @@
     let html = "";
     switch (section.id) {
       case "hub": html = renderHub(); break;
-      case "ask": html = renderAsk(); break;
       case "upload": html = renderUpload(); break;
       case "studies": html = renderStudies(); break;
       case "versions": html = renderVersions(); break;
@@ -1668,9 +2080,6 @@
       if (e.target.id === "btnRefreshQuarantine") {
         refreshQuarantine();
         return;
-      }
-      if (e.target.id === "btnAsk") {
-        sendAsk();
       }
       if (e.target.id === "btnRefreshStudies") {
         loadStudiesIntoPanel();
@@ -1753,6 +2162,7 @@
 
     document.addEventListener("keydown", (e) => {
       if (e.key === "Escape" && state.studyCompare.open) closeStudyCompare();
+      if (e.key === "Escape" && state.buddyOpen) closeBuddy();
     });
 
     els.viewRoot.addEventListener("change", (e) => {
@@ -1857,6 +2267,32 @@
 
     els.btnSave.addEventListener("click", save);
     els.btnExport.addEventListener("click", exportJson);
+
+    if (els.btnBuddyOpen) els.btnBuddyOpen.addEventListener("click", openBuddy);
+    if (els.buddyFab) els.buddyFab.addEventListener("click", openBuddy);
+    if (els.buddyClose) els.buddyClose.addEventListener("click", closeBuddy);
+    if (els.btnAsk) els.btnAsk.addEventListener("click", sendAsk);
+    if (els.askInput) {
+      els.askInput.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.shiftKey) {
+          e.preventDefault();
+          sendAsk();
+        }
+      });
+    }
+    if (els.buddyPanel) {
+      els.buddyPanel.addEventListener("click", (e) => {
+        const applyBtn = e.target.closest("[data-buddy-apply]");
+        if (applyBtn) {
+          applyProposal(applyBtn.getAttribute("data-buddy-apply"));
+          return;
+        }
+        const rejectBtn = e.target.closest("[data-buddy-reject]");
+        if (rejectBtn) {
+          rejectProposal(rejectBtn.getAttribute("data-buddy-reject"));
+        }
+      });
+    }
     els.btnRequestFill.addEventListener("click", () => els.requestDialog.showModal());
 
     els.requestForm.addEventListener("submit", (e) => {
@@ -1941,6 +2377,7 @@
 
   // Land user on their department page on first load (Admin stays on Hub)
   const user = currentUser();
+  if (state.sectionId === "ask") state.sectionId = "hub";
   if (user.department !== "Admin") {
     const home = SBW.sections.find((s) => s.department === user.department);
     if (home) state.sectionId = home.id;
@@ -1968,6 +2405,7 @@
   bind();
   bindTheme();
   render();
+  paintBuddyChat();
   markSaved();
   loadEntraUser();
 })();
