@@ -4,6 +4,7 @@
 
   const state = {
     userId: localStorage.getItem(USER_KEY) || "u-admin",
+    entraUser: null,
     sectionId: "hub",
     study: loadStudy(),
     dirty: false,
@@ -246,6 +247,7 @@
           question,
           studyId: state.study.studyId,
           studySnapshot: state.study,
+          user: state.entraUser || undefined,
           history: state.askHistory.slice(0, -1).map((t) => ({
             role: t.role,
             content: t.content
@@ -1902,13 +1904,33 @@
       const payload = await res.json();
       const principal = Array.isArray(payload) ? payload[0] : payload?.clientPrincipal;
       if (!principal) return;
-      const name =
-        principal.userDetails ||
-        principal.claims?.find((c) => c.typ === "name" || c.typ?.endsWith("/name"))?.val ||
-        principal.userId ||
-        "Signed in";
+      const claims = {};
+      for (const c of principal.claims || []) {
+        if (!c || c.typ == null) continue;
+        claims[c.typ] = c.val;
+        const short = String(c.typ).split("/").pop();
+        if (short && claims[short] == null) claims[short] = c.val;
+      }
+      const email = principal.userDetails || claims.preferred_username || claims.email || null;
+      const displayName = claims.name || email || principal.userId || "Signed in";
+      const given = claims.given_name || claims.givenname || null;
+      let firstName = given ? String(given).trim().split(/\s+/)[0] : null;
+      if (!firstName && displayName && !String(displayName).includes("@")) {
+        firstName = String(displayName).trim().split(/[\s,]+/)[0];
+      }
+      if (!firstName && email && String(email).includes("@")) {
+        const token = String(email).split("@")[0].split(/[._-]/)[0];
+        if (token) firstName = token.charAt(0).toUpperCase() + token.slice(1);
+      }
+      state.entraUser = {
+        userId: principal.userId || null,
+        identityProvider: principal.identityProvider || "aad",
+        email,
+        displayName,
+        firstName
+      };
       if (el) {
-        el.textContent = name;
+        el.textContent = displayName;
         el.hidden = false;
       }
       if (btn) btn.hidden = false;

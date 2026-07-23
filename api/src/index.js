@@ -1,7 +1,7 @@
 const { app } = require("@azure/functions");
 const AdmZip = require("adm-zip");
 const { parseWorkbookBuffer } = require("./parseWorkbook");
-const { upsertCanonical, listStudies, getStudy, listVersions, getVersion, listLineItems, compareVersions, listQuarantine, getDb } = require("./cosmosLoad");
+const { upsertCanonical, listStudies, getStudy, listVersions, getVersion, listLineItems, compareVersions, compareStudies, listQuarantine, getDb } = require("./cosmosLoad");
 const { askAi, getStudyContext, providerStatus } = require("./askClaude");
 
 function json(status, body) {
@@ -13,6 +13,109 @@ function json(status, body) {
     },
     jsonBody: body
   };
+}
+
+function headerGet(request, name) {
+  return (
+    request.headers.get(name) ||
+    request.headers.get(name.toLowerCase()) ||
+    request.headers.get(name.toUpperCase()) ||
+    ""
+  );
+}
+
+function claimMap(claims) {
+  const map = {};
+  if (!Array.isArray(claims)) return map;
+  for (const c of claims) {
+    if (!c || c.typ == null) continue;
+    map[String(c.typ)] = c.val;
+    const short = String(c.typ).split("/").pop();
+    if (short && map[short] == null) map[short] = c.val;
+  }
+  return map;
+}
+
+function firstNameFrom(displayName, email, givenName) {
+  if (givenName && String(givenName).trim()) {
+    return String(givenName).trim().split(/\s+/)[0];
+  }
+  if (displayName && String(displayName).trim()) {
+    const d = String(displayName).trim();
+    if (!d.includes("@")) return d.split(/[\s,]+/)[0];
+  }
+  if (email && String(email).includes("@")) {
+    const local = String(email).split("@")[0];
+    const token = local.split(/[._-]/)[0];
+    if (token) return token.charAt(0).toUpperCase() + token.slice(1);
+  }
+  return null;
+}
+
+/** Prefer SWA Easy Auth headers; never trust client-supplied identity alone. */
+function signedInUserFromRequest(request, bodyUser) {
+  const encoded = headerGet(request, "x-ms-client-principal");
+  if (encoded) {
+    try {
+      const raw = JSON.parse(Buffer.from(encoded, "base64").toString("utf8"));
+      const claims = claimMap(raw.claims);
+      const email =
+        raw.userDetails ||
+        claims.preferred_username ||
+        claims.email ||
+        claims.emails ||
+        headerGet(request, "x-ms-client-principal-name") ||
+        null;
+      const displayName =
+        claims.name ||
+        claims["http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name"] ||
+        null;
+      const givenName =
+        claims.given_name ||
+        claims.givenname ||
+        claims["http://schemas.xmlsoap.org/ws/2005/05/identity/claims/givenname"] ||
+        null;
+      const firstName = firstNameFrom(displayName, email, givenName);
+      return {
+        userId: raw.userId || headerGet(request, "x-ms-client-principal-id") || null,
+        identityProvider: raw.identityProvider || headerGet(request, "x-ms-client-principal-idp") || "aad",
+        email: email || null,
+        displayName: displayName || email || null,
+        firstName,
+        source: "swa_principal"
+      };
+    } catch (_) {
+      /* fall through */
+    }
+  }
+
+  const headerName = headerGet(request, "x-ms-client-principal-name");
+  if (headerName) {
+    return {
+      userId: headerGet(request, "x-ms-client-principal-id") || null,
+      identityProvider: headerGet(request, "x-ms-client-principal-idp") || "aad",
+      email: headerName.includes("@") ? headerName : null,
+      displayName: headerName,
+      firstName: firstNameFrom(headerName, headerName, null),
+      source: "swa_headers"
+    };
+  }
+
+  // Local / pre-auth preview only — optional hint from browser /.auth/me
+  if (bodyUser && (bodyUser.email || bodyUser.displayName || bodyUser.firstName)) {
+    const email = bodyUser.email || null;
+    const displayName = bodyUser.displayName || email;
+    return {
+      userId: bodyUser.userId || null,
+      identityProvider: bodyUser.identityProvider || "client",
+      email,
+      displayName,
+      firstName: bodyUser.firstName || firstNameFrom(displayName, email, null),
+      source: "client_hint"
+    };
+  }
+
+  return null;
 }
 
 async function collectXlsxFromRequest(request) {
@@ -291,6 +394,38 @@ app.http("studyCompare", {
   }
 });
 
+app.http("budgetsCompare", {
+  methods: ["GET", "OPTIONS"],
+  authLevel: "anonymous",
+  route: "compare",
+  handler: async (request, context) => {
+    if (request.method === "OPTIONS") {
+      return {
+        status: 204,
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, OPTIONS"
+        }
+      };
+    }
+    try {
+      const url = new URL(request.url);
+      const left = url.searchParams.get("left");
+      const right = url.searchParams.get("right");
+      const leftVersion = url.searchParams.get("leftVersion");
+      const rightVersion = url.searchParams.get("rightVersion");
+      if (!left || !right) {
+        return json(400, { error: "Query params left & right (study ids) are required" });
+      }
+      const diff = await compareStudies(left, right, leftVersion, rightVersion);
+      return json(200, diff);
+    } catch (err) {
+      context.error(err);
+      return json(500, { error: String(err.message || err) });
+    }
+  }
+});
+
 app.http("health", {
   methods: ["GET"],
   authLevel: "anonymous",
@@ -364,6 +499,7 @@ app.http("ask", {
       const studyId = body.studyId ? String(body.studyId).trim() : null;
       const clientStudy = body.studySnapshot || null;
       const history = body.history || [];
+      const user = signedInUserFromRequest(request, body.user || null);
 
       let cosmosContext = null;
       if (studyId) {
@@ -372,6 +508,7 @@ app.http("ask", {
 
       const contextPayload = {
         askedAt: new Date().toISOString(),
+        user,
         cosmos: cosmosContext,
         workingStudy: clientStudy
           ? {
@@ -395,7 +532,8 @@ app.http("ask", {
         model: result.model,
         provider: result.provider,
         usage: result.usage,
-        studyId: studyId || clientStudy?.studyId || null
+        studyId: studyId || clientStudy?.studyId || null,
+        greetedAs: user?.firstName || user?.displayName || null
       });
     } catch (err) {
       context.error(err);

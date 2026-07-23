@@ -2,14 +2,29 @@
  * Ask Buddy — study context + LLM (Azure OpenAI preferred; Claude optional fallback).
  */
 
-const SYSTEM_PROMPT = [
+const SYSTEM_PROMPT_BASE = [
   "You are Ask Buddy, the Study Bid Workbench assistant for Ora Clinical BD / operations.",
   "Answer questions about clinical study budgets, drivers, departments, line items, and formulas.",
   "Be concise and practical. Prefer numbers and Ora codes when present in context.",
   "If context is missing or incomplete, say what you need.",
   "Do not invent Cosmos data that is not in the provided context.",
-  "This is a proof-of-concept — keep answers short unless asked for detail."
+  "This is a proof-of-concept — keep answers short unless asked for detail.",
+  "When context.user has a firstName (or displayName), greet them by first name when they say hi/hello or on the first reply of a chat — then skip greetings on follow-ups unless they greet you again."
 ].join(" ");
+
+function systemPromptFor(context) {
+  const user = context?.user;
+  if (!user?.firstName && !user?.displayName && !user?.email) {
+    return SYSTEM_PROMPT_BASE;
+  }
+  const label = user.firstName
+    ? `${user.firstName}${user.email ? ` (${user.email})` : ""}`
+    : user.displayName || user.email;
+  return (
+    SYSTEM_PROMPT_BASE +
+    ` The signed-in user is ${label}. Prefer addressing them as ${user.firstName || "their first name"}.`
+  );
+}
 
 function envSet(name) {
   const v = (process.env[name] || "").trim();
@@ -92,7 +107,7 @@ function providerStatus() {
     claude,
     active: azure ? "azure_openai" : claude ? "claude" : null,
     effort: envSet("ANTHROPIC_EFFORT") || "low",
-    buildId: "2026-07-22T16:58-temp1",
+    buildId: "2026-07-23T09:10-entra-user",
     endpointKind: !cfg.endpoint
       ? null
       : isFoundryProjectEndpoint(cfg.endpoint)
@@ -335,7 +350,7 @@ async function askAzureOpenAI({ question, context, history }) {
   }
 
   const messages = [
-    { role: "system", content: SYSTEM_PROMPT },
+    { role: "system", content: systemPromptFor(context) },
     ...buildHistoryMessages(history),
     { role: "user", content: userBlock(question, context) }
   ];
@@ -406,7 +421,7 @@ async function askClaude({ question, context, history }) {
   const payload = {
     model,
     max_tokens: 1024,
-    system: SYSTEM_PROMPT,
+    system: systemPromptFor(context),
     messages
   };
   // Effort controls token spend / thoroughness (low = cheapest/fastest).
