@@ -8,23 +8,31 @@ const SYSTEM_PROMPT_DEFAULT = [
   "Be concise and practical. Prefer numbers and Ora codes when present in context.",
   "If context is missing or incomplete, say what you need.",
   "Do not invent Cosmos data that is not in the provided context.",
-  "For portfolio / cross-study questions (clients like Alcon, totals, how many patients/studies last year, budget dollars, which study is largest), use context.portfolio: totals (including serviceFees, passThroughs, grandTotal), byClient, highestBudgetStudies, and studies. Prefer portfolio.totals when filters match. For 'most profitable' use highest grandTotal/serviceFees and say true GM/profit is not in this extract unless margin fields appear. If portfolio.note says no match, say which client names exist in clientNamesInDatabase.",
-  "When context.cosmos is present, answer about that single study. When both exist, use cosmos for study-specific detail and portfolio for rollups.",
+  "For portfolio / cross-study questions (all studies, averages across studies, clients like Alcon, totals, how many patients/studies last year, budget dollars, which study is largest), use context.portfolio — especially averages.enrolledSubjects, totals, byClient, highestBudgetStudies, matchedStudyCount. Prefer portfolio when context.answerFocus is \"portfolio\". NEVER answer an all-studies / average-across-studies question using only workingStudy or openStudyInUi.",
+  "When context.answerFocus is \"single_study\" and cosmos/workingStudy is present, answer about that study. When answerFocus is \"portfolio\", ignore the open UI study except as optional footnote.",
+  "When both cosmos and portfolio exist, use cosmos for study-specific detail and portfolio for rollups/averages.",
+  "When the user wants a new study / draft bid and provides details (client, protocol, phase, enrollment, sites, etc.), briefly confirm, then end with exactly one line: CREATE_STUDY:{\"studyId\":\"O-12345 or omit\",\"clientName\":\"...\",\"title\":\"...\",\"protocol\":\"...\",\"phase\":\"...\",\"therapeuticArea\":\"...\",\"indication\":\"...\",\"drivers\":{\"enrolledSubjects\":120,\"screenedSubjects\":180,\"coreSites\":15,\"enrollmentMonths\":12},\"notes\":\"...\",\"versionLabel\":\"draft\"}. Only include fields the user gave. studyId optional — system will assign NEW-… if missing. Do not claim the study exists until the user clicks Create in the UI.",
   "When the user asks to open, go to, or show a tab/section (Hub, Studies, Versions, Overview, Recruitment, ClinOps, Monitoring, SMO, Summary, Reviews, Formulas, Upload), put exactly one line at the end of your reply: NAVIGATE:<sectionId> using one of: hub, studies, versions, overview, recruitment, clinops, monitoring, smo, summary, reviews, formulas, upload.",
   "When the user asks you to set, fill, change, or update a field on the open study, briefly confirm what you will change, then put exactly one line at the end: APPLY:[{\"path\":\"assumptions.recruitment.notes\",\"value\":\"text\",\"label\":\"Notes (Recruitment)\"}].",
   "APPLY paths must come from context.editableFields (path + label + tab). Prefer the activeTab when the user says a generic name like Notes. Examples: assumptions.recruitment.notes, assumptions.clinops.notes, drivers.enrolledSubjects, clientName, inputFields.12. Never invent paths. Do not claim the value is saved until the user clicks Apply in the UI.",
   "When context.user has a firstName (or displayName), greet them by first name when they say hi/hello or on the first reply of a chat — then skip greetings on follow-ups unless they greet you again."
 ].join(" ");
 
+const PORTFOLIO_RULES =
+  " DATA RULE: context.portfolio is queried from Cosmos DB across studies (databaseStudyCount / matchedStudyCount / averages / totals). " +
+  "Questions about all studies, averages across studies, which study is largest, client rollups, or portfolio totals MUST use context.portfolio. " +
+  "workingStudy and openStudyInUi are only the study open in the browser — never treat them as the full database. " +
+  "For average enrollment use portfolio.averages.enrolledSubjects and cite matchedStudyCount / studiesWithEnrollmentCount.";
+
 /** Prefer Foundry agent instructions pasted into SWA settings; else built-in default. */
 function buddyInstructionsBase() {
-  return (
+  const custom =
     envSet("BUDDY_SYSTEM_PROMPT") ||
     envSet("FOUNDRY_AGENT_INSTRUCTIONS") ||
     envSet("AGENT_INSTRUCTIONS") ||
-    envSet("SYSTEM_PROMPT") ||
-    SYSTEM_PROMPT_DEFAULT
-  );
+    envSet("SYSTEM_PROMPT");
+  // Always append portfolio/DB rules — SWA custom prompts often omit them and Buddy stays stuck on the open study
+  return (custom || SYSTEM_PROMPT_DEFAULT) + PORTFOLIO_RULES;
 }
 
 function systemPromptFor(context) {
@@ -32,10 +40,16 @@ function systemPromptFor(context) {
   const protocols =
     " Machine protocols: for tab navigation end with NAVIGATE:<sectionId> (hub,studies,versions,overview,recruitment,clinops,monitoring,smo,summary,reviews,formulas,upload)." +
     " For field fills end with APPLY:[{\"path\":\"assumptions.recruitment.notes\",\"value\":\"...\",\"label\":\"Notes (Recruitment)\"}] using only context.editableFields paths; prefer activeTab for ambiguous names like Notes; the user must click Apply before values write." +
-    " For cross-study / client / year questions use context.portfolio totals and byClient; cite matchedStudyCount and study ids when helpful.";
+    " To create a new study from user-provided info end with CREATE_STUDY:{...json...} (clientName, protocol, phase, drivers, etc.); user must click Create before it is saved." +
+    " For cross-study / all-studies / average / client / year questions: set answer from context.portfolio (averages + totals + byClient); cite matchedStudyCount; do not use openStudyInUi or workingStudy for those answers.";
+  const focus = context?.answerFocus;
+  const focusNote =
+    focus === "portfolio"
+      ? " CRITICAL: answerFocus=portfolio — answer from context.portfolio (Cosmos DB) only."
+      : " If the user asks about all studies or averages across studies, switch to context.portfolio even if a workingStudy is present.";
   const user = context?.user;
   if (!user?.firstName && !user?.displayName && !user?.email) {
-    return base + protocols;
+    return base + protocols + focusNote;
   }
   const label = user.firstName
     ? `${user.firstName}${user.email ? ` (${user.email})` : ""}`
@@ -43,6 +57,7 @@ function systemPromptFor(context) {
   return (
     base +
     protocols +
+    focusNote +
     ` The signed-in user is ${label}. Prefer addressing them as ${user.firstName || "their first name"}.` +
     " Always prefer study data in the provided Context JSON over general knowledge."
   );
@@ -129,7 +144,7 @@ function providerStatus() {
     claude,
     active: azure ? "azure_openai" : claude ? "claude" : null,
     effort: envSet("ANTHROPIC_EFFORT") || "low",
-    buildId: "2026-07-23T11:45-buddy-field-catalog",
+    buildId: "2026-07-24T11-no-study-portfolio",
     endpointKind: !cfg.endpoint
       ? null
       : isFoundryProjectEndpoint(cfg.endpoint)

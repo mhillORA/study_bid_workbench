@@ -52,6 +52,14 @@
     btnExport: document.getElementById("btnExport"),
     btnRequestFill: document.getElementById("btnRequestFill"),
     btnBuddyOpen: document.getElementById("btnBuddyOpen"),
+    btnNewStudy: document.getElementById("btnNewStudy"),
+    btnClearStudy: document.getElementById("btnClearStudy"),
+    newStudyDialog: document.getElementById("newStudyDialog"),
+    newStudyForm: document.getElementById("newStudyForm"),
+    newStudyId: document.getElementById("newStudyId"),
+    newStudyClient: document.getElementById("newStudyClient"),
+    newStudyProtocol: document.getElementById("newStudyProtocol"),
+    newStudyTitle: document.getElementById("newStudyTitle"),
     buddyFab: document.getElementById("buddyFab"),
     buddyPanel: document.getElementById("buddyPanel"),
     buddyClose: document.getElementById("buddyClose"),
@@ -457,22 +465,39 @@
       .map((t, idx) => {
         const who = t.role === "user" ? "You" : "Buddy";
         let proposalHtml = "";
-        if (t.proposal && t.proposal.patches && t.proposal.patches.length) {
+        if (t.proposal) {
           const st = t.proposal.status || "pending";
-          const rows = t.proposal.patches
-            .map((p) => `<li><strong>${escapeHtml(p.label || p.path)}</strong> → ${escapeHtml(formatPatchValue(p.value))}</li>`)
-            .join("");
-          const actions = st === "pending"
-            ? `<div class="buddy-proposal-actions">
-                <button type="button" class="btn btn-primary" data-buddy-apply="${t.proposal.id}">Apply</button>
-                <button type="button" class="btn btn-ghost" data-buddy-reject="${t.proposal.id}">Reject</button>
-              </div>`
-            : `<p class="muted">${st === "applied" ? "Applied to the open study (Save when ready)." : "Rejected."}</p>`;
-          proposalHtml = `<div class="buddy-proposal ${escapeAttr(st)}">
-            <div class="chat-who">Proposed changes</div>
-            <ul>${rows}</ul>
-            ${actions}
-          </div>`;
+          if (t.proposal.kind === "create_study") {
+            const rows = (t.proposal.summary || [])
+              .map((line) => `<li>${escapeHtml(line)}</li>`)
+              .join("");
+            const actions = st === "pending"
+              ? `<div class="buddy-proposal-actions">
+                  <button type="button" class="btn btn-primary" data-buddy-create="${t.proposal.id}">Create study</button>
+                  <button type="button" class="btn btn-ghost" data-buddy-reject="${t.proposal.id}">Reject</button>
+                </div>`
+              : `<p class="muted">${st === "applied" ? "Study created and opened." : "Rejected."}</p>`;
+            proposalHtml = `<div class="buddy-proposal ${escapeAttr(st)}">
+              <div class="chat-who">New study</div>
+              <ul>${rows}</ul>
+              ${actions}
+            </div>`;
+          } else if (t.proposal.patches && t.proposal.patches.length) {
+            const rows = t.proposal.patches
+              .map((p) => `<li><strong>${escapeHtml(p.label || p.path)}</strong> → ${escapeHtml(formatPatchValue(p.value))}</li>`)
+              .join("");
+            const actions = st === "pending"
+              ? `<div class="buddy-proposal-actions">
+                  <button type="button" class="btn btn-primary" data-buddy-apply="${t.proposal.id}">Apply</button>
+                  <button type="button" class="btn btn-ghost" data-buddy-reject="${t.proposal.id}">Reject</button>
+                </div>`
+              : `<p class="muted">${st === "applied" ? "Applied to the open study (Save when ready)." : "Rejected."}</p>`;
+            proposalHtml = `<div class="buddy-proposal ${escapeAttr(st)}">
+              <div class="chat-who">Proposed changes</div>
+              <ul>${rows}</ul>
+              ${actions}
+            </div>`;
+          }
         }
         return `<div class="chat-turn ${t.role}" data-ask-idx="${idx}">
           <div class="chat-who">${who}</div>
@@ -482,7 +507,7 @@
       })
       .join("");
     els.askLog.innerHTML = turns ||
-      "<p class=\"muted\">Try “set notes to …” on a department tab, or “set enrolled subjects to 120”. I’ll propose the change for you to Apply.</p>";
+      "<p class=\"muted\">Try “create a new study for Alcon, protocol X, 120 enrolled, 15 sites”, or “set enrolled subjects to 120”.</p>";
     els.askLog.scrollTop = els.askLog.scrollHeight;
     if (els.askStatus) {
       els.askStatus.textContent = state.buddyBusy ? "Thinking…" : "";
@@ -738,6 +763,123 @@
     return { text: cleaned.trim(), patches };
   }
 
+  function extractCreateStudy(text) {
+    const src = String(text || "");
+    const re = /\bCREATE_STUDY:\s*(\{[\s\S]*?\})\s*(?=\n(?:NAVIGATE:|APPLY:)|$)/i;
+    const m = src.match(re) || src.match(/\bCREATE_STUDY:\s*(\{[\s\S]*\})\s*$/i);
+    if (!m) return { text: src.trim(), create: null };
+    let create = null;
+    try {
+      create = JSON.parse(m[1]);
+    } catch (_) {
+      // try to find balanced JSON object after marker
+      const idx = src.toUpperCase().indexOf("CREATE_STUDY:");
+      if (idx >= 0) {
+        const brace = src.indexOf("{", idx);
+        if (brace >= 0) {
+          let depth = 0;
+          for (let i = brace; i < src.length; i++) {
+            if (src[i] === "{") depth += 1;
+            else if (src[i] === "}") {
+              depth -= 1;
+              if (depth === 0) {
+                try {
+                  create = JSON.parse(src.slice(brace, i + 1));
+                } catch (_) {}
+                break;
+              }
+            }
+          }
+        }
+      }
+    }
+    const cleaned = src.replace(/\bCREATE_STUDY:\s*\{[\s\S]*\}\s*/i, "\n").trim();
+    return { text: cleaned, create };
+  }
+
+  function summarizeCreatePayload(payload) {
+    if (!payload || typeof payload !== "object") return [];
+    const lines = [];
+    const add = (label, v) => {
+      if (v == null || v === "") return;
+      lines.push(`${label}: ${v}`);
+    };
+    add("Opportunity", payload.studyId || payload.opportunityId || "(auto NEW-…)");
+    add("Client", payload.clientName);
+    add("Title", payload.title);
+    add("Protocol", payload.protocol);
+    add("Phase", payload.phase);
+    add("TA", payload.therapeuticArea);
+    add("Indication", payload.indication);
+    const d = payload.drivers || {};
+    add("Enrolled", d.enrolledSubjects ?? d.patients);
+    add("Screened", d.screenedSubjects);
+    add("Sites", d.coreSites ?? d.sites);
+    add("Enrollment months", d.enrollmentMonths);
+    add("Notes", payload.notes);
+    return lines.length ? lines : ["Draft study with provided details"];
+  }
+
+  function buildWorkspaceFromCreate(payload) {
+    const base = SBW.defaultStudy();
+    const now = new Date().toISOString();
+    let studyId = String(payload.studyId || payload.opportunityId || "").trim();
+    if (!studyId) studyId = `NEW-${now.replace(/[-:.TZ]/g, "").slice(0, 14)}`;
+    else if (/^\d{4,5}$/.test(studyId)) studyId = `O-${studyId.padStart(5, "0")}`;
+    else if (/^O\d{4,5}$/i.test(studyId)) studyId = `O-${studyId.slice(1).padStart(5, "0")}`;
+
+    const driversIn = payload.drivers && typeof payload.drivers === "object" ? payload.drivers : {};
+    const drivers = { ...base.drivers };
+    for (const [k, v] of Object.entries(driversIn)) {
+      if (v == null || v === "") continue;
+      const key = k === "patients" ? "enrolledSubjects" : k === "sites" ? "coreSites" : k;
+      drivers[key] = typeof v === "number" ? v : coercePatchValue(v);
+    }
+
+    return {
+      ...base,
+      studyId,
+      clientName: payload.clientName || "",
+      title: payload.title || "",
+      protocol: payload.protocol || "",
+      phase: payload.phase || "",
+      therapeuticArea: payload.therapeuticArea || "",
+      indication: payload.indication || "",
+      enrollmentType: payload.enrollmentType || "",
+      budgetType: payload.budgetType || "draft",
+      versionLabel: payload.versionLabel || "draft",
+      drivers,
+      header: {
+        ...base.header,
+        clientName: payload.clientName || null,
+        title: payload.title || null,
+        protocol: payload.protocol || null,
+        phase: payload.phase || null,
+        therapeuticArea: payload.therapeuticArea || null,
+        indication: payload.indication || null,
+        opportunityId: studyId,
+        notes: payload.notes || null
+      },
+      status: "draft",
+      source: "buddy_create"
+    };
+  }
+
+  function pushCreateProposal(content, createPayload) {
+    const turn = {
+      role: "assistant",
+      content,
+      proposal: {
+        id: `c-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        kind: "create_study",
+        status: "pending",
+        payload: createPayload,
+        summary: summarizeCreatePayload(createPayload)
+      }
+    };
+    state.askHistory.push(turn);
+  }
+
   function pushAssistant(content, patches) {
     const turn = { role: "assistant", content };
     if (patches && patches.length) {
@@ -758,10 +900,13 @@
       sectionId = resolveSectionId(navMatch[1]);
       text = text.replace(/\s*NAVIGATE:[a-z0-9_-]+\s*/gi, "\n").trim();
     }
+    const created = extractCreateStudy(text);
+    text = created.text;
     const extracted = extractApplyPatches(text);
     text = extracted.text;
     if (!text) {
-      if (extracted.patches.length) {
+      if (created.create) text = "Proposed a new study — click Create study to open it.";
+      else if (extracted.patches.length) {
         text = "Proposed field updates — Apply to write them into the open study.";
       } else if (sectionId === "__buddy__") {
         text = "Buddy is already open.";
@@ -771,9 +916,152 @@
         text = "I did not return any text that time — try asking again.";
       }
     }
-    pushAssistant(text, extracted.patches);
+    if (created.create) {
+      pushCreateProposal(text, created.create);
+    } else {
+      pushAssistant(text, extracted.patches);
+    }
     if (sectionId === "__buddy__") openBuddy();
     else if (sectionId) setSection(sectionId);
+    paintBuddyChat();
+  }
+
+  function hasOpenStudy() {
+    return Boolean(state.study && String(state.study.studyId || "").trim());
+  }
+
+  /** Deselect open study — Buddy / portfolio questions hit all Cosmos studies with no working copy. */
+  function clearOpenStudy({ confirmIfDirty = true } = {}) {
+    if (confirmIfDirty && state.dirty && hasOpenStudy()) {
+      const ok = window.confirm("Clear the open study? Unsaved changes will be discarded from the workspace.");
+      if (!ok) return false;
+    }
+    state.study = SBW.defaultStudy();
+    state.lineItems = [];
+    state.versions = [];
+    state.compare = null;
+    state.source = "none";
+    state.dirty = false;
+    try {
+      localStorage.removeItem(STORAGE_KEY);
+    } catch (_) {}
+    if (state.sectionId === "overview" || state.sectionId === "recruitment" || state.sectionId === "clinops" || state.sectionId === "monitoring" || state.sectionId === "smo" || state.sectionId === "summary" || state.sectionId === "formulas" || state.sectionId === "reviews") {
+      state.sectionId = "studies";
+    }
+    markSaved();
+    if (els.saveStatus) {
+      els.saveStatus.textContent = "No study selected";
+      els.saveStatus.classList.remove("saved");
+    }
+    render();
+    return true;
+  }
+
+  function openNewStudyDialog() {
+    if (state.dirty) {
+      const ok = window.confirm("You have unsaved changes on the current study. Start a new draft anyway?");
+      if (!ok) return;
+    }
+    if (els.newStudyId) els.newStudyId.value = "";
+    if (els.newStudyClient) els.newStudyClient.value = "";
+    if (els.newStudyProtocol) els.newStudyProtocol.value = "";
+    if (els.newStudyTitle) els.newStudyTitle.value = "";
+    if (els.newStudyDialog) els.newStudyDialog.showModal();
+  }
+
+  async function startNewStudyFromForm() {
+    const payload = {
+      studyId: (els.newStudyId && els.newStudyId.value.trim()) || undefined,
+      clientName: (els.newStudyClient && els.newStudyClient.value.trim()) || undefined,
+      protocol: (els.newStudyProtocol && els.newStudyProtocol.value.trim()) || undefined,
+      title: (els.newStudyTitle && els.newStudyTitle.value.trim()) || undefined,
+      versionLabel: "draft",
+      budgetType: "draft",
+      createdBy: state.entraUser?.email || state.userId || "ui"
+    };
+    const workspace = buildWorkspaceFromCreate(payload);
+    let cosmosOk = false;
+    let cosmosError = null;
+    try {
+      const res = await fetch(apiUrl("/api/studies"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ...payload, studyId: workspace.studyId })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      cosmosOk = true;
+      if (data.studyId) workspace.studyId = data.studyId;
+      if (data.versionId) {
+        workspace.currentVersionId = data.versionId;
+        workspace.viewingVersionId = data.versionId;
+      }
+    } catch (err) {
+      cosmosError = String(err.message || err);
+    }
+
+    state.study = workspace;
+    state.lineItems = [];
+    state.versions = [];
+    state.source = cosmosOk ? "cosmos" : "local";
+    state.sectionId = "overview";
+    state.askHistory = [];
+    markDirty();
+    save();
+    render();
+    if (els.saveStatus) {
+      els.saveStatus.textContent = cosmosOk
+        ? `Created ${workspace.studyId}`
+        : `Draft ${workspace.studyId} (local${cosmosError ? " — Cosmos later" : ""})`;
+      els.saveStatus.classList.remove("saved");
+    }
+  }
+
+  async function applyCreateStudy(id) {
+    const proposal = findProposal(id);
+    if (!proposal || proposal.kind !== "create_study" || proposal.status !== "pending") return;
+    proposal.status = "applied";
+    paintBuddyChat();
+
+    const workspace = buildWorkspaceFromCreate(proposal.payload || {});
+    let cosmosOk = false;
+    let cosmosError = null;
+    try {
+      const res = await fetch(apiUrl("/api/studies"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...proposal.payload,
+          studyId: workspace.studyId,
+          createdBy: state.entraUser?.email || state.userId || "buddy"
+        })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      cosmosOk = true;
+      if (data.studyId) workspace.studyId = data.studyId;
+      if (data.versionId) {
+        workspace.currentVersionId = data.versionId;
+        workspace.viewingVersionId = data.versionId;
+      }
+    } catch (err) {
+      cosmosError = String(err.message || err);
+    }
+
+    state.study = workspace;
+    state.lineItems = [];
+    state.versions = [];
+    state.source = cosmosOk ? "cosmos" : "buddy";
+    state.sectionId = "overview";
+    markDirty();
+    save();
+    render();
+    openBuddy();
+    pushAssistant(
+      cosmosOk
+        ? `Created ${workspace.studyId} in Cosmos and opened Overview. Fill remaining tabs or upload a budget workbook when you have one.`
+        : `Opened draft ${workspace.studyId} locally${cosmosError ? ` (Cosmos save failed: ${cosmosError})` : ""}. You can still edit and Save in the browser.`
+    );
     paintBuddyChat();
   }
 
@@ -816,7 +1104,11 @@
     const proposal = findProposal(id);
     if (!proposal || proposal.status !== "pending") return;
     proposal.status = "rejected";
-    pushAssistant("Okay — left those fields unchanged.");
+    pushAssistant(
+      proposal.kind === "create_study"
+        ? "Okay — did not create that study."
+        : "Okay — left those fields unchanged."
+    );
     paintBuddyChat();
   }
 
@@ -847,6 +1139,11 @@
 
     const fillOnly = matchFillOnly(question);
     if (fillOnly && fillOnly.length) {
+      if (!hasOpenStudy()) {
+        pushAssistant("No study is selected. Click New study or open one from Studies before editing fields — or stay in All studies mode to ask portfolio questions.");
+        paintBuddyChat();
+        return;
+      }
       pushAssistant(
         "Proposed field update — click Apply to write it into the open study.",
         fillOnly
@@ -858,18 +1155,28 @@
     state.buddyBusy = true;
     paintBuddyChat();
     const catalog = buildEditableFieldCatalog();
+    const qLower = question.toLowerCase();
+    const portfolioMode = !hasOpenStudy();
+    const askAcross =
+      /\b(all studies|across (all )?studies|every study|portfolio|average|avg|mean)\b/.test(qLower) ||
+      /\b(how many studies|which study|largest study|biggest study)\b/.test(qLower) ||
+      /\b(across|among)\b.{0,40}\bstudies\b/.test(qLower);
+    const wantPortfolio = portfolioMode || askAcross;
     try {
       const res = await fetch(apiUrl("/api/ask"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           question,
-          studyId: state.study.studyId,
-          studySnapshot: state.study,
+          studyId: wantPortfolio ? undefined : (state.study.studyId || undefined),
+          studySnapshot: wantPortfolio ? undefined : state.study,
+          // Always ask API to include Cosmos portfolio; noStudy = zero selection / no open-study bias
+          portfolio: true,
+          noStudy: portfolioMode || undefined,
           activeTab: state.sectionId,
           activeTabLabel: (SBW.sections.find((s) => s.id === state.sectionId) || {}).label || state.sectionId,
-          editableFields: catalog,
-          fieldsByTab: catalogByTab(catalog),
+          editableFields: wantPortfolio ? [] : catalog,
+          fieldsByTab: wantPortfolio ? undefined : catalogByTab(catalog),
           user: state.entraUser || undefined,
           history: state.askHistory.slice(0, -1).map((t) => ({
             role: t.role,
@@ -882,6 +1189,15 @@
         pushAssistant(data.error || `Request failed (${res.status})`);
       } else {
         applyBuddyAnswer(data.answer);
+        if (els.askStatus) {
+          if (data.answerFocus === "portfolio" && data.databaseStudyCount != null) {
+            els.askStatus.textContent = `All studies · Cosmos ${data.portfolioMatched ?? "?"} / ${data.databaseStudyCount}`;
+          } else if (portfolioMode) {
+            els.askStatus.textContent = "All studies mode (no study selected)";
+          } else {
+            els.askStatus.textContent = hasOpenStudy() ? `Open study · ${state.study.studyId}` : "";
+          }
+        }
         state.buddyBusy = false;
         paintBuddyChat();
         return;
@@ -901,14 +1217,15 @@
         <div class="card wide">
           <h3>Upload budgets into Cosmos</h3>
           <p class="muted">
-            Drop one <code>.xlsx</code>, many files, or a <code>.zip</code>.
-            Large zips are unzipped in the browser and uploaded <strong>one workbook at a time</strong>
-            (avoids HTTP 413 payload limits).
+            Drop one <code>.xlsx</code>/<code>.xlsm</code>, many files, or a <code>.zip</code>
+            with nested folders. The zip is read into memory once (avoids Chrome
+            “permission problems” on long folder uploads), then each workbook is posted
+            one at a time.
           </p>
           <div class="form-grid" style="margin-top:1rem;">
             <div class="full">
               <label class="field-label">Files</label>
-              <input id="uploadInput" class="input" type="file" accept=".xlsx,.zip" multiple ${dis} />
+              <input id="uploadInput" class="input" type="file" accept=".xlsx,.xlsm,.zip" multiple ${dis} />
             </div>
             <div>
               <label class="field-label">Mode</label>
@@ -930,13 +1247,16 @@
           </div>
         </div>
         <div class="card wide">
-          <h3>Quarantine queue</h3>
-          <p class="muted">Files that parsed too weakly to promote into studies. Refresh to see Cosmos quarantine docs + reason buckets.</p>
+          <h3>Quarantine + parse learning</h3>
+          <p class="muted">
+            Unsure / near-empty parses land here. Similar old formats still load into Cosmos.
+            Quarantine logs propose sheet/field aliases; after ~2 sightings they auto-apply on the next upload.
+          </p>
           <div style="margin-top:0.75rem;display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap;">
-            <button type="button" class="btn btn-secondary" id="btnRefreshQuarantine">Refresh quarantine</button>
+            <button type="button" class="btn btn-secondary" id="btnRefreshQuarantine">Refresh quarantine + learnings</button>
             <span class="muted" id="quarantineStatus"></span>
           </div>
-          <pre class="formula-box" id="quarantineReport" style="margin-top:0.75rem;">Click Refresh quarantine.</pre>
+          <pre class="formula-box" id="quarantineReport" style="margin-top:0.75rem;">Click Refresh quarantine + learnings.</pre>
         </div>
         <div class="card wide">
           <h3>Last import report</h3>
@@ -959,16 +1279,29 @@
         confidence: q.confidence,
         missingSheets: q.missingSheets,
         reason: q.reason,
+        learnHints: q.learnHints,
+        learningPromoted: q.learningPromoted,
         preview: q.preview,
         createdAt: q.createdAt
       }));
-      if (status) status.textContent = `${data.count || 0} in quarantine`;
+      const learn = data.learnings || {};
+      if (status) {
+        const s = learn.summary || {};
+        status.textContent = `${data.count || 0} quarantined · ${s.sheetAliasCount || 0} sheet aliases · ${s.fieldAliasCount || 0} field aliases learned`;
+      }
       if (report) {
         report.textContent = JSON.stringify(
           {
             count: data.count,
             reasonBuckets: data.reasonBuckets,
-            tip: "Re-upload after deploy — loosened quarantine auto-loads most files with a filename-based study id. Remaining quarantine = nearly empty parse.",
+            learnings: {
+              summary: learn.summary,
+              promotedSheetAliases: learn.sheetAliases,
+              promotedFieldAliases: learn.fieldAliases,
+              pendingSheetProposals: learn.topSheetProposals,
+              pendingFieldProposals: learn.topFieldProposals
+            },
+            tip: "Similar budgets load to Cosmos. Quarantine only for empty/unusable parses. Re-upload after aliases promote to improve older formats.",
             sample: rows.slice(0, 40)
           },
           null,
@@ -992,36 +1325,175 @@
     if (status) status.textContent = label || "Working…";
   }
 
+  function zipEntryBaseName(entryName) {
+    const norm = String(entryName || "").replace(/\\/g, "/");
+    const parts = norm.split("/").filter(Boolean);
+    return parts.length ? parts[parts.length - 1] : "";
+  }
+
+  function isExcelWorkbookName(name) {
+    const low = String(name || "").toLowerCase();
+    return low.endsWith(".xlsx") || low.endsWith(".xlsm") || low.endsWith(".xls");
+  }
+
+  function isSupportedParseName(name) {
+    const low = String(name || "").toLowerCase();
+    return low.endsWith(".xlsx") || low.endsWith(".xlsm");
+  }
+
+  function isFileHandleError(err) {
+    const msg = String(err && (err.message || err) || "");
+    return /permission problems|could not be read|NotReadableError|NotFoundError/i.test(msg);
+  }
+
+  /** Snapshot File → ArrayBuffer immediately (avoids Chrome stale File-handle errors). */
+  async function readFileArrayBuffer(file) {
+    if (file instanceof ArrayBuffer) return file;
+    if (ArrayBuffer.isView(file)) {
+      return file.buffer.slice(file.byteOffset, file.byteOffset + file.byteLength);
+    }
+    if (typeof file.arrayBuffer === "function") {
+      return file.arrayBuffer();
+    }
+    return new Response(file).arrayBuffer();
+  }
+
+  function uint8ToBlob(u8, mime) {
+    // Copy into a fresh ArrayBuffer so Blob isn't tied to a detached/transferable view
+    const copy = u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
+    return new Blob([copy], { type: mime || "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  }
+
+  /**
+   * List parseable workbooks inside an in-memory zip (ArrayBuffer).
+   * Does not extract payloads yet — extract one-at-a-time during upload.
+   */
+  async function listZipWorkbooks(arrayBuffer, prefix, diagnostics) {
+    const listed = [];
+    const zip = await JSZip.loadAsync(arrayBuffer);
+    const entries = Object.keys(zip.files || {});
+    diagnostics.entryCount += entries.length;
+
+    for (const entryName of entries) {
+      const entry = zip.files[entryName];
+      if (!entry || entry.dir) continue;
+      const norm = String(entryName).replace(/\\/g, "/");
+      if (norm.includes("__MACOSX/") || norm.endsWith(".DS_Store")) continue;
+
+      const base = zipEntryBaseName(norm);
+      if (!base || base.startsWith("~$")) continue;
+
+      const folderPrefix = norm.slice(0, Math.max(0, norm.length - base.length)).replace(/\/+$/, "");
+      const combinedPrefix = [prefix, folderPrefix].filter(Boolean).join("/");
+      const low = base.toLowerCase();
+
+      if (low.endsWith(".zip")) {
+        diagnostics.nestedZips += 1;
+        try {
+          const innerAb = await entry.async("arraybuffer");
+          const nested = await listZipWorkbooks(innerAb, combinedPrefix || base.replace(/\.zip$/i, ""), diagnostics);
+          listed.push(...nested);
+        } catch (err) {
+          diagnostics.errors.push(`Nested zip ${norm}: ${err.message || err}`);
+        }
+        continue;
+      }
+
+      const ext = low.includes(".") ? low.slice(low.lastIndexOf(".")) : "(none)";
+      diagnostics.extensions[ext] = (diagnostics.extensions[ext] || 0) + 1;
+      if (diagnostics.samplePaths.length < 40) diagnostics.samplePaths.push(norm);
+
+      if (!isExcelWorkbookName(base)) continue;
+      if (!isSupportedParseName(base)) {
+        diagnostics.skippedXls.push(norm);
+        continue;
+      }
+
+      const uploadName = combinedPrefix
+        ? `${combinedPrefix.replace(/[\\/]+/g, "_")}_${base}`
+        : base;
+
+      listed.push({
+        name: uploadName,
+        pathInZip: norm,
+        entryName, // original key in this zip
+        zip // keep reference to extract later from memory
+      });
+    }
+    return listed;
+  }
+
   async function expandUploadFiles(fileList) {
     const workbooks = [];
+    const diagnostics = {
+      entryCount: 0,
+      nestedZips: 0,
+      extensions: {},
+      samplePaths: [],
+      skippedXls: [],
+      errors: [],
+      sourceFiles: [],
+      snapshottedBytes: 0
+    };
+
     for (const file of fileList) {
       const name = file.name || "upload";
       const lower = name.toLowerCase();
-      if (lower.endsWith(".zip")) {
-        if (typeof JSZip === "undefined") {
-          throw new Error("JSZip failed to load — refresh the page and try again.");
+      diagnostics.sourceFiles.push(name);
+
+      try {
+        if (lower.endsWith(".zip")) {
+          if (typeof JSZip === "undefined") {
+            throw new Error("JSZip failed to load — refresh the page and try again.");
+          }
+          // Critical: read the whole zip into RAM once. Re-reading File during a long
+          // upload causes Chrome's "permission problems after a reference was acquired".
+          const ab = await readFileArrayBuffer(file);
+          diagnostics.snapshottedBytes += ab.byteLength || 0;
+          const listed = await listZipWorkbooks(ab, "", diagnostics);
+          workbooks.push(...listed);
+        } else if (isSupportedParseName(name)) {
+          const ab = await readFileArrayBuffer(file);
+          diagnostics.snapshottedBytes += ab.byteLength || 0;
+          workbooks.push({
+            name,
+            blob: uint8ToBlob(new Uint8Array(ab))
+          });
+        } else if (isExcelWorkbookName(name)) {
+          diagnostics.skippedXls.push(name);
+        } else {
+          const ext = lower.includes(".") ? lower.slice(lower.lastIndexOf(".")) : "(none)";
+          diagnostics.extensions[ext] = (diagnostics.extensions[ext] || 0) + 1;
         }
-        const zip = await JSZip.loadAsync(file);
-        const entries = Object.keys(zip.files);
-        for (const entryName of entries) {
-          const entry = zip.files[entryName];
-          if (!entry || entry.dir) continue;
-          const base = entryName.split("/").pop();
-          if (!base || base.startsWith("~$")) continue;
-          if (!base.toLowerCase().endsWith(".xlsx")) continue;
-          const buf = await entry.async("blob");
-          workbooks.push({ name: base, blob: buf });
+      } catch (err) {
+        if (isFileHandleError(err)) {
+          diagnostics.errors.push(
+            `${name}: browser lost the file handle while reading (often a large zip). Re-select the file and retry; prefer smaller zips or upload .xlsx files directly.`
+          );
+        } else {
+          diagnostics.errors.push(`${name}: ${err.message || err}`);
         }
-      } else if (lower.endsWith(".xlsx")) {
-        workbooks.push({ name, blob: file });
       }
     }
-    return workbooks;
+
+    return { workbooks, diagnostics };
+  }
+
+  async function materializeWorkbook(wb) {
+    if (wb.blob) return wb;
+    if (!wb.zip || !wb.entryName) {
+      throw new Error(`Cannot extract ${wb.name}: missing in-memory zip entry`);
+    }
+    const entry = wb.zip.files[wb.entryName];
+    if (!entry) throw new Error(`Zip entry missing: ${wb.pathInZip || wb.entryName}`);
+    const u8 = await entry.async("uint8array");
+    return { name: wb.name, blob: uint8ToBlob(u8), pathInZip: wb.pathInZip };
   }
 
   async function postOneWorkbook(wb, mode) {
+    const ready = await materializeWorkbook(wb);
     const fd = new FormData();
-    fd.append("files", wb.blob, wb.name);
+    fd.append("files", ready.blob, ready.name);
     fd.append("mode", mode);
     fd.append("requestedBy", state.userId);
     const res = await fetch(apiUrl("/api/import"), { method: "POST", body: fd });
@@ -1032,12 +1504,12 @@
       return {
         ok: false,
         status: res.status,
-        file: wb.name,
+        file: ready.name,
         error: data.error || data.raw || `HTTP ${res.status}`,
         data
       };
     }
-    return { ok: true, status: res.status, file: wb.name, data };
+    return { ok: true, status: res.status, file: ready.name, data };
   }
 
   async function startUpload() {
@@ -1051,10 +1523,12 @@
       return;
     }
 
+    // Snapshot FileList immediately — input.files can become unreadable later
+    const selected = [...input.files];
     const mode = modeEl ? modeEl.value : "load";
     if (btn) btn.disabled = true;
-    report.textContent = "Preparing…";
-    setUploadProgress(0, "Reading files…");
+    report.textContent = "Reading zip into memory (avoids browser file-handle errors)…";
+    setUploadProgress(0, "Snapshotting files…");
 
     const aggregate = {
       mode,
@@ -1065,16 +1539,28 @@
     };
 
     try {
-      const workbooks = await expandUploadFiles([...input.files]);
+      const { workbooks, diagnostics } = await expandUploadFiles(selected);
       if (!workbooks.length) {
-        status.textContent = "No .xlsx workbooks found.";
-        report.textContent = "Zip/files contained no .xlsx budgets.";
+        status.textContent = diagnostics.errors.length
+          ? "Could not read zip (see report)."
+          : "No .xlsx/.xlsm workbooks found in zip/folders.";
+        report.textContent = JSON.stringify(
+          {
+            problem: diagnostics.errors.length
+              ? "Failed while reading the zip into memory."
+              : "Zip was read, but no parseable Excel workbooks were found in any folder.",
+            hint: "Nested folders are OK. Need .xlsx/.xlsm. If you see 'permission problems', re-select the zip and retry — that message is a Chrome file-handle issue, not folder ACLs.",
+            diagnostics
+          },
+          null,
+          2
+        );
         setUploadProgress(0, "Nothing to upload");
         return;
       }
 
       const total = workbooks.length;
-      report.textContent = `Uploading ${total} workbook(s) one at a time…\n`;
+      report.textContent = `Found ${total} workbook(s) across folders — uploading one at a time…\n`;
 
       for (let i = 0; i < total; i++) {
         const wb = workbooks[i];
@@ -1090,12 +1576,12 @@
             (d.loaded || []).forEach((x) => aggregate.loaded.push(x));
             (d.quarantined || []).forEach((x) => aggregate.quarantined.push(x));
             (d.failed || []).forEach((x) => aggregate.failed.push(x));
-            if (!d.loaded && !d.quarantined && !d.failed) {
-              // unexpected shape — still count as ok payload
-            }
           }
         } catch (err) {
-          aggregate.failed.push({ file: wb.name, error: String(err) });
+          const msg = isFileHandleError(err)
+            ? `Browser file-handle error while extracting ${wb.pathInZip || wb.name}. Re-select the zip and retry.`
+            : String(err.message || err);
+          aggregate.failed.push({ file: wb.name, error: msg });
         }
         report.textContent = JSON.stringify(
           {
@@ -1105,7 +1591,8 @@
               quarantined: aggregate.quarantined.length,
               failed: aggregate.failed.length
             },
-            lastFile: wb.name
+            lastFile: wb.name,
+            pathInZip: wb.pathInZip || null
           },
           null,
           2
@@ -1139,6 +1626,14 @@
       report.textContent = JSON.stringify(
         {
           files: total,
+          diagnostics: {
+            entryCount: diagnostics.entryCount,
+            snapshottedBytes: diagnostics.snapshottedBytes,
+            nestedZips: diagnostics.nestedZips,
+            extensions: diagnostics.extensions,
+            skippedXls: diagnostics.skippedXls.slice(0, 20),
+            errors: diagnostics.errors
+          },
           counts: {
             loaded: aggregate.loaded.length,
             quarantined: aggregate.quarantined.length,
@@ -1146,11 +1641,11 @@
           },
           quarantineWhy,
           meaning: {
-            loaded: "Parsed OK and written to Cosmos studies/versions/lineItems",
-            quarantined: "Near-empty parse only (after latest deploy, missing O-##### uses FILE-… id and still loads)",
+            loaded: "Similar enough → Cosmos studies/versions/lineItems (learns sheet/field aliases from success)",
+            quarantined: "Unsure / empty → quarantine only; logs still propose aliases for next parse",
             failed: "Exception (Cosmos firewall, bad/corrupt xlsx, timeout, etc.)"
           },
-          tip: "Re-upload after deploy to promote former UNKNOWN quarantines. Studies without O-##### get ids like FILE-INTERNAL_Client_…. ",
+          tip: "Zip folders are fine. 'Permission problems' = browser file handle — this build snapshots the zip into memory first. Prefer hard-refresh before retry.",
           topErrors: errorBuckets,
           failedSample: aggregate.failed.slice(0, 8),
           loaded: aggregate.loaded,
@@ -1161,16 +1656,26 @@
         2
       );
     } catch (err) {
-      status.textContent = "Upload failed";
+      status.textContent = isFileHandleError(err)
+        ? "Browser lost the file handle — re-select the zip and retry"
+        : "Upload failed";
       setUploadProgress(0, "Failed");
-      report.textContent = String(err);
+      report.textContent = JSON.stringify(
+        {
+          error: String(err.message || err),
+          hint: isFileHandleError(err)
+            ? "Chrome cannot re-read a large File after a delay. Re-choose the zip (don't leave the tab idle mid-read) or split into smaller zips / upload .xlsx files."
+            : null
+        },
+        null,
+        2
+      );
     } finally {
       if (btn) btn.disabled = false;
     }
   }
 
   function renderStudies(loadingHtml) {
-    const openId = state.source === "cosmos" ? state.study.studyId : "";
     const sel = state.studyCompare.selected || [];
     const groupBy = state.studiesGroupBy || "client";
     return `
@@ -1179,9 +1684,14 @@
           <div style="display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap;">
             <div>
               <h3>Studies in Cosmos</h3>
-              <p class="muted">Open a study into the workbench, or check two and compare side by side. Current: <strong>${escapeHtml(openId || "(none)")}</strong></p>
+              <p class="muted">
+                ${hasOpenStudy()
+                  ? `Open a study into the workbench, or click <strong>All studies</strong> to clear selection for portfolio questions. Current: <strong>${escapeHtml(state.study.studyId)}</strong>`
+                  : "<strong>No study selected</strong> — Buddy will query all Cosmos studies with no open-study bias."}
+              </p>
             </div>
             <div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;">
+              <button type="button" class="btn btn-secondary" id="btnClearStudyInline" ${hasOpenStudy() ? "" : "disabled"}>All studies (clear)</button>
               <label class="field-label" style="margin:0;" for="studiesGroupBy">Group by</label>
               <select id="studiesGroupBy" class="select" style="width:auto;min-width:11rem;">
                 <option value="client" ${groupBy === "client" ? "selected" : ""}>Client</option>
@@ -1192,6 +1702,7 @@
               <button type="button" class="btn btn-ghost" id="btnExpandAllGroups">Expand all</button>
               <button type="button" class="btn btn-ghost" id="btnCollapseAllGroups">Collapse all</button>
               <button type="button" class="btn btn-primary" id="btnOpenStudyCompare" ${sel.length === 2 ? "" : "disabled"}>Compare selected (${sel.length}/2)</button>
+              <button type="button" class="btn btn-primary" id="btnNewStudyInline">New study</button>
               <button type="button" class="btn btn-secondary" id="btnRefreshStudies">Refresh</button>
             </div>
           </div>
@@ -1254,7 +1765,7 @@
   }
 
   function renderStudiesTable(studies) {
-    const openId = state.source === "cosmos" ? state.study.studyId : "";
+    const openId = state.study.studyId || "";
     const groupBy = state.studiesGroupBy || "client";
     if (!studies.length) {
       return "<p class=\"muted\">No studies yet. Use Upload budgets to load workbooks.</p>";
@@ -1765,6 +2276,15 @@
 
     return `
       <div class="grid">
+        <div class="card wide">
+          <h3>Start here</h3>
+          <p class="muted">Open a Cosmos study from Studies, upload a budget, or start a blank draft.</p>
+          <div style="display:flex;gap:0.6rem;flex-wrap:wrap;margin-top:0.75rem;">
+            <button type="button" class="btn btn-primary" id="btnNewStudyHub">New study</button>
+            <button type="button" class="btn btn-secondary" data-jump="studies">Browse studies</button>
+            <button type="button" class="btn btn-secondary" data-jump="upload">Upload budgets</button>
+          </div>
+        </div>
         <div class="card">
           <h3>Service fees</h3>
           <div class="stat">${money(state.results["summary.totalServiceFees"])}</div>
@@ -2001,94 +2521,309 @@
       </div>`;
   }
 
-  function renderRecruitment() {
-    const a = state.study.assumptions.recruitment;
-    const locked = !canEdit("Recruitment");
+  function displayVal(v) {
+    if (v == null || v === "null" || v === "undefined") return "";
+    return String(v);
+  }
+
+  function ensureSectionStatus() {
+    if (!state.study.sectionStatus || typeof state.study.sectionStatus !== "object") {
+      state.study.sectionStatus = { ...SBW.defaultStudy().sectionStatus };
+    }
+    return state.study.sectionStatus;
+  }
+
+  function setSectionStatus(sectionId, status) {
+    const map = ensureSectionStatus();
+    map[sectionId] = status;
+    markDirty();
+    render();
+  }
+
+  /** Drivers + Input Tab labels most relevant to each department tab. */
+  const TAB_CONTENT = {
+    recruitment: {
+      title: "Recruitment",
+      assumptionKey: "recruitment",
+      drivers: [
+        "screenedSubjects",
+        "enrolledSubjects",
+        "completedSubjects",
+        "coreSites",
+        "enrollmentMonths",
+        "screenFailRate",
+        "dropOutRate"
+      ],
+      inputMatch: /recruit|screen|enroll|advertis|contact.?center|patient.?pop|site|dropout|drop-out|fail/i,
+      assumptionFields: [
+        { key: "contactCenterOn", label: "Contact center", type: "boolean" },
+        { key: "advertisingOn", label: "Advertising", type: "boolean" },
+        { key: "materialsOn", label: "Materials", type: "boolean" },
+        { key: "recruiterTrainingAttendees", label: "Training attendees", type: "number" },
+        { key: "notes", label: "Notes", type: "text" }
+      ]
+    },
+    clinops: {
+      title: "ClinOps / SOE",
+      assumptionKey: "clinops",
+      drivers: ["startupMonths", "enrollmentMonths", "treatmentMonths", "dblMonths", "closeoutMonths"],
+      inputMatch: /soe|clinops|procedure|visit|duration|treatment|closeout|database.?lock|dbl|phase|indication|therapeutic/i,
+      assumptionFields: [
+        { key: "soeSource", label: "SOE source", type: "text" },
+        { key: "patientPopulation", label: "Patient population", type: "text" },
+        { key: "notes", label: "Notes", type: "text" }
+      ]
+    },
+    monitoring: {
+      title: "Clinical Monitoring",
+      assumptionKey: "monitoring",
+      drivers: ["sdvPercent", "coreSites", "enrolledSubjects"],
+      inputMatch: /monitor|sdv|imv|rbqm|masked|unmasked|on.?site|cra/i,
+      useMonitoringInputs: true,
+      assumptionFields: [
+        { key: "strategy", label: "Monitoring strategy", type: "text" },
+        { key: "rbqmFrequency", label: "RBQM frequency", type: "text" },
+        { key: "maskedTeams", label: "Masked teams", type: "boolean" },
+        { key: "notes", label: "Notes", type: "text" }
+      ]
+    },
+    smo: {
+      title: "Block Enrollment / SMO",
+      assumptionKey: "smo",
+      drivers: ["coreSites", "enrolledSubjects", "completedSubjects"],
+      inputMatch: /smo|block.?enroll|site.?comp|patient.?comp|payment|vendor/i,
+      assumptionFields: [
+        { key: "blockEnrollmentOn", label: "Block enrollment", type: "boolean" },
+        { key: "fixedSitePtComp", label: "Fixed site patient compensation", type: "boolean" },
+        { key: "notes", label: "Notes", type: "text" }
+      ]
+    }
+  };
+
+  function relatedInputFields(sectionId) {
+    const cfg = TAB_CONTENT[sectionId];
+    if (!cfg) return [];
+    const fields = state.study.inputFields || [];
+    return fields
+      .map((f, idx) => ({ ...f, idx }))
+      .filter((f) => {
+        if (f.kind === "section") return false;
+        const blob = `${f.label || ""} ${f.key || ""} ${f.section || ""} ${f.canonicalKey || ""}`;
+        return cfg.inputMatch.test(blob);
+      })
+      .slice(0, 40);
+  }
+
+  function relatedDriverBlocks(sectionId, dis) {
+    const cfg = TAB_CONTENT[sectionId];
+    if (!cfg) return "";
+    const d = state.study.drivers || {};
+    const known = Object.fromEntries(DRIVER_FIELDS.map((x) => [x.key, x.label]));
+    return cfg.drivers
+      .map((key) => {
+        const label = known[key] || humanizeKey(key);
+        const val = d[key];
+        return `<div>
+          <label class="field-label">${escapeHtml(label)}</label>
+          <input class="input" type="number" step="any" data-driver="${escapeAttr(key)}" value="${escapeAttr(displayVal(val))}" ${dis} />
+        </div>`;
+      })
+      .join("");
+  }
+
+  function assumptionFieldHtml(assumptionKey, def, bucket, dis) {
+    const val = bucket[def.key];
+    if (def.type === "boolean") {
+      const on = Boolean(val);
+      return `<div>
+        <label class="field-label">${escapeHtml(def.label)}</label>
+        <select class="select" data-assumption="${assumptionKey}.${def.key}" ${dis}>
+          <option value="true" ${on ? "selected" : ""}>On / Yes</option>
+          <option value="false" ${!on ? "selected" : ""}>Off / No</option>
+        </select>
+      </div>`;
+    }
+    if (def.type === "text" && def.key === "notes") {
+      return `<div class="full">
+        <label class="field-label">${escapeHtml(def.label)}</label>
+        <textarea class="textarea" rows="4" data-assumption="${assumptionKey}.${def.key}" ${dis}>${escapeHtml(displayVal(val))}</textarea>
+      </div>`;
+    }
+    const isNum = def.type === "number";
+    return `<div>
+      <label class="field-label">${escapeHtml(def.label)}</label>
+      <input class="input" ${isNum ? 'type="number" step="any"' : ""} data-assumption="${assumptionKey}.${def.key}" value="${escapeAttr(displayVal(val))}" ${dis} />
+    </div>`;
+  }
+
+  function relatedInputBlocks(sectionId, dis) {
+    const items = relatedInputFields(sectionId);
+    if (!items.length) {
+      return `<p class="muted">No Input Tab fields matched this department yet. Open a Cosmos study after upload, or check Overview for the full capture.</p>`;
+    }
+    return `<div class="form-grid">${items
+      .map((f) => {
+        const raw = f.value;
+        const isNum = typeof raw === "number";
+        return `<div class="${f.note ? "full" : ""}">
+          <label class="field-label">${escapeHtml(f.label || f.key)}${f.section ? ` <span class="muted">· ${escapeHtml(f.section)}</span>` : ""}</label>
+          <input class="input" data-input-idx="${f.idx}" ${isNum ? 'type="number" step="any"' : ""} value="${escapeAttr(displayVal(raw))}" ${dis || f.editable === false ? "disabled" : ""} />
+        </div>`;
+      })
+      .join("")}</div>`;
+  }
+
+  function renderDepartmentTab(sectionId) {
+    const cfg = TAB_CONTENT[sectionId];
+    const section = SBW.sections.find((s) => s.id === sectionId);
+    if (!cfg || !section) return `<p class="muted">Unknown section.</p>`;
+
+    if (!state.study.assumptions) state.study.assumptions = SBW.defaultStudy().assumptions;
+    if (!state.study.assumptions[cfg.assumptionKey]) {
+      state.study.assumptions[cfg.assumptionKey] = { ...(SBW.defaultStudy().assumptions[cfg.assumptionKey] || { notes: "" }) };
+    }
+    const bucket = state.study.assumptions[cfg.assumptionKey];
+    const locked = !canEdit(section.department);
     const dis = locked ? "disabled" : "";
-    return `
-      <div class="grid">
-        <div class="card half">
-          <h3>Recruitment assumptions</h3>
-          <div class="form-grid">
-            <div><label class="field-label">Contact center</label>
-              <select class="select" data-assumption="recruitment.contactCenterOn" ${dis}>
-                <option value="true" ${a.contactCenterOn ? "selected" : ""}>On</option>
-                <option value="false" ${!a.contactCenterOn ? "selected" : ""}>Off</option>
-              </select>
-            </div>
-            <div><label class="field-label">Advertising</label>
-              <select class="select" data-assumption="recruitment.advertisingOn" ${dis}>
-                <option value="true" ${a.advertisingOn ? "selected" : ""}>On</option>
-                <option value="false" ${!a.advertisingOn ? "selected" : ""}>Off</option>
-              </select>
-            </div>
-            <div><label class="field-label">Training attendees</label>
-              <input class="input" type="number" data-assumption="recruitment.recruiterTrainingAttendees" value="${a.recruiterTrainingAttendees}" ${dis} />
-            </div>
-            <div class="full"><label class="field-label">Notes</label>
-              <textarea class="textarea" rows="4" data-assumption="recruitment.notes" ${dis}>${escapeHtml(a.notes)}</textarea>
-            </div>
-          </div>
-          <div style="margin-top:1rem;">
-            <button type="button" class="btn btn-secondary" data-status-section="recruitment" data-status="ready_for_review" ${dis}>Mark ready for review</button>
-          </div>
-        </div>
-        <div class="card half">
-          <h3>Calculated line drivers</h3>
-          <table class="table">
+    const status = (ensureSectionStatus()[sectionId] || "not_started");
+
+    const assumptionHtml = cfg.assumptionFields
+      .map((def) => assumptionFieldHtml(cfg.assumptionKey, def, bucket, dis))
+      .join("");
+
+    let monitoringExtra = "";
+    if (cfg.useMonitoringInputs) {
+      const mon = state.study.monitoringInputs || {};
+      const entries = Object.entries(mon);
+      monitoringExtra = entries.length
+        ? `<div class="card wide">
+            <h3>Monitoring inputs (from Input Tab)</h3>
+            <div class="form-grid">${entries
+              .map(
+                ([label, val]) => `<div class="full">
+              <label class="field-label">${escapeHtml(label)}</label>
+              <input class="input" data-monitoring-key="${escapeAttr(label)}" value="${escapeAttr(displayVal(val))}" ${dis} />
+            </div>`
+              )
+              .join("")}</div>
+          </div>`
+        : "";
+    }
+
+    const calcRows =
+      sectionId === "recruitment"
+        ? `<table class="table">
             <thead><tr><th>Code</th><th>Units</th></tr></thead>
             <tbody>
               <tr><td>AA2 training</td><td>${num(state.results["recruitment.AA2.units"], 0)}</td></tr>
               <tr><td>AA3 first contact</td><td>${num(state.results["recruitment.AA3.units"], 0)}</td></tr>
               <tr><td>AA4 pre-screen</td><td>${num(state.results["recruitment.AA4.units"], 0)}</td></tr>
             </tbody>
-          </table>
-          <p class="muted">Units come from editable formulas, not a spreadsheet grid.</p>
-        </div>
-        <div class="card wide">
-          <h3>Recruitment line items (from Cosmos version)</h3>
-          ${lineItemsForDept("Recruitment")}
-        </div>
-      </div>`;
-  }
-
-  function renderDeptSimple(sectionId, assumptionKey, title) {
-    const a = state.study.assumptions[assumptionKey];
-    const section = SBW.sections.find((s) => s.id === sectionId);
-    const locked = !canEdit(section.department);
-    const dis = locked ? "disabled" : "";
-    const extra = Object.keys(a)
-      .filter((k) => k !== "notes")
-      .map((k) => {
-        const val = a[k];
-        if (typeof val === "boolean") {
-          return `<div><label class="field-label">${k}</label>
-            <select class="select" data-assumption="${assumptionKey}.${k}" ${dis}>
-              <option value="true" ${val ? "selected" : ""}>Yes / On</option>
-              <option value="false" ${!val ? "selected" : ""}>No / Off</option>
-            </select></div>`;
-        }
-        return `<div><label class="field-label">${k}</label>
-          <input class="input" data-assumption="${assumptionKey}.${k}" value="${escapeAttr(String(val))}" ${dis} /></div>`;
-      }).join("");
+          </table>`
+        : `<p class="muted">Enrollment rate ${num(state.results["drivers.enrollmentRate"], 3)} · Total duration ${num(state.results["drivers.totalDuration"], 2)} mo</p>`;
 
     return `
       <div class="grid">
         <div class="card wide">
-          <h3>${title}</h3>
-          <div class="form-grid">
-            ${extra}
-            <div class="full"><label class="field-label">Notes</label>
-              <textarea class="textarea" rows="4" data-assumption="${assumptionKey}.notes" ${dis}>${escapeHtml(a.notes || "")}</textarea>
+          <div style="display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap;align-items:center;">
+            <div>
+              <h3>${escapeHtml(cfg.title)}</h3>
+              <p class="muted">Status: <span class="badge ${escapeAttr(status)}">${escapeHtml(statusLabel(status))}</span></p>
+            </div>
+            <div style="display:flex;gap:0.5rem;flex-wrap:wrap;">
+              <button type="button" class="btn btn-secondary" data-status-section="${sectionId}" data-status="in_progress" ${dis}>In progress</button>
+              <button type="button" class="btn btn-secondary" data-status-section="${sectionId}" data-status="ready_for_review" ${dis}>Mark ready for review</button>
+              <button type="button" class="btn btn-primary" data-status-section="${sectionId}" data-status="approved" ${dis}>Approve</button>
             </div>
           </div>
-          <div style="margin-top:1rem;">
-            <button type="button" class="btn btn-secondary" data-status-section="${sectionId}" data-status="ready_for_review" ${dis}>Mark ready for review</button>
-          </div>
         </div>
+        <div class="card half">
+          <h3>Department assumptions</h3>
+          <div class="form-grid">${assumptionHtml}</div>
+        </div>
+        <div class="card half">
+          <h3>Related drivers</h3>
+          <div class="form-grid">${relatedDriverBlocks(sectionId, dis)}</div>
+          <div style="margin-top:0.75rem;">${calcRows}</div>
+        </div>
+        <div class="card wide">
+          <h3>Related Input Tab fields</h3>
+          ${relatedInputBlocks(sectionId, dis)}
+        </div>
+        ${monitoringExtra}
         <div class="card wide">
           <h3>${escapeHtml(section.department || "")} line items</h3>
           ${lineItemsForDept(section.department)}
+        </div>
+      </div>`;
+  }
+
+  function renderRecruitment() {
+    return renderDepartmentTab("recruitment");
+  }
+
+  function renderDeptSimple(sectionId) {
+    return renderDepartmentTab(sectionId);
+  }
+
+  function renderReviews() {
+    ensureSectionStatus();
+    const deptSections = SBW.sections.filter((s) => s.department);
+    const statusRows = deptSections
+      .map((s) => {
+        const st = state.study.sectionStatus[s.id] || "not_started";
+        return `<tr>
+          <td><button type="button" class="btn btn-secondary" data-jump="${s.id}">${escapeHtml(s.label)}</button></td>
+          <td>${escapeHtml(s.department)}</td>
+          <td><span class="badge ${escapeAttr(st)}">${escapeHtml(statusLabel(st))}</span></td>
+          <td style="display:flex;gap:0.35rem;flex-wrap:wrap;">
+            <button type="button" class="btn btn-ghost" data-status-section="${s.id}" data-status="in_progress">In progress</button>
+            <button type="button" class="btn btn-secondary" data-status-section="${s.id}" data-status="ready_for_review">Ready for review</button>
+            <button type="button" class="btn btn-primary" data-status-section="${s.id}" data-status="approved">Approve</button>
+            <button type="button" class="btn btn-ghost" data-status-section="${s.id}" data-status="not_started">Reset</button>
+          </td>
+        </tr>`;
+      })
+      .join("");
+
+    if (!Array.isArray(state.study.requests)) state.study.requests = [];
+    const rows = state.study.requests
+      .map((r) => {
+        const user = SBW.users.find((u) => u.id === r.assigneeId);
+        const by = SBW.users.find((u) => u.id === r.requestedBy);
+        return `<tr>
+          <td>${escapeHtml(r.department || "")}</td>
+          <td>${escapeHtml(user ? user.name : displayVal(r.assigneeId) || "—")}</td>
+          <td>${escapeHtml(by ? by.name : displayVal(r.requestedBy) || "—")}</td>
+          <td>${escapeHtml(displayVal(r.note) || "—")}</td>
+          <td><span class="badge ${r.status === "completed" ? "approved" : "in_progress"}">${escapeHtml(r.status || "open")}</span></td>
+          <td>
+            ${
+              r.status !== "completed"
+                ? `<button type="button" class="btn btn-secondary" data-complete-request="${escapeAttr(r.id)}">Mark done</button>`
+                : "—"
+            }
+          </td>
+        </tr>`;
+      })
+      .join("") || `<tr><td colspan="6">No fill requests yet. Use <strong>Request fill</strong> in the top bar.</td></tr>`;
+
+    return `
+      <div class="grid">
+        <div class="card wide">
+          <h3>Section review status</h3>
+          <p class="muted">Move each department through review. Status also appears as dots in the left nav.</p>
+          <table class="table">
+            <thead><tr><th>Section</th><th>Dept</th><th>Status</th><th>Actions</th></tr></thead>
+            <tbody>${statusRows}</tbody>
+          </table>
+        </div>
+        <div class="card wide">
+          <h3>Fill / review requests</h3>
+          <table class="table">
+            <thead><tr><th>Dept</th><th>Assignee</th><th>Requested by</th><th>Note</th><th>Status</th><th></th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
         </div>
       </div>`;
   }
@@ -2119,31 +2854,6 @@
         <div class="card wide">
           <h3>Export</h3>
           <button type="button" class="btn btn-primary" id="btnExportInline">Download study JSON</button>
-        </div>
-      </div>`;
-  }
-
-  function renderReviews() {
-    const rows = state.study.requests.map((r) => {
-      const user = SBW.users.find((u) => u.id === r.assigneeId);
-      const by = SBW.users.find((u) => u.id === r.requestedBy);
-      return `<tr>
-        <td>${r.department}</td>
-        <td>${user ? user.name : r.assigneeId}</td>
-        <td>${by ? by.name : r.requestedBy}</td>
-        <td>${escapeHtml(r.note)}</td>
-        <td><span class="badge ${r.status === "completed" ? "approved" : "in_progress"}">${r.status}</span></td>
-      </tr>`;
-    }).join("") || `<tr><td colspan="5">No requests yet.</td></tr>`;
-
-    return `
-      <div class="grid">
-        <div class="card wide">
-          <h3>Fill / review requests</h3>
-          <table class="table">
-            <thead><tr><th>Dept</th><th>Assignee</th><th>Requested by</th><th>Note</th><th>Status</th></tr></thead>
-            <tbody>${rows}</tbody>
-          </table>
         </div>
       </div>`;
   }
@@ -2181,6 +2891,7 @@
   }
 
   function escapeHtml(str) {
+    if (str == null) return "";
     return String(str)
       .replaceAll("&", "&amp;")
       .replaceAll("<", "&lt;")
@@ -2196,13 +2907,19 @@
     const user = currentUser();
     const section = SBW.sections.find((s) => s.id === state.sectionId) || SBW.sections[0];
 
-    els.studyMeta.textContent = state.study.studyId
+    els.studyMeta.textContent = hasOpenStudy()
       ? `${state.study.studyId} · ${state.study.clientName || "—"} · ${state.study.versionLabel || "—"}${state.source === "cosmos" ? " · Cosmos" : ""}`
-      : "No study open";
+      : "No study selected · All studies (portfolio)";
     els.pageTitle.textContent = section.label;
-    els.pageSubtitle.textContent = section.department
-      ? `Editable by ${section.department}${canEdit(section.department) ? "" : " (view only for you)"}`
-      : "Shared study workspace";
+    els.pageSubtitle.textContent = !hasOpenStudy()
+      ? "Portfolio mode — Buddy answers from all Cosmos studies"
+      : section.department
+        ? `Editable by ${section.department}${canEdit(section.department) ? "" : " (view only for you)"}`
+        : "Shared study workspace";
+    if (els.btnClearStudy) {
+      els.btnClearStudy.disabled = !hasOpenStudy();
+      els.btnClearStudy.textContent = hasOpenStudy() ? "All studies" : "All studies ✓";
+    }
 
     renderNav();
 
@@ -2213,10 +2930,10 @@
       case "studies": html = renderStudies(); break;
       case "versions": html = renderVersions(); break;
       case "overview": html = renderOverview(); break;
-      case "recruitment": html = renderRecruitment(); break;
-      case "clinops": html = renderDeptSimple("clinops", "clinops", "ClinOps / SOE assumptions"); break;
-      case "monitoring": html = renderDeptSimple("monitoring", "monitoring", "Monitoring assumptions"); break;
-      case "smo": html = renderDeptSimple("smo", "smo", "SMO / block enrollment"); break;
+      case "recruitment": html = renderDepartmentTab("recruitment"); break;
+      case "clinops": html = renderDepartmentTab("clinops"); break;
+      case "monitoring": html = renderDepartmentTab("monitoring"); break;
+      case "smo": html = renderDepartmentTab("smo"); break;
       case "summary": html = renderSummary(); break;
       case "reviews": html = renderReviews(); break;
       case "formulas": html = renderFormulas(); break;
@@ -2274,9 +2991,19 @@
       }
       const statusBtn = e.target.closest("[data-status-section]");
       if (statusBtn) {
-        state.study.sectionStatus[statusBtn.dataset.statusSection] = statusBtn.dataset.status;
-        markDirty();
-        render();
+        setSectionStatus(statusBtn.dataset.statusSection, statusBtn.dataset.status);
+        return;
+      }
+      const completeReq = e.target.closest("[data-complete-request]");
+      if (completeReq) {
+        const id = completeReq.getAttribute("data-complete-request");
+        if (!Array.isArray(state.study.requests)) state.study.requests = [];
+        const req = state.study.requests.find((r) => r.id === id);
+        if (req) {
+          req.status = "completed";
+          markDirty();
+          render();
+        }
         return;
       }
       if (e.target.id === "btnExportInline") {
@@ -2292,6 +3019,14 @@
       }
       if (e.target.id === "btnRefreshStudies") {
         loadStudiesIntoPanel();
+        return;
+      }
+      if (e.target.id === "btnNewStudyInline" || e.target.id === "btnNewStudyHub") {
+        openNewStudyDialog();
+        return;
+      }
+      if (e.target.id === "btnClearStudyInline") {
+        clearOpenStudy();
         return;
       }
       if (e.target.id === "btnExpandAllGroups") {
@@ -2456,10 +3191,12 @@
       }
       if (t.dataset.assumption) {
         const [group, key] = t.dataset.assumption.split(".");
+        if (!state.study.assumptions) state.study.assumptions = SBW.defaultStudy().assumptions;
+        if (!state.study.assumptions[group]) state.study.assumptions[group] = {};
         let val = t.value;
         if (val === "true") val = true;
         else if (val === "false") val = false;
-        else if (t.type === "number") val = Number(val);
+        else if (t.type === "number") val = val === "" ? null : Number(val);
         state.study.assumptions[group][key] = val;
         markDirty();
         recalc();
@@ -2478,6 +3215,15 @@
     els.btnExport.addEventListener("click", exportJson);
 
     if (els.btnBuddyOpen) els.btnBuddyOpen.addEventListener("click", openBuddy);
+    if (els.btnNewStudy) els.btnNewStudy.addEventListener("click", openNewStudyDialog);
+    if (els.btnClearStudy) els.btnClearStudy.addEventListener("click", () => clearOpenStudy());
+    if (els.newStudyForm) {
+      els.newStudyForm.addEventListener("submit", (e) => {
+        const submitter = e.submitter;
+        if (!submitter || submitter.value !== "confirm") return;
+        startNewStudyFromForm();
+      });
+    }
     if (els.buddyFab) els.buddyFab.addEventListener("click", openBuddy);
     if (els.buddyClose) els.buddyClose.addEventListener("click", closeBuddy);
     if (els.btnAsk) els.btnAsk.addEventListener("click", sendAsk);
@@ -2494,6 +3240,11 @@
         const applyBtn = e.target.closest("[data-buddy-apply]");
         if (applyBtn) {
           applyProposal(applyBtn.getAttribute("data-buddy-apply"));
+          return;
+        }
+        const createBtn = e.target.closest("[data-buddy-create]");
+        if (createBtn) {
+          applyCreateStudy(createBtn.getAttribute("data-buddy-create"));
           return;
         }
         const rejectBtn = e.target.closest("[data-buddy-reject]");

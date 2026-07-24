@@ -18,6 +18,8 @@ CONTAINERS = [
     {"id": "rateCards", "partition_key": "/rateCardId"},
     {"id": "importJobs", "partition_key": "/jobId"},
     {"id": "quarantine", "partition_key": "/jobId"},
+    # Learned sheet/field aliases promoted from quarantine + successful parses
+    {"id": "parseLearnings", "partition_key": "/id"},
     {"id": "users", "partition_key": "/userId"},
     {"id": "profiles", "partition_key": "/profileId"},
 ]

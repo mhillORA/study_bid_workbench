@@ -1,7 +1,7 @@
 const { app } = require("@azure/functions");
 const AdmZip = require("adm-zip");
 const { parseWorkbookBuffer } = require("./parseWorkbook");
-const { upsertCanonical, listStudies, getStudy, listVersions, getVersion, listLineItems, compareVersions, compareStudies, listQuarantine, getDb, buildPortfolioContext } = require("./cosmosLoad");
+const { upsertCanonical, createManualStudy, listStudies, getStudy, listVersions, getVersion, listLineItems, compareVersions, compareStudies, listQuarantine, getParseLearningsSummary, loadLearnings, getDb, buildPortfolioContext } = require("./cosmosLoad");
 const { askAi, getStudyContext, providerStatus } = require("./askClaude");
 
 function json(status, body) {
@@ -25,16 +25,40 @@ function headerGet(request, name) {
 }
 
 /** Infer studyId / client / year from the question + known client list. */
+function isCrossStudyQuestion(question) {
+  const q = String(question || "").toLowerCase();
+  if (!q) return false;
+  // Explicit multi-study / portfolio intent
+  if (
+    /\b(all studies|across (all )?studies|every study|entire portfolio|whole portfolio|portfolio)\b/.test(q) ||
+    /\b(across|among|between)\b.{0,40}\bstudies\b/.test(q) ||
+    /\b(how many studies|which study|which studies|largest study|biggest study|most expensive|highest budget)\b/.test(q) ||
+    /\b(largest|biggest|highest|top)\b.{0,40}\b(budget|fee|enrollment|study|studies)\b/.test(q) ||
+    /\b(average|avg|mean|median|total|sum|rollup)\b.{0,60}\b(across|all|every|portfolio|studies)\b/.test(q) ||
+    /\b(enroll|patient|subject|budget|fee).{0,40}\b(across|all studies|every study)\b/.test(q) ||
+    /\bstudies\b.{0,40}\b(last year|this year|in 20\d{2}|overall|combined)\b/.test(q) ||
+    /\bcompare\b.{0,40}\bstud(y|ies)\b/.test(q)
+  ) {
+    return true;
+  }
+  return false;
+}
+
 function inferAskHints(question, body, clientNames) {
   const q = String(question || "");
-  let studyId = body.studyId ? String(body.studyId).trim() : null;
+  const crossStudy = isCrossStudyQuestion(q) || body.portfolio === true;
+  // Explicit O-##### in the question wins; otherwise open-study id from the UI
+  // must NOT bind cross-study / "all studies" questions to one workbook.
+  const explicitStudy =
+    (q.match(/\b(O-\d{3,})\b/i) || q.match(/\b(FILE-[A-Za-z0-9._-]{4,})\b/))?.[1] || null;
+
+  let studyId = explicitStudy;
+  if (!studyId && !crossStudy && body.studyId) {
+    studyId = String(body.studyId).trim();
+  }
+
   let clientName = body.clientName ? String(body.clientName).trim() : null;
   let year = body.year != null && body.year !== "" ? Number(body.year) : null;
-
-  if (!studyId) {
-    const m = q.match(/\b(O-\d{3,})\b/i) || q.match(/\b([A-Z]{1,3}-\d{4,})\b/);
-    if (m) studyId = m[1];
-  }
 
   if (!year || Number.isNaN(year)) {
     if (/\blast\s+year\b/i.test(q)) year = new Date().getFullYear() - 1;
@@ -63,7 +87,7 @@ function inferAskHints(question, body, clientNames) {
     if (m) clientName = m[1].trim();
   }
 
-  return { studyId, clientName, year };
+  return { studyId, clientName, year, crossStudy };
 }
 
 function claimMap(claims) {
@@ -188,20 +212,49 @@ async function collectXlsxFromRequest(request) {
   return { files, mode: "load", requestedBy: "anonymous" };
 }
 
-function expandArchives(files) {
+function zipBaseName(entryName) {
+  const parts = String(entryName || "")
+    .replace(/\\/g, "/")
+    .split("/")
+    .filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : "";
+}
+
+function isParseableExcel(name) {
+  const low = String(name || "").toLowerCase();
+  return low.endsWith(".xlsx") || low.endsWith(".xlsm");
+}
+
+function expandArchives(files, depth = 0) {
   const out = [];
   for (const f of files) {
-    const lower = f.name.toLowerCase();
+    const lower = String(f.name || "").toLowerCase();
     if (lower.endsWith(".zip")) {
+      if (depth > 3) continue;
       const zip = new AdmZip(f.buffer);
       for (const entry of zip.getEntries()) {
         if (entry.isDirectory) continue;
-        const en = entry.entryName.split("/").pop();
+        const full = String(entry.entryName || "").replace(/\\/g, "/");
+        if (full.includes("__MACOSX/") || full.endsWith(".DS_Store")) continue;
+        const en = zipBaseName(full);
         if (!en || en.startsWith("~$")) continue;
-        if (!en.toLowerCase().endsWith(".xlsx")) continue;
-        out.push({ name: en, buffer: entry.getData() });
+        const enLow = en.toLowerCase();
+        if (enLow.endsWith(".zip")) {
+          out.push(
+            ...expandArchives([{ name: en, buffer: entry.getData() }], depth + 1)
+          );
+          continue;
+        }
+        if (!isParseableExcel(en)) continue;
+        // Preserve folder uniqueness in the study/file name
+        const folderPrefix = full
+          .slice(0, Math.max(0, full.length - en.length))
+          .replace(/\/+$/, "")
+          .replace(/[\\/]+/g, "_");
+        const name = folderPrefix ? `${folderPrefix}_${en}` : en;
+        out.push({ name, buffer: entry.getData() });
       }
-    } else if (lower.endsWith(".xlsx")) {
+    } else if (isParseableExcel(f.name)) {
       out.push(f);
     }
   }
@@ -236,13 +289,20 @@ app.http("import", {
       const { files, mode } = await collectXlsxFromRequest(request);
       const workbooks = expandArchives(files);
       if (!workbooks.length) {
-        return json(400, { error: "No .xlsx or .zip files found in upload" });
+        return json(400, { error: "No .xlsx/.xlsm workbooks found in upload (nested zip folders are scanned)" });
       }
 
       const dryRun = mode === "dry";
+      let learnings = null;
+      try {
+        learnings = await loadLearnings(getDb);
+      } catch (_) {
+        learnings = null;
+      }
+
       for (const wb of workbooks) {
         try {
-          const canonical = await parseWorkbookBuffer(wb.buffer, wb.name);
+          const canonical = await parseWorkbookBuffer(wb.buffer, wb.name, { learnings });
           const entry = {
             file: wb.name,
             studyId: canonical.study.studyId,
@@ -250,7 +310,8 @@ app.http("import", {
             lineItems: canonical.version.lineItemCount,
             warnings: canonical.warnings,
             quarantineReasons: canonical.quarantineReasons || [],
-            missingSheets: canonical.fingerprint?.missingSheets || []
+            missingSheets: canonical.fingerprint?.missingSheets || [],
+            learnHints: canonical.learnHints || null
           };
           if (dryRun) {
             entry.cosmosStatus = canonical.quarantine ? "quarantined" : "dry_run_ok";
@@ -259,6 +320,11 @@ app.http("import", {
             const summary = await upsertCanonical(canonical, jobId);
             entry.cosmosStatus = summary.status;
             entry.versionId = summary.versionId;
+            entry.learningPromoted = summary.learningPromoted || 0;
+            // Refresh learnings so later files in the same batch benefit
+            try {
+              learnings = await loadLearnings(getDb);
+            } catch (_) {}
             (summary.status === "quarantined" ? report.quarantined : report.loaded).push(entry);
           }
           context.log(`OK ${wb.name} -> ${entry.studyId} (${entry.cosmosStatus})`);
@@ -296,7 +362,7 @@ app.http("import", {
 });
 
 app.http("studies", {
-  methods: ["GET", "OPTIONS"],
+  methods: ["GET", "POST", "OPTIONS"],
   authLevel: "anonymous",
   route: "studies",
   handler: async (request, context) => {
@@ -305,11 +371,17 @@ app.http("studies", {
         status: 204,
         headers: {
           "Access-Control-Allow-Origin": "*",
-          "Access-Control-Allow-Methods": "GET, OPTIONS"
+          "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+          "Access-Control-Allow-Headers": "content-type"
         }
       };
     }
     try {
+      if (request.method === "POST") {
+        const body = await request.json().catch(() => ({}));
+        const result = await createManualStudy(body || {});
+        return json(200, result);
+      }
       const studies = await listStudies(Number(new URL(request.url).searchParams.get("limit") || 500));
       return json(200, { studies });
     } catch (err) {
@@ -537,7 +609,13 @@ app.http("quarantine", {
           reasonBuckets[key] = (reasonBuckets[key] || 0) + 1;
         }
       }
-      return json(200, { count: items.length, reasonBuckets, items });
+      let learnings = null;
+      try {
+        learnings = await getParseLearningsSummary();
+      } catch (err) {
+        learnings = { error: String(err.message || err) };
+      }
+      return json(200, { count: items.length, reasonBuckets, learnings, items });
     } catch (err) {
       context.error(err);
       return json(500, { error: String(err.message || err) });
@@ -585,18 +663,27 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
     const question = String(body.question || "").trim();
     if (!question) return json(400, { error: "question is required" });
 
-    // Lightweight client directory for name matching (Copilot portfolio questions)
+    // ALWAYS query Cosmos for the full portfolio — Buddy must not be limited to the open UI study.
+    let portfolioFull = null;
     let clientDirectory = [];
     try {
-      const preview = await buildPortfolioContext({ limit: 500 });
-      clientDirectory = preview.clientNamesInDatabase || [];
-    } catch (_) {
+      portfolioFull = await buildPortfolioContext({ limit: 500 });
+      clientDirectory = portfolioFull.clientNamesInDatabase || [];
+    } catch (err) {
+      portfolioFull = { source: "cosmos_portfolio_error", error: String(err.message || err) };
       clientDirectory = [];
     }
 
     const hints = inferAskHints(question, body, clientDirectory);
-    const studyId = hints.studyId;
-    const clientStudy = body.studySnapshot || null;
+    // noStudy / empty selection = portfolio only. portfolio:true alone still allows single-study when studyId/snapshot sent.
+    const forcePortfolio =
+      body.noStudy === true ||
+      Boolean(hints.crossStudy) ||
+      (!body.studyId && !body.studySnapshot);
+    const studyId = forcePortfolio
+      ? (String(question).match(/\b(O-\d{3,})\b/i) || [])[1] || null
+      : hints.studyId;
+    const crossStudy = Boolean(hints.crossStudy) || forcePortfolio;
     const history = body.history || [];
     const user = signedInUserFromRequest(request, body.user || null);
     const activeTab = body.activeTab ? String(body.activeTab) : null;
@@ -604,78 +691,111 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
     const editableFields = Array.isArray(body.editableFields) ? body.editableFields : null;
     const fieldsByTab = body.fieldsByTab && typeof body.fieldsByTab === "object" ? body.fieldsByTab : null;
 
+    const answerFocus =
+      forcePortfolio || crossStudy
+        ? "portfolio"
+        : studyId || body.studySnapshot
+          ? "single_study"
+          : "portfolio";
+
+    // Browser working copy only for single-study questions
+    const clientStudy = answerFocus === "portfolio" ? null : body.studySnapshot || null;
+
     let cosmosContext = null;
-    if (studyId) {
+    if (studyId && answerFocus === "single_study") {
       cosmosContext = await getStudyContext(studyId, { getDb });
     }
 
-    // Always attach portfolio for Copilot; for workbench when no single study snapshot
-    let portfolio = null;
-    const wantPortfolio =
-      requireCopilotKey ||
-      body.portfolio === true ||
-      (!clientStudy && !studyId) ||
-      hints.clientName ||
-      hints.year;
-    if (wantPortfolio) {
+    // Prefer filtered portfolio when the question names a client/year; else full DB rollup
+    let portfolio = portfolioFull;
+    if (
+      portfolioFull &&
+      portfolioFull.source === "cosmos_portfolio" &&
+      (hints.clientName || hints.year)
+    ) {
       try {
-        portfolio = await buildPortfolioContext({
+        const filtered = await buildPortfolioContext({
           clientName: hints.clientName,
           year: hints.year,
           limit: 500
         });
-        // If filter matched nothing but we have a client hint, still send unfiltered rollup top clients
-        if (hints.clientName && portfolio.matchedStudyCount === 0) {
-          const fallback = await buildPortfolioContext({ year: hints.year, limit: 500 });
+        if (hints.clientName && filtered.matchedStudyCount === 0) {
           portfolio = {
-            ...fallback,
-            filters: { ...fallback.filters, clientNameRequested: hints.clientName, matched: false },
-            note: `No studies matched client filter "${hints.clientName}". Showing full portfolio rollup; clientNamesInDatabase lists valid names.`
+            ...portfolioFull,
+            filters: {
+              ...(portfolioFull.filters || {}),
+              clientNameRequested: hints.clientName,
+              year: hints.year || null,
+              matched: false
+            },
+            note: `No studies matched client filter "${hints.clientName}". Showing full database portfolio.`
           };
+        } else {
+          portfolio = filtered;
         }
       } catch (err) {
-        portfolio = { source: "cosmos_portfolio_error", error: String(err.message || err) };
+        portfolio = { ...portfolioFull, filterError: String(err.message || err) };
       }
     }
 
+    const openStudyId = body.studyId ? String(body.studyId).trim() : null;
     const contextPayload = {
       askedAt: new Date().toISOString(),
       source: requireCopilotKey ? "copilot_studio" : "workbench",
+      answerFocus,
+      dataSources: {
+        cosmosPortfolioQueried: Boolean(portfolio && portfolio.source === "cosmos_portfolio"),
+        databaseStudyCount: portfolio?.databaseStudyCount ?? null,
+        matchedStudyCount: portfolio?.matchedStudyCount ?? null,
+        note: "portfolio = Cosmos DB query across studies. workingStudy = browser-open copy only."
+      },
       user,
       activeTab,
       activeTabLabel,
       queryHints: {
         studyId: studyId || null,
         clientName: hints.clientName || null,
-        year: hints.year || null
+        year: hints.year || null,
+        crossStudy
       },
-      cosmos: cosmosContext,
-      portfolio,
-      workingStudy: clientStudy
+      openStudyInUi: openStudyId
         ? {
-            source: "browser_working_copy",
-            studyId: clientStudy.studyId,
-            clientName: clientStudy.clientName,
-            title: clientStudy.title,
-            protocol: clientStudy.protocol,
-            phase: clientStudy.phase,
-            versionLabel: clientStudy.versionLabel,
-            drivers: clientStudy.drivers,
-            sectionStatus: clientStudy.sectionStatus,
-            assumptions: clientStudy.assumptions
+            studyId: openStudyId,
+            note:
+              answerFocus === "portfolio"
+                ? "Open in UI only — IGNORE. Answer from context.portfolio (Cosmos)."
+                : "Study currently open in the workbench UI."
           }
         : null,
-      editableFields: (editableFields || [])
-        .slice(0, 200)
-        .map((f) => ({
-          path: f.path,
-          label: f.label,
-          tab: f.tab,
-          tabLabel: f.tabLabel,
-          group: f.group,
-          value: f.value
-        })),
-      fieldsByTab
+      cosmos: cosmosContext,
+      portfolio,
+      workingStudy:
+        answerFocus === "portfolio" || !clientStudy
+          ? null
+          : {
+              source: "browser_working_copy",
+              studyId: clientStudy.studyId,
+              clientName: clientStudy.clientName,
+              title: clientStudy.title,
+              protocol: clientStudy.protocol,
+              phase: clientStudy.phase,
+              versionLabel: clientStudy.versionLabel,
+              drivers: clientStudy.drivers,
+              sectionStatus: clientStudy.sectionStatus,
+              assumptions: clientStudy.assumptions
+            },
+      editableFields:
+        answerFocus === "portfolio"
+          ? []
+          : (editableFields || []).slice(0, 200).map((f) => ({
+              path: f.path,
+              label: f.label,
+              tab: f.tab,
+              tabLabel: f.tabLabel,
+              group: f.group,
+              value: f.value
+            })),
+      fieldsByTab: answerFocus === "portfolio" ? null : fieldsByTab
     };
 
     const result = await askAi({ question, context: contextPayload, history });
@@ -684,10 +804,12 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       model: result.model,
       provider: result.provider,
       usage: result.usage,
-      studyId: studyId || clientStudy?.studyId || null,
+      studyId: answerFocus === "portfolio" ? null : studyId || clientStudy?.studyId || null,
       clientName: hints.clientName || null,
       year: hints.year || null,
+      answerFocus,
       portfolioMatched: portfolio?.matchedStudyCount ?? null,
+      databaseStudyCount: portfolio?.databaseStudyCount ?? null,
       greetedAs: user?.firstName || user?.displayName || null
     });
   } catch (err) {

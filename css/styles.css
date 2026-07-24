@@ -350,6 +350,7 @@ h1 {
   color: var(--chip-ink);
 }
 
+.badge.not_started { background: var(--surface-2, #eee); color: var(--muted, #666); }
 .badge.in_progress { background: var(--warn-soft); color: var(--warn); }
 .badge.ready_for_review,
 .badge.approved { background: var(--ok-soft); color: var(--ok); }

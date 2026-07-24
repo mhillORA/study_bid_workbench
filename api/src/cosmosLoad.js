@@ -1,4 +1,10 @@
 const { CosmosClient } = require("@azure/cosmos");
+const {
+  loadLearnings,
+  learnFromQuarantine,
+  learnFromSuccess,
+  learningsSummary
+} = require("./parseLearning");
 
 let client;
 let db;
@@ -33,6 +39,12 @@ async function upsertCanonical(canonical, jobId) {
   };
 
   if (canonical.quarantine) {
+    let learning = null;
+    try {
+      learning = await learnFromQuarantine(getDb, canonical);
+    } catch (_) {
+      /* learnings optional — quarantine still lands */
+    }
     await database.container("quarantine").items.upsert({
       id: `q-${version.sourceSha256.slice(0, 16)}`,
       jobId,
@@ -44,6 +56,8 @@ async function upsertCanonical(canonical, jobId) {
       source: canonical.source,
       fingerprint: canonical.fingerprint,
       sheetInventory: canonical.sheetInventory || [],
+      learnHints: canonical.learnHints || null,
+      learningPromoted: learning?.promoted || 0,
       preview: {
         clientName: study.clientName,
         title: study.title,
@@ -56,7 +70,15 @@ async function upsertCanonical(canonical, jobId) {
     });
     summary.status = "quarantined";
     summary.quarantineReasons = canonical.quarantineReasons || [];
+    summary.learnHints = canonical.learnHints || null;
+    summary.learningPromoted = learning?.promoted || 0;
     return summary;
+  }
+
+  try {
+    await learnFromSuccess(getDb, canonical);
+  } catch (_) {
+    /* non-fatal */
   }
 
   await database.container("studies").items.upsert({
@@ -325,6 +347,12 @@ async function buildPortfolioContext({ clientName = null, year = null, limit = 5
   const sum = (key) =>
     rows.reduce((acc, r) => acc + (typeof r[key] === "number" ? r[key] : 0), 0);
 
+  const avg = (key) => {
+    const nums = rows.map((r) => r[key]).filter((n) => typeof n === "number");
+    if (!nums.length) return null;
+    return Math.round((nums.reduce((a, b) => a + b, 0) / nums.length) * 100) / 100;
+  };
+
   const byClientMap = {};
   for (const r of rows) {
     const key = r.clientName || "(unknown)";
@@ -339,7 +367,8 @@ async function buildPortfolioContext({ clientName = null, year = null, limit = 5
         serviceFees: 0,
         passThroughs: 0,
         grandTotal: 0,
-        studiesWithMoney: 0
+        studiesWithMoney: 0,
+        studiesWithEnrollment: 0
       };
     }
     const b = byClientMap[key];
@@ -348,6 +377,7 @@ async function buildPortfolioContext({ clientName = null, year = null, limit = 5
     b.screenedSubjects += typeof r.screenedSubjects === "number" ? r.screenedSubjects : 0;
     b.completedSubjects += typeof r.completedSubjects === "number" ? r.completedSubjects : 0;
     b.coreSites += typeof r.coreSites === "number" ? r.coreSites : 0;
+    if (typeof r.enrolledSubjects === "number") b.studiesWithEnrollment += 1;
     if (typeof r.serviceFees === "number" || typeof r.grandTotal === "number") {
       b.studiesWithMoney += 1;
       b.serviceFees += typeof r.serviceFees === "number" ? r.serviceFees : 0;
@@ -356,9 +386,17 @@ async function buildPortfolioContext({ clientName = null, year = null, limit = 5
     }
   }
 
-  const byClient = Object.values(byClientMap).sort(
-    (a, b) => b.grandTotal - a.grandTotal || b.serviceFees - a.serviceFees || b.studyCount - a.studyCount
-  );
+  const byClient = Object.values(byClientMap)
+    .map((b) => ({
+      ...b,
+      avgEnrolledSubjects:
+        b.studiesWithEnrollment > 0
+          ? Math.round((b.enrolledSubjects / b.studiesWithEnrollment) * 100) / 100
+          : null
+    }))
+    .sort(
+      (a, b) => b.grandTotal - a.grandTotal || b.serviceFees - a.serviceFees || b.studyCount - a.studyCount
+    );
 
   const withMoney = rows.filter((r) => typeof r.grandTotal === "number" || typeof r.serviceFees === "number");
   const mostExpensive = [...withMoney].sort(
@@ -369,6 +407,8 @@ async function buildPortfolioContext({ clientName = null, year = null, limit = 5
     ...new Set(all.map((s) => s.clientName).filter(Boolean))
   ].sort((a, b) => a.localeCompare(b));
 
+  const enrollmentN = rows.filter((r) => typeof r.enrolledSubjects === "number").length;
+
   return {
     source: "cosmos_portfolio",
     filters: {
@@ -378,6 +418,7 @@ async function buildPortfolioContext({ clientName = null, year = null, limit = 5
     databaseStudyCount: all.length,
     matchedStudyCount: rows.length,
     studiesWithMoneyCount: withMoney.length,
+    studiesWithEnrollmentCount: enrollmentN,
     totals: {
       enrolledSubjects: sum("enrolledSubjects"),
       screenedSubjects: sum("screenedSubjects"),
@@ -386,6 +427,15 @@ async function buildPortfolioContext({ clientName = null, year = null, limit = 5
       serviceFees: sum("serviceFees"),
       passThroughs: sum("passThroughs"),
       grandTotal: sum("grandTotal")
+    },
+    averages: {
+      enrolledSubjects: avg("enrolledSubjects"),
+      screenedSubjects: avg("screenedSubjects"),
+      completedSubjects: avg("completedSubjects"),
+      coreSites: avg("coreSites"),
+      serviceFees: avg("serviceFees"),
+      grandTotal: avg("grandTotal"),
+      note: "Averages are the mean across matched studies that have that field (missing values excluded). Use averages.enrolledSubjects for 'average enrollment across all studies'."
     },
     byClient: byClient.slice(0, 40),
     highestBudgetStudies: mostExpensive.map((r) => ({
@@ -403,7 +453,8 @@ async function buildPortfolioContext({ clientName = null, year = null, limit = 5
       "Money fields come from Exec Sum totals on each study's current version (Total Service Fees, pass-throughs).",
       "grandTotal ≈ serviceFees + passThroughs when both exist; otherwise serviceFees alone.",
       "We do not have true profit/GM% in this portfolio extract — 'most profitable' should be answered as highest grandTotal/serviceFees unless margin fields appear in a single-study cosmos context.",
-      "Totals sum drivers and money; missing drivers/money on a study contribute 0.",
+      "For average patient enrollment across ALL studies use averages.enrolledSubjects (not workingStudy / openStudyInUi).",
+      "Totals sum drivers and money; missing drivers/money on a study contribute 0 to totals but are excluded from averages.",
       "Year filter uses updatedAt/importedAt calendar year when present."
     ]
   };
@@ -688,13 +739,150 @@ async function listQuarantine(limit = 200) {
       warnings: q.warnings || [],
       missingSheets: q.fingerprint?.missingSheets || [],
       resolvedSheets: q.fingerprint?.resolvedSheets || {},
+      learnHints: q.learnHints || null,
+      learningPromoted: q.learningPromoted || 0,
       preview: q.preview || {},
       createdAt: q.createdAt
     }));
 }
 
+async function getParseLearningsSummary() {
+  const doc = await loadLearnings(getDb);
+  return {
+    summary: learningsSummary(doc),
+    sheetAliases: doc.sheetAliases || {},
+    fieldAliases: doc.fieldAliases || {},
+    topSheetProposals: Object.entries(doc.proposals?.sheets || {})
+      .sort((a, b) => (b[1]?.count || 0) - (a[1]?.count || 0))
+      .slice(0, 25)
+      .map(([key, meta]) => ({ mapping: key, count: meta.count, examples: meta.examples || [] })),
+    topFieldProposals: Object.entries(doc.proposals?.fields || {})
+      .sort((a, b) => (b[1]?.count || 0) - (a[1]?.count || 0))
+      .slice(0, 25)
+      .map(([key, meta]) => ({ mapping: key, count: meta.count, examples: meta.examples || [] }))
+  };
+}
+
+async function createManualStudy(payload = {}) {
+  const database = getDb();
+  const now = new Date().toISOString();
+  const rawId = String(payload.studyId || payload.opportunityId || "").trim();
+  let studyId = rawId;
+  if (!studyId) {
+    studyId = `NEW-${now.replace(/[-:.TZ]/g, "").slice(0, 14)}`;
+  } else if (/^\d{4,5}$/.test(studyId)) {
+    studyId = `O-${studyId.padStart(5, "0")}`;
+  } else if (/^O\d{4,5}$/i.test(studyId)) {
+    studyId = `O-${studyId.slice(1).padStart(5, "0")}`;
+  }
+
+  const driversIn = payload.drivers && typeof payload.drivers === "object" ? payload.drivers : {};
+  const drivers = {
+    screenedSubjects: numOrNull(driversIn.screenedSubjects),
+    enrolledSubjects: numOrNull(driversIn.enrolledSubjects ?? driversIn.patients),
+    completedSubjects: numOrNull(driversIn.completedSubjects),
+    coreSites: numOrNull(driversIn.coreSites ?? driversIn.sites),
+    startupMonths: numOrNull(driversIn.startupMonths),
+    enrollmentMonths: numOrNull(driversIn.enrollmentMonths),
+    treatmentMonths: numOrNull(driversIn.treatmentMonths),
+    dblMonths: numOrNull(driversIn.dblMonths),
+    closeoutMonths: numOrNull(driversIn.closeoutMonths),
+    screenFailRate: numOrNull(driversIn.screenFailRate),
+    dropOutRate: numOrNull(driversIn.dropOutRate),
+    sdvPercent: numOrNull(driversIn.sdvPercent),
+    contingency: numOrNull(driversIn.contingency) ?? 0,
+    inflationRate: numOrNull(driversIn.inflationRate) ?? 0,
+    discount: numOrNull(driversIn.discount) ?? 0
+  };
+
+  const header = {
+    clientName: payload.clientName || null,
+    title: payload.title || null,
+    protocol: payload.protocol || null,
+    phase: payload.phase || null,
+    therapeuticArea: payload.therapeuticArea || null,
+    indication: payload.indication || null,
+    enrollmentType: payload.enrollmentType || null,
+    budgetType: payload.budgetType || "draft",
+    opportunityId: studyId,
+    notes: payload.notes || null
+  };
+
+  const versionId = `ver-${studyId}-draft`;
+  const studyDoc = {
+    id: `study-${studyId}`,
+    studyId,
+    opportunityId: studyId,
+    clientName: header.clientName,
+    title: header.title,
+    protocol: header.protocol,
+    phase: header.phase,
+    therapeuticArea: header.therapeuticArea,
+    indication: header.indication,
+    enrollmentType: header.enrollmentType,
+    budgetType: header.budgetType,
+    status: "draft",
+    createdAt: now,
+    updatedAt: now,
+    importedAt: now,
+    currentVersionId: versionId,
+    header,
+    drivers,
+    sites: Array.isArray(payload.sites) ? payload.sites : [],
+    inputFields: [],
+    resourceLeads: [],
+    monitoring: {},
+    vendors: [],
+    payments: {},
+    docType: "study",
+    createdBy: payload.createdBy || "buddy",
+    source: "buddy_create"
+  };
+
+  const versionDoc = {
+    id: versionId,
+    studyId,
+    label: String(payload.versionLabel || "draft"),
+    sourceSha256: `buddy-${studyId}`,
+    sourceFileName: "buddy-created",
+    totals: {},
+    execSum: { totals: {}, serviceAreas: [] },
+    lineItemCount: 0,
+    rateCount: 0,
+    createdAt: now,
+    confidence: 1,
+    docType: "version",
+    snapshot: {
+      header,
+      drivers,
+      sites: studyDoc.sites,
+      inputFields: [],
+      clientName: header.clientName,
+      title: header.title,
+      protocol: header.protocol,
+      phase: header.phase,
+      therapeuticArea: header.therapeuticArea,
+      indication: header.indication,
+      enrollmentType: header.enrollmentType,
+      budgetType: header.budgetType
+    }
+  };
+
+  await database.container("studies").items.upsert(studyDoc);
+  await database.container("versions").items.upsert(versionDoc);
+
+  return {
+    status: "created",
+    studyId,
+    versionId,
+    study: studyDoc,
+    version: versionDoc
+  };
+}
+
 module.exports = {
   upsertCanonical,
+  createManualStudy,
   listStudies,
   listStudiesWithDrivers,
   buildPortfolioContext,
@@ -705,5 +893,7 @@ module.exports = {
   compareVersions,
   compareStudies,
   listQuarantine,
+  getParseLearningsSummary,
+  loadLearnings,
   getDb
 };

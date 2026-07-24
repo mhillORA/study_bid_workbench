@@ -95,10 +95,18 @@ function resolveCanonicalKey(labelOrKey) {
   return hit || null;
 }
 
-function enrichInputFields(fields) {
+/**
+ * @param {Array} fields
+ * @param {(label: string) => string|null} [extraResolve] learned-alias resolver
+ */
+function enrichInputFields(fields, extraResolve) {
   if (!Array.isArray(fields)) return [];
+  const resolveExtra = typeof extraResolve === "function" ? extraResolve : null;
   return fields.map((f) => {
-    const canonicalKey = resolveCanonicalKey(f.key) || resolveCanonicalKey(f.label);
+    let canonicalKey = resolveCanonicalKey(f.key) || resolveCanonicalKey(f.label);
+    if (!canonicalKey && resolveExtra) {
+      canonicalKey = resolveExtra(f.key) || resolveExtra(f.label) || null;
+    }
     const domain = canonicalKey && CANONICAL_FIELDS[canonicalKey]
       ? CANONICAL_FIELDS[canonicalKey].domain
       : f.kind || "input";
@@ -131,6 +139,7 @@ function applyCanonicalToBags(header, drivers, fields) {
 
 module.exports = {
   CANONICAL_FIELDS,
+  normAlias,
   resolveCanonicalKey,
   enrichInputFields,
   applyCanonicalToBags

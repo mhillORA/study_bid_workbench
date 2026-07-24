@@ -3,6 +3,12 @@ const crypto = require("crypto");
 const { parseInputFull, parseKeyRates } = require("./parseInputFull");
 const { enrichInputFields, applyCanonicalToBags } = require("./fieldRegistry");
 const { harvestAllSheets } = require("./parseSheetHarvest");
+const {
+  mergeSheetAliasOptions,
+  resolveCanonicalWithLearnings,
+  guessSheetCanonical,
+  buildLearnHints
+} = require("./parseLearning");
 
 const SHEET_ALIASES = {
   "Input Tab": ["Input Tab", "Main Specifications Required", "Study Specs"],
@@ -102,25 +108,54 @@ function studyIdFromFilename(name) {
   return stem ? `FILE-${stem}` : `FILE-UNKNOWN`;
 }
 
-function resolveSheets(names) {
+function resolveSheets(names, learnings) {
   const has = new Set(names);
+  const aliases = mergeSheetAliasOptions(SHEET_ALIASES, learnings);
   const resolved = {};
-  for (const [canon, options] of Object.entries(SHEET_ALIASES)) {
+  const used = new Set();
+
+  for (const [canon, options] of Object.entries(aliases)) {
     for (const opt of options) {
-      if (has.has(opt)) {
+      if (has.has(opt) && !used.has(opt)) {
         resolved[canon] = opt;
+        used.add(opt);
         break;
       }
     }
     if (!resolved[canon]) {
       for (const s of names) {
+        if (used.has(s)) continue;
         const low = s.toLowerCase();
-        if (canon === "Internal Budget" && (low.includes("cost breakdown") || low.includes("internal budget"))) {
+        if (canon === "Internal Budget" && (low.includes("cost breakdown") || low.includes("internal budget") || low.includes("ora model"))) {
           resolved[canon] = s;
+          used.add(s);
           break;
         }
-        if (canon === "Exec Sum" && low.includes("econom")) {
+        if (canon === "Exec Sum" && (low.includes("econom") || low.includes("exec sum") || low.includes("executive"))) {
           resolved[canon] = s;
+          used.add(s);
+          break;
+        }
+        if (canon === "Input Tab" && (low.includes("input") || low.includes("spec") || low.includes("assumption"))) {
+          if (/budget|cost|exec|key|rate/.test(low)) continue;
+          resolved[canon] = s;
+          used.add(s);
+          break;
+        }
+        if (canon === "Key" && (low === "key" || low.includes("rate card") || low.includes("rates"))) {
+          resolved[canon] = s;
+          used.add(s);
+          break;
+        }
+      }
+    }
+    // Learned fuzzy: any unused sheet whose name maps to this canonical role
+    if (!resolved[canon]) {
+      for (const s of names) {
+        if (used.has(s)) continue;
+        if (guessSheetCanonical(s) === canon) {
+          resolved[canon] = s;
+          used.add(s);
           break;
         }
       }
@@ -224,13 +259,14 @@ function parseExecSum(rows) {
   return { totals, serviceAreas };
 }
 
-async function parseWorkbookBuffer(buffer, fileName) {
+async function parseWorkbookBuffer(buffer, fileName, options = {}) {
+  const learnings = options.learnings || null;
   const sha256 = crypto.createHash("sha256").update(buffer).digest("hex");
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.load(buffer);
 
   const sheetNames = wb.worksheets.map((w) => w.name);
-  const resolved = resolveSheets(sheetNames);
+  const resolved = resolveSheets(sheetNames, learnings);
   const required = ["Input Tab", "Internal Budget", "Exec Sum"];
   const missing = required.filter((r) => !resolved[r]);
   const fp = {
@@ -251,7 +287,10 @@ async function parseWorkbookBuffer(buffer, fileName) {
   const input = parseInputFull(inputRows);
   let { header, drivers, sites, fields, resourceLeads, monitoring, vendors, payments, matchedKnown, fieldCount } =
     input;
-  fields = enrichInputFields(fields);
+  const extraResolve = learnings
+    ? (label) => resolveCanonicalWithLearnings(label, learnings)
+    : null;
+  fields = enrichInputFields(fields, extraResolve);
   const bags = applyCanonicalToBags(header, drivers, fields);
   header = bags.header;
   drivers = bags.drivers;
@@ -278,6 +317,8 @@ async function parseWorkbookBuffer(buffer, fileName) {
     };
   });
 
+  const harvestLabelTotal = sheetInventory.reduce((n, s) => n + (s.labelValueCount || 0), 0);
+
   const warnings = [];
   let conf = fp.score;
   const matched = matchedKnown;
@@ -296,6 +337,13 @@ async function parseWorkbookBuffer(buffer, fileName) {
   warnings.push(
     `Sheet harvest: ${sheetHarvest.sheetCount} sheets (${sheetHarvest.unstructuredCount} unstructured dumps)`
   );
+  if (learnings) {
+    const sheetLearned = Object.values(learnings.sheetAliases || {}).reduce((n, a) => n + (a?.length || 0), 0);
+    const fieldLearned = Object.values(learnings.fieldAliases || {}).reduce((n, a) => n + (a?.length || 0), 0);
+    if (sheetLearned || fieldLearned) {
+      warnings.push(`Applied learned aliases: ${sheetLearned} sheet, ${fieldLearned} field`);
+    }
+  }
 
   const fileOpp = opportunityFromFilename(fileName);
   const fileStudyId = studyIdFromFilename(fileName);
@@ -323,11 +371,14 @@ async function parseWorkbookBuffer(buffer, fileName) {
 
   const enoughLines = lineItems.length >= 20;
   const hasId = opportunityId !== "UNKNOWN";
+  // "Similar enough": any recognizable budget content → Cosmos; empty shells → quarantine
   const hasContent =
     lineItems.length >= 1 ||
     fieldCount >= 5 ||
+    harvestLabelTotal >= 8 ||
     Boolean(resolved["Input Tab"]) ||
-    Boolean(resolved["Internal Budget"]);
+    Boolean(resolved["Internal Budget"]) ||
+    Boolean(resolved["Exec Sum"]);
 
   let quarantineReasons = [];
   if (!hasId) quarantineReasons.push("no_study_id");
@@ -335,15 +386,16 @@ async function parseWorkbookBuffer(buffer, fileName) {
   if (fieldCount === 0) quarantineReasons.push("no_input_fields");
   if (!fp.matched) quarantineReasons.push(`missing_sheets:${missing.join("|") || "none"}`);
   if (conf < 0.45) quarantineReasons.push("low_confidence");
+  if (!hasContent) quarantineReasons.push("no_recognizable_content");
 
-  // POC: load anything with an id + any captured content. Quarantine only empty shells.
+  // Similar → Cosmos. Unsure / empty → quarantine (still mined for learnings).
   let quarantine = !(hasId && hasContent);
 
   if (hasId && hasContent) {
     warnings.push(
       lineItems.length >= 20
-        ? "POC auto-load: study id + line items"
-        : "POC auto-load: study id + captured inputs (filename stem OK if no O-#####)"
+        ? "Auto-load: study id + line items (similar format)"
+        : "Auto-load: study id + similar content (inputs/harvest/sheets); re-upload after learnings promote aliases"
     );
     conf = Math.max(conf, lineItems.length >= 20 ? 0.7 : 0.55);
     quarantine = false;
@@ -368,6 +420,19 @@ async function parseWorkbookBuffer(buffer, fileName) {
   const importedAt = new Date().toISOString();
   const studyId = opportunityId;
 
+  const partial = {
+    fingerprint: fp,
+    sheetInventory,
+    study: { inputFields: fields },
+    source: { fileName }
+  };
+  const learnHints = buildLearnHints(partial);
+  if (learnHints.proposedSheets.length || learnHints.proposedFields.length) {
+    warnings.push(
+      `Learn hints: ${learnHints.proposedSheets.length} sheet map(s), ${learnHints.proposedFields.length} field alias(es) proposed`
+    );
+  }
+
   return {
     schemaVersion: 2,
     profileId: "ora-budget-internal-v3",
@@ -375,6 +440,7 @@ async function parseWorkbookBuffer(buffer, fileName) {
     warnings,
     quarantine,
     quarantineReasons,
+    learnHints,
     source: {
       fileName,
       sha256,

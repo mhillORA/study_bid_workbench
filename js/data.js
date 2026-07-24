@@ -92,7 +92,16 @@ SBW.defaultStudy = function () {
         notes: ""
       }
     },
+    rates: SBW.defaultRates(),
+    factors: SBW.defaultFactors(),
+    staffing: SBW.defaultStaffing(),
+    rateCards: [],
     requests: [],
-    formulaOverrides: {}
+    formulaOverrides: {},
+    bidHelper: {
+      step: 0,
+      answers: {},
+      ballpark: null
+    }
   };
 };

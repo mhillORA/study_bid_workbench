@@ -6,7 +6,7 @@
   <title>Study Bid Workbench · Ora</title>
   <link rel="icon" type="image/png" href="img/ora-logo.png" />
   <link rel="stylesheet" href="css/styles.css" />
-  <!-- deploy-bust: 2026-07-23T15:50:00-04:00 -->
+  <!-- deploy-bust: 2026-07-24T11:30:00-04:00 -->
   <script>
     (function () {
       var key = "sbw.theme";
@@ -54,6 +54,8 @@
         </div>
         <div class="topbar-actions">
           <span class="pill" id="saveStatus">Saved</span>
+          <button type="button" class="btn btn-primary" id="btnNewStudy">New study</button>
+          <button type="button" class="btn btn-secondary" id="btnClearStudy" title="Deselect open study — Buddy queries all Cosmos studies">All studies</button>
           <button type="button" class="btn btn-secondary" id="btnBuddyOpen">Buddy</button>
           <button type="button" class="btn btn-secondary" id="btnRequestFill">Request fill</button>
         </div>
@@ -84,6 +86,25 @@
       </div>
     </div>
   </aside>
+
+  <dialog id="newStudyDialog" class="dialog">
+    <form method="dialog" id="newStudyForm">
+      <h2>Start a new study</h2>
+      <p class="muted">Creates a blank draft you can fill in Overview. Optional — leave blank and we’ll assign a NEW-… id.</p>
+      <label class="field-label" for="newStudyId">Opportunity id</label>
+      <input id="newStudyId" class="input" placeholder="O-12345 (optional)" />
+      <label class="field-label" for="newStudyClient">Client</label>
+      <input id="newStudyClient" class="input" placeholder="Client / sponsor" />
+      <label class="field-label" for="newStudyProtocol">Protocol</label>
+      <input id="newStudyProtocol" class="input" placeholder="Protocol number" />
+      <label class="field-label" for="newStudyTitle">Title</label>
+      <input id="newStudyTitle" class="input" placeholder="Study title" />
+      <div class="dialog-actions">
+        <button type="submit" class="btn btn-ghost" value="cancel">Cancel</button>
+        <button type="submit" class="btn btn-primary" value="confirm">Create &amp; open</button>
+      </div>
+    </form>
+  </dialog>
 
   <dialog id="requestDialog" class="dialog">
     <form method="dialog" id="requestForm">
