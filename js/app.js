@@ -1287,7 +1287,7 @@
       const learn = data.learnings || {};
       if (status) {
         const s = learn.summary || {};
-        status.textContent = `${data.count || 0} quarantined · ${s.sheetAliasCount || 0} sheet aliases · ${s.fieldAliasCount || 0} field aliases learned`;
+        status.textContent = `${data.count || 0} quarantined · ${s.sheetAliasCount || 0} sheet · ${s.fieldAliasCount || 0} field · ${s.siteHeaderAliasCount || 0} site-header aliases · loads ${s.stats?.loads || 0} / quarantines ${s.stats?.quarantines || 0}`;
       }
       if (report) {
         report.textContent = JSON.stringify(
@@ -1298,10 +1298,14 @@
               summary: learn.summary,
               promotedSheetAliases: learn.sheetAliases,
               promotedFieldAliases: learn.fieldAliases,
+              promotedSiteHeaderAliases: learn.siteHeaderAliases,
+              promotedSiteHeaderSignatures: learn.siteHeaderSignatures,
+              countryAliases: learn.countryAliases,
               pendingSheetProposals: learn.topSheetProposals,
-              pendingFieldProposals: learn.topFieldProposals
+              pendingFieldProposals: learn.topFieldProposals,
+              pendingSiteHeaderProposals: learn.topSiteHeaderProposals
             },
-            tip: "Similar budgets load to Cosmos. Quarantine only for empty/unusable parses. Re-upload after aliases promote to improve older formats.",
+            tip: "Similar budgets load to Cosmos. Quarantine + successful loads both write parseLearnings. Site table headers now learn too — re-upload older files after aliases promote.",
             sample: rows.slice(0, 40)
           },
           null,
@@ -2025,7 +2029,13 @@
     const v = payload.version || {};
     const snap = v.snapshot || {};
     const base = SBW.defaultStudy();
-    const drivers = { ...base.drivers, ...(s.drivers || {}), ...(snap.drivers || {}) };
+    const snapFields = Array.isArray(snap.inputFields) ? snap.inputFields : [];
+    const studyFields = Array.isArray(s.inputFields) ? s.inputFields : [];
+    const drivers = {
+      ...base.drivers,
+      ...(snap.drivers || {}),
+      ...(s.drivers || {})
+    };
     return {
       ...base,
       studyId: s.studyId,
@@ -2039,21 +2049,35 @@
       budgetType: s.budgetType || snap.budgetType || "",
       versionLabel: v.label || "imported",
       drivers,
-      header: snap.header || s.header || {},
-      inputFields: snap.inputFields || s.inputFields || [],
-      sites: snap.sites || s.sites || [],
-      resourceLeads: snap.resourceLeads || s.resourceLeads || [],
-      monitoringInputs: snap.monitoring || s.monitoring || {},
-      vendors: snap.vendors || s.vendors || [],
-      payments: snap.payments || s.payments || {},
+      header: { ...(base.header || {}), ...(snap.header || {}), ...(s.header || {}) },
+      inputFields: snapFields.length ? snapFields : studyFields,
+      sites: (Array.isArray(snap.sites) && snap.sites.length ? snap.sites : null) || s.sites || [],
+      resourceLeads:
+        (Array.isArray(snap.resourceLeads) && snap.resourceLeads.length ? snap.resourceLeads : null) ||
+        s.resourceLeads ||
+        [],
+      monitoringInputs: {
+        ...(typeof snap.monitoring === "object" && snap.monitoring ? snap.monitoring : {}),
+        ...(typeof s.monitoring === "object" && s.monitoring ? s.monitoring : {})
+      },
+      vendors: (Array.isArray(snap.vendors) && snap.vendors.length ? snap.vendors : null) || s.vendors || [],
+      payments: { ...(snap.payments || {}), ...(s.payments || {}) },
       sheetHarvestSummary: s.sheetHarvestSummary || snap.sheetHarvestSummary || v.sheetHarvestSummary || null,
       totals: v.totals || {},
       execSum: v.execSum || {},
+      rates: { ...base.rates, ...(s.rates || {}) },
+      factors: { ...base.factors },
+      staffing: { ...base.staffing },
       currentVersionId: s.currentVersionId || v.id,
       viewingVersionId: v.id,
-      sectionStatus: base.sectionStatus,
-      assumptions: base.assumptions,
-      requests: base.requests,
+      sectionStatus: { ...base.sectionStatus, ...(s.sectionStatus || {}) },
+      assumptions: {
+        recruitment: { ...base.assumptions.recruitment, ...((s.assumptions || {}).recruitment || {}) },
+        monitoring: { ...base.assumptions.monitoring, ...((s.assumptions || {}).monitoring || {}) },
+        clinops: { ...base.assumptions.clinops, ...((s.assumptions || {}).clinops || {}) },
+        smo: { ...base.assumptions.smo, ...((s.assumptions || {}).smo || {}) }
+      },
+      requests: Array.isArray(s.requests) ? s.requests : base.requests,
       formulaOverrides: {}
     };
   }

@@ -52,9 +52,13 @@ function emptyLearnings() {
     docType: "parseLearnings",
     sheetAliases: {}, // canonical -> [sheetName, ...]
     fieldAliases: {}, // canonicalKey -> [alias, ...]
+    siteHeaderAliases: [], // e.g. "geography", "site locations"
+    siteHeaderSignatures: [], // joined header cells that successfully parsed sites
+    countryAliases: {}, // "usa" -> "United States"
     proposals: {
       sheets: {}, // `${canon}||${sheet}` -> { count, examples[] }
-      fields: {} // `${canon}||${alias}` -> { count, examples[] }
+      fields: {}, // `${canon}||${alias}` -> { count, examples[] }
+      siteHeaders: {} // signature or alias -> { count, examples[] }
     },
     stats: { loads: 0, quarantines: 0, autoPromoted: 0 },
     updatedAt: null
@@ -79,7 +83,7 @@ async function loadLearnings(getDb) {
     await ensureLearningsContainer(getDb);
     const database = getDb();
     const { resource } = await database.container("parseLearnings").item(LEARNINGS_ID, LEARNINGS_ID).read();
-    cache = resource || emptyLearnings();
+    cache = ensureLearningShape(resource || emptyLearnings());
   } catch (_) {
     cache = emptyLearnings();
   }
@@ -103,6 +107,7 @@ async function saveLearnings(getDb, doc) {
 function buildLearnHints(canonical) {
   const proposedSheets = [];
   const proposedFields = [];
+  const proposedSiteHeaders = [];
   const missing = canonical?.fingerprint?.missingSheets || [];
   const sheetNames = (canonical?.sheetInventory || []).map((s) => (typeof s === "string" ? s : s.name)).filter(Boolean);
 
@@ -126,10 +131,46 @@ function buildLearnHints(canonical) {
     proposedFields.push({ canonicalKey: guess, alias: normAlias(label), label, reason: "label_fuzzy" });
   }
 
+  const siteCount = (canonical?.study?.sites || []).length;
+  const meta = canonical?.siteParseMeta;
+  if (meta?.headerSignature && siteCount > 0) {
+    proposedSiteHeaders.push({
+      signature: meta.headerSignature,
+      alias: (meta.headerSignature.split("|")[0] || "").trim(),
+      reason: "parsed_ok",
+      siteCount
+    });
+  } else {
+    // Mine near-miss headers from input preview when sites failed
+    const preview = canonical?.inputPreviewRows || [];
+    for (const row of preview) {
+      if (!Array.isArray(row)) continue;
+      const cells = row.map((c) => normAlias(c)).filter(Boolean);
+      if (!cells.length) continue;
+      const joined = cells.slice(0, 14).join("|");
+      const hasGeo = cells.some((c) =>
+        /country|countries|geography|geograph|nation|location|site name|site location|region/.test(c)
+      );
+      const hasSite = cells.some((c) => /(^|\b)(#\s*)?(core\s*)?sites?\b|number of sites|site count/.test(c));
+      if (hasGeo || hasSite) {
+        proposedSiteHeaders.push({
+          signature: joined,
+          alias: cells[0],
+          reason: siteCount ? "reinforce" : "near_miss",
+          siteCount
+        });
+        if (proposedSiteHeaders.length >= 6) break;
+      }
+    }
+  }
+
   return {
     proposedSheets,
     proposedFields,
-    unmatchedFieldCount: (canonical?.study?.inputFields || []).filter((f) => !f.normalized).length
+    proposedSiteHeaders,
+    unmatchedFieldCount: (canonical?.study?.inputFields || []).filter((f) => !f.normalized).length,
+    siteCount,
+    siteHeaderFound: Boolean(meta?.foundHeader)
   };
 }
 
@@ -161,6 +202,24 @@ function promoteReady(learnings, minCount = 2) {
     if (!learnings.fieldAliases[canon].includes(alias)) {
       learnings.fieldAliases[canon].push(alias);
       promoted += 1;
+    }
+  }
+  if (!learnings.siteHeaderAliases) learnings.siteHeaderAliases = [];
+  if (!learnings.siteHeaderSignatures) learnings.siteHeaderSignatures = [];
+  for (const [key, meta] of Object.entries(learnings.proposals.siteHeaders || {})) {
+    if (!meta || meta.count < minCount) continue;
+    if (key.startsWith("sig||")) {
+      const sig = key.slice(5);
+      if (sig && !learnings.siteHeaderSignatures.includes(sig)) {
+        learnings.siteHeaderSignatures.push(sig);
+        promoted += 1;
+      }
+    } else if (key.startsWith("alias||")) {
+      const alias = key.slice(7);
+      if (alias && !learnings.siteHeaderAliases.includes(alias)) {
+        learnings.siteHeaderAliases.push(alias);
+        promoted += 1;
+      }
     }
   }
   learnings.stats.autoPromoted = (learnings.stats.autoPromoted || 0) + promoted;
@@ -248,8 +307,22 @@ function resolveCanonicalWithLearnings(labelOrKey, learnings) {
 /**
  * After a quarantine write — propose sheet/field learnings from fingerprint + harvest labels.
  */
+function ensureLearningShape(learnings) {
+  if (!learnings.proposals) learnings.proposals = {};
+  if (!learnings.proposals.sheets) learnings.proposals.sheets = {};
+  if (!learnings.proposals.fields) learnings.proposals.fields = {};
+  if (!learnings.proposals.siteHeaders) learnings.proposals.siteHeaders = {};
+  if (!learnings.sheetAliases) learnings.sheetAliases = {};
+  if (!learnings.fieldAliases) learnings.fieldAliases = {};
+  if (!learnings.siteHeaderAliases) learnings.siteHeaderAliases = [];
+  if (!learnings.siteHeaderSignatures) learnings.siteHeaderSignatures = [];
+  if (!learnings.countryAliases) learnings.countryAliases = {};
+  if (!learnings.stats) learnings.stats = { loads: 0, quarantines: 0, autoPromoted: 0 };
+  return learnings;
+}
+
 async function learnFromQuarantine(getDb, canonical) {
-  const learnings = await loadLearnings(getDb);
+  const learnings = ensureLearningShape(await loadLearnings(getDb));
   learnings.stats.quarantines = (learnings.stats.quarantines || 0) + 1;
 
   const fileName = canonical?.source?.fileName || "unknown";
@@ -264,6 +337,10 @@ async function learnFromQuarantine(getDb, canonical) {
     if (p.canonicalKey && p.alias) {
       bumpProposal(learnings.proposals.fields, `${p.canonicalKey}||${p.alias}`, fileName);
     }
+  }
+  for (const p of hints.proposedSiteHeaders || []) {
+    if (p.signature) bumpProposal(learnings.proposals.siteHeaders, `sig||${p.signature}`, fileName);
+    if (p.alias) bumpProposal(learnings.proposals.siteHeaders, `alias||${normAlias(p.alias)}`, fileName);
   }
 
   // Fallback: mine sheet names + unmatched fields when hints empty
@@ -294,10 +371,10 @@ async function learnFromQuarantine(getDb, canonical) {
 }
 
 /**
- * After a successful Cosmos load — reinforce resolved sheet names + normalized fields.
+ * After a successful Cosmos load — reinforce resolved sheet names + normalized fields + site headers.
  */
 async function learnFromSuccess(getDb, canonical) {
-  const learnings = await loadLearnings(getDb);
+  const learnings = ensureLearningShape(await loadLearnings(getDb));
   learnings.stats.loads = (learnings.stats.loads || 0) + 1;
   const fileName = canonical?.source?.fileName || "unknown";
   const resolved = canonical?.fingerprint?.resolvedSheets || {};
@@ -326,6 +403,33 @@ async function learnFromSuccess(getDb, canonical) {
     }
   }
 
+  const meta = canonical?.siteParseMeta;
+  const siteCount = (canonical?.study?.sites || []).length;
+  if (siteCount > 0 && meta?.headerSignature) {
+    bumpProposal(learnings.proposals.siteHeaders, `sig||${meta.headerSignature}`, fileName);
+    if (!learnings.siteHeaderSignatures.includes(meta.headerSignature)) {
+      learnings.siteHeaderSignatures.push(meta.headerSignature);
+      learnings.stats.autoPromoted = (learnings.stats.autoPromoted || 0) + 1;
+    }
+    const first = (meta.headerSignature.split("|")[0] || "").trim();
+    if (first && !learnings.siteHeaderAliases.includes(first)) {
+      learnings.siteHeaderAliases.push(first);
+      learnings.stats.autoPromoted = (learnings.stats.autoPromoted || 0) + 1;
+    }
+  }
+  for (const s of canonical?.study?.sites || []) {
+    if (!s.countryRaw || !s.country || s.countryRaw === s.country) continue;
+    const key = normAlias(s.countryRaw);
+    if (key && !learnings.countryAliases[key]) {
+      learnings.countryAliases[key] = s.country;
+      learnings.stats.autoPromoted = (learnings.stats.autoPromoted || 0) + 1;
+    }
+  }
+  for (const p of (canonical.learnHints || {}).proposedSiteHeaders || []) {
+    if (p.signature) bumpProposal(learnings.proposals.siteHeaders, `sig||${p.signature}`, fileName);
+    if (p.alias) bumpProposal(learnings.proposals.siteHeaders, `alias||${normAlias(p.alias)}`, fileName);
+  }
+
   promoteReady(learnings, 2);
   await saveLearnings(getDb, learnings);
   return learnings;
@@ -336,10 +440,16 @@ function learningsSummary(doc) {
   return {
     sheetAliasCount: Object.values(doc.sheetAliases || {}).reduce((n, a) => n + (a?.length || 0), 0),
     fieldAliasCount: Object.values(doc.fieldAliases || {}).reduce((n, a) => n + (a?.length || 0), 0),
+    siteHeaderAliasCount: (doc.siteHeaderAliases || []).length,
+    siteHeaderSignatureCount: (doc.siteHeaderSignatures || []).length,
+    countryAliasCount: Object.keys(doc.countryAliases || {}).length,
     sheetProposals: Object.keys(doc.proposals?.sheets || {}).length,
     fieldProposals: Object.keys(doc.proposals?.fields || {}).length,
+    siteHeaderProposals: Object.keys(doc.proposals?.siteHeaders || {}).length,
     stats: doc.stats || {},
-    updatedAt: doc.updatedAt
+    updatedAt: doc.updatedAt,
+    learningActive: true,
+    note: "Sheet/field/site-header aliases write on quarantine + successful loads; site layouts promote after 2 hits (success promotes immediately)."
   };
 }
 

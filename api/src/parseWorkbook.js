@@ -284,9 +284,20 @@ async function parseWorkbookBuffer(buffer, fileName, options = {}) {
   const execRows = resolved["Exec Sum"] ? sheetMatrix(wb.getWorksheet(resolved["Exec Sum"])) : [];
   const keyRows = resolved.Key ? sheetMatrix(wb.getWorksheet(resolved.Key)) : [];
 
-  const input = parseInputFull(inputRows);
-  let { header, drivers, sites, fields, resourceLeads, monitoring, vendors, payments, matchedKnown, fieldCount } =
-    input;
+  const input = parseInputFull(inputRows, { learnings });
+  let {
+    header,
+    drivers,
+    sites,
+    fields,
+    resourceLeads,
+    monitoring,
+    vendors,
+    payments,
+    matchedKnown,
+    fieldCount,
+    siteParseMeta
+  } = input;
   const extraResolve = learnings
     ? (label) => resolveCanonicalWithLearnings(label, learnings)
     : null;
@@ -334,6 +345,16 @@ async function parseWorkbookBuffer(buffer, fileName, options = {}) {
   warnings.push(
     `Captured ${fieldCount} Input Tab fields (${normalizedCount} canonical), ${sites.length} sites, ${rates.length} key rates`
   );
+  if (!sites.length) {
+    conf *= 0.85;
+    warnings.push(
+      siteParseMeta?.foundHeader
+        ? "Site Mix header found but no country rows captured — check older column layout"
+        : "No Site Mix / Country table detected — older site headers will be proposed for learning"
+    );
+  } else if (siteParseMeta?.headerSignature) {
+    warnings.push(`Site table header: ${siteParseMeta.headerSignature.slice(0, 120)}`);
+  }
   warnings.push(
     `Sheet harvest: ${sheetHarvest.sheetCount} sheets (${sheetHarvest.unstructuredCount} unstructured dumps)`
   );
@@ -423,13 +444,16 @@ async function parseWorkbookBuffer(buffer, fileName, options = {}) {
   const partial = {
     fingerprint: fp,
     sheetInventory,
-    study: { inputFields: fields },
-    source: { fileName }
+    study: { inputFields: fields, sites },
+    source: { fileName },
+    siteParseMeta,
+    inputPreviewRows: inputRows.slice(0, 80).map((r) => (r || []).slice(0, 14))
   };
   const learnHints = buildLearnHints(partial);
-  if (learnHints.proposedSheets.length || learnHints.proposedFields.length) {
+  const siteHintN = (learnHints.proposedSiteHeaders || []).length;
+  if (learnHints.proposedSheets.length || learnHints.proposedFields.length || siteHintN) {
     warnings.push(
-      `Learn hints: ${learnHints.proposedSheets.length} sheet map(s), ${learnHints.proposedFields.length} field alias(es) proposed`
+      `Learn hints: ${learnHints.proposedSheets.length} sheet, ${learnHints.proposedFields.length} field, ${siteHintN} site-header proposal(s)`
     );
   }
 
@@ -441,6 +465,7 @@ async function parseWorkbookBuffer(buffer, fileName, options = {}) {
     quarantine,
     quarantineReasons,
     learnHints,
+    siteParseMeta: siteParseMeta || null,
     source: {
       fileName,
       sha256,

@@ -298,32 +298,33 @@ SBW.calc = {
   },
 
   runAll(study) {
-    const lib = { ...SBW.formulaLibrary, ...study.formulaOverrides };
+    const lib = { ...SBW.formulaLibrary, ...(study && study.formulaOverrides) };
     const out = {};
-    const rates = { ...SBW.defaultRates(), ...(study.rates || {}) };
-    const factors = { ...SBW.defaultFactors(), ...(study.factors || {}) };
-    const staffing = { ...SBW.defaultStaffing(), ...(study.staffing || {}) };
+    const rates = { ...SBW.defaultRates(), ...((study && study.rates) || {}) };
+    const factors = { ...SBW.defaultFactors(), ...((study && study.factors) || {}) };
+    const staffing = { ...SBW.defaultStaffing(), ...((study && study.staffing) || {}) };
+    const assumptions = (study && study.assumptions) || {};
 
     Object.keys(lib).forEach((key) => {
       const item = lib[key];
       const deptAssumptions =
         item.department === "Recruitment"
-          ? study.assumptions.recruitment
+          ? assumptions.recruitment || {}
           : item.department === "Monitoring"
-            ? study.assumptions.monitoring
+            ? assumptions.monitoring || {}
             : item.department === "ClinOps"
-              ? study.assumptions.clinops
+              ? assumptions.clinops || {}
               : item.department === "SMO"
-                ? study.assumptions.smo
-                : study.assumptions.recruitment;
+                ? assumptions.smo || {}
+                : assumptions.recruitment || {};
 
       out[key] = this.eval(item.expression, {
-        drivers: study.drivers,
+        drivers: (study && study.drivers) || {},
         assumptions: deptAssumptions,
         rates,
         factors,
         staffing,
-        totals: study.totals || {}
+        totals: (study && study.totals) || {}
       });
     });
 

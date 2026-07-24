@@ -144,7 +144,7 @@ function providerStatus() {
     claude,
     active: azure ? "azure_openai" : claude ? "claude" : null,
     effort: envSet("ANTHROPIC_EFFORT") || "low",
-    buildId: "2026-07-24T11-no-study-portfolio",
+    buildId: "2026-07-24T12-site-parse-learn",
     endpointKind: !cfg.endpoint
       ? null
       : isFoundryProjectEndpoint(cfg.endpoint)

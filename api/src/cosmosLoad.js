@@ -88,12 +88,16 @@ async function upsertCanonical(canonical, jobId) {
     docType: "study"
   });
 
+  // Never persist full sheetHarvest cell dumps on the version doc (Cosmos 2MB limit).
+  // Keep summary + inventory only; full harvest was blowing writes and leaving studies half-empty.
+  const { sheetHarvest: _omitHarvest, ...versionRest } = version;
   await database.container("versions").items.upsert({
-    ...version,
+    ...versionRest,
     docType: "version",
     confidence: canonical.confidence,
     profileId: canonical.profileId,
     source: canonical.source,
+    sheetHarvestSummary: study.sheetHarvestSummary || null,
     // Snapshot study inputs on the version so history/compare works after later uploads
     snapshot: {
       header: study.header || {},
@@ -752,11 +756,18 @@ async function getParseLearningsSummary() {
     summary: learningsSummary(doc),
     sheetAliases: doc.sheetAliases || {},
     fieldAliases: doc.fieldAliases || {},
+    siteHeaderAliases: doc.siteHeaderAliases || [],
+    siteHeaderSignatures: doc.siteHeaderSignatures || [],
+    countryAliases: doc.countryAliases || {},
     topSheetProposals: Object.entries(doc.proposals?.sheets || {})
       .sort((a, b) => (b[1]?.count || 0) - (a[1]?.count || 0))
       .slice(0, 25)
       .map(([key, meta]) => ({ mapping: key, count: meta.count, examples: meta.examples || [] })),
     topFieldProposals: Object.entries(doc.proposals?.fields || {})
+      .sort((a, b) => (b[1]?.count || 0) - (a[1]?.count || 0))
+      .slice(0, 25)
+      .map(([key, meta]) => ({ mapping: key, count: meta.count, examples: meta.examples || [] })),
+    topSiteHeaderProposals: Object.entries(doc.proposals?.siteHeaders || {})
       .sort((a, b) => (b[1]?.count || 0) - (a[1]?.count || 0))
       .slice(0, 25)
       .map(([key, meta]) => ({ mapping: key, count: meta.count, examples: meta.examples || [] }))

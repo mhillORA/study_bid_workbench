@@ -54,7 +54,8 @@ const DRIVER_LABELS = {
   "drop-out rate": "dropOutRate"
 };
 
-function parseInputFull(rows) {
+function parseInputFull(rows, options = {}) {
+  const learnings = options.learnings || null;
   const fields = []; // every A/B (and note) we find in core + later sections
   const header = {};
   const drivers = {};
@@ -127,7 +128,8 @@ function parseInputFull(rows) {
     harvestDriversFromRow(r, drivers, driverMeta, fields, section);
   }
 
-  const sites = parseSites(rows);
+  const siteParse = parseSites(rows, learnings);
+  const sites = siteParse.sites;
   const resourceLeads = parseResourceLeads(rows);
   const monitoring = parseMonitoringBlock(rows);
   const vendors = parseVendors(rows);
@@ -147,6 +149,13 @@ function parseInputFull(rows) {
     driverMeta,
     fields,
     sites,
+    siteParseMeta: {
+      headerRow: siteParse.headerRow,
+      headerSignature: siteParse.headerSignature,
+      columnMap: siteParse.columnMap,
+      foundHeader: siteParse.headerRow >= 0,
+      siteCount: sites.length
+    },
     resourceLeads,
     monitoring,
     vendors,
@@ -201,40 +210,270 @@ function harvestDriversFromRow(r, drivers, driverMeta, fields, section) {
   }
 }
 
-function parseSites(rows) {
-  let siteHeader = -1;
+/** Built-in + learned labels that can mark the country / geography column. */
+const COUNTRY_HEADER_ALIASES = [
+  "country",
+  "countries",
+  "country name",
+  "site country",
+  "country / region",
+  "country/region",
+  "geography",
+  "geographies",
+  "nation",
+  "location",
+  "locations",
+  "site location",
+  "site locations",
+  "site name",
+  "site names",
+  "sites",
+  "site",
+  "region / country",
+  "region/country"
+];
+
+const STOP_SITE_ROWS = new Set([
+  "totals",
+  "total",
+  "pts check",
+  "latinaba",
+  "resources",
+  "resource leads",
+  "imv duration calculation",
+  "masked and unmasked teams",
+  "site & vendor payments",
+  "site and vendor payments",
+  "vendors",
+  "monitoring"
+]);
+
+function normHeaderCell(v) {
+  return normLabel(v).toLowerCase().replace(/[#:]+/g, "").replace(/\s+/g, " ").trim();
+}
+
+function isCountryHeaderLabel(label, learnings) {
+  const n = normHeaderCell(label);
+  if (!n) return false;
+  if (COUNTRY_HEADER_ALIASES.includes(n)) return true;
+  const learned = (learnings && learnings.siteHeaderAliases) || [];
+  if (learned.map(normHeaderCell).includes(n)) return true;
+  // Soft: starts with country/geography/nation/location
+  if (/^(country|countries|geography|geographies|nation|location|locations|site name)/.test(n)) return true;
+  return false;
+}
+
+function looksLikeSiteCountHeader(label) {
+  const n = normHeaderCell(label);
+  if (!n) return false;
+  if (/(^|\b)(#\s*)?(core\s*)?sites?\b/.test(n)) return true;
+  if (/(number|no\.?|#)\s+of\s+sites?/.test(n)) return true;
+  if (/^sites?$/.test(n) || n === "site count" || n === "n sites") return true;
+  return false;
+}
+
+function mapSiteColumns(headerRow, learnings) {
+  const cells = (headerRow || []).map(normHeaderCell);
+  const map = {
+    country: 0,
+    region: 1,
+    coreSites: 2,
+    backupSites: 3,
+    startupMonths: 4,
+    enrolledPts: 5,
+    screenedPts: 6,
+    completedPts: 7,
+    enrollmentMonths: 8,
+    enrollmentRate: 9,
+    notes: 13
+  };
+
+  let foundCountry = false;
+  cells.forEach((h, idx) => {
+    if (!h) return;
+    if (isCountryHeaderLabel(h, learnings) && !foundCountry) {
+      map.country = idx;
+      foundCountry = true;
+      return;
+    }
+    if (/^region$|^geo(graphy)?$|^territory$/.test(h) || h.includes("region")) {
+      if (h !== cells[map.country]) map.region = idx;
+    }
+    if (looksLikeSiteCountHeader(h) && !/backup|back-up|back up/.test(h)) map.coreSites = idx;
+    if (/backup|back-up|back up/.test(h) && /site/.test(h)) map.backupSites = idx;
+    if (/start.?up|startup|contract.?fpfv/.test(h) && /month/.test(h)) map.startupMonths = idx;
+    if (/enrolled|enrollment pts|pts enrolled|# enrolled/.test(h) && !/rate|month/.test(h)) map.enrolledPts = idx;
+    if (/screened|# screened/.test(h) && !/rate|fail/.test(h)) map.screenedPts = idx;
+    if (/completed|# completed/.test(h)) map.completedPts = idx;
+    if (/enrollment.*(month|mo)|enroll.*(month|mo)|fpfv.?lpfv/.test(h)) map.enrollmentMonths = idx;
+    if (/enrollment rate|subjects.?site.?month|pts.?site.?mo/.test(h)) map.enrollmentRate = idx;
+    if (/^notes?$|^comments?$|^assumptions?$/.test(h)) map.notes = idx;
+  });
+
+  return { map, foundCountry };
+}
+
+function findSiteHeaderRow(rows, learnings) {
+  // 1) Classic: col0 country-like + a site-count column nearby
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i];
-    if (r && normLabel(r[0]).toLowerCase() === "country" && r[2] && String(r[2]).toLowerCase().includes("site")) {
-      siteHeader = i;
-      break;
+    if (!r) continue;
+    const a0 = normHeaderCell(r[0]);
+    if (isCountryHeaderLabel(a0, learnings)) {
+      const hasSiteCol = r.some((c, idx) => idx > 0 && looksLikeSiteCountHeader(c));
+      if (hasSiteCol || (r[2] && String(r[2]).toLowerCase().includes("site"))) {
+        return i;
+      }
+      // Older sheets: "Country" then Region then blank until numbers — still accept
+      if (a0 === "country" || a0 === "countries" || a0 === "geography") return i;
     }
   }
+
+  // 2) "Site Mix" section marker — header is that row or the next non-empty row
+  for (let i = 0; i < rows.length; i++) {
+    const a0 = normHeaderCell(rows[i] && rows[i][0]);
+    if (a0 === "site mix" || a0 === "sites mix" || a0 === "country mix" || a0 === "site distribution") {
+      if (rows[i].some((c, idx) => idx > 0 && looksLikeSiteCountHeader(c))) return i;
+      for (let j = i + 1; j < Math.min(i + 4, rows.length); j++) {
+        const r = rows[j];
+        if (!r) continue;
+        if (isCountryHeaderLabel(r[0], learnings) || r.some((c) => looksLikeSiteCountHeader(c))) return j;
+      }
+    }
+  }
+
+  // 3) Any row where a cell is country-like AND another cell is site-count-like
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    if (!r) continue;
+    let countryIdx = -1;
+    let siteIdx = -1;
+    r.forEach((c, idx) => {
+      if (countryIdx < 0 && isCountryHeaderLabel(c, learnings)) countryIdx = idx;
+      if (siteIdx < 0 && looksLikeSiteCountHeader(c)) siteIdx = idx;
+    });
+    if (countryIdx >= 0 && siteIdx >= 0 && countryIdx !== siteIdx) return i;
+  }
+
+  // 4) Learned header signatures (joined first cells)
+  const sigs = (learnings && learnings.siteHeaderSignatures) || [];
+  if (sigs.length) {
+    for (let i = 0; i < rows.length; i++) {
+      const sig = siteHeaderSignature(rows[i]);
+      if (sig && sigs.includes(sig)) return i;
+    }
+  }
+
+  return -1;
+}
+
+function siteHeaderSignature(headerRow) {
+  if (!headerRow) return "";
+  return headerRow
+    .slice(0, 14)
+    .map((c) => normHeaderCell(c))
+    .filter(Boolean)
+    .join("|");
+}
+
+function cellAt(r, idx) {
+  if (idx == null || idx < 0) return null;
+  return r[idx] ?? null;
+}
+
+function normalizeCountryName(raw, learnings) {
+  const s = String(raw || "").trim();
+  if (!s) return s;
+  const key = s.toLowerCase().replace(/\./g, "").replace(/\s+/g, " ").trim();
+  const builtin = {
+    us: "United States",
+    usa: "United States",
+    "u s": "United States",
+    "u s a": "United States",
+    "united states of america": "United States",
+    "united states": "United States",
+    uk: "United Kingdom",
+    "u k": "United Kingdom",
+    "great britain": "United Kingdom",
+    britain: "United Kingdom",
+    korea: "South Korea",
+    "republic of korea": "South Korea",
+    "south korea": "South Korea",
+    "korea south": "South Korea",
+    russia: "Russian Federation",
+    czech: "Czech Republic",
+    czechia: "Czech Republic",
+    "czech republic": "Czech Republic",
+    holland: "Netherlands",
+    nederland: "Netherlands",
+    "the netherlands": "Netherlands",
+    uae: "United Arab Emirates",
+    "u a e": "United Arab Emirates"
+  };
+  const learned = (learnings && learnings.countryAliases) || {};
+  if (learned[key]) return learned[key];
+  if (builtin[key]) return builtin[key];
+  return s;
+}
+
+function parseSites(rows, learnings) {
+  const siteHeader = findSiteHeaderRow(rows, learnings);
+  const empty = {
+    sites: [],
+    headerRow: siteHeader,
+    headerSignature: siteHeader >= 0 ? siteHeaderSignature(rows[siteHeader]) : "",
+    columnMap: null
+  };
+  if (siteHeader < 0) return empty;
+
+  const { map, foundCountry } = mapSiteColumns(rows[siteHeader], learnings);
+  // If header detection found country elsewhere but map defaulted wrong, keep map.country from scan
+  if (!foundCountry) {
+    const cells = (rows[siteHeader] || []).map(normHeaderCell);
+    const idx = cells.findIndex((h) => isCountryHeaderLabel(h, learnings));
+    if (idx >= 0) map.country = idx;
+  }
+
   const sites = [];
-  if (siteHeader < 0) return sites;
   for (let i = siteHeader + 1; i < rows.length; i++) {
     const r = rows[i];
-    if (!r || r[0] == null) continue;
-    const country = String(r[0]).trim();
-    if (country.toLowerCase() === "totals") break;
-    if (["pts check", "latinaba"].includes(country.toLowerCase())) break;
-    const core = r[2];
-    if ((core == null || core === "" || core === 0) && !r[13] && !r[5]) continue;
+    if (!r) continue;
+    const rawCountry = cellAt(r, map.country);
+    if (rawCountry == null || String(rawCountry).trim() === "") continue;
+    const countryRaw = String(rawCountry).trim();
+    const countryLow = countryRaw.toLowerCase();
+    if (STOP_SITE_ROWS.has(countryLow)) break;
+    if (isCountryHeaderLabel(countryRaw, learnings) && looksLikeSiteCountHeader(cellAt(r, map.coreSites))) break;
+    // Skip pure section markers / numeric-only first cells that aren't names
+    if (/^(resources|monitoring|vendors|payments)/i.test(countryRaw)) break;
+
+    const core = cellAt(r, map.coreSites);
+    const enrolled = cellAt(r, map.enrolledPts);
+    const notes = cellAt(r, map.notes);
+    if ((core == null || core === "" || core === 0) && !notes && (enrolled == null || enrolled === "")) continue;
+
     sites.push({
-      country,
-      region: r[1] ?? null,
-      coreSites: r[2] ?? null,
-      backupSites: r[3] ?? null,
-      startupMonths: r[4] ?? null,
-      enrolledPts: r[5] ?? null,
-      screenedPts: r[6] ?? null,
-      completedPts: r[7] ?? null,
-      enrollmentMonths: r[8] ?? null,
-      enrollmentRate: r[9] ?? null,
-      notes: r[13] ?? null
+      country: normalizeCountryName(countryRaw, learnings),
+      countryRaw,
+      region: cellAt(r, map.region),
+      coreSites: core,
+      backupSites: cellAt(r, map.backupSites),
+      startupMonths: cellAt(r, map.startupMonths),
+      enrolledPts: enrolled,
+      screenedPts: cellAt(r, map.screenedPts),
+      completedPts: cellAt(r, map.completedPts),
+      enrollmentMonths: cellAt(r, map.enrollmentMonths),
+      enrollmentRate: cellAt(r, map.enrollmentRate),
+      notes
     });
   }
-  return sites;
+
+  return {
+    sites,
+    headerRow: siteHeader,
+    headerSignature: siteHeaderSignature(rows[siteHeader]),
+    columnMap: map
+  };
 }
 
 function parseResourceLeads(rows) {
