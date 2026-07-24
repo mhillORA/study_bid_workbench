@@ -22,6 +22,13 @@ CONTAINERS = [
     {"id": "parseLearnings", "partition_key": "/id"},
     {"id": "users", "partition_key": "/userId"},
     {"id": "profiles", "partition_key": "/profileId"},
+    # Ora Clinical Intelligence (Veeva + TrialHub reference tables)
+    # See docs/ora-intelligence.md — SQL API, not Mongo.
+    {"id": "ora_fact_site", "partition_key": "/country"},
+    {"id": "ora_fact_study", "partition_key": "/indication"},
+    {"id": "ora_trialhub_trials", "partition_key": "/indication"},
+    {"id": "ora_sponsor_crosswalk", "partition_key": "/crosswalk_status"},
+    {"id": "ora_site_alias_table", "partition_key": "/country"},
 ]
 
 

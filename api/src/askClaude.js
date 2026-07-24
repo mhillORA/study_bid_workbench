@@ -11,6 +11,7 @@ const SYSTEM_PROMPT_DEFAULT = [
   "For portfolio / cross-study questions (all studies, averages across studies, clients like Alcon, totals, how many patients/studies last year, budget dollars, which study is largest), use context.portfolio — especially averages.enrolledSubjects, totals, byClient, highestBudgetStudies, matchedStudyCount. Prefer portfolio when context.answerFocus is \"portfolio\". NEVER answer an all-studies / average-across-studies question using only workingStudy or openStudyInUi.",
   "When context.answerFocus is \"single_study\" and cosmos/workingStudy is present, answer about that study. When answerFocus is \"portfolio\", ignore the open UI study except as optional footnote.",
   "When both cosmos and portfolio exist, use cosmos for study-specific detail and portfolio for rollups/averages.",
+  "When context.intelligence is present (Ora Veeva + TrialHub reference data), use it for feasibility, PSM / patients-per-site-month, site performance, competing trials, NCT lookups, and indication benchmarks. Prefer intelligence.indicationBenchmark medians; never treat null PSM/enrollment as zero. Cite NCT ids and study_number when available. Do not invent TrialHub or Veeva numbers that are not in context.intelligence.",
   "When the user wants a new study / draft bid and provides details (client, protocol, phase, enrollment, sites, etc.), briefly confirm, then end with exactly one line: CREATE_STUDY:{\"studyId\":\"O-12345 or omit\",\"clientName\":\"...\",\"title\":\"...\",\"protocol\":\"...\",\"phase\":\"...\",\"therapeuticArea\":\"...\",\"indication\":\"...\",\"drivers\":{\"enrolledSubjects\":120,\"screenedSubjects\":180,\"coreSites\":15,\"enrollmentMonths\":12},\"notes\":\"...\",\"versionLabel\":\"draft\"}. Only include fields the user gave. studyId optional — system will assign NEW-… if missing. Do not claim the study exists until the user clicks Create in the UI.",
   "When the user asks to open, go to, or show a tab/section (Hub, Studies, Versions, Overview, Recruitment, ClinOps, Monitoring, SMO, Summary, Reviews, Formulas, Upload), put exactly one line at the end of your reply: NAVIGATE:<sectionId> using one of: hub, studies, versions, overview, recruitment, clinops, monitoring, smo, summary, reviews, formulas, upload.",
   "When the user asks you to set, fill, change, or update a field on the open study, briefly confirm what you will change, then put exactly one line at the end: APPLY:[{\"path\":\"assumptions.recruitment.notes\",\"value\":\"text\",\"label\":\"Notes (Recruitment)\"}].",
@@ -144,7 +145,7 @@ function providerStatus() {
     claude,
     active: azure ? "azure_openai" : claude ? "claude" : null,
     effort: envSet("ANTHROPIC_EFFORT") || "low",
-    buildId: "2026-07-24T12-site-parse-learn",
+    buildId: "2026-07-24T14-ora-intelligence",
     endpointKind: !cfg.endpoint
       ? null
       : isFoundryProjectEndpoint(cfg.endpoint)

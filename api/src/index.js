@@ -3,6 +3,17 @@ const AdmZip = require("adm-zip");
 const { parseWorkbookBuffer } = require("./parseWorkbook");
 const { upsertCanonical, createManualStudy, listStudies, getStudy, listVersions, getVersion, listLineItems, compareVersions, compareStudies, listQuarantine, getParseLearningsSummary, loadLearnings, getDb, buildPortfolioContext } = require("./cosmosLoad");
 const { askAi, getStudyContext, providerStatus } = require("./askClaude");
+const {
+  buildIntelligenceContext,
+  getIntelligenceHealth,
+  isIntelligenceQuestion,
+  extractIndicationFromQuestion
+} = require("./intelligence");
+
+function nctFromQuestion(question) {
+  const m = String(question || "").match(/\b(NCT\d{8})\b/i);
+  return m ? m[1].toUpperCase() : null;
+}
 
 function json(status, body) {
   return {
@@ -582,6 +593,64 @@ app.http("health", {
   }
 });
 
+app.http("intelligenceHealth", {
+  methods: ["GET", "OPTIONS"],
+  authLevel: "anonymous",
+  route: "intelligence",
+  handler: async (request, context) => {
+    if (request.method === "OPTIONS") {
+      return {
+        status: 204,
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, OPTIONS",
+          "Access-Control-Allow-Headers": "content-type"
+        }
+      };
+    }
+    try {
+      const health = await getIntelligenceHealth(getDb);
+      return json(200, health);
+    } catch (err) {
+      context.error(err);
+      return json(500, { ok: false, error: String(err.message || err) });
+    }
+  }
+});
+
+app.http("intelligenceIndication", {
+  methods: ["GET", "OPTIONS"],
+  authLevel: "anonymous",
+  route: "intelligence/indication",
+  handler: async (request, context) => {
+    if (request.method === "OPTIONS") {
+      return {
+        status: 204,
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, OPTIONS",
+          "Access-Control-Allow-Headers": "content-type"
+        }
+      };
+    }
+    try {
+      const q = request.query.get("q") || request.query.get("indication") || "";
+      if (!String(q).trim()) {
+        return json(400, { error: "query param q (indication) is required" });
+      }
+      const pack = await buildIntelligenceContext(getDb, {
+        question: `benchmark ${q}`,
+        indication: String(q).trim(),
+        force: true
+      });
+      return json(200, pack);
+    } catch (err) {
+      context.error(err);
+      return json(500, { error: String(err.message || err) });
+    }
+  }
+});
+
 app.http("quarantine", {
   methods: ["GET", "OPTIONS"],
   authLevel: "anonymous",
@@ -738,6 +807,34 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       }
     }
 
+    // Ora Clinical Intelligence (Veeva + TrialHub) — summaries only when relevant
+    let intelligence = null;
+    try {
+      const snap = body.studySnapshot || clientStudy || null;
+      const snapIndication =
+        (snap && snap.indication) ||
+        (cosmosContext && cosmosContext.study && cosmosContext.study.indication) ||
+        null;
+      const snapClient =
+        (snap && snap.clientName) ||
+        (cosmosContext && cosmosContext.study && cosmosContext.study.clientName) ||
+        null;
+      const qIndication = extractIndicationFromQuestion(question);
+      const indication = qIndication || snapIndication || null;
+      const forceIntel = isIntelligenceQuestion(question) || Boolean(nctFromQuestion(question));
+      if (forceIntel || indication || hints.clientName || snapIndication) {
+        intelligence = await buildIntelligenceContext(getDb, {
+          question,
+          indication,
+          clientName: hints.clientName || snapClient || null,
+          sponsor: hints.clientName || snapClient || null,
+          force: forceIntel || Boolean(indication)
+        });
+      }
+    } catch (err) {
+      intelligence = { source: "ora_clinical_intelligence_error", error: String(err.message || err) };
+    }
+
     const openStudyId = body.studyId ? String(body.studyId).trim() : null;
     const contextPayload = {
       askedAt: new Date().toISOString(),
@@ -747,7 +844,8 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         cosmosPortfolioQueried: Boolean(portfolio && portfolio.source === "cosmos_portfolio"),
         databaseStudyCount: portfolio?.databaseStudyCount ?? null,
         matchedStudyCount: portfolio?.matchedStudyCount ?? null,
-        note: "portfolio = Cosmos DB query across studies. workingStudy = browser-open copy only."
+        intelligenceAttached: Boolean(intelligence && intelligence.source === "ora_clinical_intelligence"),
+        note: "portfolio = budget studies. intelligence = Ora Veeva + TrialHub reference (PSM/feasibility)."
       },
       user,
       activeTab,
@@ -756,7 +854,8 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         studyId: studyId || null,
         clientName: hints.clientName || null,
         year: hints.year || null,
-        crossStudy
+        crossStudy,
+        intelligence: Boolean(intelligence && !intelligence.error)
       },
       openStudyInUi: openStudyId
         ? {
@@ -769,6 +868,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         : null,
       cosmos: cosmosContext,
       portfolio,
+      intelligence,
       workingStudy:
         answerFocus === "portfolio" || !clientStudy
           ? null
@@ -779,6 +879,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
               title: clientStudy.title,
               protocol: clientStudy.protocol,
               phase: clientStudy.phase,
+              indication: clientStudy.indication,
               versionLabel: clientStudy.versionLabel,
               drivers: clientStudy.drivers,
               sectionStatus: clientStudy.sectionStatus,
