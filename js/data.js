@@ -23,7 +23,8 @@ SBW.sections = [
   { id: "summary", label: "Exec Summary", department: null },
   { id: "reviews", label: "Reviews", department: null },
   { id: "formulas", label: "Formulas", department: "Analyst" },
-  { id: "upload", label: "Upload budgets", department: "Analyst" }
+  { id: "upload", label: "Upload budgets", department: "Analyst" },
+  { id: "scorecard", label: "Site Scorecard", department: null }
 ];
 
 /** Empty = same origin /api (Static Web App) */

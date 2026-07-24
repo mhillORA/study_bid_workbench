@@ -42,12 +42,26 @@
       health: null,
       pack: null,
       indication: "",
-      country: "",
+      countries: [],
+      globalRegion: false,
+      countryQuery: "",
+      countrySuggestOpen: false,
       status: "",
       loading: false,
       syncStatus: null,
       syncBusy: false,
       syncMessage: ""
+    },
+    scorecard: {
+      indication: "",
+      countries: [],
+      globalRegion: false,
+      countryQuery: "",
+      countrySuggestOpen: false,
+      source: "veeva",
+      result: null,
+      status: "",
+      loading: false
     }
   };
 
@@ -150,6 +164,11 @@
     }
     if (sectionId === "intelligence") {
       ensureIntelligenceLoaded();
+    }
+    if (sectionId === "scorecard" && state.intelligence.indication && !state.scorecard.indication) {
+      state.scorecard.indication = state.intelligence.indication;
+      state.scorecard.countries = [...(state.intelligence.countries || [])];
+      state.scorecard.globalRegion = !!state.intelligence.globalRegion;
     }
   }
 
@@ -317,6 +336,7 @@
       "trialhub",
       "psm"
     ],
+    scorecard: ["scorecard", "site scorecard", "site scores", "sites"],
     overview: ["overview", "inputs", "overview / inputs"],
     recruitment: ["recruitment", "recruit"],
     clinops: ["clinops", "clin ops", "soe", "clinops / soe"],
@@ -1219,8 +1239,12 @@
           user: state.entraUser || undefined,
           // Same indication/region as Ora Clinical Intelligence tab (and pack already on screen)
           intelligenceHint: {
-            indication: String(state.intelligence.indication || "").trim() || undefined,
-            country: String(state.intelligence.country || "").trim() || undefined
+            indication: String(state.intelligence.indication || state.scorecard.indication || "").trim() || undefined,
+            country: state.intelligence.globalRegion
+              ? "Global"
+              : (state.intelligence.countries || []).join(", ") || undefined,
+            countries: state.intelligence.globalRegion ? undefined : state.intelligence.countries,
+            global: state.intelligence.globalRegion || undefined
           },
           intelligencePack:
             state.intelligence.pack &&
@@ -1308,25 +1332,26 @@
     if (state.sectionId === "intelligence") render();
   }
 
-  async function runIntelligenceQuery(indication, country) {
+  async function runIntelligenceQuery(indication) {
     const ind = String(indication != null ? indication : state.intelligence.indication || "").trim();
-    const ctry = String(country != null ? country : state.intelligence.country || "").trim();
-    if (!ind && !ctry) {
-      state.intelligence.status = "Enter an indication and/or country/region first.";
+    const global = !!state.intelligence.globalRegion;
+    const countries = global ? [] : [...(state.intelligence.countries || [])];
+    if (!ind && !global && !countries.length) {
+      state.intelligence.status = "Pick an indication and/or country (or Global) first.";
       if (state.sectionId === "intelligence") render();
       return;
     }
     state.intelligence.indication = ind;
-    state.intelligence.country = ctry;
     state.intelligence.loading = true;
     state.intelligence.status = `Querying Cosmos${ind ? ` for “${ind}”` : ""}${
-      ctry ? ` in ${ctry}` : ""
+      global ? " · Global" : countries.length ? ` · ${countries.join(", ")}` : ""
     }…`;
     if (state.sectionId === "intelligence") render();
     try {
       const params = new URLSearchParams();
       if (ind) params.set("q", ind);
-      if (ctry) params.set("country", ctry);
+      if (global) params.set("global", "true");
+      else if (countries.length) params.set("countries", countries.join(","));
       const res = await fetch(apiUrl(`/api/intelligence/indication?${params.toString()}`));
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -1375,17 +1400,111 @@
 
   function askBuddyAboutIndication(indication) {
     const ind = String(indication || state.intelligence.indication || "").trim();
-    const ctry = String(state.intelligence.country || "").trim();
-    if (!ind && !ctry) return;
+    const global = !!state.intelligence.globalRegion;
+    const countries = global ? [] : [...(state.intelligence.countries || [])];
+    if (!ind && !global && !countries.length) return;
     openBuddy();
     if (els.askInput) {
+      const geo = global ? " globally" : countries.length ? ` in ${countries.join(", ")}` : "";
       els.askInput.value = ind
-        ? `What is the typical PSM and competitive landscape for ${ind}${
-            ctry ? ` in ${ctry}` : ""
-          }? Use Ora, TrialHub, and CT.gov benchmarks.`
-        : `Which Ora sites perform best in ${ctry}? Include PSM when available.`;
+        ? `Give an executive summary of the competitive and Ora enrollment landscape for ${ind}${geo}. Highlight typical PSM and 2–3 takeaways.`
+        : `Which Ora sites perform best${geo}? Include PSM when available.`;
     }
     sendAsk();
+  }
+
+  function countryBagState(scope) {
+    return scope === "scorecard" ? state.scorecard : state.intelligence;
+  }
+
+  function setCountryGlobal(scope, on) {
+    const st = countryBagState(scope);
+    st.globalRegion = !!on;
+    if (st.globalRegion) {
+      st.countries = [];
+      st.countryQuery = "";
+      st.countrySuggestOpen = false;
+    }
+  }
+
+  function addCountrySelection(scope, name) {
+    const st = countryBagState(scope);
+    const resolved =
+      name === (SBW.INTEL_GLOBAL || "Global")
+        ? SBW.INTEL_GLOBAL
+        : SBW.resolveIntelCountry
+          ? SBW.resolveIntelCountry(name)
+          : name;
+    if (!resolved) return false;
+    if (resolved === (SBW.INTEL_GLOBAL || "Global")) {
+      setCountryGlobal(scope, true);
+      return true;
+    }
+    st.globalRegion = false;
+    if (!st.countries.includes(resolved)) st.countries.push(resolved);
+    st.countryQuery = "";
+    st.countrySuggestOpen = false;
+    return true;
+  }
+
+  function removeCountrySelection(scope, name) {
+    const st = countryBagState(scope);
+    st.countries = (st.countries || []).filter((c) => c !== name);
+  }
+
+  function renderCountryPicker(scope) {
+    const st = countryBagState(scope);
+    const chipsPopular = (SBW.intelCountryChips || []).map((c) => {
+      const on = !st.globalRegion && (st.countries || []).includes(c);
+      return `<button type="button" class="btn btn-secondary${on ? " active" : ""}" data-country-add="${escapeAttr(
+        scope
+      )}" data-country-name="${escapeAttr(c)}" style="margin:0 0.35rem 0.35rem 0;">${escapeHtml(c)}</button>`;
+    }).join("");
+    const globalOn = st.globalRegion;
+    const selected = st.globalRegion
+      ? `<span class="badge buddy-country-chip">Global <button type="button" class="buddy-country-x" data-country-clear-global="${escapeAttr(
+          scope
+        )}" aria-label="Clear Global">×</button></span>`
+      : (st.countries || [])
+          .map(
+            (c) =>
+              `<span class="badge buddy-country-chip">${escapeHtml(c)} <button type="button" class="buddy-country-x" data-country-remove="${escapeAttr(
+                scope
+              )}" data-country-name="${escapeAttr(c)}" aria-label="Remove">×</button></span>`
+          )
+          .join(" ");
+    const suggestions =
+      st.countrySuggestOpen && SBW.suggestIntelCountries
+        ? SBW.suggestIntelCountries(st.countryQuery || "", st.countries || [], 10)
+        : [];
+    const suggestHtml = suggestions.length
+      ? `<ul class="country-suggest" role="listbox">${suggestions
+          .map(
+            (s) =>
+              `<li><button type="button" data-country-add="${escapeAttr(scope)}" data-country-name="${escapeAttr(
+                s.name
+              )}">${escapeHtml(s.name)} <span class="muted">${escapeHtml(
+                (s.aliases || []).slice(0, 3).join(" · ")
+              )}</span></button></li>`
+          )
+          .join("")}</ul>`
+      : "";
+    return `
+      <div class="country-picker" data-country-scope="${escapeAttr(scope)}">
+        <div style="display:flex;gap:0.5rem;align-items:flex-start;flex-wrap:wrap;">
+          <button type="button" class="btn ${globalOn ? "btn-primary" : "btn-secondary"}" data-country-global="${escapeAttr(
+            scope
+          )}">Global</button>
+          <div class="country-typeahead" style="position:relative;flex:1;min-width:200px;max-width:360px;">
+            <input id="${scope}CountryQuery" class="input" autocomplete="off" placeholder="Type country / ISO (TUR, US, USA)…" value="${escapeAttr(
+              st.countryQuery || ""
+            )}" data-country-query="${escapeAttr(scope)}" ${globalOn ? "disabled" : ""} />
+            ${suggestHtml}
+          </div>
+        </div>
+        <div style="margin-top:0.5rem;display:flex;flex-wrap:wrap;gap:0.35rem;min-height:1.5rem;">${selected || `<span class="muted">No countries selected — use Global or pick below.</span>`}</div>
+        <div style="margin-top:0.55rem;">${chipsPopular}</div>
+      </div>`;
   }
 
   function intelStatNum(v) {
@@ -1582,37 +1701,154 @@
     const status = state.intelligence.status
       ? `<p class="muted" style="margin-top:0.5rem;">${escapeHtml(state.intelligence.status)}</p>`
       : "";
-    const countryNote =
-      state.intelligence.pack &&
-      (state.intelligence.pack.query?.country ||
-        state.intelligence.pack.countryFilter ||
-        state.intelligence.pack.countrySites?.country)
-        ? `<p class="muted" style="margin-top:0.35rem;">Region filter: <strong>${escapeHtml(
-            state.intelligence.pack.query?.country ||
-              state.intelligence.pack.countryFilter ||
-              state.intelligence.pack.countrySites?.country
-          )}</strong></p>`
+    const geoLabel = state.intelligence.globalRegion
+      ? "Global"
+      : (state.intelligence.pack?.query?.countries || state.intelligence.pack?.query?.country ||
+          state.intelligence.countries || []).length
+        ? Array.isArray(state.intelligence.pack?.query?.countries)
+          ? state.intelligence.pack.query.countries.join(", ")
+          : (state.intelligence.countries || []).join(", ")
         : "";
+    const countryNote = geoLabel
+      ? `<p class="muted" style="margin-top:0.35rem;">Region filter: <strong>${escapeHtml(geoLabel)}</strong></p>`
+      : "";
     return `
       <div class="grid">
         ${renderIntelligenceHealthCard()}
         <div class="card wide">
           <h3>Indication &amp; region benchmark</h3>
-          <p class="muted">Ora Veeva + TrialHub + CT.gov. Filter by indication, country/region, or both.</p>
+          <p class="muted">Ora Veeva + TrialHub + CT.gov. Pick countries from the list (type TUR / US / USA) or Global — not free text.</p>
           <div style="display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap;margin-top:0.75rem;">
             <input id="intelIndication" class="input" style="max-width:280px;" placeholder="Indication (e.g. Dry Eye)" value="${escapeAttr(
               state.intelligence.indication || ""
             )}" />
-            <input id="intelCountry" class="input" style="max-width:220px;" placeholder="Country / region (e.g. United States)" value="${escapeAttr(
-              state.intelligence.country || ""
-            )}" />
             <button type="button" class="btn btn-primary" id="btnIntelQuery">Query</button>
+            <button type="button" class="btn btn-secondary" id="btnOpenBenchmark" title="Open this view in a new tab">Open benchmark</button>
+          </div>
+          <div style="margin-top:0.85rem;">
+            <label class="field-label">Countries / region</label>
+            ${renderCountryPicker("intelligence")}
           </div>
           <div style="margin-top:0.75rem;">${chips}</div>
           ${status}
           ${countryNote}
         </div>
         ${renderIntelBenchmark()}
+      </div>`;
+  }
+
+  async function runSiteScorecard() {
+    const ind = String(state.scorecard.indication || "").trim();
+    const global = !!state.scorecard.globalRegion;
+    const countries = global ? [] : [...(state.scorecard.countries || [])];
+    if (!ind && !global && !countries.length) {
+      state.scorecard.status = "Pick an indication and/or country (or Global) first.";
+      if (state.sectionId === "scorecard") render();
+      return;
+    }
+    state.scorecard.loading = true;
+    state.scorecard.status = `Scoring sites (${state.scorecard.source === "all" ? "Veeva + industry" : "Veeva only"})…`;
+    if (state.sectionId === "scorecard") render();
+    try {
+      const params = new URLSearchParams();
+      if (ind) params.set("q", ind);
+      if (global) params.set("global", "true");
+      else if (countries.length) params.set("countries", countries.join(","));
+      params.set("source", state.scorecard.source || "veeva");
+      const res = await fetch(apiUrl(`/api/intelligence/sitescorecard?${params.toString()}`));
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        state.scorecard.result = null;
+        state.scorecard.status = data.error || `Scorecard failed (${res.status})`;
+      } else {
+        state.scorecard.result = data;
+        state.scorecard.status = "";
+      }
+    } catch (err) {
+      state.scorecard.result = null;
+      state.scorecard.status = String(err);
+    }
+    state.scorecard.loading = false;
+    if (state.sectionId === "scorecard") render();
+  }
+
+  function renderScorecard() {
+    const chips = INTEL_COMMON_INDICATIONS.map(
+      (i) =>
+        `<button type="button" class="btn btn-secondary" data-score-ind="${escapeAttr(i)}" style="margin:0 0.35rem 0.35rem 0;">${escapeHtml(
+          i
+        )}</button>`
+    ).join("");
+    const src = state.scorecard.source || "veeva";
+    const status = state.scorecard.status
+      ? `<p class="muted" style="margin-top:0.5rem;">${escapeHtml(state.scorecard.status)}</p>`
+      : "";
+    const result = state.scorecard.result;
+    let table = "";
+    if (result && result.sites && result.sites.length) {
+      const showAll = src === "all";
+      table = `
+        <div class="card wide">
+          <h3>Ranked sites · ${escapeHtml(result.countryFilterLabel || "Global")} · ${escapeHtml(
+            result.indication || "—"
+          )}</h3>
+          <p class="muted">${escapeHtml(result.note || "")} · n=${intelStatNum(result.siteCount)}</p>
+          <table class="table">
+            <thead><tr>
+              <th>#</th><th>Site</th><th>Country</th><th>Score</th><th>Site PSM</th><th>Enrolled</th><th>Trust</th>
+              ${showAll ? "<th>Industry PSM</th><th>vs Ind.</th><th>Recruiting</th>" : ""}
+            </tr></thead>
+            <tbody>
+              ${result.sites
+                .slice(0, 50)
+                .map(
+                  (s, i) => `<tr>
+                  <td>${i + 1}</td>
+                  <td>${escapeHtml(s.org_clean || "—")}</td>
+                  <td>${escapeHtml(s.country || "—")}</td>
+                  <td><span class="buddy-i">${intelStatNum(s.score)}</span></td>
+                  <td>${intelStatNum(s.sitePsmMedian)}</td>
+                  <td>${intelStatNum(s.totalEnrolledSum)}</td>
+                  <td>${intelStatNum(s.highTrustShare)}</td>
+                  ${
+                    showAll
+                      ? `<td>${intelStatNum(s.industryMedianPsm)}</td><td>${intelStatNum(
+                          s.vsIndustry
+                        )}</td><td>${intelStatNum(s.recruitingTrials)}</td>`
+                      : ""
+                  }
+                </tr>`
+                )
+                .join("")}
+            </tbody>
+          </table>
+        </div>`;
+    } else if (result && !result.sites?.length) {
+      table = `<div class="card wide"><p class="muted">No scored sites for this filter.</p></div>`;
+    }
+    return `
+      <div class="grid">
+        <div class="card wide">
+          <h3>Site Scorecard</h3>
+          <p class="muted">Veeva = Ora site history only. All data = same scores plus industry TrialHub overlay by country (what everyone reports at market level — named competitor sites are not in this pack).</p>
+          <div class="score-source-toggle" style="margin-top:0.75rem;display:flex;gap:0.5rem;flex-wrap:wrap;">
+            <button type="button" class="btn ${src === "veeva" ? "btn-primary" : "btn-secondary"}" data-score-source="veeva">Veeva (Ora)</button>
+            <button type="button" class="btn ${src === "all" ? "btn-primary" : "btn-secondary"}" data-score-source="all">All data</button>
+          </div>
+          <div style="display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap;margin-top:0.85rem;">
+            <input id="scoreIndication" class="input" style="max-width:280px;" placeholder="Indication (e.g. Dry Eye)" value="${escapeAttr(
+              state.scorecard.indication || ""
+            )}" />
+            <button type="button" class="btn btn-primary" id="btnScoreQuery">Score sites</button>
+          </div>
+          <div style="margin-top:0.85rem;">
+            <label class="field-label">Countries / region</label>
+            ${renderCountryPicker("scorecard")}
+          </div>
+          <div style="margin-top:0.75rem;">${chips}</div>
+          ${status}
+        </div>
+        ${table}
       </div>`;
   }
 
@@ -3392,6 +3628,8 @@
       case "studies": html = renderStudies(); break;
       case "versions": html = renderVersions(); break;
       case "intelligence": html = renderIntelligence(); break;
+      case "scorecard": html = renderScorecard(); break;
+      case "upload": html = renderUpload(); break;
       case "overview": html = renderOverview(); break;
       case "recruitment": html = renderDepartmentTab("recruitment"); break;
       case "clinops": html = renderDepartmentTab("clinops"); break;
@@ -3449,19 +3687,69 @@
     els.viewRoot.addEventListener("input", (e) => {
       if (!e.target) return;
       if (e.target.id === "intelIndication") state.intelligence.indication = e.target.value;
-      if (e.target.id === "intelCountry") state.intelligence.country = e.target.value;
+      if (e.target.id === "scoreIndication") state.scorecard.indication = e.target.value;
+      const qScope = e.target.getAttribute("data-country-query");
+      if (qScope) {
+        const st = countryBagState(qScope);
+        st.countryQuery = e.target.value;
+        st.countrySuggestOpen = true;
+        // Re-render only the suggest list via light paint
+        const picker = e.target.closest(".country-picker");
+        if (picker) {
+          const wrap = picker.querySelector(".country-typeahead");
+          if (wrap) {
+            const suggestions = SBW.suggestIntelCountries
+              ? SBW.suggestIntelCountries(st.countryQuery || "", st.countries || [], 10)
+              : [];
+            let ul = wrap.querySelector(".country-suggest");
+            if (!suggestions.length) {
+              if (ul) ul.remove();
+            } else {
+              const html = `<ul class="country-suggest" role="listbox">${suggestions
+                .map(
+                  (s) =>
+                    `<li><button type="button" data-country-add="${escapeAttr(qScope)}" data-country-name="${escapeAttr(
+                      s.name
+                    )}">${escapeHtml(s.name)} <span class="muted">${escapeHtml(
+                      (s.aliases || []).slice(0, 3).join(" · ")
+                    )}</span></button></li>`
+                )
+                .join("")}</ul>`;
+              if (ul) ul.outerHTML = html;
+              else wrap.insertAdjacentHTML("beforeend", html);
+            }
+          }
+        }
+      }
     });
 
     els.viewRoot.addEventListener("keydown", (e) => {
-      if (
-        e.target &&
-        (e.target.id === "intelIndication" || e.target.id === "intelCountry") &&
-        e.key === "Enter"
-      ) {
+      if (!e.target) return;
+      if (e.target.id === "intelIndication" && e.key === "Enter") {
         e.preventDefault();
-        const ind = document.getElementById("intelIndication");
-        const ctry = document.getElementById("intelCountry");
-        runIntelligenceQuery(ind ? ind.value : "", ctry ? ctry.value : "");
+        runIntelligenceQuery(e.target.value);
+        return;
+      }
+      if (e.target.id === "scoreIndication" && e.key === "Enter") {
+        e.preventDefault();
+        runSiteScorecard();
+        return;
+      }
+      const qScope = e.target.getAttribute("data-country-query");
+      if (qScope && e.key === "Enter") {
+        e.preventDefault();
+        const st = countryBagState(qScope);
+        const resolved = SBW.resolveIntelCountry
+          ? SBW.resolveIntelCountry(st.countryQuery)
+          : null;
+        if (resolved) {
+          addCountrySelection(qScope, resolved);
+          render();
+        }
+      }
+      if (qScope && e.key === "Escape") {
+        countryBagState(qScope).countrySuggestOpen = false;
+        render();
       }
     });
 
@@ -3476,10 +3764,55 @@
         setSectionStatus(statusBtn.dataset.statusSection, statusBtn.dataset.status);
         return;
       }
+
+      const countryAdd = e.target.closest("[data-country-add]");
+      if (countryAdd) {
+        addCountrySelection(
+          countryAdd.getAttribute("data-country-add"),
+          countryAdd.getAttribute("data-country-name")
+        );
+        render();
+        return;
+      }
+      const countryRm = e.target.closest("[data-country-remove]");
+      if (countryRm) {
+        removeCountrySelection(
+          countryRm.getAttribute("data-country-remove"),
+          countryRm.getAttribute("data-country-name")
+        );
+        render();
+        return;
+      }
+      const countryGlobal = e.target.closest("[data-country-global]");
+      if (countryGlobal) {
+        const scope = countryGlobal.getAttribute("data-country-global");
+        setCountryGlobal(scope, !countryBagState(scope).globalRegion);
+        render();
+        return;
+      }
+      const clearGlobal = e.target.closest("[data-country-clear-global]");
+      if (clearGlobal) {
+        setCountryGlobal(clearGlobal.getAttribute("data-country-clear-global"), false);
+        render();
+        return;
+      }
+
       const intelChip = e.target.closest("[data-intel-ind]");
       if (intelChip) {
-        const ctry = document.getElementById("intelCountry");
-        runIntelligenceQuery(intelChip.getAttribute("data-intel-ind"), ctry ? ctry.value : "");
+        runIntelligenceQuery(intelChip.getAttribute("data-intel-ind"));
+        return;
+      }
+      const scoreChip = e.target.closest("[data-score-ind]");
+      if (scoreChip) {
+        state.scorecard.indication = scoreChip.getAttribute("data-score-ind") || "";
+        runSiteScorecard();
+        return;
+      }
+      const scoreSrc = e.target.closest("[data-score-source]");
+      if (scoreSrc) {
+        state.scorecard.source = scoreSrc.getAttribute("data-score-source") || "veeva";
+        if (state.scorecard.result) runSiteScorecard();
+        else render();
         return;
       }
       const intelAsk = e.target.closest("[data-intel-ask]");
@@ -3489,8 +3822,24 @@
       }
       if (e.target.id === "btnIntelQuery") {
         const input = document.getElementById("intelIndication");
-        const ctry = document.getElementById("intelCountry");
-        runIntelligenceQuery(input ? input.value : "", ctry ? ctry.value : "");
+        runIntelligenceQuery(input ? input.value : "");
+        return;
+      }
+      if (e.target.id === "btnScoreQuery") {
+        const input = document.getElementById("scoreIndication");
+        if (input) state.scorecard.indication = input.value;
+        runSiteScorecard();
+        return;
+      }
+      if (e.target.id === "btnOpenBenchmark") {
+        const u = new URL(window.location.href);
+        u.searchParams.set("section", "intelligence");
+        if (state.intelligence.indication) u.searchParams.set("q", state.intelligence.indication);
+        if (state.intelligence.globalRegion) u.searchParams.set("global", "true");
+        else if ((state.intelligence.countries || []).length) {
+          u.searchParams.set("countries", state.intelligence.countries.join(","));
+        }
+        window.open(u.toString(), "_blank", "noopener");
         return;
       }
       if (e.target.id === "btnIntelRefresh") {
@@ -3845,7 +4194,33 @@
   // Land user on their department page on first load (Admin stays on Hub)
   const user = currentUser();
   if (state.sectionId === "ask") state.sectionId = "hub";
-  if (user.department !== "Admin") {
+
+  // Deep-link: ?section=intelligence&q=Dry+Eye&countries=United%20States or global=true
+  try {
+    const boot = new URLSearchParams(window.location.search);
+    const sec = boot.get("section");
+    if (sec && SBW.sections.some((s) => s.id === sec)) state.sectionId = sec;
+    const q = boot.get("q");
+    if (q) {
+      state.intelligence.indication = q;
+      state.scorecard.indication = q;
+    }
+    if (boot.get("global") === "true") {
+      state.intelligence.globalRegion = true;
+      state.scorecard.globalRegion = true;
+    } else if (boot.get("countries")) {
+      const list = boot
+        .get("countries")
+        .split(",")
+        .map((c) => (SBW.resolveIntelCountry ? SBW.resolveIntelCountry(c.trim()) : c.trim()))
+        .filter(Boolean)
+        .filter((c) => c !== (SBW.INTEL_GLOBAL || "Global"));
+      state.intelligence.countries = [...new Set(list)];
+      state.scorecard.countries = [...state.intelligence.countries];
+    }
+  } catch (_) {}
+
+  if (user.department !== "Admin" && !new URLSearchParams(window.location.search).get("section")) {
     const home = SBW.sections.find((s) => s.department === user.department);
     if (home) state.sectionId = home.id;
   }

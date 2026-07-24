@@ -13,7 +13,7 @@ const SYSTEM_PROMPT_DEFAULT = [
   "When context.answerFocus is \"single_study\" and cosmos/workingStudy is present, answer about that study. When answerFocus is \"portfolio\", ignore the open UI study except as optional footnote.",
   "When both cosmos and portfolio exist, use cosmos for study-specific detail and portfolio for rollups/averages.",
   "When the user wants a new study / draft bid and provides details (client, protocol, phase, enrollment, sites, etc.), briefly confirm, then end with exactly one line: CREATE_STUDY:{\"studyId\":\"O-12345 or omit\",\"clientName\":\"...\",\"title\":\"...\",\"protocol\":\"...\",\"phase\":\"...\",\"therapeuticArea\":\"...\",\"indication\":\"...\",\"drivers\":{\"enrolledSubjects\":120,\"screenedSubjects\":180,\"coreSites\":15,\"enrollmentMonths\":12},\"notes\":\"...\",\"versionLabel\":\"draft\"}. Only include fields the user gave. studyId optional — system will assign NEW-… if missing. Do not claim the study exists until the user clicks Create in the UI.",
-  "When the user asks to open, go to, or show a tab/section (Hub, Studies, Versions, Ora Clinical Intelligence, Overview, Recruitment, ClinOps, Monitoring, SMO, Summary, Reviews, Formulas, Upload), put exactly one line at the end of your reply: NAVIGATE:<sectionId> using one of: hub, studies, versions, intelligence, overview, recruitment, clinops, monitoring, smo, summary, reviews, formulas, upload.",
+  "When the user asks to open, go to, or show a tab/section (Hub, Studies, Versions, Ora Clinical Intelligence, Site Scorecard, Overview, Recruitment, ClinOps, Monitoring, SMO, Summary, Reviews, Formulas, Upload), put exactly one line at the end of your reply: NAVIGATE:<sectionId> using one of: hub, studies, versions, intelligence, scorecard, overview, recruitment, clinops, monitoring, smo, summary, reviews, formulas, upload.",
   "When the user asks you to set, fill, change, or update a field on the open study, briefly confirm what you will change, then put exactly one line at the end: APPLY:[{\"path\":\"assumptions.recruitment.notes\",\"value\":\"text\",\"label\":\"Notes (Recruitment)\"}].",
   "APPLY paths must come from context.editableFields (path + label + tab). Prefer the activeTab when the user says a generic name like Notes. Examples: assumptions.recruitment.notes, assumptions.clinops.notes, drivers.enrolledSubjects, clientName, inputFields.12. Never invent paths. Do not claim the value is saved until the user clicks Apply in the UI.",
   "When context.user has a firstName (or displayName), greet them by first name when they say hi/hello or on the first reply of a chat — then skip greetings on follow-ups unless they greet you again."
@@ -40,8 +40,9 @@ const INTELLIGENCE_RULES = [
   " USE CASES — match the ask to the right source:",
   "• Feasibility / \"how fast do we enroll\" / typical PSM for an indication → context.intelligence.indicationBenchmark (Ora median PSM + TrialHub median psm_common + site medians). Prefer medians; cite studiesWithPsm / trialsWithPsm counts.",
   "• Competing / recruiting industry trials → intelligence.indicationBenchmark.trialhub.recruitingSample / sampleTrials (NCT + sponsor + status).",
-  "• Site selection / which sites perform → intelligence.indicationBenchmark.sites.topSitesByPsm (org_clean, country, site_psm, fsi_trust). Filter by country when query.country / countryFilter is set.",
+  "• Site selection / which sites perform → intelligence.indicationBenchmark.sites.topSitesByPsm or Site Scorecard tab (NAVIGATE:scorecard). Filter by country when query.country / countryFilter is set.",
   "• Region / country feasibility (US, UK, Germany, Japan, …) → use countryFilter on sites + ctgov + TrialHub countries; cite geography explicitly.",
+  "• Site Scorecard (Veeva vs All) → scored Ora sites; All adds industry country overlay. Prefer medians; null ≠ 0.",
   "• Sponsor already in SF? BD owner / tier? → intelligence.sponsorCrosswalk.",
   "• NCT lookup → intelligence.nctLookup (TrialHub) and/or intelligence.ctgov.",
   "• Budget dollars / uploaded bid portfolio → context.portfolio (not intelligence).",
@@ -69,7 +70,7 @@ function buddyInstructionsBase() {
 function systemPromptFor(context) {
   const base = buddyInstructionsBase();
   const protocols =
-    " Machine protocols: for tab navigation end with NAVIGATE:<sectionId> (hub,studies,versions,intelligence,overview,recruitment,clinops,monitoring,smo,summary,reviews,formulas,upload)." +
+    " Machine protocols: for tab navigation end with NAVIGATE:<sectionId> (hub,studies,versions,intelligence,scorecard,overview,recruitment,clinops,monitoring,smo,summary,reviews,formulas,upload)." +
     " For field fills end with APPLY:[{\"path\":\"assumptions.recruitment.notes\",\"value\":\"...\",\"label\":\"Notes (Recruitment)\"}] using only context.editableFields paths; prefer activeTab for ambiguous names like Notes; the user must click Apply before values write." +
     " To create a new study from user-provided info end with CREATE_STUDY:{...json...} (clientName, protocol, phase, drivers, etc.); user must click Create before it is saved." +
     " For cross-study / all-studies / average / client / year questions: set answer from context.portfolio (averages + totals + byClient); cite matchedStudyCount; do not use openStudyInUi or workingStudy for those answers." +
@@ -188,7 +189,7 @@ function providerStatus() {
     // Deployment name only (not a secret) — so you can verify SWA matches Foundry
     deployment: cfg.deployment || null,
     effort: envSet("ANTHROPIC_EFFORT") || "low",
-    buildId: "2026-07-24T18-buddy-format-colors",
+    buildId: "2026-07-24T19-scorecard-country-picker",
     endpointKind: !cfg.endpoint
       ? null
       : isFoundryProjectEndpoint(cfg.endpoint)

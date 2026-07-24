@@ -78,40 +78,213 @@ const COUNTRY_ALIASES = {
   "u s a": "United States",
   "united states": "United States",
   "united states of america": "United States",
+  america: "United States",
   uk: "United Kingdom",
+  gb: "United Kingdom",
+  gbr: "United Kingdom",
   "u k": "United Kingdom",
   "united kingdom": "United Kingdom",
   britain: "United Kingdom",
   "great britain": "United Kingdom",
+  england: "United Kingdom",
+  ca: "Canada",
+  can: "Canada",
+  canada: "Canada",
+  mx: "Mexico",
+  mex: "Mexico",
+  mexico: "Mexico",
+  de: "Germany",
+  deu: "Germany",
+  deutschland: "Germany",
+  germany: "Germany",
+  fr: "France",
+  fra: "France",
+  france: "France",
+  es: "Spain",
+  esp: "Spain",
+  spain: "Spain",
+  it: "Italy",
+  ita: "Italy",
+  italy: "Italy",
+  pt: "Portugal",
+  prt: "Portugal",
+  portugal: "Portugal",
+  nl: "Netherlands",
+  nld: "Netherlands",
+  netherlands: "Netherlands",
+  holland: "Netherlands",
+  be: "Belgium",
+  bel: "Belgium",
+  belgium: "Belgium",
+  ch: "Switzerland",
+  che: "Switzerland",
+  switzerland: "Switzerland",
+  at: "Austria",
+  aut: "Austria",
+  austria: "Austria",
+  pl: "Poland",
+  pol: "Poland",
+  poland: "Poland",
+  cz: "Czechia",
+  cze: "Czechia",
+  czechia: "Czechia",
+  "czech republic": "Czechia",
+  sk: "Slovakia",
+  svk: "Slovakia",
+  slovakia: "Slovakia",
+  hu: "Hungary",
+  hun: "Hungary",
+  hungary: "Hungary",
+  ro: "Romania",
+  rou: "Romania",
+  romania: "Romania",
+  bg: "Bulgaria",
+  bgr: "Bulgaria",
+  bulgaria: "Bulgaria",
+  gr: "Greece",
+  grc: "Greece",
+  greece: "Greece",
+  se: "Sweden",
+  swe: "Sweden",
+  sweden: "Sweden",
+  no: "Norway",
+  nor: "Norway",
+  norway: "Norway",
+  dk: "Denmark",
+  dnk: "Denmark",
+  denmark: "Denmark",
+  fi: "Finland",
+  fin: "Finland",
+  finland: "Finland",
+  ie: "Ireland",
+  irl: "Ireland",
+  ireland: "Ireland",
+  tr: "Turkey",
+  tur: "Turkey",
+  turkey: "Turkey",
+  turkiye: "Turkey",
+  "türkiye": "Turkey",
+  ru: "Russia",
+  rus: "Russia",
+  russia: "Russia",
+  "russian federation": "Russia",
+  ua: "Ukraine",
+  ukr: "Ukraine",
+  ukraine: "Ukraine",
+  il: "Israel",
+  isr: "Israel",
+  israel: "Israel",
+  sa: "Saudi Arabia",
+  sau: "Saudi Arabia",
+  "saudi arabia": "Saudi Arabia",
+  ae: "United Arab Emirates",
+  are: "United Arab Emirates",
+  uae: "United Arab Emirates",
+  "united arab emirates": "United Arab Emirates",
+  eg: "Egypt",
+  egy: "Egypt",
+  egypt: "Egypt",
+  za: "South Africa",
+  zaf: "South Africa",
+  "south africa": "South Africa",
+  ng: "Nigeria",
+  nga: "Nigeria",
+  nigeria: "Nigeria",
+  ke: "Kenya",
+  ken: "Kenya",
+  kenya: "Kenya",
+  jp: "Japan",
+  jpn: "Japan",
+  japan: "Japan",
+  cn: "China",
+  chn: "China",
+  prc: "China",
+  china: "China",
+  hk: "Hong Kong",
+  hkg: "Hong Kong",
+  "hong kong": "Hong Kong",
+  tw: "Taiwan",
+  twn: "Taiwan",
+  taiwan: "Taiwan",
+  kr: "Korea, Republic of",
+  kor: "Korea, Republic of",
   korea: "Korea, Republic of",
   "south korea": "Korea, Republic of",
   "republic of korea": "Korea, Republic of",
-  deutschland: "Germany",
-  germany: "Germany",
-  france: "France",
-  spain: "Spain",
-  italy: "Italy",
-  canada: "Canada",
-  australia: "Australia",
-  japan: "Japan",
-  china: "China",
-  brazil: "Brazil",
+  in: "India",
+  ind: "India",
   india: "India",
-  mexico: "Mexico",
-  netherlands: "Netherlands",
-  holland: "Netherlands",
-  poland: "Poland",
-  hungary: "Hungary",
-  slovakia: "Slovakia"
+  pk: "Pakistan",
+  pak: "Pakistan",
+  pakistan: "Pakistan",
+  bd: "Bangladesh",
+  bgd: "Bangladesh",
+  bangladesh: "Bangladesh",
+  th: "Thailand",
+  tha: "Thailand",
+  thailand: "Thailand",
+  vn: "Vietnam",
+  vnm: "Vietnam",
+  vietnam: "Vietnam",
+  "viet nam": "Vietnam",
+  sg: "Singapore",
+  sgp: "Singapore",
+  singapore: "Singapore",
+  my: "Malaysia",
+  mys: "Malaysia",
+  malaysia: "Malaysia",
+  id: "Indonesia",
+  idn: "Indonesia",
+  indonesia: "Indonesia",
+  ph: "Philippines",
+  phl: "Philippines",
+  philippines: "Philippines",
+  au: "Australia",
+  aus: "Australia",
+  australia: "Australia",
+  nz: "New Zealand",
+  nzl: "New Zealand",
+  "new zealand": "New Zealand",
+  br: "Brazil",
+  bra: "Brazil",
+  brazil: "Brazil",
+  ar: "Argentina",
+  arg: "Argentina",
+  argentina: "Argentina",
+  cl: "Chile",
+  chl: "Chile",
+  chile: "Chile",
+  co: "Colombia",
+  col: "Colombia",
+  colombia: "Colombia",
+  pe: "Peru",
+  per: "Peru",
+  peru: "Peru",
+  pr: "Puerto Rico",
+  pri: "Puerto Rico",
+  "puerto rico": "Puerto Rico"
 };
+
+function countryKey(raw) {
+  return String(raw || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\./g, "")
+    .replace(/['’]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isGlobalCountryToken(raw) {
+  const k = countryKey(raw);
+  return k === "global" || k === "worldwide" || k === "world" || k === "all countries" || k === "all";
+}
 
 function normalizeCountryName(raw) {
   if (!raw) return null;
-  const key = String(raw)
-    .toLowerCase()
-    .replace(/\./g, "")
-    .replace(/\s+/g, " ")
-    .trim();
+  if (isGlobalCountryToken(raw)) return null;
+  const key = countryKey(raw);
   if (COUNTRY_ALIASES[key]) return COUNTRY_ALIASES[key];
   // Title-case leftover
   return String(raw)
@@ -119,13 +292,37 @@ function normalizeCountryName(raw) {
     .replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+/**
+ * Parse country filter from query/body.
+ * Returns null for Global / empty (no geo filter), or unique canonical names[].
+ */
+function parseCountryFilter(input) {
+  if (input == null || input === false) return null;
+  if (typeof input === "boolean" && input) return null; // global:true
+  const parts = Array.isArray(input)
+    ? input
+    : String(input)
+        .split(/[,|;]+/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+  if (!parts.length) return null;
+  if (parts.some((p) => isGlobalCountryToken(p))) return null;
+  const out = [];
+  for (const p of parts) {
+    const n = normalizeCountryName(p);
+    if (n && !out.includes(n)) out.push(n);
+  }
+  return out.length ? out : null;
+}
+
 function extractCountryFromQuestion(question) {
   const q = String(question || "");
   const lower = q.toLowerCase();
+  if (/\b(global|worldwide|all countries)\b/.test(lower)) return null;
   // Longest alias keys first
   const keys = Object.keys(COUNTRY_ALIASES).sort((a, b) => b.length - a.length);
   for (const k of keys) {
-    if (lower.includes(k)) return COUNTRY_ALIASES[k];
+    if (new RegExp(`\\b${k.replace(/\s+/g, "\\s+")}\\b`, "i").test(lower)) return COUNTRY_ALIASES[k];
   }
   const m = q.match(
     /\b(?:in|for|across|country|region|geography)\s+([A-Za-z][A-Za-z .'-]{1,40?}?)(?:\s+for|\s+indication|\s+psm|\s+sites?|\?|$)/i
@@ -148,18 +345,52 @@ function extractIndicationFromQuestion(question) {
 
 function countriesMatch(rawCountries, countryNorm) {
   if (!countryNorm) return true;
+  const list = Array.isArray(countryNorm) ? countryNorm : [countryNorm];
+  if (!list.length) return true;
   const blob = Array.isArray(rawCountries)
     ? rawCountries.join(" | ")
     : String(rawCountries || "");
   if (!blob.trim()) return false;
   const lower = blob.toLowerCase();
-  const needle = countryNorm.toLowerCase().split(",")[0].trim();
-  if (lower.includes(needle)) return true;
-  if (needle === "united states" && /\busa\b|\bu\.?s\.?\b|\bunited states\b/.test(lower)) return true;
-  if (needle === "united kingdom" && /\buk\b|\bu\.?k\.?\b|\bunited kingdom\b|\bgreat britain\b/.test(lower)) {
-    return true;
+  for (const c of list) {
+    const needle = String(c).toLowerCase().trim();
+    if (!needle) continue;
+    if (lower.includes(needle)) return true;
+    if (needle === "united states" && /\busa\b|\bu\.?s\.?\b|\bunited states\b/.test(lower)) return true;
+    if (needle === "united kingdom" && /\buk\b|\bu\.?k\.?\b|\bunited kingdom\b|\bgreat britain\b/.test(lower)) {
+      return true;
+    }
+    if (needle === "turkey" && /\bturkey\b|\btürkiye\b|\bturkiye\b/.test(lower)) return true;
+    if (needle === "korea, republic of" && /\bkorea\b|\bsouth korea\b/.test(lower)) return true;
   }
   return false;
+}
+
+function countrySqlClause(fieldExpr, countries, paramPrefix = "c") {
+  if (!countries || !countries.length) return { sql: "", params: [] };
+  if (countries.length === 1) {
+    return {
+      sql: ` AND ${fieldExpr} = @${paramPrefix}0`,
+      params: [{ name: `@${paramPrefix}0`, value: countries[0] }]
+    };
+  }
+  // ARRAY_CONTAINS(@list, field) → field is one of the selected countries
+  return {
+    sql: ` AND ARRAY_CONTAINS(@${paramPrefix}List, ${fieldExpr})`,
+    params: [{ name: `@${paramPrefix}List`, value: countries }]
+  };
+}
+
+function ctgovCountrySqlClause(countries, paramPrefix = "cg") {
+  if (!countries || !countries.length) return { sql: "", params: [] };
+  const parts = [];
+  const params = [];
+  countries.forEach((c, i) => {
+    const name = `@${paramPrefix}${i}`;
+    parts.push(`ARRAY_CONTAINS(c.countries, ${name})`);
+    params.push({ name, value: c });
+  });
+  return { sql: ` AND (${parts.join(" OR ")})`, params };
 }
 
 function extractNct(question) {
@@ -296,7 +527,7 @@ async function lookupSponsorCrosswalk(database, sponsorOrClient) {
 async function benchmarkIndication(database, indication, country = null) {
   const aliases = indicationAliases(indication);
   if (!aliases.length) return null;
-  const countryNorm = country ? normalizeCountryName(country) : null;
+  const countries = parseCountryFilter(country);
 
   const studyContainer = database.container("ora_fact_study");
   const siteContainer = database.container("ora_fact_site");
@@ -317,7 +548,7 @@ async function benchmarkIndication(database, indication, country = null) {
       ]
     );
     for (const r of rows) {
-      if (countryNorm && !countriesMatch(r.countries, countryNorm)) continue;
+      if (countries && !countriesMatch(r.countries, countries)) continue;
       if (!oraStudies.some((x) => x.study_number === r.study_number)) oraStudies.push(r);
     }
   }
@@ -336,12 +567,12 @@ async function benchmarkIndication(database, indication, country = null) {
       ]
     );
     for (const r of rows) {
-      if (countryNorm && !countriesMatch(r.countries, countryNorm)) continue;
+      if (countries && !countriesMatch(r.countries, countries)) continue;
       if (!thTrials.some((x) => x.nct === r.nct)) thTrials.push(r);
     }
   }
 
-  // Site PSM for aliases (cap scan — prefer high trust); optional country partition
+  // Site PSM for aliases (cap scan — prefer high trust); optional country partition(s)
   const sitePsms = [];
   const topSites = [];
   for (const alias of aliases.slice(0, 4)) {
@@ -352,10 +583,9 @@ async function benchmarkIndication(database, indication, country = null) {
     let q = `SELECT TOP 200 c.org_clean, c.organization, c.country, c.indication, c.phase,
               c.site_psm, c.total_enrolled, c.site_enroll_months, c.fsi_trust, c.study_name
        FROM c WHERE c.docType = @t AND c.indication = @ind AND IS_DEFINED(c.site_psm) AND c.site_psm > 0`;
-    if (countryNorm) {
-      q += ` AND c.country = @country`;
-      params.push({ name: "@country", value: countryNorm });
-    }
+    const geo = countrySqlClause("c.country", countries, "geo");
+    q += geo.sql;
+    params.push(...geo.params);
     const rows = await queryAll(siteContainer, q, params);
     const sorted = [...rows].sort((a, b) => (b.site_psm || 0) - (a.site_psm || 0));
     for (const r of sorted) {
@@ -385,7 +615,8 @@ async function benchmarkIndication(database, indication, country = null) {
 
   return {
     indicationRequested: indication,
-    countryFilter: countryNorm,
+    countryFilter: countries,
+    countryFilterLabel: countries ? countries.join(", ") : "Global",
     aliasesUsed: aliases,
     ora: {
       studyCount: oraStudies.length,
@@ -494,7 +725,7 @@ async function lookupCtgovNct(database, nct) {
 async function ctgovByIndication(database, indication, country = null) {
   const aliases = indicationAliases(indication);
   if (!aliases.length) return null;
-  const countryNorm = country ? normalizeCountryName(country) : null;
+  const countries = parseCountryFilter(country);
   try {
     const trials = [];
     for (const alias of aliases.slice(0, 6)) {
@@ -505,10 +736,9 @@ async function ctgovByIndication(database, indication, country = null) {
       let q = `SELECT TOP 40 c.nct, c.title, c.oraIndication, c.status, c.phase, c.sponsor, c.sponsorClass,
                 c.enrollment, c.countries, c.startDate, c.lastUpdatePostDate, c.hasResults
          FROM c WHERE c.docType = @t AND c.oraIndication = @ind`;
-      if (countryNorm) {
-        q += ` AND ARRAY_CONTAINS(c.countries, @country)`;
-        params.push({ name: "@country", value: countryNorm });
-      }
+      const geo = ctgovCountrySqlClause(countries, "cg");
+      q += geo.sql;
+      params.push(...geo.params);
       const rows = await queryAll(database.container("ora_ctgov_trials"), q, params);
       for (const r of rows) {
         if (!trials.some((x) => x.nct === r.nct)) trials.push(r);
@@ -518,7 +748,8 @@ async function ctgovByIndication(database, indication, country = null) {
     return {
       trialCount: trials.length,
       recruitingCount: recruiting.length,
-      countryFilter: countryNorm,
+      countryFilter: countries,
+      countryFilterLabel: countries ? countries.join(", ") : "Global",
       sample: trials.slice(0, 10),
       recruitingSample: recruiting.slice(0, 8),
       note: "From ClinicalTrials.gov daily ophthalmology feed (ora_ctgov_trials)."
@@ -536,6 +767,8 @@ async function buildIntelligenceContext(getDb, opts = {}) {
     question = "",
     indication = null,
     country = null,
+    countries = null,
+    global = false,
     clientName = null,
     sponsor = null,
     force = false
@@ -544,12 +777,17 @@ async function buildIntelligenceContext(getDb, opts = {}) {
   const wantsIntel = force || isIntelligenceQuestion(question);
   const nct = extractNct(question);
   const qIndication = extractIndicationFromQuestion(question);
-  const qCountry = country || extractCountryFromQuestion(question);
+  const resolvedCountries = global
+    ? null
+    : parseCountryFilter(countries != null ? countries : country) ||
+      (() => {
+        const fromQ = extractCountryFromQuestion(question);
+        return fromQ ? [fromQ] : null;
+      })();
   const resolvedIndication = indication || qIndication;
-  const resolvedCountry = qCountry ? normalizeCountryName(qCountry) : null;
 
   // Skip entirely if nothing to hang a query on and question isn't intelligence-shaped
-  if (!wantsIntel && !resolvedIndication && !nct && !clientName && !sponsor && !resolvedCountry) {
+  if (!wantsIntel && !resolvedIndication && !nct && !clientName && !sponsor && !resolvedCountries) {
     return null;
   }
 
@@ -564,11 +802,13 @@ async function buildIntelligenceContext(getDb, opts = {}) {
       "TrialHub vs Ora vs CT.gov indication labels may differ; aliasesUsed lists what was queried.",
       "Prefer fsi_trust=high when comparing site_psm.",
       "ctgov = ClinicalTrials.gov ophthalmology feed (daily delta).",
-      "When countryFilter is set, site/CT.gov/TrialHub results are geography-scoped."
+      "When countryFilter is set (array), site/CT.gov/TrialHub results match ANY of those countries. Null/Global = all geographies."
     ],
     query: {
       indication: resolvedIndication || null,
-      country: resolvedCountry || null,
+      country: resolvedCountries ? resolvedCountries.join(", ") : null,
+      countries: resolvedCountries,
+      global: !resolvedCountries,
       nct: nct || null,
       clientName: clientName || null,
       sponsor: sponsor || null,
@@ -582,28 +822,28 @@ async function buildIntelligenceContext(getDb, opts = {}) {
       out.ctgovNct = await lookupCtgovNct(database, nct);
     }
 
-    if (resolvedIndication || wantsIntel || resolvedCountry) {
+    if (resolvedIndication || wantsIntel || resolvedCountries) {
       const ind = resolvedIndication || qIndication;
       if (ind) {
-        out.indicationBenchmark = await benchmarkIndication(database, ind, resolvedCountry);
-        out.ctgov = await ctgovByIndication(database, ind, resolvedCountry);
-      } else if (resolvedCountry) {
-        // Country-only: sample Ora sites in that country
-        const rows = await queryAll(
-          database.container("ora_fact_site"),
-          `SELECT TOP 40 c.org_clean, c.country, c.indication, c.site_psm, c.total_enrolled, c.fsi_trust, c.study_name
-           FROM c WHERE c.docType = @t AND c.country = @country AND IS_DEFINED(c.site_psm) AND c.site_psm > 0`,
-          [
-            { name: "@t", value: "ora_fact_site" },
-            { name: "@country", value: resolvedCountry }
-          ]
-        );
+        out.indicationBenchmark = await benchmarkIndication(database, ind, resolvedCountries);
+        out.ctgov = await ctgovByIndication(database, ind, resolvedCountries);
+      } else if (resolvedCountries) {
+        // Country-only: sample Ora sites in those countries
+        const params = [{ name: "@t", value: "ora_fact_site" }];
+        let q = `SELECT TOP 80 c.org_clean, c.country, c.indication, c.site_psm, c.total_enrolled, c.fsi_trust, c.study_name
+           FROM c WHERE c.docType = @t AND IS_DEFINED(c.site_psm) AND c.site_psm > 0`;
+        const geo = countrySqlClause("c.country", resolvedCountries, "geo");
+        q += geo.sql;
+        params.push(...geo.params);
+        const rows = await queryAll(database.container("ora_fact_site"), q, params);
         const sorted = [...rows].sort((a, b) => (b.site_psm || 0) - (a.site_psm || 0));
         out.countrySites = {
-          country: resolvedCountry,
+          countries: resolvedCountries,
+          country: resolvedCountries.join(", "),
           sampleCount: sorted.length,
           topSites: sorted.slice(0, 12).map((s) => ({
             org_clean: s.org_clean,
+            country: s.country,
             indication: s.indication,
             site_psm: round(s.site_psm),
             total_enrolled: s.total_enrolled,
@@ -634,6 +874,188 @@ async function buildIntelligenceContext(getDb, opts = {}) {
   }
 }
 
+/**
+ * Site scorecard from Veeva (ora_fact_site). Optional "all" mode adds industry
+ * TrialHub / CT.gov overlays by country — not industry site names (we don't have them).
+ */
+async function buildSiteScorecard(getDb, opts = {}) {
+  const indication = String(opts.indication || "").trim() || null;
+  const countries = opts.global ? null : parseCountryFilter(opts.countries || opts.country);
+  const source = String(opts.source || "veeva").toLowerCase() === "all" ? "all" : "veeva";
+  const aliases = indication ? indicationAliases(indication) : [];
+  const database = getDb();
+  const started = Date.now();
+
+  if (!indication && !countries) {
+    return { error: "indication and/or country is required", source };
+  }
+
+  const siteRows = [];
+  const indList = aliases.length ? aliases.slice(0, 6) : [null];
+  for (const alias of indList) {
+    const params = [{ name: "@t", value: "ora_fact_site" }];
+    let q = `SELECT TOP 400 c.org_clean, c.organization, c.country, c.indication, c.phase,
+              c.site_psm, c.total_enrolled, c.site_enroll_months, c.fsi_trust, c.screen_fail_rate, c.study_name
+       FROM c WHERE c.docType = @t AND IS_DEFINED(c.site_psm) AND c.site_psm > 0`;
+    if (alias) {
+      q += ` AND c.indication = @ind`;
+      params.push({ name: "@ind", value: alias });
+    }
+    const geo = countrySqlClause("c.country", countries, "geo");
+    q += geo.sql;
+    params.push(...geo.params);
+    const rows = await queryAll(database.container("ora_fact_site"), q, params);
+    for (const r of rows) siteRows.push(r);
+  }
+
+  // Aggregate by org_clean + country
+  const byKey = new Map();
+  for (const r of siteRows) {
+    const org = r.org_clean || r.organization;
+    if (!org) continue;
+    const key = `${org}||${r.country || "_unknown"}`;
+    let g = byKey.get(key);
+    if (!g) {
+      g = {
+        org_clean: org,
+        country: r.country || "_unknown",
+        studyCount: 0,
+        psms: [],
+        enrolled: [],
+        months: [],
+        sfr: [],
+        highTrust: 0,
+        indications: new Set()
+      };
+      byKey.set(key, g);
+    }
+    g.studyCount += 1;
+    if (typeof r.site_psm === "number" && r.site_psm > 0) g.psms.push(r.site_psm);
+    if (typeof r.total_enrolled === "number" && r.total_enrolled > 0) g.enrolled.push(r.total_enrolled);
+    if (typeof r.site_enroll_months === "number" && r.site_enroll_months > 0) g.months.push(r.site_enroll_months);
+    if (typeof r.screen_fail_rate === "number" && r.screen_fail_rate >= 0) g.sfr.push(r.screen_fail_rate);
+    if (String(r.fsi_trust || "").toLowerCase() === "high") g.highTrust += 1;
+    if (r.indication) g.indications.add(r.indication);
+  }
+
+  const aggregates = [...byKey.values()].map((g) => ({
+    org_clean: g.org_clean,
+    country: g.country,
+    studyCount: g.studyCount,
+    sitePsmMedian: round(median(g.psms)),
+    totalEnrolledSum: g.enrolled.reduce((a, b) => a + b, 0) || null,
+    enrollMonthsMedian: round(median(g.months), 2),
+    screenFailMedian: round(median(g.sfr), 3),
+    highTrustShare: g.studyCount ? round(g.highTrust / g.studyCount, 3) : 0,
+    indications: [...g.indications].slice(0, 6)
+  }));
+
+  const psmVals = aggregates.map((a) => a.sitePsmMedian).filter((n) => typeof n === "number");
+  const volVals = aggregates.map((a) => a.totalEnrolledSum).filter((n) => typeof n === "number");
+  const sfrVals = aggregates.map((a) => a.screenFailMedian).filter((n) => typeof n === "number");
+  const psmMin = Math.min(...(psmVals.length ? psmVals : [0]));
+  const psmMax = Math.max(...(psmVals.length ? psmVals : [1]));
+  const volMin = Math.min(...(volVals.length ? volVals : [0]));
+  const volMax = Math.max(...(volVals.length ? volVals : [1]));
+  const sfrMin = Math.min(...(sfrVals.length ? sfrVals : [0]));
+  const sfrMax = Math.max(...(sfrVals.length ? sfrVals : [1]));
+
+  function normAsc(v, lo, hi) {
+    if (v == null || hi === lo) return 50;
+    return Math.max(0, Math.min(100, ((v - lo) / (hi - lo)) * 100));
+  }
+  function normDesc(v, lo, hi) {
+    if (v == null || hi === lo) return 50;
+    return Math.max(0, Math.min(100, (1 - (v - lo) / (hi - lo)) * 100));
+  }
+
+  // Industry overlay by country (All mode)
+  const industryByCountry = {};
+  if (source === "all" && aliases.length) {
+    for (const alias of aliases.slice(0, 4)) {
+      const thRows = await queryAll(
+        database.container("ora_trialhub_trials"),
+        `SELECT c.countries, c.psm_common, c.th_actual_psm, c.status
+         FROM c WHERE c.docType = @t AND c.indication = @ind`,
+        [
+          { name: "@t", value: "ora_trialhub_trials" },
+          { name: "@ind", value: alias }
+        ]
+      );
+      for (const t of thRows) {
+        const list = Array.isArray(t.countries) ? t.countries : [];
+        const psm =
+          typeof t.psm_common === "number" && t.psm_common > 0 && t.psm_common < 500
+            ? t.psm_common
+            : typeof t.th_actual_psm === "number" && t.th_actual_psm > 0 && t.th_actual_psm < 500
+              ? t.th_actual_psm
+              : null;
+        const recruiting = /recruit/i.test(String(t.status || ""));
+        for (const cRaw of list) {
+          const c = normalizeCountryName(cRaw);
+          if (!c) continue;
+          if (countries && !countries.includes(c)) continue;
+          if (!industryByCountry[c]) industryByCountry[c] = { psms: [], recruiting: 0, trials: 0 };
+          industryByCountry[c].trials += 1;
+          if (psm != null) industryByCountry[c].psms.push(psm);
+          if (recruiting) industryByCountry[c].recruiting += 1;
+        }
+      }
+    }
+  }
+
+  const scored = aggregates.map((a) => {
+    const psmScore = normAsc(a.sitePsmMedian, psmMin, psmMax);
+    const volScore = normAsc(a.totalEnrolledSum, volMin, volMax);
+    const sfrScore = normDesc(a.screenFailMedian, sfrMin, sfrMax);
+    const trustScore = (a.highTrustShare || 0) * 100;
+    // Weights: PSM 40%, volume 25%, screen-fail 20%, trust 15%
+    let score = 0.4 * psmScore + 0.25 * volScore + 0.2 * sfrScore + 0.15 * trustScore;
+    const industry = industryByCountry[a.country] || null;
+    const industryMedianPsm = industry ? round(median(industry.psms)) : null;
+    const recruitingTrials = industry ? industry.recruiting : null;
+    let vsIndustry = null;
+    if (source === "all" && industryMedianPsm != null && a.sitePsmMedian != null && industryMedianPsm > 0) {
+      vsIndustry = round(a.sitePsmMedian / industryMedianPsm, 2);
+      // Mild boost if Ora site is faster than industry median
+      if (vsIndustry >= 1.1) score = Math.min(100, score + 5);
+      else if (vsIndustry <= 0.8) score = Math.max(0, score - 5);
+    }
+    return {
+      ...a,
+      score: round(score, 1),
+      components: {
+        psm: round(psmScore, 1),
+        volume: round(volScore, 1),
+        screenFail: round(sfrScore, 1),
+        trust: round(trustScore, 1)
+      },
+      industryMedianPsm: source === "all" ? industryMedianPsm : undefined,
+      recruitingTrials: source === "all" ? recruitingTrials : undefined,
+      vsIndustry: source === "all" ? vsIndustry : undefined,
+      dataSource: "veeva"
+    };
+  });
+
+  scored.sort((a, b) => (b.score || 0) - (a.score || 0));
+
+  return {
+    source,
+    indication,
+    countries: countries,
+    countryFilterLabel: countries ? countries.join(", ") : "Global",
+    aliasesUsed: aliases,
+    siteCount: scored.length,
+    weights: { psm: 0.4, volume: 0.25, screenFail: 0.2, trust: 0.15 },
+    note:
+      source === "veeva"
+        ? "Scores from Ora Veeva site history only (ora_fact_site)."
+        : "Veeva site scores + industry overlay (TrialHub PSM / recruiting by country). Industry has no named competitor sites in this pack.",
+    sites: scored.slice(0, 80),
+    elapsedMs: Date.now() - started
+  };
+}
+
 module.exports = {
   DATASET,
   INDICATION_GROUPS,
@@ -642,8 +1064,10 @@ module.exports = {
   extractIndicationFromQuestion,
   extractCountryFromQuestion,
   normalizeCountryName,
+  parseCountryFilter,
   getIntelligenceHealth,
   buildIntelligenceContext,
+  buildSiteScorecard,
   benchmarkIndication,
   lookupSponsorCrosswalk
 };

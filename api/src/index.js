@@ -5,6 +5,7 @@ const { upsertCanonical, createManualStudy, listStudies, getStudy, listVersions,
 const { askAi, getStudyContext, providerStatus } = require("./askClaude");
 const {
   buildIntelligenceContext,
+  buildSiteScorecard,
   getIntelligenceHealth,
   isIntelligenceQuestion,
   extractIndicationFromQuestion,
@@ -651,17 +652,68 @@ app.http("intelligenceIndication", {
     }
     try {
       const q = request.query.get("q") || request.query.get("indication") || "";
-      const country = request.query.get("country") || request.query.get("region") || "";
-      if (!String(q).trim() && !String(country).trim()) {
+      const countryRaw =
+        request.query.get("countries") ||
+        request.query.get("country") ||
+        request.query.get("region") ||
+        "";
+      const global =
+        request.query.get("global") === "true" ||
+        String(countryRaw).toLowerCase() === "global";
+      if (!String(q).trim() && !String(countryRaw).trim() && !global) {
         return json(400, { error: "query param q (indication) and/or country is required" });
       }
       const pack = await buildIntelligenceContext(getDb, {
-        question: `benchmark ${q} ${country}`.trim(),
+        question: `benchmark ${q} ${countryRaw}`.trim(),
         indication: String(q).trim() || null,
-        country: String(country).trim() || null,
+        countries: global ? null : countryRaw,
+        global,
         force: true
       });
       return json(200, pack);
+    } catch (err) {
+      context.error(err);
+      return json(500, { error: String(err.message || err) });
+    }
+  }
+});
+
+app.http("intelligenceSiteScorecard", {
+  methods: ["GET", "OPTIONS"],
+  authLevel: "anonymous",
+  route: "intelligence/sitescorecard",
+  handler: async (request, context) => {
+    if (request.method === "OPTIONS") {
+      return {
+        status: 204,
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, OPTIONS",
+          "Access-Control-Allow-Headers": "content-type"
+        }
+      };
+    }
+    try {
+      const q = request.query.get("q") || request.query.get("indication") || "";
+      const countryRaw =
+        request.query.get("countries") ||
+        request.query.get("country") ||
+        request.query.get("region") ||
+        "";
+      const global =
+        request.query.get("global") === "true" ||
+        String(countryRaw).toLowerCase() === "global";
+      const source = request.query.get("source") || "veeva";
+      if (!String(q).trim() && !String(countryRaw).trim() && !global) {
+        return json(400, { error: "q (indication) and/or country is required" });
+      }
+      const card = await buildSiteScorecard(getDb, {
+        indication: String(q).trim() || null,
+        countries: global ? null : countryRaw,
+        global,
+        source
+      });
+      return json(card.error ? 400 : 200, card);
     } catch (err) {
       context.error(err);
       return json(500, { error: String(err.message || err) });
