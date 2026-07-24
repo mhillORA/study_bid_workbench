@@ -680,7 +680,8 @@ async function benchmarkIndication(database, indication, country = null) {
       sitePsmMedian: round(median(sitePsms)),
       sitePsmP75: round(percentile(sitePsms, 75)),
       topSitesByPsm: topSites.slice(0, 10),
-      countryFilter: countryNorm,
+      countryFilter: countries,
+      countryFilterLabel: countries ? countries.join(", ") : "Global",
       note: "High null rates on site_psm are expected Veeva gaps — null ≠ 0."
     }
   };

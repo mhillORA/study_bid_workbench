@@ -1454,21 +1454,21 @@
 
   function renderCountryPicker(scope) {
     const st = countryBagState(scope);
-    const chipsPopular = (SBW.intelCountryChips || []).map((c) => {
+    const chipsPopular = (SBW.intelCountryChips || []).slice(0, 8).map((c) => {
       const on = !st.globalRegion && (st.countries || []).includes(c);
-      return `<button type="button" class="btn btn-secondary${on ? " active" : ""}" data-country-add="${escapeAttr(
+      return `<button type="button" class="filter-pill${on ? " active" : ""}" data-country-add="${escapeAttr(
         scope
-      )}" data-country-name="${escapeAttr(c)}" style="margin:0 0.35rem 0.35rem 0;">${escapeHtml(c)}</button>`;
+      )}" data-country-name="${escapeAttr(c)}">${escapeHtml(c)}</button>`;
     }).join("");
     const globalOn = st.globalRegion;
     const selected = st.globalRegion
-      ? `<span class="badge buddy-country-chip">Global <button type="button" class="buddy-country-x" data-country-clear-global="${escapeAttr(
+      ? `<span class="filter-token global">Global <button type="button" class="buddy-country-x" data-country-clear-global="${escapeAttr(
           scope
         )}" aria-label="Clear Global">×</button></span>`
       : (st.countries || [])
           .map(
             (c) =>
-              `<span class="badge buddy-country-chip">${escapeHtml(c)} <button type="button" class="buddy-country-x" data-country-remove="${escapeAttr(
+              `<span class="filter-token">${escapeHtml(c)} <button type="button" class="buddy-country-x" data-country-remove="${escapeAttr(
                 scope
               )}" data-country-name="${escapeAttr(c)}" aria-label="Remove">×</button></span>`
           )
@@ -1491,20 +1491,34 @@
       : "";
     return `
       <div class="country-picker" data-country-scope="${escapeAttr(scope)}">
-        <div style="display:flex;gap:0.5rem;align-items:flex-start;flex-wrap:wrap;">
-          <button type="button" class="btn ${globalOn ? "btn-primary" : "btn-secondary"}" data-country-global="${escapeAttr(
+        <div class="country-picker-row">
+          <button type="button" class="global-toggle${globalOn ? " active" : ""}" data-country-global="${escapeAttr(
             scope
           )}">Global</button>
-          <div class="country-typeahead" style="position:relative;flex:1;min-width:200px;max-width:360px;">
-            <input id="${scope}CountryQuery" class="input" autocomplete="off" placeholder="Type country / ISO (TUR, US, USA)…" value="${escapeAttr(
+          <div class="country-typeahead">
+            <input id="${scope}CountryQuery" class="input" autocomplete="off" placeholder="Search country or code (US, USA, TUR)" value="${escapeAttr(
               st.countryQuery || ""
             )}" data-country-query="${escapeAttr(scope)}" ${globalOn ? "disabled" : ""} />
             ${suggestHtml}
           </div>
         </div>
-        <div style="margin-top:0.5rem;display:flex;flex-wrap:wrap;gap:0.35rem;min-height:1.5rem;">${selected || `<span class="muted">No countries selected — use Global or pick below.</span>`}</div>
-        <div style="margin-top:0.55rem;">${chipsPopular}</div>
+        <div class="filter-selections">${selected || `<span class="muted">Select countries, or choose Global.</span>`}</div>
+        <div class="filter-popular"><span class="filter-caption">Popular</span>${chipsPopular}</div>
       </div>`;
+  }
+
+  function renderIndicationPicker(scope) {
+    const st = scope === "scorecard" ? state.scorecard : state.intelligence;
+    const attr = scope === "scorecard" ? "data-score-ind" : "data-intel-ind";
+    return `<div class="filter-popular indication-popular">
+      <span class="filter-caption">Common</span>
+      ${INTEL_COMMON_INDICATIONS.map(
+        (i) =>
+          `<button type="button" class="filter-pill${st.indication === i ? " active" : ""}" ${attr}="${escapeAttr(
+            i
+          )}">${escapeHtml(i)}</button>`
+      ).join("")}
+    </div>`;
   }
 
   function intelStatNum(v) {
@@ -1692,12 +1706,6 @@
   }
 
   function renderIntelligence() {
-    const chips = INTEL_COMMON_INDICATIONS.map(
-      (i) =>
-        `<button type="button" class="btn btn-secondary" data-intel-ind="${escapeAttr(i)}" style="margin:0 0.35rem 0.35rem 0;">${escapeHtml(
-          i
-        )}</button>`
-    ).join("");
     const status = state.intelligence.status
       ? `<p class="muted" style="margin-top:0.5rem;">${escapeHtml(state.intelligence.status)}</p>`
       : "";
@@ -1717,19 +1725,24 @@
         ${renderIntelligenceHealthCard()}
         <div class="card wide">
           <h3>Indication &amp; region benchmark</h3>
-          <p class="muted">Ora Veeva + TrialHub + CT.gov. Pick countries from the list (type TUR / US / USA) or Global — not free text.</p>
-          <div style="display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap;margin-top:0.75rem;">
-            <input id="intelIndication" class="input" style="max-width:280px;" placeholder="Indication (e.g. Dry Eye)" value="${escapeAttr(
-              state.intelligence.indication || ""
-            )}" />
+          <p class="muted">Compare Ora history, TrialHub, and CT.gov by indication and geography.</p>
+          <div class="benchmark-filter-grid">
+            <div class="benchmark-filter-field">
+              <label class="field-label" for="intelIndication">Indication</label>
+              <input id="intelIndication" class="input" placeholder="Search or choose below" value="${escapeAttr(
+                state.intelligence.indication || ""
+              )}" />
+              ${renderIndicationPicker("intelligence")}
+            </div>
+            <div class="benchmark-filter-field">
+              <label class="field-label">Geography</label>
+              ${renderCountryPicker("intelligence")}
+            </div>
+          </div>
+          <div class="benchmark-actions">
             <button type="button" class="btn btn-primary" id="btnIntelQuery">Query</button>
             <button type="button" class="btn btn-secondary" id="btnOpenBenchmark" title="Open this view in a new tab">Open benchmark</button>
           </div>
-          <div style="margin-top:0.85rem;">
-            <label class="field-label">Countries / region</label>
-            ${renderCountryPicker("intelligence")}
-          </div>
-          <div style="margin-top:0.75rem;">${chips}</div>
           ${status}
           ${countryNote}
         </div>
@@ -1773,12 +1786,6 @@
   }
 
   function renderScorecard() {
-    const chips = INTEL_COMMON_INDICATIONS.map(
-      (i) =>
-        `<button type="button" class="btn btn-secondary" data-score-ind="${escapeAttr(i)}" style="margin:0 0.35rem 0.35rem 0;">${escapeHtml(
-          i
-        )}</button>`
-    ).join("");
     const src = state.scorecard.source || "veeva";
     const status = state.scorecard.status
       ? `<p class="muted" style="margin-top:0.5rem;">${escapeHtml(state.scorecard.status)}</p>`
@@ -1835,17 +1842,22 @@
             <button type="button" class="btn ${src === "veeva" ? "btn-primary" : "btn-secondary"}" data-score-source="veeva">Veeva (Ora)</button>
             <button type="button" class="btn ${src === "all" ? "btn-primary" : "btn-secondary"}" data-score-source="all">All data</button>
           </div>
-          <div style="display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap;margin-top:0.85rem;">
-            <input id="scoreIndication" class="input" style="max-width:280px;" placeholder="Indication (e.g. Dry Eye)" value="${escapeAttr(
-              state.scorecard.indication || ""
-            )}" />
+          <div class="benchmark-filter-grid">
+            <div class="benchmark-filter-field">
+              <label class="field-label" for="scoreIndication">Indication</label>
+              <input id="scoreIndication" class="input" placeholder="Search or choose below" value="${escapeAttr(
+                state.scorecard.indication || ""
+              )}" />
+              ${renderIndicationPicker("scorecard")}
+            </div>
+            <div class="benchmark-filter-field">
+              <label class="field-label">Geography</label>
+              ${renderCountryPicker("scorecard")}
+            </div>
+          </div>
+          <div class="benchmark-actions">
             <button type="button" class="btn btn-primary" id="btnScoreQuery">Score sites</button>
           </div>
-          <div style="margin-top:0.85rem;">
-            <label class="field-label">Countries / region</label>
-            ${renderCountryPicker("scorecard")}
-          </div>
-          <div style="margin-top:0.75rem;">${chips}</div>
           ${status}
         </div>
         ${table}
@@ -3629,7 +3641,6 @@
       case "versions": html = renderVersions(); break;
       case "intelligence": html = renderIntelligence(); break;
       case "scorecard": html = renderScorecard(); break;
-      case "upload": html = renderUpload(); break;
       case "overview": html = renderOverview(); break;
       case "recruitment": html = renderDepartmentTab("recruitment"); break;
       case "clinops": html = renderDepartmentTab("clinops"); break;

@@ -523,11 +523,130 @@ h1 {
   color: #fca5a5;
 }
 
-.buddy-country-chip {
+.benchmark-filter-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 1.25rem;
+  margin-top: 1rem;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface-2, rgba(148, 163, 184, 0.06));
+}
+
+.benchmark-filter-field {
+  min-width: 0;
+}
+
+.benchmark-filter-field > .input {
+  width: 100%;
+}
+
+.benchmark-actions {
+  display: flex;
+  gap: 0.6rem;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-top: 0.85rem;
+}
+
+.country-picker-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: stretch;
+}
+
+.country-typeahead {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.country-typeahead > .input {
+  width: 100%;
+}
+
+.global-toggle {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.5rem 0.75rem;
+  color: var(--muted);
+  background: var(--card-bg);
+  cursor: pointer;
+  font: inherit;
+  font-weight: 600;
+}
+
+.global-toggle.active {
+  border-color: #2563eb;
+  color: #fff;
+  background: #2563eb;
+}
+
+.filter-selections {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+  min-height: 1.8rem;
+  margin-top: 0.55rem;
+}
+
+.filter-token {
   display: inline-flex;
   align-items: center;
   gap: 0.25rem;
-  padding-right: 0.25rem;
+  padding: 0.25rem 0.3rem 0.25rem 0.55rem;
+  border-radius: 999px;
+  color: #1e3a8a;
+  background: #dbeafe;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
+.filter-token.global {
+  color: #065f46;
+  background: #d1fae5;
+}
+
+.filter-popular {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+  margin-top: 0.65rem;
+}
+
+.filter-caption {
+  margin-right: 0.15rem;
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.filter-pill {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0.28rem 0.58rem;
+  color: var(--muted);
+  background: var(--card-bg);
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.78rem;
+  line-height: 1.2;
+}
+
+.filter-pill:hover,
+.filter-pill.active {
+  border-color: #2563eb;
+  color: #1d4ed8;
+  background: #eff6ff;
+}
+
+.indication-popular {
+  margin-top: 0.55rem;
 }
 
 .buddy-country-x {
@@ -581,6 +700,12 @@ h1 {
 .btn-secondary.active {
   outline: 2px solid var(--accent, #1d4ed8);
   outline-offset: 1px;
+}
+
+@media (max-width: 860px) {
+  .benchmark-filter-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .buddy-compose {
