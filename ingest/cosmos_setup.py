@@ -29,6 +29,10 @@ CONTAINERS = [
     {"id": "ora_trialhub_trials", "partition_key": "/indication"},
     {"id": "ora_sponsor_crosswalk", "partition_key": "/crosswalk_status"},
     {"id": "ora_site_alias_table", "partition_key": "/country"},
+    # ClinicalTrials.gov ophthalmology feed (daily delta pull).
+    {"id": "ora_ctgov_trials", "partition_key": "/oraIndication"},
+    # Watermarks / cursors for scheduled sync jobs.
+    {"id": "syncState", "partition_key": "/id"},
 ]
 
 

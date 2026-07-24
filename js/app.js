@@ -37,6 +37,13 @@
       left: null,
       right: null,
       status: ""
+    },
+    intelligence: {
+      health: null,
+      pack: null,
+      indication: "",
+      status: "",
+      loading: false
     }
   };
 
@@ -136,6 +143,9 @@
           render();
         }
       });
+    }
+    if (sectionId === "intelligence") {
+      ensureIntelligenceLoaded();
     }
   }
 
@@ -295,6 +305,14 @@
     hub: ["hub", "home"],
     studies: ["studies", "study list"],
     versions: ["versions", "diff", "versions / diff"],
+    intelligence: [
+      "intelligence",
+      "ora clinical intelligence",
+      "clinical intelligence",
+      "feasibility",
+      "trialhub",
+      "psm"
+    ],
     overview: ["overview", "inputs", "overview / inputs"],
     recruitment: ["recruitment", "recruit"],
     clinops: ["clinops", "clin ops", "soe", "clinops / soe"],
@@ -1207,6 +1225,273 @@
     }
     state.buddyBusy = false;
     paintBuddyChat();
+  }
+
+  // ---- Ora Clinical Intelligence tab -------------------------------------
+  const INTEL_COMMON_INDICATIONS = [
+    "Dry Eye",
+    "Glaucoma",
+    "Cataract",
+    "Diabetic Macular Edema (DME)",
+    "Wet AMD",
+    "Geographic Atrophy",
+    "Retinitis Pigmentosa",
+    "Presbyopia",
+    "Allergic Conjunctivitis",
+    "Myopia",
+    "Thyroid Eye Disease"
+  ];
+
+  async function ensureIntelligenceLoaded() {
+    if (!state.intelligence.health && !state.intelligence.loading) {
+      await loadIntelligenceHealth();
+    }
+  }
+
+  async function loadIntelligenceHealth() {
+    state.intelligence.loading = true;
+    try {
+      const res = await fetch(apiUrl("/api/intelligence"));
+      const data = await res.json().catch(() => ({}));
+      state.intelligence.health = res.ok ? data : { ok: false, error: data.error || `HTTP ${res.status}` };
+    } catch (err) {
+      state.intelligence.health = { ok: false, error: String(err) };
+    }
+    state.intelligence.loading = false;
+    if (state.sectionId === "intelligence") render();
+  }
+
+  async function runIntelligenceQuery(indication) {
+    const ind = String(indication || state.intelligence.indication || "").trim();
+    if (!ind) {
+      state.intelligence.status = "Enter or pick an indication first.";
+      if (state.sectionId === "intelligence") render();
+      return;
+    }
+    state.intelligence.indication = ind;
+    state.intelligence.loading = true;
+    state.intelligence.status = `Querying Cosmos for “${ind}”…`;
+    if (state.sectionId === "intelligence") render();
+    try {
+      const res = await fetch(apiUrl(`/api/intelligence/indication?q=${encodeURIComponent(ind)}`));
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        state.intelligence.pack = null;
+        state.intelligence.status = data.error || `Query failed (${res.status})`;
+      } else {
+        state.intelligence.pack = data;
+        state.intelligence.status = "";
+      }
+    } catch (err) {
+      state.intelligence.pack = null;
+      state.intelligence.status = `Could not reach /api/intelligence. ${String(err)}`;
+    }
+    state.intelligence.loading = false;
+    if (state.sectionId === "intelligence") render();
+  }
+
+  function askBuddyAboutIndication(indication) {
+    const ind = String(indication || state.intelligence.indication || "").trim();
+    if (!ind) return;
+    openBuddy();
+    if (els.askInput) {
+      els.askInput.value = `What is the typical PSM and competitive landscape for ${ind}? Use Ora and TrialHub benchmarks.`;
+    }
+    sendAsk();
+  }
+
+  function intelStatNum(v) {
+    if (v == null || Number.isNaN(v)) return "—";
+    return typeof v === "number" ? v.toLocaleString(undefined, { maximumFractionDigits: 2 }) : escapeHtml(String(v));
+  }
+
+  function renderIntelligenceHealthCard() {
+    const h = state.intelligence.health;
+    if (!h) {
+      return `<div class="card wide"><h3>Data status</h3><p class="muted">Loading intelligence containers…</p></div>`;
+    }
+    if (h.ok === false && h.error) {
+      return `<div class="card wide"><h3>Data status</h3><p class="muted">Could not read intelligence containers: ${escapeHtml(
+        h.error
+      )}</p><button type="button" class="btn btn-secondary" id="btnIntelRefresh">Retry</button></div>`;
+    }
+    const counts = h.counts || {};
+    const expected = h.expected || {};
+    const rows = Object.keys(expected)
+      .map((id) => {
+        const c = counts[id];
+        const exp = expected[id];
+        const val = typeof c === "number" ? c : (c && c.error ? "err" : "—");
+        const ok = typeof c === "number" && c === exp;
+        const badge = ok
+          ? `<span class="badge" style="background:#D1FAE5;color:#065F46;">ok</span>`
+          : `<span class="badge" style="background:#FEF3C7;color:#92400E;">${escapeHtml(String(val))}/${exp}</span>`;
+        return `<tr><td><code>${escapeHtml(id)}</code></td><td>${intelStatNum(
+          typeof c === "number" ? c : null
+        )}</td><td>${exp.toLocaleString()}</td><td>${badge}</td></tr>`;
+      })
+      .join("");
+    return `
+      <div class="card wide">
+        <h3>Data status ${h.ok ? "· loaded" : "· check counts"}</h3>
+        <p class="muted">Ora Veeva + TrialHub reference tables in Cosmos (<code>bd-budgets</code>). Buddy reads summaries from these.</p>
+        <table class="table">
+          <thead><tr><th>Container</th><th>Loaded</th><th>Expected</th><th>Status</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+        <button type="button" class="btn btn-secondary" id="btnIntelRefresh">Refresh</button>
+      </div>`;
+  }
+
+  function renderIntelBenchmark() {
+    const pack = state.intelligence.pack;
+    if (!pack) return "";
+    if (pack.error) {
+      return `<div class="card wide"><h3>Benchmark</h3><p class="muted">${escapeHtml(pack.error)}</p></div>`;
+    }
+    const b = pack.indicationBenchmark;
+    if (!b) {
+      return `<div class="card wide"><h3>Benchmark</h3><p class="muted">No benchmark data returned for this indication.</p></div>`;
+    }
+    const ora = b.ora || {};
+    const th = b.trialhub || {};
+    const sites = b.sites || {};
+
+    const oraCard = `
+      <div class="card">
+        <h3>Ora history (Veeva)</h3>
+        <div class="stat">${intelStatNum(ora.psmMedian)}</div>
+        <p class="muted">Median PSM · ${intelStatNum(ora.studiesWithPsm)} of ${intelStatNum(
+      ora.studyCount
+    )} studies with PSM</p>
+        <p class="muted">P25–P75: ${intelStatNum(ora.psmP25)} – ${intelStatNum(ora.psmP75)}</p>
+      </div>`;
+
+    const thCard = `
+      <div class="card">
+        <h3>Industry (TrialHub)</h3>
+        <div class="stat">${intelStatNum(th.psmMedian)}</div>
+        <p class="muted">Median PSM · ${intelStatNum(th.trialsWithPsm)} of ${intelStatNum(
+      th.trialCount
+    )} trials with PSM</p>
+        <p class="muted">${intelStatNum(th.recruitingCount)} recruiting · ${intelStatNum(
+      th.completedCount
+    )} completed</p>
+      </div>`;
+
+    const siteCard = `
+      <div class="card">
+        <h3>Ora sites</h3>
+        <div class="stat">${intelStatNum(sites.sitePsmMedian)}</div>
+        <p class="muted">Median site PSM · ${intelStatNum(sites.sitesWithPsmSampled)} sites sampled</p>
+        <p class="muted">P75: ${intelStatNum(sites.sitePsmP75)}</p>
+      </div>`;
+
+    const topSites = (sites.topSitesByPsm || []).length
+      ? `<div class="card wide">
+          <h3>Top Ora sites by PSM</h3>
+          <table class="table">
+            <thead><tr><th>Site</th><th>Country</th><th>Site PSM</th><th>Enrolled</th><th>Trust</th></tr></thead>
+            <tbody>${sites.topSitesByPsm
+              .map(
+                (s) =>
+                  `<tr><td>${escapeHtml(s.org_clean || "—")}</td><td>${escapeHtml(
+                    s.country || "—"
+                  )}</td><td>${intelStatNum(s.site_psm)}</td><td>${intelStatNum(
+                    s.total_enrolled
+                  )}</td><td>${escapeHtml(s.fsi_trust || "—")}</td></tr>`
+              )
+              .join("")}</tbody>
+          </table>
+        </div>`
+      : "";
+
+    const thTrials = (th.sampleTrials || []).length
+      ? `<div class="card wide">
+          <h3>Industry trials (TrialHub)</h3>
+          <table class="table">
+            <thead><tr><th>NCT</th><th>Sponsor</th><th>Phase</th><th>Status</th><th>Patients</th><th>Sites</th><th>PSM</th></tr></thead>
+            <tbody>${th.sampleTrials
+              .map(
+                (t) =>
+                  `<tr><td>${escapeHtml(t.nct || "—")}</td><td>${escapeHtml(
+                    t.sponsor || "—"
+                  )}</td><td>${escapeHtml(String(t.phase || "—"))}</td><td>${escapeHtml(
+                    t.status || "—"
+                  )}</td><td>${intelStatNum(t.patients)}</td><td>${intelStatNum(
+                    t.sites
+                  )}</td><td>${intelStatNum(t.psm_common)}</td></tr>`
+              )
+              .join("")}</tbody>
+          </table>
+        </div>`
+      : "";
+
+    const crosswalk = (pack.sponsorCrosswalk || []).length
+      ? `<div class="card wide">
+          <h3>Sponsor → Salesforce</h3>
+          <table class="table">
+            <thead><tr><th>TrialHub sponsor</th><th>SF account</th><th>Owner</th><th>Tier</th><th>Status</th></tr></thead>
+            <tbody>${pack.sponsorCrosswalk
+              .map(
+                (r) =>
+                  `<tr><td>${escapeHtml(r.trialhub_veeva_sponsor || "—")}</td><td>${escapeHtml(
+                    r.sf_account_name || "—"
+                  )}</td><td>${escapeHtml(r.sf_owner || "—")}</td><td>${escapeHtml(
+                    String(r.tier || "—")
+                  )}</td><td>${escapeHtml(r.crosswalk_status || "—")}</td></tr>`
+              )
+              .join("")}</tbody>
+          </table>
+        </div>`
+      : "";
+
+    const aliases = (b.aliasesUsed || []).join(", ");
+    return `
+      <div class="card wide" style="display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap;">
+        <div>
+          <h3 style="margin:0;">Benchmark · ${escapeHtml(b.indicationRequested || state.intelligence.indication)}</h3>
+          <p class="muted" style="margin:0.35rem 0 0;">Matched labels: ${escapeHtml(aliases || "—")}</p>
+        </div>
+        <button type="button" class="btn btn-primary" data-intel-ask="${escapeAttr(
+          b.indicationRequested || state.intelligence.indication
+        )}">Ask Buddy about this</button>
+      </div>
+      ${oraCard}
+      ${thCard}
+      ${siteCard}
+      ${topSites}
+      ${thTrials}
+      ${crosswalk}`;
+  }
+
+  function renderIntelligence() {
+    const chips = INTEL_COMMON_INDICATIONS.map(
+      (i) =>
+        `<button type="button" class="btn btn-secondary" data-intel-ind="${escapeAttr(i)}" style="margin:0 0.35rem 0.35rem 0;">${escapeHtml(
+          i
+        )}</button>`
+    ).join("");
+    const status = state.intelligence.status
+      ? `<p class="muted" style="margin-top:0.5rem;">${escapeHtml(state.intelligence.status)}</p>`
+      : "";
+    return `
+      <div class="grid">
+        ${renderIntelligenceHealthCard()}
+        <div class="card wide">
+          <h3>Indication benchmark</h3>
+          <p class="muted">Ora Veeva history + TrialHub industry benchmarks (PSM, sites, competitors) for feasibility and BD.</p>
+          <div style="display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap;margin-top:0.75rem;">
+            <input id="intelIndication" class="input" style="max-width:340px;" placeholder="Indication (e.g. Dry Eye)" value="${escapeAttr(
+              state.intelligence.indication || ""
+            )}" />
+            <button type="button" class="btn btn-primary" id="btnIntelQuery">Query</button>
+          </div>
+          <div style="margin-top:0.75rem;">${chips}</div>
+          ${status}
+        </div>
+        ${renderIntelBenchmark()}
+      </div>`;
   }
 
   function renderUpload() {
@@ -2953,6 +3238,7 @@
       case "upload": html = renderUpload(); break;
       case "studies": html = renderStudies(); break;
       case "versions": html = renderVersions(); break;
+      case "intelligence": html = renderIntelligence(); break;
       case "overview": html = renderOverview(); break;
       case "recruitment": html = renderDepartmentTab("recruitment"); break;
       case "clinops": html = renderDepartmentTab("clinops"); break;
@@ -3007,6 +3293,19 @@
       setSection(btn.dataset.section);
     });
 
+    els.viewRoot.addEventListener("input", (e) => {
+      if (e.target && e.target.id === "intelIndication") {
+        state.intelligence.indication = e.target.value;
+      }
+    });
+
+    els.viewRoot.addEventListener("keydown", (e) => {
+      if (e.target && e.target.id === "intelIndication" && e.key === "Enter") {
+        e.preventDefault();
+        runIntelligenceQuery(e.target.value);
+      }
+    });
+
     els.viewRoot.addEventListener("click", (e) => {
       const jump = e.target.closest("[data-jump]");
       if (jump) {
@@ -3016,6 +3315,25 @@
       const statusBtn = e.target.closest("[data-status-section]");
       if (statusBtn) {
         setSectionStatus(statusBtn.dataset.statusSection, statusBtn.dataset.status);
+        return;
+      }
+      const intelChip = e.target.closest("[data-intel-ind]");
+      if (intelChip) {
+        runIntelligenceQuery(intelChip.getAttribute("data-intel-ind"));
+        return;
+      }
+      const intelAsk = e.target.closest("[data-intel-ask]");
+      if (intelAsk) {
+        askBuddyAboutIndication(intelAsk.getAttribute("data-intel-ask"));
+        return;
+      }
+      if (e.target.id === "btnIntelQuery") {
+        const input = document.getElementById("intelIndication");
+        runIntelligenceQuery(input ? input.value : "");
+        return;
+      }
+      if (e.target.id === "btnIntelRefresh") {
+        loadIntelligenceHealth();
         return;
       }
       const completeReq = e.target.closest("[data-complete-request]");

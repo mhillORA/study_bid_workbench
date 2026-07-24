@@ -61,7 +61,7 @@ function isIntelligenceQuestion(question) {
     /\b(feasibility|site (mix|selection|performance|capacity)|competing trials?|competitor|competitive landscape)\b/.test(
       q
     ) ||
-    /\b(trialhub|trial hub|industry (benchmark|trial|psm)|nct\d*|clinicaltrials\.gov)\b/.test(q) ||
+    /\b(trialhub|trial hub|industry (benchmark|trial|psm)|nct\d*|clinicaltrials\.gov|ct\.gov|ctgov)\b/.test(q) ||
     /\b(screen[- ]?fail|dropout|recruit(ment)? (rate|days|benchmark))\b/.test(q) ||
     /\b(indication).{0,40}\b(benchmark|histor(y|ical)|industry|ora studies)\b/.test(q) ||
     /\b(how (fast|quickly)|typical).{0,40}\b(enroll|recruit|site)\b/.test(q) ||
@@ -133,7 +133,8 @@ async function getIntelligenceHealth(getDb) {
     "ora_fact_study",
     "ora_trialhub_trials",
     "ora_sponsor_crosswalk",
-    "ora_site_alias_table"
+    "ora_site_alias_table",
+    "ora_ctgov_trials"
   ];
   const counts = {};
   for (const id of containers) {
@@ -146,14 +147,33 @@ async function getIntelligenceHealth(getDb) {
     ora_sponsor_crosswalk: 642,
     ora_site_alias_table: 46
   };
-  const ok = containers.every((id) => counts[id] === expected[id]);
+  const fixedOk = Object.keys(expected).every((id) => counts[id] === expected[id]);
+  let syncState = null;
+  try {
+    const { resource } = await database.container("syncState").item("ctgov_ophthalmology", "ctgov_ophthalmology").read();
+    syncState = resource
+      ? {
+          lastSuccessfulSync: resource.lastSuccessfulSync,
+          lastUpserted: resource.lastUpserted,
+          mode: resource.mode,
+          lastTotalCount: resource.lastTotalCount
+        }
+      : null;
+  } catch (_) {
+    syncState = null;
+  }
   return {
     dataset: DATASET,
-    ok,
+    ok: fixedOk,
     counts,
     expected,
-    note: ok
-      ? "All intelligence containers loaded."
+    ctgov: {
+      count: counts.ora_ctgov_trials,
+      sync: syncState,
+      note: "Growing feed — daily delta ~5AM Eastern; no fixed expected count."
+    },
+    note: fixedOk
+      ? "Core intelligence containers loaded."
       : "Count mismatch or containers missing — run ingest/load_ora_intelligence.py"
   };
 }
@@ -360,6 +380,59 @@ async function lookupNct(database, nct) {
   return rows[0] || null;
 }
 
+async function lookupCtgovNct(database, nct) {
+  if (!nct) return null;
+  try {
+    const rows = await queryAll(
+      database.container("ora_ctgov_trials"),
+      `SELECT TOP 3 c.nct, c.title, c.oraIndication, c.status, c.phase, c.sponsor, c.sponsorClass,
+              c.enrollment, c.enrollmentType, c.conditions, c.countries, c.startDate,
+              c.primaryCompletionDate, c.lastUpdatePostDate, c.hasResults, c.interventions
+       FROM c WHERE c.docType = @t AND c.nct = @nct`,
+      [
+        { name: "@t", value: "ora_ctgov_trials" },
+        { name: "@nct", value: nct }
+      ]
+    );
+    return rows[0] || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+async function ctgovByIndication(database, indication) {
+  const aliases = indicationAliases(indication);
+  if (!aliases.length) return null;
+  try {
+    const trials = [];
+    for (const alias of aliases.slice(0, 6)) {
+      const rows = await queryAll(
+        database.container("ora_ctgov_trials"),
+        `SELECT TOP 40 c.nct, c.title, c.oraIndication, c.status, c.phase, c.sponsor, c.sponsorClass,
+                c.enrollment, c.countries, c.startDate, c.lastUpdatePostDate, c.hasResults
+         FROM c WHERE c.docType = @t AND c.oraIndication = @ind`,
+        [
+          { name: "@t", value: "ora_ctgov_trials" },
+          { name: "@ind", value: alias }
+        ]
+      );
+      for (const r of rows) {
+        if (!trials.some((x) => x.nct === r.nct)) trials.push(r);
+      }
+    }
+    const recruiting = trials.filter((t) => /recruit/i.test(String(t.status || "")));
+    return {
+      trialCount: trials.length,
+      recruitingCount: recruiting.length,
+      sample: trials.slice(0, 10),
+      recruitingSample: recruiting.slice(0, 8),
+      note: "From ClinicalTrials.gov daily ophthalmology feed (ora_ctgov_trials)."
+    };
+  } catch (err) {
+    return { error: String(err.message || err), note: "CT.gov container may be empty until first pull." };
+  }
+}
+
 /**
  * Build a bounded intelligence context for Buddy.
  */
@@ -390,8 +463,9 @@ async function buildIntelligenceContext(getDb, opts = {}) {
     rules: [
       "Use medians for PSM; never invent rates from nulls.",
       "null enrollment/PSM means missing Veeva data — not zero.",
-      "TrialHub vs Ora indication labels may differ; aliasesUsed lists what was queried.",
-      "Prefer fsi_trust=high when comparing site_psm."
+      "TrialHub vs Ora vs CT.gov indication labels may differ; aliasesUsed lists what was queried.",
+      "Prefer fsi_trust=high when comparing site_psm.",
+      "ctgov = ClinicalTrials.gov ophthalmology feed (daily delta)."
     ],
     query: {
       indication: resolvedIndication || null,
@@ -405,12 +479,14 @@ async function buildIntelligenceContext(getDb, opts = {}) {
   try {
     if (nct) {
       out.nctLookup = await lookupNct(database, nct);
+      out.ctgovNct = await lookupCtgovNct(database, nct);
     }
 
     if (resolvedIndication || wantsIntel) {
       const ind = resolvedIndication || qIndication;
       if (ind) {
         out.indicationBenchmark = await benchmarkIndication(database, ind);
+        out.ctgov = await ctgovByIndication(database, ind);
       }
     }
 

@@ -14,6 +14,7 @@ SBW.sections = [
   { id: "hub", label: "Hub", department: null },
   { id: "studies", label: "Studies", department: null },
   { id: "versions", label: "Versions / Diff", department: null },
+  { id: "intelligence", label: "Ora Clinical Intelligence", department: null },
   { id: "overview", label: "Overview / Inputs", department: "Analyst" },
   { id: "recruitment", label: "Recruitment", department: "Recruitment" },
   { id: "clinops", label: "ClinOps / SOE", department: "ClinOps" },

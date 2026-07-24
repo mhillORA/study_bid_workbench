@@ -1,0 +1,72 @@
+name: CT.gov ophthalmology daily delta
+
+# Pulls ClinicalTrials.gov ophthalmology updates into Cosmos bd-budgets.
+# Schedule: 09:00 UTC ≈ 05:00 America/New_York (EDT).
+# Secrets: same COSMOS_ENDPOINT / COSMOS_KEY as SWA App Settings (Actions ≠ SWA runtime).
+# Manual runs via workflow_dispatch; local pulls use repo .env instead.
+
+on:
+  schedule:
+    - cron: "0 9 * * *"
+  workflow_dispatch:
+    inputs:
+      full:
+        description: "Full 10-year backfill (ignore watermark)"
+        type: boolean
+        default: false
+      dry_run:
+        description: "Dry-run (no Cosmos writes)"
+        type: boolean
+        default: false
+
+jobs:
+  pull:
+    runs-on: ubuntu-latest
+    name: Pull CT.gov ophthalmology → Cosmos
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Ensure Cosmos containers
+        env:
+          COSMOS_ENDPOINT: ${{ secrets.COSMOS_ENDPOINT }}
+          COSMOS_KEY: ${{ secrets.COSMOS_KEY }}
+          COSMOS_DATABASE: ${{ secrets.COSMOS_DATABASE }}
+        run: |
+          if [ -z "$COSMOS_ENDPOINT" ] || [ -z "$COSMOS_KEY" ]; then
+            echo "Missing COSMOS_ENDPOINT / COSMOS_KEY secrets"
+            exit 1
+          fi
+          export COSMOS_DATABASE="${COSMOS_DATABASE:-bd-budgets}"
+          python ingest/cosmos_setup.py
+
+      - name: Pull ClinicalTrials.gov delta
+        env:
+          COSMOS_ENDPOINT: ${{ secrets.COSMOS_ENDPOINT }}
+          COSMOS_KEY: ${{ secrets.COSMOS_KEY }}
+          COSMOS_DATABASE: ${{ secrets.COSMOS_DATABASE }}
+        run: |
+          export COSMOS_DATABASE="${COSMOS_DATABASE:-bd-budgets}"
+          ARGS=""
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            if [ "${{ inputs.full }}" = "true" ]; then ARGS="$ARGS --full"; fi
+            if [ "${{ inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+          fi
+          echo "Running: python ingest/pull_ctgov_ophthalmology.py $ARGS"
+          python ingest/pull_ctgov_ophthalmology.py $ARGS
+
+      - name: Upload run report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ctgov-pull-report
+          path: out/ctgov_pull_report.json
+          if-no-files-found: ignore
