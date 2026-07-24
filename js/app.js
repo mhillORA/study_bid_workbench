@@ -42,8 +42,12 @@
       health: null,
       pack: null,
       indication: "",
+      country: "",
       status: "",
-      loading: false
+      loading: false,
+      syncStatus: null,
+      syncBusy: false,
+      syncMessage: ""
     }
   };
 
@@ -460,7 +464,24 @@
     }
     if (els.buddyFab) els.buddyFab.setAttribute("aria-expanded", "true");
     paintBuddyChat();
+    refreshBuddyModelLabel();
     if (els.askInput) els.askInput.focus();
+  }
+
+  async function refreshBuddyModelLabel() {
+    const el = document.getElementById("buddyModelLabel");
+    if (!el) return;
+    try {
+      const res = await fetch(apiUrl("/api/health"));
+      const data = await res.json().catch(() => ({}));
+      const dep = data?.llm?.deployment || data?.llm?.resolvedFrom?.deployment || "";
+      const active = data?.llm?.active || "";
+      if (dep) {
+        el.textContent = `Study bid helper · ${dep}${active ? ` (${active})` : ""}`;
+      } else if (active) {
+        el.textContent = `Study bid helper · provider ${active}`;
+      }
+    } catch (_) {}
   }
 
   function closeBuddy() {
@@ -1196,6 +1217,17 @@
           editableFields: wantPortfolio ? [] : catalog,
           fieldsByTab: wantPortfolio ? undefined : catalogByTab(catalog),
           user: state.entraUser || undefined,
+          // Same indication/region as Ora Clinical Intelligence tab (and pack already on screen)
+          intelligenceHint: {
+            indication: String(state.intelligence.indication || "").trim() || undefined,
+            country: String(state.intelligence.country || "").trim() || undefined
+          },
+          intelligencePack:
+            state.intelligence.pack &&
+            state.intelligence.pack.source === "ora_clinical_intelligence" &&
+            !state.intelligence.pack.error
+              ? state.intelligence.pack
+              : undefined,
           history: state.askHistory.slice(0, -1).map((t) => ({
             role: t.role,
             content: t.content
@@ -1208,12 +1240,22 @@
       } else {
         applyBuddyAnswer(data.answer);
         if (els.askStatus) {
+          const modelLabel = data.deployment || data.model || "";
+          const modelNote = modelLabel ? ` · ${modelLabel}` : "";
+          const intelBits = [];
+          if (data.intelligenceQuery?.indication) intelBits.push(data.intelligenceQuery.indication);
+          if (data.intelligenceQuery?.country) intelBits.push(data.intelligenceQuery.country);
+          const intelNote = data.intelligenceAttached
+            ? ` · Intel${intelBits.length ? ` ${intelBits.join(" / ")}` : ""}`
+            : "";
           if (data.answerFocus === "portfolio" && data.databaseStudyCount != null) {
-            els.askStatus.textContent = `All studies · Cosmos ${data.portfolioMatched ?? "?"} / ${data.databaseStudyCount}`;
+            els.askStatus.textContent = `All studies · Cosmos ${data.portfolioMatched ?? "?"} / ${data.databaseStudyCount}${intelNote}${modelNote}`;
           } else if (portfolioMode) {
-            els.askStatus.textContent = "All studies mode (no study selected)";
+            els.askStatus.textContent = `All studies mode (no study selected)${intelNote}${modelNote}`;
           } else {
-            els.askStatus.textContent = hasOpenStudy() ? `Open study · ${state.study.studyId}` : "";
+            els.askStatus.textContent = hasOpenStudy()
+              ? `Open study · ${state.study.studyId}${intelNote}${modelNote}`
+              : `${intelNote}${modelNote}`.replace(/^ · /, "") || modelLabel;
           }
         }
         state.buddyBusy = false;
@@ -1257,23 +1299,35 @@
     } catch (err) {
       state.intelligence.health = { ok: false, error: String(err) };
     }
+    try {
+      const sres = await fetch(apiUrl("/api/ctgov/sync"));
+      const sdata = await sres.json().catch(() => ({}));
+      if (sres.ok) state.intelligence.syncStatus = sdata;
+    } catch (_) {}
     state.intelligence.loading = false;
     if (state.sectionId === "intelligence") render();
   }
 
-  async function runIntelligenceQuery(indication) {
-    const ind = String(indication || state.intelligence.indication || "").trim();
-    if (!ind) {
-      state.intelligence.status = "Enter or pick an indication first.";
+  async function runIntelligenceQuery(indication, country) {
+    const ind = String(indication != null ? indication : state.intelligence.indication || "").trim();
+    const ctry = String(country != null ? country : state.intelligence.country || "").trim();
+    if (!ind && !ctry) {
+      state.intelligence.status = "Enter an indication and/or country/region first.";
       if (state.sectionId === "intelligence") render();
       return;
     }
     state.intelligence.indication = ind;
+    state.intelligence.country = ctry;
     state.intelligence.loading = true;
-    state.intelligence.status = `Querying Cosmos for “${ind}”…`;
+    state.intelligence.status = `Querying Cosmos${ind ? ` for “${ind}”` : ""}${
+      ctry ? ` in ${ctry}` : ""
+    }…`;
     if (state.sectionId === "intelligence") render();
     try {
-      const res = await fetch(apiUrl(`/api/intelligence/indication?q=${encodeURIComponent(ind)}`));
+      const params = new URLSearchParams();
+      if (ind) params.set("q", ind);
+      if (ctry) params.set("country", ctry);
+      const res = await fetch(apiUrl(`/api/intelligence/indication?${params.toString()}`));
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         state.intelligence.pack = null;
@@ -1290,12 +1344,46 @@
     if (state.sectionId === "intelligence") render();
   }
 
+  async function runCtgovSyncManual() {
+    if (state.intelligence.syncBusy) return;
+    state.intelligence.syncBusy = true;
+    state.intelligence.syncMessage = "Running ClinicalTrials.gov delta sync…";
+    if (state.sectionId === "intelligence") render();
+    try {
+      const res = await fetch(apiUrl("/api/ctgov/sync"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ full: false })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        state.intelligence.syncMessage = data.error || `Sync failed (${res.status})`;
+      } else if (data.skipped) {
+        state.intelligence.syncMessage = data.reason || "Sync skipped.";
+      } else {
+        state.intelligence.syncMessage = `Synced ${data.upserted ?? 0} trials (${data.mode || "delta"}${
+          data.incomplete ? ", partial — will catch up next run" : ""
+        }).`;
+      }
+      await loadIntelligenceHealth();
+    } catch (err) {
+      state.intelligence.syncMessage = `Sync error: ${String(err)}`;
+    }
+    state.intelligence.syncBusy = false;
+    if (state.sectionId === "intelligence") render();
+  }
+
   function askBuddyAboutIndication(indication) {
     const ind = String(indication || state.intelligence.indication || "").trim();
-    if (!ind) return;
+    const ctry = String(state.intelligence.country || "").trim();
+    if (!ind && !ctry) return;
     openBuddy();
     if (els.askInput) {
-      els.askInput.value = `What is the typical PSM and competitive landscape for ${ind}? Use Ora and TrialHub benchmarks.`;
+      els.askInput.value = ind
+        ? `What is the typical PSM and competitive landscape for ${ind}${
+            ctry ? ` in ${ctry}` : ""
+          }? Use Ora, TrialHub, and CT.gov benchmarks.`
+        : `Which Ora sites perform best in ${ctry}? Include PSM when available.`;
     }
     sendAsk();
   }
@@ -1307,6 +1395,17 @@
 
   function renderIntelligenceHealthCard() {
     const h = state.intelligence.health;
+    const sync = state.intelligence.syncStatus || {};
+    const syncMsg = state.intelligence.syncMessage
+      ? `<p class="muted" style="margin-top:0.5rem;">${escapeHtml(state.intelligence.syncMessage)}</p>`
+      : "";
+    const lastSync = sync.lastSuccessAt || sync.lastRunAt || sync.watermark || null;
+    const syncMeta = lastSync
+      ? `<p class="muted" style="margin:0.35rem 0 0;">Last CT.gov sync: ${escapeHtml(
+          String(lastSync)
+        )}${sync.count != null ? ` · ${Number(sync.count).toLocaleString()} trials` : ""}</p>`
+      : `<p class="muted" style="margin:0.35rem 0 0;">CT.gov sync status unavailable yet.</p>`;
+
     if (!h) {
       return `<div class="card wide"><h3>Data status</h3><p class="muted">Loading intelligence containers…</p></div>`;
     }
@@ -1331,6 +1430,7 @@
         )}</td><td>${exp.toLocaleString()}</td><td>${badge}</td></tr>`;
       })
       .join("");
+    const syncDisabled = state.intelligence.syncBusy ? "disabled" : "";
     return `
       <div class="card wide">
         <h3>Data status ${h.ok ? "· loaded" : "· check counts"}</h3>
@@ -1339,7 +1439,14 @@
           <thead><tr><th>Container</th><th>Loaded</th><th>Expected</th><th>Status</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
-        <button type="button" class="btn btn-secondary" id="btnIntelRefresh">Refresh</button>
+        <div style="margin-top:0.85rem;display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap;">
+          <button type="button" class="btn btn-secondary" id="btnIntelRefresh">Refresh</button>
+          <button type="button" class="btn btn-primary" id="btnCtgovSync" ${syncDisabled}>${
+            state.intelligence.syncBusy ? "Syncing…" : "Sync CT.gov now"
+          }</button>
+        </div>
+        ${syncMeta}
+        ${syncMsg}
       </div>`;
   }
 
@@ -1475,20 +1582,35 @@
     const status = state.intelligence.status
       ? `<p class="muted" style="margin-top:0.5rem;">${escapeHtml(state.intelligence.status)}</p>`
       : "";
+    const countryNote =
+      state.intelligence.pack &&
+      (state.intelligence.pack.query?.country ||
+        state.intelligence.pack.countryFilter ||
+        state.intelligence.pack.countrySites?.country)
+        ? `<p class="muted" style="margin-top:0.35rem;">Region filter: <strong>${escapeHtml(
+            state.intelligence.pack.query?.country ||
+              state.intelligence.pack.countryFilter ||
+              state.intelligence.pack.countrySites?.country
+          )}</strong></p>`
+        : "";
     return `
       <div class="grid">
         ${renderIntelligenceHealthCard()}
         <div class="card wide">
-          <h3>Indication benchmark</h3>
-          <p class="muted">Ora Veeva history + TrialHub industry benchmarks (PSM, sites, competitors) for feasibility and BD.</p>
+          <h3>Indication &amp; region benchmark</h3>
+          <p class="muted">Ora Veeva + TrialHub + CT.gov. Filter by indication, country/region, or both.</p>
           <div style="display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap;margin-top:0.75rem;">
-            <input id="intelIndication" class="input" style="max-width:340px;" placeholder="Indication (e.g. Dry Eye)" value="${escapeAttr(
+            <input id="intelIndication" class="input" style="max-width:280px;" placeholder="Indication (e.g. Dry Eye)" value="${escapeAttr(
               state.intelligence.indication || ""
+            )}" />
+            <input id="intelCountry" class="input" style="max-width:220px;" placeholder="Country / region (e.g. United States)" value="${escapeAttr(
+              state.intelligence.country || ""
             )}" />
             <button type="button" class="btn btn-primary" id="btnIntelQuery">Query</button>
           </div>
           <div style="margin-top:0.75rem;">${chips}</div>
           ${status}
+          ${countryNote}
         </div>
         ${renderIntelBenchmark()}
       </div>`;
@@ -3294,15 +3416,21 @@
     });
 
     els.viewRoot.addEventListener("input", (e) => {
-      if (e.target && e.target.id === "intelIndication") {
-        state.intelligence.indication = e.target.value;
-      }
+      if (!e.target) return;
+      if (e.target.id === "intelIndication") state.intelligence.indication = e.target.value;
+      if (e.target.id === "intelCountry") state.intelligence.country = e.target.value;
     });
 
     els.viewRoot.addEventListener("keydown", (e) => {
-      if (e.target && e.target.id === "intelIndication" && e.key === "Enter") {
+      if (
+        e.target &&
+        (e.target.id === "intelIndication" || e.target.id === "intelCountry") &&
+        e.key === "Enter"
+      ) {
         e.preventDefault();
-        runIntelligenceQuery(e.target.value);
+        const ind = document.getElementById("intelIndication");
+        const ctry = document.getElementById("intelCountry");
+        runIntelligenceQuery(ind ? ind.value : "", ctry ? ctry.value : "");
       }
     });
 
@@ -3319,7 +3447,8 @@
       }
       const intelChip = e.target.closest("[data-intel-ind]");
       if (intelChip) {
-        runIntelligenceQuery(intelChip.getAttribute("data-intel-ind"));
+        const ctry = document.getElementById("intelCountry");
+        runIntelligenceQuery(intelChip.getAttribute("data-intel-ind"), ctry ? ctry.value : "");
         return;
       }
       const intelAsk = e.target.closest("[data-intel-ask]");
@@ -3329,11 +3458,16 @@
       }
       if (e.target.id === "btnIntelQuery") {
         const input = document.getElementById("intelIndication");
-        runIntelligenceQuery(input ? input.value : "");
+        const ctry = document.getElementById("intelCountry");
+        runIntelligenceQuery(input ? input.value : "", ctry ? ctry.value : "");
         return;
       }
       if (e.target.id === "btnIntelRefresh") {
         loadIntelligenceHealth();
+        return;
+      }
+      if (e.target.id === "btnCtgovSync") {
+        runCtgovSyncManual();
         return;
       }
       const completeReq = e.target.closest("[data-complete-request]");

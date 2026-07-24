@@ -1,6 +1,6 @@
 # Ora Clinical Intelligence → Cosmos (`bd-budgets`)
 
-Source pack: `Claude AI Model Files for Matt.zip` (July 2026) + ClinicalTrials.gov daily feed.  
+Source pack: `Claude AI Model Files for Matt.zip` (July 2026) + ClinicalTrials.gov feed.  
 App uses **Cosmos SQL/Core API** (`@azure/cosmos` / `azure.cosmos`), not Mongo API.
 
 ## What this is for (use cases)
@@ -9,11 +9,13 @@ App uses **Cosmos SQL/Core API** (`@azure/cosmos` / `azure.cosmos`), not Mongo A
 |-----|--------|
 | How fast does Ora enroll in Dry Eye? Typical PSM? | `ora_fact_study` / `ora_fact_site` |
 | What is industry doing? Competing / recruiting trials? | `ora_trialhub_trials` + `ora_ctgov_trials` |
+| Sites / feasibility **in a country or region** | same tables + `country` / `region` filter |
 | Is this sponsor in Salesforce? Who owns them? | `ora_sponsor_crosswalk` |
 | Which sites perform for an indication? | `ora_fact_site` (+ aliases) |
 | Budget dollars / uploaded bids | `studies` / `versions` (portfolio — not these tables) |
 
-UI tab: **Ora Clinical Intelligence**. Buddy gets summaries via `context.intelligence` (never full table dumps).
+UI tab: **Ora Clinical Intelligence** — indication + **country/region** inputs, CT.gov **Sync now** button.  
+Buddy gets the same pack via `/api/ask` (`intelligenceHint` / on-screen pack).
 
 ## Containers
 
@@ -24,7 +26,7 @@ UI tab: **Ora Clinical Intelligence**. Buddy gets summaries via `context.intelli
 | `ora_trialhub_trials` | `/indication` | 1,682 | Industry trials / NCT / `psm_common` |
 | `ora_sponsor_crosswalk` | `/crosswalk_status` | 642 | TrialHub sponsor → Salesforce |
 | `ora_site_alias_table` | `/country` | 46 | Site name variants → canonical |
-| `ora_ctgov_trials` | `/oraIndication` | growing | ClinicalTrials.gov ophthalmology (daily delta) |
+| `ora_ctgov_trials` | `/oraIndication` | growing | ClinicalTrials.gov ophthalmology (app delta) |
 | `syncState` | `/id` | cursors | Watermarks (e.g. `ctgov_ophthalmology`) |
 
 Every reference document gets:
@@ -65,26 +67,32 @@ python ingest/load_ora_intelligence.py
 
 Default data dir: `_inbox/claude-model-files/` (gitignored).
 
-## ClinicalTrials.gov daily delta (~5AM Eastern)
+## ClinicalTrials.gov sync (Mon–Fri ~9AM Eastern)
 
-```bash
-# First / backfill (StartDate last 10 years) — uses local .env COSMOS_*
-python ingest/pull_ctgov_ophthalmology.py --full
+**Preferred:** app API uses SWA App Settings (Cosmos already there).
 
-# Incremental (LastUpdatePostDate since watermark − 36h)
-python ingest/pull_ctgov_ophthalmology.py
+```http
+POST /api/ctgov/sync
+Header: x-copilot-key: <COPILOT_ASK_KEY>
+Body: {"full":false}
 ```
 
-GitHub Actions: `.github/workflows/ctgov-daily-delta.yml`  
-Cron: `0 9 * * *` UTC ≈ **05:00 America/New_York (EDT)**.
+- Signed-in users can click **Sync CT.gov now** on the Intelligence tab (no key in browser).
+- GitHub Actions `.github/workflows/ctgov-daily-delta.yml` only **HTTP-pings** that endpoint (cron `0 13 * * 1-5` ≈ 9AM EDT). Needs Actions secret `COPILOT_ASK_KEY` (same as SWA). Optional `CTGOV_SYNC_URL`.
 
-**Secrets note:** SWA App Settings already hold Cosmos for the live API. The daily Actions job runs on a separate GitHub runner, so add the *same* values as repo secrets: `COSMOS_ENDPOINT`, `COSMOS_KEY`, optional `COSMOS_DATABASE`. Local/manual pulls use `.env` and do not need GitHub secrets.
+**Full 10y backfill** (too large for the web API):
+
+```bash
+python ingest/pull_ctgov_ophthalmology.py --full
+```
 
 API: https://clinicaltrials.gov/data-api/api (`/api/v2/studies`).
 
 ## Buddy
 
-`/api/ask` attaches `context.intelligence` for feasibility / PSM / TrialHub / CT.gov / site / NCT asks (or when the open study has an indication). System prompt always includes the intelligence data catalog (even if `BUDDY_SYSTEM_PROMPT` is overridden in SWA).
+`/api/ask` attaches `context.intelligence` for feasibility / PSM / TrialHub / CT.gov / site / NCT / region asks (or when the open study has an indication, or the Intelligence tab hint/pack is sent). System prompt always includes the intelligence data catalog (even if `BUDDY_SYSTEM_PROMPT` is overridden in SWA).
+
+Model = SWA `AZURE_OPENAI_DEPLOYMENT` (Foundry **deployment name**). `/api/health` → `llm.deployment` shows what is live.
 
 ## Data quality
 

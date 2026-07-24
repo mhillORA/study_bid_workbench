@@ -39,7 +39,8 @@ const INTELLIGENCE_RULES = [
   " USE CASES — match the ask to the right source:",
   "• Feasibility / \"how fast do we enroll\" / typical PSM for an indication → context.intelligence.indicationBenchmark (Ora median PSM + TrialHub median psm_common + site medians). Prefer medians; cite studiesWithPsm / trialsWithPsm counts.",
   "• Competing / recruiting industry trials → intelligence.indicationBenchmark.trialhub.recruitingSample / sampleTrials (NCT + sponsor + status).",
-  "• Site selection / which sites perform → intelligence.indicationBenchmark.sites.topSitesByPsm (org_clean, country, site_psm, fsi_trust).",
+  "• Site selection / which sites perform → intelligence.indicationBenchmark.sites.topSitesByPsm (org_clean, country, site_psm, fsi_trust). Filter by country when query.country / countryFilter is set.",
+  "• Region / country feasibility (US, UK, Germany, Japan, …) → use countryFilter on sites + ctgov + TrialHub countries; cite geography explicitly.",
   "• Sponsor already in SF? BD owner / tier? → intelligence.sponsorCrosswalk.",
   "• NCT lookup → intelligence.nctLookup (TrialHub) and/or intelligence.ctgov.",
   "• Budget dollars / uploaded bid portfolio → context.portfolio (not intelligence).",
@@ -76,9 +77,13 @@ function systemPromptFor(context) {
   const intelNote = context?.intelligence
     ? " context.intelligence IS attached for this turn — use indicationBenchmark / sponsorCrosswalk / nctLookup / ctgov as applicable."
     : " context.intelligence may be absent on this turn; for feasibility/PSM asks, say you need the Intelligence query or NAVIGATE:intelligence.";
+  const dep = azureConfig().deployment;
+  const modelNote = dep
+    ? ` You are served via Azure deployment "${dep}". If asked which model you are, say that deployment name — do not claim GPT-4 or another model unless that is the deployment name.`
+    : "";
   const user = context?.user;
   if (!user?.firstName && !user?.displayName && !user?.email) {
-    return base + protocols + focusNote + intelNote;
+    return base + protocols + focusNote + intelNote + modelNote;
   }
   const label = user.firstName
     ? `${user.firstName}${user.email ? ` (${user.email})` : ""}`
@@ -88,6 +93,7 @@ function systemPromptFor(context) {
     protocols +
     focusNote +
     intelNote +
+    modelNote +
     ` The signed-in user is ${label}. Prefer addressing them as ${user.firstName || "their first name"}.` +
     " Always prefer study data in the provided Context JSON over general knowledge."
   );
@@ -173,8 +179,10 @@ function providerStatus() {
     azureOpenAI: azure,
     claude,
     active: azure ? "azure_openai" : claude ? "claude" : null,
+    // Deployment name only (not a secret) — so you can verify SWA matches Foundry
+    deployment: cfg.deployment || null,
     effort: envSet("ANTHROPIC_EFFORT") || "low",
-    buildId: "2026-07-24T15-intel-tab-ctgov",
+    buildId: "2026-07-24T17-region-ui-model-label",
     endpointKind: !cfg.endpoint
       ? null
       : isFoundryProjectEndpoint(cfg.endpoint)

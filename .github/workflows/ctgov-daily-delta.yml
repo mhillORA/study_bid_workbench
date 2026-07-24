@@ -1,72 +1,49 @@
-name: CT.gov ophthalmology daily delta
+name: CT.gov ophthalmology sync (app ping)
 
-# Pulls ClinicalTrials.gov ophthalmology updates into Cosmos bd-budgets.
-# Schedule: 09:00 UTC ≈ 05:00 America/New_York (EDT).
-# Secrets: same COSMOS_ENDPOINT / COSMOS_KEY as SWA App Settings (Actions ≠ SWA runtime).
-# Manual runs via workflow_dispatch; local pulls use repo .env instead.
+# Mon–Fri ~9:00 America/New_York (EDT = UTC−4 → 13:00 UTC).
+# During EST (UTC−5) this fires at 8:00 local — accept seasonal shift or adjust cron.
+# Calls the Static Web App API (uses App Settings Cosmos). No COSMOS_* in Actions.
+# Auth: COPILOT_ASK_KEY secret → x-copilot-key header (same key as SWA App Setting).
 
 on:
   schedule:
-    - cron: "0 9 * * *"
+    - cron: "0 13 * * 1-5"
   workflow_dispatch:
     inputs:
       full:
-        description: "Full 10-year backfill (ignore watermark)"
-        type: boolean
-        default: false
-      dry_run:
-        description: "Dry-run (no Cosmos writes)"
+        description: "Request full backfill (API rejects large full; use local Python --full)"
         type: boolean
         default: false
 
 jobs:
-  pull:
+  ping:
     runs-on: ubuntu-latest
-    name: Pull CT.gov ophthalmology → Cosmos
-    timeout-minutes: 120
+    name: POST /api/ctgov/sync
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install dependencies
-        run: pip install -r requirements.txt
-
-      - name: Ensure Cosmos containers
+      - name: Trigger CT.gov delta via app API
         env:
-          COSMOS_ENDPOINT: ${{ secrets.COSMOS_ENDPOINT }}
-          COSMOS_KEY: ${{ secrets.COSMOS_KEY }}
-          COSMOS_DATABASE: ${{ secrets.COSMOS_DATABASE }}
+          COPILOT_ASK_KEY: ${{ secrets.COPILOT_ASK_KEY }}
+          CTGOV_SYNC_URL: ${{ secrets.CTGOV_SYNC_URL }}
         run: |
-          if [ -z "$COSMOS_ENDPOINT" ] || [ -z "$COSMOS_KEY" ]; then
-            echo "Missing COSMOS_ENDPOINT / COSMOS_KEY secrets"
+          set -euo pipefail
+          if [ -z "${COPILOT_ASK_KEY:-}" ]; then
+            echo "Missing Actions secret COPILOT_ASK_KEY (same value as SWA App Setting)"
             exit 1
           fi
-          export COSMOS_DATABASE="${COSMOS_DATABASE:-bd-budgets}"
-          python ingest/cosmos_setup.py
-
-      - name: Pull ClinicalTrials.gov delta
-        env:
-          COSMOS_ENDPOINT: ${{ secrets.COSMOS_ENDPOINT }}
-          COSMOS_KEY: ${{ secrets.COSMOS_KEY }}
-          COSMOS_DATABASE: ${{ secrets.COSMOS_DATABASE }}
-        run: |
-          export COSMOS_DATABASE="${COSMOS_DATABASE:-bd-budgets}"
-          ARGS=""
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            if [ "${{ inputs.full }}" = "true" ]; then ARGS="$ARGS --full"; fi
-            if [ "${{ inputs.dry_run }}" = "true" ]; then ARGS="$ARGS --dry-run"; fi
+          URL="${CTGOV_SYNC_URL:-https://white-river-0de1aed0f.7.azurestaticapps.net/api/ctgov/sync}"
+          FULL="${{ github.event_name == 'workflow_dispatch' && inputs.full || false }}"
+          BODY='{"full":false}'
+          if [ "$FULL" = "true" ]; then BODY='{"full":true}'; fi
+          echo "POST $URL"
+          RESP=$(curl -sS -w "\n%{http_code}" -X POST "$URL" \
+            -H "Content-Type: application/json" \
+            -H "x-copilot-key: $COPILOT_ASK_KEY" \
+            -d "$BODY")
+          CODE=$(echo "$RESP" | tail -n1)
+          BODY_OUT=$(echo "$RESP" | sed '$d')
+          echo "$BODY_OUT"
+          if [ "$CODE" -lt 200 ] || [ "$CODE" -ge 300 ]; then
+            echo "HTTP $CODE"
+            exit 1
           fi
-          echo "Running: python ingest/pull_ctgov_ophthalmology.py $ARGS"
-          python ingest/pull_ctgov_ophthalmology.py $ARGS
-
-      - name: Upload run report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: ctgov-pull-report
-          path: out/ctgov_pull_report.json
-          if-no-files-found: ignore

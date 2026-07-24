@@ -7,12 +7,28 @@ const {
   buildIntelligenceContext,
   getIntelligenceHealth,
   isIntelligenceQuestion,
-  extractIndicationFromQuestion
+  extractIndicationFromQuestion,
+  extractCountryFromQuestion
 } = require("./intelligence");
+const { runCtgovSync, getCtgovSyncStatus } = require("./ctgovSync");
 
 function nctFromQuestion(question) {
   const m = String(question || "").match(/\b(NCT\d{8})\b/i);
   return m ? m[1].toUpperCase() : null;
+}
+
+function hasCopilotKey(request) {
+  const expected = String(process.env.COPILOT_ASK_KEY || "").trim();
+  const got = String(headerGet(request, "x-copilot-key") || "").trim();
+  return Boolean(expected && !expected.includes("SET_IN") && got === expected);
+}
+
+/** Scheduler uses Copilot key; manual UI uses signed-in SWA principal. */
+function authorizeCtgovSync(request) {
+  if (hasCopilotKey(request)) return { ok: true, via: "copilot_key" };
+  const user = signedInUserFromRequest(request, null);
+  if (user && (user.email || user.userId)) return { ok: true, via: "swa_user", user };
+  return { ok: false };
 }
 
 function json(status, body) {
@@ -635,18 +651,67 @@ app.http("intelligenceIndication", {
     }
     try {
       const q = request.query.get("q") || request.query.get("indication") || "";
-      if (!String(q).trim()) {
-        return json(400, { error: "query param q (indication) is required" });
+      const country = request.query.get("country") || request.query.get("region") || "";
+      if (!String(q).trim() && !String(country).trim()) {
+        return json(400, { error: "query param q (indication) and/or country is required" });
       }
       const pack = await buildIntelligenceContext(getDb, {
-        question: `benchmark ${q}`,
-        indication: String(q).trim(),
+        question: `benchmark ${q} ${country}`.trim(),
+        indication: String(q).trim() || null,
+        country: String(country).trim() || null,
         force: true
       });
       return json(200, pack);
     } catch (err) {
       context.error(err);
       return json(500, { error: String(err.message || err) });
+    }
+  }
+});
+
+app.http("ctgovSync", {
+  methods: ["GET", "POST", "OPTIONS"],
+  authLevel: "anonymous",
+  route: "ctgov/sync",
+  handler: async (request, context) => {
+    if (request.method === "OPTIONS") {
+      return {
+        status: 204,
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+          "Access-Control-Allow-Headers": "content-type, x-copilot-key"
+        }
+      };
+    }
+    try {
+      if (request.method === "GET") {
+        const status = await getCtgovSyncStatus(getDb);
+        return json(200, status);
+      }
+
+      const auth = authorizeCtgovSync(request);
+      if (!auth.ok) {
+        return json(401, {
+          error: "Unauthorized — sign in, or pass x-copilot-key (same as Copilot Ask key)"
+        });
+      }
+
+      let body = {};
+      try {
+        body = (await request.json()) || {};
+      } catch (_) {
+        body = {};
+      }
+      const full = body.full === true || request.query.get("full") === "true";
+      const result = await runCtgovSync(getDb, {
+        full,
+        triggeredBy: auth.via === "copilot_key" ? "scheduler_or_key" : `ui:${auth.user?.email || auth.user?.userId || "user"}`
+      });
+      return json(result.ok || result.skipped ? 200 : 500, result);
+    } catch (err) {
+      context.error(err);
+      return json(500, { ok: false, error: String(err.message || err) });
     }
   }
 });
@@ -807,9 +872,16 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       }
     }
 
-    // Ora Clinical Intelligence (Veeva + TrialHub) — summaries only when relevant
+    // Ora Clinical Intelligence (Veeva + TrialHub) — same filters as Intelligence tab when provided
     let intelligence = null;
     try {
+      const hint =
+        body.intelligenceHint && typeof body.intelligenceHint === "object"
+          ? body.intelligenceHint
+          : {};
+      const hintIndication = String(hint.indication || body.indication || "").trim() || null;
+      const hintCountry = String(hint.country || body.country || body.region || "").trim() || null;
+
       const snap = body.studySnapshot || clientStudy || null;
       const snapIndication =
         (snap && snap.indication) ||
@@ -820,15 +892,66 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         (cosmosContext && cosmosContext.study && cosmosContext.study.clientName) ||
         null;
       const qIndication = extractIndicationFromQuestion(question);
-      const indication = qIndication || snapIndication || null;
-      const forceIntel = isIntelligenceQuestion(question) || Boolean(nctFromQuestion(question));
-      if (forceIntel || indication || hints.clientName || snapIndication) {
+      const qCountry = extractCountryFromQuestion(question);
+      const indication = hintIndication || qIndication || snapIndication || null;
+      const country = hintCountry || qCountry || null;
+
+      // Reuse the pack already shown on the Intelligence tab when it matches the hint
+      const clientPack =
+        body.intelligencePack &&
+        typeof body.intelligencePack === "object" &&
+        body.intelligencePack.source === "ora_clinical_intelligence" &&
+        !body.intelligencePack.error
+          ? body.intelligencePack
+          : null;
+      const packMatchesHint = (() => {
+        if (!clientPack) return false;
+        const pq = clientPack.query || {};
+        const packInd = String(pq.indication || clientPack.indicationBenchmark?.indicationRequested || "")
+          .trim()
+          .toLowerCase();
+        const packCtry = String(pq.country || clientPack.countryFilter || clientPack.countrySites?.country || "")
+          .trim()
+          .toLowerCase();
+        const wantInd = String(indication || "").trim().toLowerCase();
+        const wantCtry = String(country || "").trim().toLowerCase();
+        if (wantInd && packInd && packInd !== wantInd && !packInd.includes(wantInd) && !wantInd.includes(packInd)) {
+          return false;
+        }
+        if (wantCtry && packCtry && packCtry !== wantCtry) return false;
+        // Prefer pack when user is on Intelligence tab or has an on-screen pack
+        return Boolean(
+          activeTab === "intelligence" ||
+            hintIndication ||
+            hintCountry ||
+            clientPack.indicationBenchmark ||
+            clientPack.countrySites ||
+            clientPack.ctgov
+        );
+      })();
+
+      const forceIntel =
+        isIntelligenceQuestion(question) ||
+        Boolean(nctFromQuestion(question)) ||
+        Boolean(country) ||
+        Boolean(hintIndication) ||
+        Boolean(hintCountry) ||
+        activeTab === "intelligence";
+
+      if (packMatchesHint) {
+        intelligence = {
+          ...clientPack,
+          attachedFrom: "ui_intelligence_pack",
+          note: "Same Cosmos pack as Ora Clinical Intelligence tab (not re-queried)."
+        };
+      } else if (forceIntel || indication || hints.clientName || snapIndication || country) {
         intelligence = await buildIntelligenceContext(getDb, {
           question,
           indication,
+          country,
           clientName: hints.clientName || snapClient || null,
           sponsor: hints.clientName || snapClient || null,
-          force: forceIntel || Boolean(indication)
+          force: forceIntel || Boolean(indication) || Boolean(country)
         });
       }
     } catch (err) {
@@ -900,9 +1023,11 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
     };
 
     const result = await askAi({ question, context: contextPayload, history });
+    const llm = providerStatus();
     return json(200, {
       answer: result.answer,
       model: result.model,
+      deployment: llm.deployment || result.model || null,
       provider: result.provider,
       usage: result.usage,
       studyId: answerFocus === "portfolio" ? null : studyId || clientStudy?.studyId || null,
@@ -911,6 +1036,11 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       answerFocus,
       portfolioMatched: portfolio?.matchedStudyCount ?? null,
       databaseStudyCount: portfolio?.databaseStudyCount ?? null,
+      intelligenceAttached: Boolean(intelligence && intelligence.source === "ora_clinical_intelligence"),
+      intelligenceQuery: intelligence?.query || {
+        indication: null,
+        country: null
+      },
       greetedAs: user?.firstName || user?.displayName || null
     });
   } catch (err) {

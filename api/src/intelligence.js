@@ -65,8 +65,73 @@ function isIntelligenceQuestion(question) {
     /\b(screen[- ]?fail|dropout|recruit(ment)? (rate|days|benchmark))\b/.test(q) ||
     /\b(indication).{0,40}\b(benchmark|histor(y|ical)|industry|ora studies)\b/.test(q) ||
     /\b(how (fast|quickly)|typical).{0,40}\b(enroll|recruit|site)\b/.test(q) ||
-    /\b(veeva|ora (histor|performance|sites?))\b/.test(q)
+    /\b(veeva|ora (histor|performance|sites?))\b/.test(q) ||
+    /\b(country|countries|region|geography|united states|usa|uk|europe|eu|japan|china|canada|australia)\b/.test(q)
   );
+}
+
+/** Country / region aliases for site + CT.gov geography filters. */
+const COUNTRY_ALIASES = {
+  us: "United States",
+  usa: "United States",
+  "u s": "United States",
+  "u s a": "United States",
+  "united states": "United States",
+  "united states of america": "United States",
+  uk: "United Kingdom",
+  "u k": "United Kingdom",
+  "united kingdom": "United Kingdom",
+  britain: "United Kingdom",
+  "great britain": "United Kingdom",
+  korea: "Korea, Republic of",
+  "south korea": "Korea, Republic of",
+  "republic of korea": "Korea, Republic of",
+  deutschland: "Germany",
+  germany: "Germany",
+  france: "France",
+  spain: "Spain",
+  italy: "Italy",
+  canada: "Canada",
+  australia: "Australia",
+  japan: "Japan",
+  china: "China",
+  brazil: "Brazil",
+  india: "India",
+  mexico: "Mexico",
+  netherlands: "Netherlands",
+  holland: "Netherlands",
+  poland: "Poland",
+  hungary: "Hungary",
+  slovakia: "Slovakia"
+};
+
+function normalizeCountryName(raw) {
+  if (!raw) return null;
+  const key = String(raw)
+    .toLowerCase()
+    .replace(/\./g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (COUNTRY_ALIASES[key]) return COUNTRY_ALIASES[key];
+  // Title-case leftover
+  return String(raw)
+    .trim()
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function extractCountryFromQuestion(question) {
+  const q = String(question || "");
+  const lower = q.toLowerCase();
+  // Longest alias keys first
+  const keys = Object.keys(COUNTRY_ALIASES).sort((a, b) => b.length - a.length);
+  for (const k of keys) {
+    if (lower.includes(k)) return COUNTRY_ALIASES[k];
+  }
+  const m = q.match(
+    /\b(?:in|for|across|country|region|geography)\s+([A-Za-z][A-Za-z .'-]{1,40?}?)(?:\s+for|\s+indication|\s+psm|\s+sites?|\?|$)/i
+  );
+  if (m) return normalizeCountryName(m[1]);
+  return null;
 }
 
 function extractIndicationFromQuestion(question) {
@@ -79,6 +144,22 @@ function extractIndicationFromQuestion(question) {
   }
   const m = q.match(/\b(?:indication|in)\s+([A-Za-z][A-Za-z0-9 /()-]{2,60})/i);
   return m ? m[1].trim().replace(/[?.!,;]+$/, "") : null;
+}
+
+function countriesMatch(rawCountries, countryNorm) {
+  if (!countryNorm) return true;
+  const blob = Array.isArray(rawCountries)
+    ? rawCountries.join(" | ")
+    : String(rawCountries || "");
+  if (!blob.trim()) return false;
+  const lower = blob.toLowerCase();
+  const needle = countryNorm.toLowerCase().split(",")[0].trim();
+  if (lower.includes(needle)) return true;
+  if (needle === "united states" && /\busa\b|\bu\.?s\.?\b|\bunited states\b/.test(lower)) return true;
+  if (needle === "united kingdom" && /\buk\b|\bu\.?k\.?\b|\bunited kingdom\b|\bgreat britain\b/.test(lower)) {
+    return true;
+  }
+  return false;
 }
 
 function extractNct(question) {
@@ -212,9 +293,10 @@ async function lookupSponsorCrosswalk(database, sponsorOrClient) {
   return rows.slice(0, 5);
 }
 
-async function benchmarkIndication(database, indication) {
+async function benchmarkIndication(database, indication, country = null) {
   const aliases = indicationAliases(indication);
   if (!aliases.length) return null;
+  const countryNorm = country ? normalizeCountryName(country) : null;
 
   const studyContainer = database.container("ora_fact_study");
   const siteContainer = database.container("ora_fact_site");
@@ -235,6 +317,7 @@ async function benchmarkIndication(database, indication) {
       ]
     );
     for (const r of rows) {
+      if (countryNorm && !countriesMatch(r.countries, countryNorm)) continue;
       if (!oraStudies.some((x) => x.study_number === r.study_number)) oraStudies.push(r);
     }
   }
@@ -245,7 +328,7 @@ async function benchmarkIndication(database, indication) {
       thContainer,
       `SELECT c.nct, c.title, c.sponsor, c.indication, c.phase, c.status, c.patients,
               c.planned_sites, c.actual_sites, c.psm_common, c.th_actual_psm, c.recruit_days,
-              c.n_countries, c.in_ora_indication, c.lead_sponsor_type
+              c.n_countries, c.in_ora_indication, c.lead_sponsor_type, c.countries
        FROM c WHERE c.docType = @t AND c.indication = @ind`,
       [
         { name: "@t", value: "ora_trialhub_trials" },
@@ -253,24 +336,27 @@ async function benchmarkIndication(database, indication) {
       ]
     );
     for (const r of rows) {
+      if (countryNorm && !countriesMatch(r.countries, countryNorm)) continue;
       if (!thTrials.some((x) => x.nct === r.nct)) thTrials.push(r);
     }
   }
 
-  // Site PSM for aliases (cap scan — prefer high trust)
+  // Site PSM for aliases (cap scan — prefer high trust); optional country partition
   const sitePsms = [];
   const topSites = [];
   for (const alias of aliases.slice(0, 4)) {
-    const rows = await queryAll(
-      siteContainer,
-      `SELECT TOP 200 c.org_clean, c.organization, c.country, c.indication, c.phase,
+    const params = [
+      { name: "@t", value: "ora_fact_site" },
+      { name: "@ind", value: alias }
+    ];
+    let q = `SELECT TOP 200 c.org_clean, c.organization, c.country, c.indication, c.phase,
               c.site_psm, c.total_enrolled, c.site_enroll_months, c.fsi_trust, c.study_name
-       FROM c WHERE c.docType = @t AND c.indication = @ind AND IS_DEFINED(c.site_psm) AND c.site_psm > 0`,
-      [
-        { name: "@t", value: "ora_fact_site" },
-        { name: "@ind", value: alias }
-      ]
-    );
+       FROM c WHERE c.docType = @t AND c.indication = @ind AND IS_DEFINED(c.site_psm) AND c.site_psm > 0`;
+    if (countryNorm) {
+      q += ` AND c.country = @country`;
+      params.push({ name: "@country", value: countryNorm });
+    }
+    const rows = await queryAll(siteContainer, q, params);
     const sorted = [...rows].sort((a, b) => (b.site_psm || 0) - (a.site_psm || 0));
     for (const r of sorted) {
       if (typeof r.site_psm === "number") sitePsms.push(r.site_psm);
@@ -292,13 +378,14 @@ async function benchmarkIndication(database, indication) {
   const oraPsm = oraStudies.map((s) => s.psm).filter((n) => typeof n === "number" && n > 0);
   const thPsm = thTrials
     .map((t) => (typeof t.psm_common === "number" ? t.psm_common : t.th_actual_psm))
-    .filter((n) => typeof n === "number" && n > 0 && n < 500); // drop absurd outliers from summary stats
+    .filter((n) => typeof n === "number" && n > 0 && n < 500);
 
   const recruiting = thTrials.filter((t) => /recruit/i.test(String(t.status || "")));
   const completed = thTrials.filter((t) => /completed/i.test(String(t.status || "")));
 
   return {
     indicationRequested: indication,
+    countryFilter: countryNorm,
     aliasesUsed: aliases,
     ora: {
       studyCount: oraStudies.length,
@@ -317,7 +404,8 @@ async function benchmarkIndication(database, indication) {
           psm: round(s.psm),
           total_enrolled: s.total_enrolled,
           n_contributing_sites: s.n_contributing_sites,
-          lifecycle_state: s.lifecycle_state
+          lifecycle_state: s.lifecycle_state,
+          countries: s.countries
         }))
     },
     trialhub: {
@@ -343,7 +431,8 @@ async function benchmarkIndication(database, indication) {
           patients: t.patients,
           sites: t.actual_sites ?? t.planned_sites,
           psm_common: round(t.psm_common),
-          recruit_days: t.recruit_days
+          recruit_days: t.recruit_days,
+          countries: t.countries
         })),
       recruitingSample: recruiting.slice(0, 6).map((t) => ({
         nct: t.nct,
@@ -351,7 +440,8 @@ async function benchmarkIndication(database, indication) {
         sponsor: t.sponsor,
         phase: t.phase,
         patients: t.patients,
-        planned_sites: t.planned_sites
+        planned_sites: t.planned_sites,
+        countries: t.countries
       }))
     },
     sites: {
@@ -359,6 +449,7 @@ async function benchmarkIndication(database, indication) {
       sitePsmMedian: round(median(sitePsms)),
       sitePsmP75: round(percentile(sitePsms, 75)),
       topSitesByPsm: topSites.slice(0, 10),
+      countryFilter: countryNorm,
       note: "High null rates on site_psm are expected Veeva gaps — null ≠ 0."
     }
   };
@@ -400,22 +491,25 @@ async function lookupCtgovNct(database, nct) {
   }
 }
 
-async function ctgovByIndication(database, indication) {
+async function ctgovByIndication(database, indication, country = null) {
   const aliases = indicationAliases(indication);
   if (!aliases.length) return null;
+  const countryNorm = country ? normalizeCountryName(country) : null;
   try {
     const trials = [];
     for (const alias of aliases.slice(0, 6)) {
-      const rows = await queryAll(
-        database.container("ora_ctgov_trials"),
-        `SELECT TOP 40 c.nct, c.title, c.oraIndication, c.status, c.phase, c.sponsor, c.sponsorClass,
+      const params = [
+        { name: "@t", value: "ora_ctgov_trials" },
+        { name: "@ind", value: alias }
+      ];
+      let q = `SELECT TOP 40 c.nct, c.title, c.oraIndication, c.status, c.phase, c.sponsor, c.sponsorClass,
                 c.enrollment, c.countries, c.startDate, c.lastUpdatePostDate, c.hasResults
-         FROM c WHERE c.docType = @t AND c.oraIndication = @ind`,
-        [
-          { name: "@t", value: "ora_ctgov_trials" },
-          { name: "@ind", value: alias }
-        ]
-      );
+         FROM c WHERE c.docType = @t AND c.oraIndication = @ind`;
+      if (countryNorm) {
+        q += ` AND ARRAY_CONTAINS(c.countries, @country)`;
+        params.push({ name: "@country", value: countryNorm });
+      }
+      const rows = await queryAll(database.container("ora_ctgov_trials"), q, params);
       for (const r of rows) {
         if (!trials.some((x) => x.nct === r.nct)) trials.push(r);
       }
@@ -424,6 +518,7 @@ async function ctgovByIndication(database, indication) {
     return {
       trialCount: trials.length,
       recruitingCount: recruiting.length,
+      countryFilter: countryNorm,
       sample: trials.slice(0, 10),
       recruitingSample: recruiting.slice(0, 8),
       note: "From ClinicalTrials.gov daily ophthalmology feed (ora_ctgov_trials)."
@@ -440,6 +535,7 @@ async function buildIntelligenceContext(getDb, opts = {}) {
   const {
     question = "",
     indication = null,
+    country = null,
     clientName = null,
     sponsor = null,
     force = false
@@ -448,10 +544,12 @@ async function buildIntelligenceContext(getDb, opts = {}) {
   const wantsIntel = force || isIntelligenceQuestion(question);
   const nct = extractNct(question);
   const qIndication = extractIndicationFromQuestion(question);
+  const qCountry = country || extractCountryFromQuestion(question);
   const resolvedIndication = indication || qIndication;
+  const resolvedCountry = qCountry ? normalizeCountryName(qCountry) : null;
 
   // Skip entirely if nothing to hang a query on and question isn't intelligence-shaped
-  if (!wantsIntel && !resolvedIndication && !nct && !clientName && !sponsor) {
+  if (!wantsIntel && !resolvedIndication && !nct && !clientName && !sponsor && !resolvedCountry) {
     return null;
   }
 
@@ -465,10 +563,12 @@ async function buildIntelligenceContext(getDb, opts = {}) {
       "null enrollment/PSM means missing Veeva data — not zero.",
       "TrialHub vs Ora vs CT.gov indication labels may differ; aliasesUsed lists what was queried.",
       "Prefer fsi_trust=high when comparing site_psm.",
-      "ctgov = ClinicalTrials.gov ophthalmology feed (daily delta)."
+      "ctgov = ClinicalTrials.gov ophthalmology feed (daily delta).",
+      "When countryFilter is set, site/CT.gov/TrialHub results are geography-scoped."
     ],
     query: {
       indication: resolvedIndication || null,
+      country: resolvedCountry || null,
       nct: nct || null,
       clientName: clientName || null,
       sponsor: sponsor || null,
@@ -482,11 +582,35 @@ async function buildIntelligenceContext(getDb, opts = {}) {
       out.ctgovNct = await lookupCtgovNct(database, nct);
     }
 
-    if (resolvedIndication || wantsIntel) {
+    if (resolvedIndication || wantsIntel || resolvedCountry) {
       const ind = resolvedIndication || qIndication;
       if (ind) {
-        out.indicationBenchmark = await benchmarkIndication(database, ind);
-        out.ctgov = await ctgovByIndication(database, ind);
+        out.indicationBenchmark = await benchmarkIndication(database, ind, resolvedCountry);
+        out.ctgov = await ctgovByIndication(database, ind, resolvedCountry);
+      } else if (resolvedCountry) {
+        // Country-only: sample Ora sites in that country
+        const rows = await queryAll(
+          database.container("ora_fact_site"),
+          `SELECT TOP 40 c.org_clean, c.country, c.indication, c.site_psm, c.total_enrolled, c.fsi_trust, c.study_name
+           FROM c WHERE c.docType = @t AND c.country = @country AND IS_DEFINED(c.site_psm) AND c.site_psm > 0`,
+          [
+            { name: "@t", value: "ora_fact_site" },
+            { name: "@country", value: resolvedCountry }
+          ]
+        );
+        const sorted = [...rows].sort((a, b) => (b.site_psm || 0) - (a.site_psm || 0));
+        out.countrySites = {
+          country: resolvedCountry,
+          sampleCount: sorted.length,
+          topSites: sorted.slice(0, 12).map((s) => ({
+            org_clean: s.org_clean,
+            indication: s.indication,
+            site_psm: round(s.site_psm),
+            total_enrolled: s.total_enrolled,
+            fsi_trust: s.fsi_trust,
+            study_name: s.study_name
+          }))
+        };
       }
     }
 
@@ -495,8 +619,7 @@ async function buildIntelligenceContext(getDb, opts = {}) {
       out.sponsorCrosswalk = await lookupSponsorCrosswalk(database, who);
     }
 
-    // Compact inventory so Buddy knows data exists even on thin matches
-    if (wantsIntel && !out.indicationBenchmark && !out.nctLookup) {
+    if (wantsIntel && !out.indicationBenchmark && !out.nctLookup && !out.countrySites) {
       out.inventory = await getIntelligenceHealth(getDb);
     }
 
@@ -517,6 +640,8 @@ module.exports = {
   isIntelligenceQuestion,
   indicationAliases,
   extractIndicationFromQuestion,
+  extractCountryFromQuestion,
+  normalizeCountryName,
   getIntelligenceHealth,
   buildIntelligenceContext,
   benchmarkIndication,
