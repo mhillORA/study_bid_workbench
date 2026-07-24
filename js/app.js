@@ -540,7 +540,7 @@
         }
         return `<div class="chat-turn ${t.role}" data-ask-idx="${idx}">
           <div class="chat-who">${who}</div>
-          <div class="chat-body">${escapeHtml(t.content)}</div>
+          <div class="chat-body">${formatBuddyHtml(t.content)}</div>
           ${proposalHtml}
         </div>`;
       })
@@ -3327,6 +3327,37 @@
       .replaceAll("&", "&amp;")
       .replaceAll("<", "&lt;")
       .replaceAll(">", "&gt;");
+  }
+
+  /** Buddy chat: [[h]] blue headers, [[i]] red important; strip leftover markdown noise. */
+  function formatBuddyHtml(raw) {
+    let s = String(raw == null ? "" : raw);
+    s = s.replace(/\r\n/g, "\n");
+    // Soften leftover markdown the model still emits
+    s = s.replace(/^#{1,6}\s+/gm, "");
+    s = s.replace(/\*\*\*([^*\n]+)\*\*\*/g, "[[i]]$1[[/i]]");
+    s = s.replace(/\*\*([^*\n]+)\*\*/g, "[[i]]$1[[/i]]");
+    s = s.replace(/__([^_\n]+)__/g, "[[i]]$1[[/i]]");
+
+    const chunks = [];
+    const re = /\[\[(h|i)\]\]([\s\S]*?)\[\[\/\1\]\]/gi;
+    let last = 0;
+    let m;
+    while ((m = re.exec(s))) {
+      if (m.index > last) chunks.push({ type: "text", value: s.slice(last, m.index) });
+      chunks.push({ type: m[1].toLowerCase(), value: m[2] });
+      last = m.index + m[0].length;
+    }
+    if (last < s.length) chunks.push({ type: "text", value: s.slice(last) });
+
+    return chunks
+      .map((c) => {
+        const body = escapeHtml(c.value).replaceAll("\n", "<br>");
+        if (c.type === "h") return `<div class="buddy-h">${body}</div>`;
+        if (c.type === "i") return `<span class="buddy-i">${body}</span>`;
+        return body;
+      })
+      .join("");
   }
 
   function escapeAttr(str) {

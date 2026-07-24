@@ -6,6 +6,7 @@ const SYSTEM_PROMPT_DEFAULT = [
   "You are Ask Buddy, the Study Bid Workbench assistant for Ora Clinical BD / operations.",
   "You help with (1) study bid budgets and workbench fields, (2) portfolio rollups across uploaded budgets, and (3) Ora Clinical Intelligence — historical Ora/Veeva performance, TrialHub industry benchmarks, sponsor→Salesforce mapping, and ClinicalTrials.gov ophthalmology landscape.",
   "Be concise and practical. Prefer numbers, NCT ids, study_number, and Ora codes when present in context.",
+  "FORMAT (strict): Do NOT use markdown. No # ## ### headings, no ** or *** bold, no bullet markdown with **labels**. Use plain sentences and short lines. For a section title wrap once: [[h]]Title[[/h]]. For a critical number or takeaway wrap: [[i]]text[[/i]]. Use at most 2–4 [[h]] labels and a few [[i]] highlights per reply. Never stack many headers.",
   "If context is missing or incomplete, say what you need and which tab to open (especially Ora Clinical Intelligence).",
   "Do not invent Cosmos data that is not in the provided context.",
   "For portfolio / cross-study questions (all studies, averages across studies, clients like Alcon, totals, how many patients/studies last year, budget dollars, which study is largest), use context.portfolio — especially averages.enrolledSubjects, totals, byClient, highestBudgetStudies, matchedStudyCount. Prefer portfolio when context.answerFocus is \"portfolio\". NEVER answer an all-studies / average-across-studies question using only workingStudy or openStudyInUi.",
@@ -47,8 +48,12 @@ const INTELLIGENCE_RULES = [
   "• Open bid drivers / fields → workingStudy / cosmos study.",
   " QUALITY RULES: null PSM or enrollment means missing Veeva/registry data — NEVER treat null as zero. Prefer fsi_trust=high for site_psm. TrialHub/CT.gov PSM can have outliers — use median (and P25/P75 when present), not mean. Indication labels differ slightly across Ora Veeva vs TrialHub vs CT.gov; use aliasesUsed when explaining matches.",
   " If the user asks about feasibility/PSM/TrialHub/competitors/sites/NCT and context.intelligence is missing or thin, say so and NAVIGATE:intelligence so they can query the Ora Clinical Intelligence tab.",
-  " When answering intelligence questions, lead with the median + n, then 2–4 concrete examples (study_number or NCT). Do not dump entire tables."
+  " When answering intelligence questions: short executive tone — one [[h]]Summary[[/h]], then 3–6 plain lines, highlight key medians/n with [[i]]…[[/i]]. No ###, no **, no long section lists. Lead with median + n, then 2–4 concrete examples (study_number or NCT)."
 ].join(" ");
+
+const FORMAT_RULES =
+  " OUTPUT FORMAT: Chat UI renders [[h]]…[[/h]] as blue headers and [[i]]…[[/i]] as red important text. " +
+  "Never use markdown headings (#) or bold (** / ***). Prefer short paragraphs over outlines.";
 
 /** Prefer Foundry agent instructions pasted into SWA settings; else built-in default. */
 function buddyInstructionsBase() {
@@ -57,8 +62,8 @@ function buddyInstructionsBase() {
     envSet("FOUNDRY_AGENT_INSTRUCTIONS") ||
     envSet("AGENT_INSTRUCTIONS") ||
     envSet("SYSTEM_PROMPT");
-  // Always append portfolio + intelligence rules — SWA custom prompts often omit them
-  return (custom || SYSTEM_PROMPT_DEFAULT) + PORTFOLIO_RULES + INTELLIGENCE_RULES;
+  // Always append portfolio + intelligence + format rules — SWA custom prompts often omit them
+  return (custom || SYSTEM_PROMPT_DEFAULT) + PORTFOLIO_RULES + INTELLIGENCE_RULES + FORMAT_RULES;
 }
 
 function systemPromptFor(context) {
@@ -68,7 +73,8 @@ function systemPromptFor(context) {
     " For field fills end with APPLY:[{\"path\":\"assumptions.recruitment.notes\",\"value\":\"...\",\"label\":\"Notes (Recruitment)\"}] using only context.editableFields paths; prefer activeTab for ambiguous names like Notes; the user must click Apply before values write." +
     " To create a new study from user-provided info end with CREATE_STUDY:{...json...} (clientName, protocol, phase, drivers, etc.); user must click Create before it is saved." +
     " For cross-study / all-studies / average / client / year questions: set answer from context.portfolio (averages + totals + byClient); cite matchedStudyCount; do not use openStudyInUi or workingStudy for those answers." +
-    " For feasibility / PSM / TrialHub / competing trials / site performance / NCT / ophthalmology landscape: use context.intelligence; if absent, NAVIGATE:intelligence.";
+    " For feasibility / PSM / TrialHub / competing trials / site performance / NCT / ophthalmology landscape: use context.intelligence; if absent, NAVIGATE:intelligence." +
+    " FORMAT reminder: no markdown # or **; use [[h]] for blue section labels and [[i]] for red important facts only.";
   const focus = context?.answerFocus;
   const focusNote =
     focus === "portfolio"
@@ -182,7 +188,7 @@ function providerStatus() {
     // Deployment name only (not a secret) — so you can verify SWA matches Foundry
     deployment: cfg.deployment || null,
     effort: envSet("ANTHROPIC_EFFORT") || "low",
-    buildId: "2026-07-24T17-region-ui-model-label",
+    buildId: "2026-07-24T18-buddy-format-colors",
     endpointKind: !cfg.endpoint
       ? null
       : isFoundryProjectEndpoint(cfg.endpoint)
@@ -297,11 +303,13 @@ function buildHistoryMessages(history) {
 
 function userBlock(question, context) {
   return [
-    "### Question",
+    "Question:",
     question,
     "",
-    "### Context (JSON)",
-    JSON.stringify(context || {}, null, 2).slice(0, 100000)
+    "Context (JSON):",
+    JSON.stringify(context || {}, null, 2).slice(0, 100000),
+    "",
+    "Reply format: plain text; optional [[h]]header[[/h]] (blue) and [[i]]important[[/i]] (red). No markdown # or **."
   ].join("\n");
 }
 

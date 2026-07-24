@@ -498,6 +498,31 @@ h1 {
   background: transparent;
 }
 
+.chat-body .buddy-h {
+  color: #1d4ed8;
+  font-weight: 650;
+  font-size: 0.98em;
+  margin: 0.55rem 0 0.2rem;
+  letter-spacing: 0.01em;
+}
+
+.chat-body .buddy-h:first-child {
+  margin-top: 0;
+}
+
+.chat-body .buddy-i {
+  color: #b91c1c;
+  font-weight: 650;
+}
+
+[data-theme="dark"] .chat-body .buddy-h {
+  color: #93c5fd;
+}
+
+[data-theme="dark"] .chat-body .buddy-i {
+  color: #fca5a5;
+}
+
 .buddy-compose {
   padding: 0.85rem 1rem 1rem;
   border-top: 1px solid var(--line);
