@@ -498,29 +498,34 @@ h1 {
   background: transparent;
 }
 
-.chat-body .buddy-h {
+.chat-turn.assistant .chat-body .buddy-h {
+  display: block;
   color: #1d4ed8;
-  font-weight: 650;
+  font-weight: 700;
   font-size: 0.98em;
   margin: 0.55rem 0 0.2rem;
   letter-spacing: 0.01em;
 }
 
-.chat-body .buddy-h:first-child {
+.chat-turn.assistant .chat-body .buddy-h:first-child {
   margin-top: 0;
 }
 
-.chat-body .buddy-i {
+.chat-turn.assistant .chat-body .buddy-i {
   color: #b91c1c;
-  font-weight: 650;
+  font-weight: 700;
+  background: rgba(185, 28, 28, 0.08);
+  padding: 0 0.15em;
+  border-radius: 3px;
 }
 
-[data-theme="dark"] .chat-body .buddy-h {
+[data-theme="dark"] .chat-turn.assistant .chat-body .buddy-h {
   color: #93c5fd;
 }
 
-[data-theme="dark"] .chat-body .buddy-i {
+[data-theme="dark"] .chat-turn.assistant .chat-body .buddy-i {
   color: #fca5a5;
+  background: rgba(252, 165, 165, 0.12);
 }
 
 .benchmark-filter-grid {

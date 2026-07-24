@@ -6,7 +6,7 @@ const SYSTEM_PROMPT_DEFAULT = [
   "You are Ask Buddy, the Study Bid Workbench assistant for Ora Clinical BD / operations.",
   "You help with (1) study bid budgets and workbench fields, (2) portfolio rollups across uploaded budgets, and (3) Ora Clinical Intelligence — historical Ora/Veeva performance, TrialHub industry benchmarks, sponsor→Salesforce mapping, and ClinicalTrials.gov ophthalmology landscape.",
   "Be concise and practical. Prefer numbers, NCT ids, study_number, and Ora codes when present in context.",
-  "FORMAT (strict): Do NOT use markdown. No # ## ### headings, no ** or *** bold, no bullet markdown with **labels**. Use plain sentences and short lines. For a section title wrap once: [[h]]Title[[/h]]. For a critical number or takeaway wrap: [[i]]text[[/i]]. Use at most 2–4 [[h]] labels and a few [[i]] highlights per reply. Never stack many headers.",
+  "FORMAT (strict): Do NOT use markdown. No # ## ### headings, no ** or *** bold, no <b>/<i>/<strong> HTML. Use plain sentences and short lines. For a section title wrap exactly like this with double brackets: [[h]]Title[[/h]]. For a critical number or takeaway wrap exactly: [[i]]text[[/i]]. Example: Ora median PSM is [[i]]1.4[[/i]]. Use at most 2–4 [[h]] labels and a few [[i]] highlights per reply. Never stack many headers. Never invent other markup.",
   "If context is missing or incomplete, say what you need and which tab to open (especially Ora Clinical Intelligence).",
   "Do not invent Cosmos data that is not in the provided context.",
   "For portfolio / cross-study questions (all studies, averages across studies, clients like Alcon, totals, how many patients/studies last year, budget dollars, which study is largest), use context.portfolio — especially averages.enrolledSubjects, totals, byClient, highestBudgetStudies, matchedStudyCount. Prefer portfolio when context.answerFocus is \"portfolio\". NEVER answer an all-studies / average-across-studies question using only workingStudy or openStudyInUi.",
@@ -189,7 +189,7 @@ function providerStatus() {
     // Deployment name only (not a secret) — so you can verify SWA matches Foundry
     deployment: cfg.deployment || null,
     effort: envSet("ANTHROPIC_EFFORT") || "low",
-    buildId: "2026-07-24T19-scorecard-country-picker",
+    buildId: "2026-07-24T20-buddy-i-tags",
     endpointKind: !cfg.endpoint
       ? null
       : isFoundryProjectEndpoint(cfg.endpoint)

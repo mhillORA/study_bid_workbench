@@ -3577,15 +3577,33 @@
       .replaceAll(">", "&gt;");
   }
 
-  /** Buddy chat: [[h]] blue headers, [[i]] red important; strip leftover markdown noise. */
+  /** Buddy chat: [[h]] blue headers, [[i]] red important; accept common model variants. */
   function formatBuddyHtml(raw) {
     let s = String(raw == null ? "" : raw);
     s = s.replace(/\r\n/g, "\n");
-    // Soften leftover markdown the model still emits
+    // Soften leftover markdown / HTML the model still emits
     s = s.replace(/^#{1,6}\s+/gm, "");
     s = s.replace(/\*\*\*([^*\n]+)\*\*\*/g, "[[i]]$1[[/i]]");
     s = s.replace(/\*\*([^*\n]+)\*\*/g, "[[i]]$1[[/i]]");
     s = s.replace(/__([^_\n]+)__/g, "[[i]]$1[[/i]]");
+    s = s.replace(/<\/?(?:strong|b)>/gi, (m) => (/^<\//.test(m) ? "[[/i]]" : "[[i]]"));
+    s = s.replace(/<\/?(?:em|i)>/gi, (m) => (/^<\//.test(m) ? "[[/i]]" : "[[i]]"));
+    // Normalize spaced double-bracket tags first: [[ i ]] → [[i]]
+    s = s.replace(/\[\[\s*(h|i)\s*\]\]/gi, (_, t) => `[[${t.toLowerCase()}]]`);
+    s = s.replace(/\[\[\s*\/\s*(h|i)\s*\]\]/gi, (_, t) => `[[/${t.toLowerCase()}]]`);
+    // ((i))…((/i)) → canonical (safe; does not collide with [[i]])
+    s = s.replace(/\(\(\s*(h|i)\s*\)\)([\s\S]*?)\(\(\s*\/\s*\1\s*\)\)/gi, (_, t, body) => {
+      const tag = String(t).toLowerCase();
+      return `[[${tag}]]${body}[[/${tag}]]`;
+    });
+    // Single [i]…[/i] only when NOT already double-bracketed
+    s = s.replace(
+      /(?<!\[)\[\s*(h|i)\s*\](?!\[)([\s\S]*?)(?<!\[)\[\s*\/\s*\1\s*\](?!\])/gi,
+      (_, t, body) => {
+        const tag = String(t).toLowerCase();
+        return `[[${tag}]]${body}[[/${tag}]]`;
+      }
+    );
 
     const chunks = [];
     const re = /\[\[(h|i)\]\]([\s\S]*?)\[\[\/\1\]\]/gi;
