@@ -876,13 +876,18 @@ async function buildIntelligenceContext(getDb, opts = {}) {
 }
 
 /**
- * Site scorecard from Veeva (ora_fact_site). Optional "all" mode adds industry
- * TrialHub / CT.gov overlays by country — not industry site names (we don't have them).
+ * Site scorecard from Veeva (ora_fact_site).
+ * source=ora → Ora scores only
+ * source=compare → Ora score + industry (TrialHub country) score side-by-side
  */
 async function buildSiteScorecard(getDb, opts = {}) {
   const indication = String(opts.indication || "").trim() || null;
   const countries = opts.global ? null : parseCountryFilter(opts.countries || opts.country);
-  const source = String(opts.source || "veeva").toLowerCase() === "all" ? "all" : "veeva";
+  const rawSource = String(opts.source || "ora").toLowerCase();
+  const source =
+    rawSource === "all" || rawSource === "compare" || rawSource === "industry"
+      ? "compare"
+      : "ora";
   const aliases = indication ? indicationAliases(indication) : [];
   const database = getDb();
   const started = Date.now();
@@ -970,9 +975,9 @@ async function buildSiteScorecard(getDb, opts = {}) {
     return Math.max(0, Math.min(100, (1 - (v - lo) / (hi - lo)) * 100));
   }
 
-  // Industry overlay by country (All mode)
+  // Industry by country (compare mode) — TrialHub country medians, not named competitor sites
   const industryByCountry = {};
-  if (source === "all" && aliases.length) {
+  if (source === "compare" && aliases.length) {
     for (const alias of aliases.slice(0, 4)) {
       const thRows = await queryAll(
         database.container("ora_trialhub_trials"),
@@ -1005,40 +1010,65 @@ async function buildSiteScorecard(getDb, opts = {}) {
     }
   }
 
+  const industryCountryMedians = Object.values(industryByCountry)
+    .map((x) => median(x.psms))
+    .filter((n) => typeof n === "number" && n > 0);
+  const indPsmMin = Math.min(...(industryCountryMedians.length ? industryCountryMedians : [0]));
+  const indPsmMax = Math.max(...(industryCountryMedians.length ? industryCountryMedians : [1]));
+
   const scored = aggregates.map((a) => {
     const psmScore = normAsc(a.sitePsmMedian, psmMin, psmMax);
     const volScore = normAsc(a.totalEnrolledSum, volMin, volMax);
     const sfrScore = normDesc(a.screenFailMedian, sfrMin, sfrMax);
     const trustScore = (a.highTrustShare || 0) * 100;
     // Weights: PSM 40%, volume 25%, screen-fail 20%, trust 15%
-    let score = 0.4 * psmScore + 0.25 * volScore + 0.2 * sfrScore + 0.15 * trustScore;
+    const oraScore = round(
+      0.4 * psmScore + 0.25 * volScore + 0.2 * sfrScore + 0.15 * trustScore,
+      1
+    );
     const industry = industryByCountry[a.country] || null;
     const industryMedianPsm = industry ? round(median(industry.psms)) : null;
     const recruitingTrials = industry ? industry.recruiting : null;
-    let vsIndustry = null;
-    if (source === "all" && industryMedianPsm != null && a.sitePsmMedian != null && industryMedianPsm > 0) {
-      vsIndustry = round(a.sitePsmMedian / industryMedianPsm, 2);
-      // Mild boost if Ora site is faster than industry median
-      if (vsIndustry >= 1.1) score = Math.min(100, score + 5);
-      else if (vsIndustry <= 0.8) score = Math.max(0, score - 5);
+    // Industry score = how strong industry enrollment looks in this country (same 0–100 scale)
+    const industryScore =
+      source === "compare" && industryMedianPsm != null
+        ? round(normAsc(industryMedianPsm, indPsmMin, indPsmMax), 1)
+        : null;
+    let vsIndustryRatio = null;
+    let scoreDelta = null;
+    if (source === "compare" && industryMedianPsm != null && a.sitePsmMedian != null && industryMedianPsm > 0) {
+      vsIndustryRatio = round(a.sitePsmMedian / industryMedianPsm, 2);
     }
+    if (source === "compare" && industryScore != null) {
+      scoreDelta = round(oraScore - industryScore, 1);
+    }
+    const monthlyCapacity =
+      typeof a.sitePsmMedian === "number" && a.sitePsmMedian > 0
+        ? a.sitePsmMedian
+        : a.totalEnrolledSum && a.enrollMonthsMedian
+          ? round(a.totalEnrolledSum / a.enrollMonthsMedian, 3)
+          : null;
     return {
       ...a,
-      score: round(score, 1),
+      score: oraScore,
+      oraScore,
+      industryScore,
+      scoreDelta,
       components: {
         psm: round(psmScore, 1),
         volume: round(volScore, 1),
         screenFail: round(sfrScore, 1),
         trust: round(trustScore, 1)
       },
-      industryMedianPsm: source === "all" ? industryMedianPsm : undefined,
-      recruitingTrials: source === "all" ? recruitingTrials : undefined,
-      vsIndustry: source === "all" ? vsIndustry : undefined,
+      industryMedianPsm: source === "compare" ? industryMedianPsm : undefined,
+      recruitingTrials: source === "compare" ? recruitingTrials : undefined,
+      vsIndustry: source === "compare" ? vsIndustryRatio : undefined,
+      monthlyCapacity,
       dataSource: "veeva"
     };
   });
 
-  scored.sort((a, b) => (b.score || 0) - (a.score || 0));
+  scored.sort((a, b) => (b.oraScore || b.score || 0) - (a.oraScore || a.score || 0));
 
   return {
     source,
@@ -1049,9 +1079,9 @@ async function buildSiteScorecard(getDb, opts = {}) {
     siteCount: scored.length,
     weights: { psm: 0.4, volume: 0.25, screenFail: 0.2, trust: 0.15 },
     note:
-      source === "veeva"
-        ? "Scores from Ora Veeva site history only (ora_fact_site)."
-        : "Veeva site scores + industry overlay (TrialHub PSM / recruiting by country). Industry has no named competitor sites in this pack.",
+      source === "ora"
+        ? "Ora scores from Veeva site history (ora_fact_site)."
+        : "Ora site score vs industry country score (TrialHub PSM by country). Industry has no named competitor sites — country-level benchmark only.",
     sites: scored.slice(0, 80),
     elapsedMs: Date.now() - started
   };

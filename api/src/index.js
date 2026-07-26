@@ -703,7 +703,7 @@ app.http("intelligenceSiteScorecard", {
       const global =
         request.query.get("global") === "true" ||
         String(countryRaw).toLowerCase() === "global";
-      const source = request.query.get("source") || "veeva";
+      const source = request.query.get("source") || "ora";
       if (!String(q).trim() && !String(countryRaw).trim() && !global) {
         return json(400, { error: "q (indication) and/or country is required" });
       }

@@ -58,10 +58,18 @@
       globalRegion: false,
       countryQuery: "",
       countrySuggestOpen: false,
-      source: "veeva",
+      source: "ora",
       result: null,
       status: "",
-      loading: false
+      loading: false,
+      dive: {
+        open: false,
+        enrolledGoal: 120,
+        targetSites: 15,
+        enrollMonths: 12,
+        picks: null,
+        note: ""
+      }
     }
   };
 
@@ -1526,6 +1534,22 @@
     return typeof v === "number" ? v.toLocaleString(undefined, { maximumFractionDigits: 2 }) : escapeHtml(String(v));
   }
 
+  /** 0.57 → 57%; values already >1 treated as percent points. */
+  function intelPct(v, digits = 0) {
+    if (v == null || Number.isNaN(Number(v))) return "—";
+    const n = Number(v);
+    const pct = Math.abs(n) <= 1 ? n * 100 : n;
+    return `${pct.toLocaleString(undefined, {
+      maximumFractionDigits: digits,
+      minimumFractionDigits: digits
+    })}%`;
+  }
+
+  function intelRatio(v) {
+    if (v == null || Number.isNaN(Number(v))) return "—";
+    return `${Number(v).toLocaleString(undefined, { maximumFractionDigits: 2 })}×`;
+  }
+
   function renderIntelligenceHealthCard() {
     const h = state.intelligence.health;
     const sync = state.intelligence.syncStatus || {};
@@ -1725,7 +1749,7 @@
         ${renderIntelligenceHealthCard()}
         <div class="card wide">
           <h3>Indication &amp; region benchmark</h3>
-          <p class="muted">Compare Ora history, TrialHub, and CT.gov by indication and geography.</p>
+          <p class="muted">For BD/sales: Ora vs industry PSM and competitive recruiting for proposals. For leadership: a quick feasibility read by indication and geography.</p>
           <div class="benchmark-filter-grid">
             <div class="benchmark-filter-field">
               <label class="field-label" for="intelIndication">Indication</label>
@@ -1759,15 +1783,29 @@
       if (state.sectionId === "scorecard") render();
       return;
     }
+    const src = state.scorecard.source === "compare" || state.scorecard.source === "all" ? "compare" : "ora";
+    state.scorecard.source = src;
     state.scorecard.loading = true;
-    state.scorecard.status = `Scoring sites (${state.scorecard.source === "all" ? "Veeva + industry" : "Veeva only"})…`;
+    state.scorecard.status = `Scoring sites (${src === "compare" ? "Ora vs industry" : "Ora"})…`;
+    if (!state.scorecard.dive) {
+      state.scorecard.dive = {
+        open: false,
+        enrolledGoal: 120,
+        targetSites: 15,
+        enrollMonths: 12,
+        picks: null,
+        note: ""
+      };
+    }
+    state.scorecard.dive.picks = null;
+    state.scorecard.dive.note = "";
     if (state.sectionId === "scorecard") render();
     try {
       const params = new URLSearchParams();
       if (ind) params.set("q", ind);
       if (global) params.set("global", "true");
       else if (countries.length) params.set("countries", countries.join(","));
-      params.set("source", state.scorecard.source || "veeva");
+      params.set("source", src);
       const res = await fetch(apiUrl(`/api/intelligence/sitescorecard?${params.toString()}`));
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -1785,15 +1823,88 @@
     if (state.sectionId === "scorecard") render();
   }
 
+  function runDeeperDive() {
+    const sites = state.scorecard.result && state.scorecard.result.sites;
+    if (!state.scorecard.dive) {
+      state.scorecard.dive = {
+        open: true,
+        enrolledGoal: 120,
+        targetSites: 15,
+        enrollMonths: 12,
+        picks: null,
+        note: ""
+      };
+    }
+    if (!sites || !sites.length) {
+      state.scorecard.dive.note = "Score sites first, then run Deeper dive.";
+      state.scorecard.dive.picks = null;
+      if (state.sectionId === "scorecard") render();
+      return;
+    }
+    const goal = Math.max(1, Number(state.scorecard.dive.enrolledGoal) || 0);
+    const targetSites = Math.max(1, Number(state.scorecard.dive.targetSites) || 1);
+    const months = Math.max(1, Number(state.scorecard.dive.enrollMonths) || 12);
+    const ranked = [...sites].sort(
+      (a, b) => (b.oraScore || b.score || 0) - (a.oraScore || a.score || 0)
+    );
+    const picks = [];
+    let projected = 0;
+    for (const s of ranked) {
+      if (picks.length >= targetSites && projected >= goal) break;
+      if (picks.length >= Math.max(targetSites, 40)) break;
+      const capacity =
+        typeof s.monthlyCapacity === "number" && s.monthlyCapacity > 0
+          ? s.monthlyCapacity
+          : typeof s.sitePsmMedian === "number" && s.sitePsmMedian > 0
+            ? s.sitePsmMedian
+            : null;
+      const expected = capacity != null ? capacity * months : null;
+      picks.push({
+        ...s,
+        expectedEnrollment: expected != null ? Math.round(expected * 10) / 10 : null,
+        monthlyCapacity: capacity
+      });
+      if (expected != null) projected += expected;
+      if (picks.length >= targetSites && projected >= goal) break;
+    }
+    if (projected < goal) {
+      for (const s of ranked.slice(picks.length)) {
+        if (picks.length >= 40) break;
+        const capacity =
+          typeof s.monthlyCapacity === "number" && s.monthlyCapacity > 0
+            ? s.monthlyCapacity
+            : typeof s.sitePsmMedian === "number" && s.sitePsmMedian > 0
+              ? s.sitePsmMedian
+              : null;
+        const expected = capacity != null ? capacity * months : null;
+        picks.push({
+          ...s,
+          expectedEnrollment: expected != null ? Math.round(expected * 10) / 10 : null,
+          monthlyCapacity: capacity
+        });
+        if (expected != null) projected += expected;
+        if (projected >= goal) break;
+      }
+    }
+    state.scorecard.dive.picks = picks;
+    state.scorecard.dive.open = true;
+    state.scorecard.dive.note =
+      projected < goal
+        ? `Projected ~${Math.round(projected)} enrolled in ${months} mo across ${picks.length} sites — short of goal ${goal}. Add countries or lower goal.`
+        : `Projected ~${Math.round(projected)} enrolled in ${months} mo across ${picks.length} sites (goal ${goal}).`;
+    if (state.sectionId === "scorecard") render();
+  }
+
   function renderScorecard() {
-    const src = state.scorecard.source || "veeva";
+    const src =
+      state.scorecard.source === "compare" || state.scorecard.source === "all" ? "compare" : "ora";
     const status = state.scorecard.status
       ? `<p class="muted" style="margin-top:0.5rem;">${escapeHtml(state.scorecard.status)}</p>`
       : "";
     const result = state.scorecard.result;
+    const compare = src === "compare";
     let table = "";
     if (result && result.sites && result.sites.length) {
-      const showAll = src === "all";
       table = `
         <div class="card wide">
           <h3>Ranked sites · ${escapeHtml(result.countryFilterLabel || "Global")} · ${escapeHtml(
@@ -1802,30 +1913,44 @@
           <p class="muted">${escapeHtml(result.note || "")} · n=${intelStatNum(result.siteCount)}</p>
           <table class="table">
             <thead><tr>
-              <th>#</th><th>Site</th><th>Country</th><th>Score</th><th>Site PSM</th><th>Enrolled</th><th>Trust</th>
-              ${showAll ? "<th>Industry PSM</th><th>vs Ind.</th><th>Recruiting</th>" : ""}
+              <th>#</th><th>Site</th><th>Country</th>
+              <th>Ora score</th>
+              ${
+                compare
+                  ? "<th>Industry score</th><th>Δ</th><th>Ora PSM</th><th>Ind. PSM</th><th>vs Ind.</th><th>Recruiting</th>"
+                  : "<th>Site PSM</th>"
+              }
+              <th>Enrolled</th><th>Trust</th>
             </tr></thead>
             <tbody>
               ${result.sites
                 .slice(0, 50)
-                .map(
-                  (s, i) => `<tr>
+                .map((s, i) => {
+                  const ora = s.oraScore != null ? s.oraScore : s.score;
+                  const delta = s.scoreDelta;
+                  const deltaCls =
+                    delta == null ? "" : delta >= 0 ? "score-delta-up" : "score-delta-down";
+                  return `<tr>
                   <td>${i + 1}</td>
                   <td>${escapeHtml(s.org_clean || "—")}</td>
                   <td>${escapeHtml(s.country || "—")}</td>
-                  <td><span class="buddy-i">${intelStatNum(s.score)}</span></td>
-                  <td>${intelStatNum(s.sitePsmMedian)}</td>
-                  <td>${intelStatNum(s.totalEnrolledSum)}</td>
-                  <td>${intelStatNum(s.highTrustShare)}</td>
+                  <td><span class="buddy-i">${intelStatNum(ora)}</span></td>
                   ${
-                    showAll
-                      ? `<td>${intelStatNum(s.industryMedianPsm)}</td><td>${intelStatNum(
-                          s.vsIndustry
-                        )}</td><td>${intelStatNum(s.recruitingTrials)}</td>`
-                      : ""
+                    compare
+                      ? `<td>${intelStatNum(s.industryScore)}</td>
+                         <td class="${deltaCls}">${
+                           delta == null ? "—" : `${delta > 0 ? "+" : ""}${intelStatNum(delta)}`
+                         }</td>
+                         <td>${intelStatNum(s.sitePsmMedian)}</td>
+                         <td>${intelStatNum(s.industryMedianPsm)}</td>
+                         <td>${intelRatio(s.vsIndustry)}</td>
+                         <td>${intelStatNum(s.recruitingTrials)}</td>`
+                      : `<td>${intelStatNum(s.sitePsmMedian)}</td>`
                   }
-                </tr>`
-                )
+                  <td>${intelStatNum(s.totalEnrolledSum)}</td>
+                  <td>${intelPct(s.highTrustShare)}</td>
+                </tr>`;
+                })
                 .join("")}
             </tbody>
           </table>
@@ -1833,18 +1958,54 @@
     } else if (result && !result.sites?.length) {
       table = `<div class="card wide"><p class="muted">No scored sites for this filter.</p></div>`;
     }
+
+    const dive = state.scorecard.dive || {
+      open: false,
+      enrolledGoal: 120,
+      targetSites: 15,
+      enrollMonths: 12,
+      picks: null,
+      note: ""
+    };
+    const diveOpen = !!dive.open;
+    let diveTable = "";
+    if (dive.picks && dive.picks.length) {
+      diveTable = `
+        <table class="table" style="margin-top:0.75rem;">
+          <thead><tr>
+            <th>#</th><th>Recommended site</th><th>Country</th><th>Ora score</th><th>PSM / mo</th><th>Expected in ${intelStatNum(
+              dive.enrollMonths
+            )} mo</th>
+          </tr></thead>
+          <tbody>
+            ${dive.picks
+              .map(
+                (s, i) => `<tr>
+                <td>${i + 1}</td>
+                <td>${escapeHtml(s.org_clean || "—")}</td>
+                <td>${escapeHtml(s.country || "—")}</td>
+                <td><span class="buddy-i">${intelStatNum(s.oraScore != null ? s.oraScore : s.score)}</span></td>
+                <td>${intelStatNum(s.monthlyCapacity != null ? s.monthlyCapacity : s.sitePsmMedian)}</td>
+                <td>${intelStatNum(s.expectedEnrollment)}</td>
+              </tr>`
+              )
+              .join("")}
+          </tbody>
+        </table>`;
+    }
+
     return `
       <div class="grid">
         <div class="card wide">
           <h3>Site Scorecard</h3>
-          <p class="muted">Veeva = Ora site history only. All data = same scores plus industry TrialHub overlay by country (what everyone reports at market level — named competitor sites are not in this pack).</p>
+          <p class="muted">BD/sales: rank Ora sites and build a recommended slate for the bid. Leadership: see how our sites stack up vs a country-level industry benchmark from TrialHub (market context — not named competitor sites).</p>
           <div class="score-source-toggle" style="margin-top:0.75rem;display:flex;gap:0.5rem;flex-wrap:wrap;">
-            <button type="button" class="btn ${src === "veeva" ? "btn-primary" : "btn-secondary"}" data-score-source="veeva">Veeva (Ora)</button>
-            <button type="button" class="btn ${src === "all" ? "btn-primary" : "btn-secondary"}" data-score-source="all">All data</button>
+            <button type="button" class="btn ${src === "ora" ? "btn-primary" : "btn-secondary"}" data-score-source="ora">Ora</button>
+            <button type="button" class="btn ${src === "compare" ? "btn-primary" : "btn-secondary"}" data-score-source="compare">Ora vs industry</button>
           </div>
           <div class="benchmark-filter-grid">
             <div class="benchmark-filter-field">
-              <label class="field-label" for="scoreIndication">Indication</label>
+              <label class="field-label" for="scoreIndication">Indication / TA</label>
               <input id="scoreIndication" class="input" placeholder="Search or choose below" value="${escapeAttr(
                 state.scorecard.indication || ""
               )}" />
@@ -1857,9 +2018,45 @@
           </div>
           <div class="benchmark-actions">
             <button type="button" class="btn btn-primary" id="btnScoreQuery">Score sites</button>
+            <button type="button" class="btn btn-secondary" id="btnScoreDiveToggle">${
+              diveOpen ? "Hide deeper dive" : "Deeper dive"
+            }</button>
           </div>
           ${status}
         </div>
+        ${
+          diveOpen
+            ? `<div class="card wide">
+          <h3>Deeper dive · site slate</h3>
+          <p class="muted">Build a recommended slate from the scored list using enrollment goal, target sites, and months. Uses Ora site PSM as monthly capacity.</p>
+          <div class="form-grid" style="margin-top:0.75rem;">
+            <div>
+              <label class="field-label" for="diveEnrolledGoal">Enrollment goal</label>
+              <input id="diveEnrolledGoal" class="input" type="number" min="1" value="${escapeAttr(
+                String(dive.enrolledGoal ?? 120)
+              )}" />
+            </div>
+            <div>
+              <label class="field-label" for="diveTargetSites">Target sites</label>
+              <input id="diveTargetSites" class="input" type="number" min="1" value="${escapeAttr(
+                String(dive.targetSites ?? 15)
+              )}" />
+            </div>
+            <div>
+              <label class="field-label" for="diveEnrollMonths">Enrollment months</label>
+              <input id="diveEnrollMonths" class="input" type="number" min="1" value="${escapeAttr(
+                String(dive.enrollMonths ?? 12)
+              )}" />
+            </div>
+          </div>
+          <div class="benchmark-actions">
+            <button type="button" class="btn btn-primary" id="btnScoreDiveRun">Build recommended slate</button>
+          </div>
+          ${dive.note ? `<p class="muted" style="margin-top:0.65rem;">${escapeHtml(dive.note)}</p>` : ""}
+          ${diveTable}
+        </div>`
+            : ""
+        }
         ${table}
       </div>`;
   }
@@ -2937,6 +3134,15 @@
     }
   }
 
+  function openBuddyWithPrompt(prompt) {
+    const text = String(prompt || "").trim();
+    openBuddy();
+    if (text && els.askInput) {
+      els.askInput.value = text;
+      els.askInput.focus();
+    }
+  }
+
   function renderHub() {
     const rows = SBW.sections
       .filter((s) => s.department)
@@ -2953,15 +3159,39 @@
         </tr>`;
       }).join("");
 
+    const shortcuts = (SBW.bdShortcuts || [])
+      .map(
+        (s) => `<button type="button" class="btn btn-secondary" data-jump="${s.id}" title="${escapeAttr(
+          s.blurb || ""
+        )}">${escapeHtml(s.title)}</button>`
+      )
+      .join("");
+    const quickAsks = (SBW.buddyQuickAsks || [])
+      .map(
+        (q) =>
+          `<button type="button" class="btn btn-secondary" data-buddy-ask="${escapeAttr(q.id)}">${escapeHtml(
+            q.label
+          )}</button>`
+      )
+      .join("");
+
     return `
       <div class="grid">
         <div class="card wide">
           <h3>Start here</h3>
-          <p class="muted">Open a Cosmos study from Studies, upload a budget, or start a blank draft.</p>
+          <p class="muted">Built for BD and sales who need pitch-ready feasibility — and for leadership who need a fast portfolio snapshot. Open a study, query Intelligence, or ask Buddy.</p>
           <div style="display:flex;gap:0.6rem;flex-wrap:wrap;margin-top:0.75rem;">
             <button type="button" class="btn btn-primary" id="btnNewStudyHub">New study</button>
             <button type="button" class="btn btn-secondary" data-jump="studies">Browse studies</button>
             <button type="button" class="btn btn-secondary" data-jump="upload">Upload budgets</button>
+          </div>
+        </div>
+        <div class="card wide">
+          <h3>Sell &amp; lead</h3>
+          <p class="muted">Indication benchmarks and site slates for proposals · Ask Buddy for pitch points or an executive rollup.</p>
+          <div style="display:flex;gap:0.6rem;flex-wrap:wrap;margin-top:0.75rem;">
+            ${shortcuts}
+            ${quickasks}
           </div>
         </div>
         <div class="card">
@@ -3717,6 +3947,15 @@
       if (!e.target) return;
       if (e.target.id === "intelIndication") state.intelligence.indication = e.target.value;
       if (e.target.id === "scoreIndication") state.scorecard.indication = e.target.value;
+      if (e.target.id === "diveEnrolledGoal" && state.scorecard.dive) {
+        state.scorecard.dive.enrolledGoal = Number(e.target.value) || 0;
+      }
+      if (e.target.id === "diveTargetSites" && state.scorecard.dive) {
+        state.scorecard.dive.targetSites = Number(e.target.value) || 0;
+      }
+      if (e.target.id === "diveEnrollMonths" && state.scorecard.dive) {
+        state.scorecard.dive.enrollMonths = Number(e.target.value) || 0;
+      }
       const qScope = e.target.getAttribute("data-country-query");
       if (qScope) {
         const st = countryBagState(qScope);
@@ -3788,6 +4027,13 @@
         setSection(jump.dataset.jump);
         return;
       }
+      const buddyAsk = e.target.closest("[data-buddy-ask]");
+      if (buddyAsk) {
+        const id = buddyAsk.getAttribute("data-buddy-ask");
+        const q = (SBW.buddyQuickAsks || []).find((x) => x.id === id);
+        if (q) openBuddyWithPrompt(q.prompt);
+        return;
+      }
       const statusBtn = e.target.closest("[data-status-section]");
       if (statusBtn) {
         setSectionStatus(statusBtn.dataset.statusSection, statusBtn.dataset.status);
@@ -3839,9 +4085,37 @@
       }
       const scoreSrc = e.target.closest("[data-score-source]");
       if (scoreSrc) {
-        state.scorecard.source = scoreSrc.getAttribute("data-score-source") || "veeva";
+        const raw = scoreSrc.getAttribute("data-score-source") || "ora";
+        state.scorecard.source = raw === "all" || raw === "compare" ? "compare" : "ora";
         if (state.scorecard.result) runSiteScorecard();
         else render();
+        return;
+      }
+      if (e.target.id === "btnScoreDiveToggle") {
+        if (!state.scorecard.dive) {
+          state.scorecard.dive = {
+            open: true,
+            enrolledGoal: 120,
+            targetSites: 15,
+            enrollMonths: 12,
+            picks: null,
+            note: ""
+          };
+        } else {
+          state.scorecard.dive.open = !state.scorecard.dive.open;
+        }
+        render();
+        return;
+      }
+      if (e.target.id === "btnScoreDiveRun") {
+        const g = document.getElementById("diveEnrolledGoal");
+        const t = document.getElementById("diveTargetSites");
+        const m = document.getElementById("diveEnrollMonths");
+        if (!state.scorecard.dive) state.scorecard.dive = {};
+        if (g) state.scorecard.dive.enrolledGoal = Number(g.value) || 120;
+        if (t) state.scorecard.dive.targetSites = Number(t.value) || 15;
+        if (m) state.scorecard.dive.enrollMonths = Number(m.value) || 12;
+        runDeeperDive();
         return;
       }
       const intelAsk = e.target.closest("[data-intel-ask]");

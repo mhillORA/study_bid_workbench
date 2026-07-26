@@ -650,8 +650,14 @@ h1 {
   background: #eff6ff;
 }
 
-.indication-popular {
-  margin-top: 0.55rem;
+.score-delta-up {
+  color: #047857;
+  font-weight: 650;
+}
+
+.score-delta-down {
+  color: #b91c1c;
+  font-weight: 650;
 }
 
 .buddy-country-x {

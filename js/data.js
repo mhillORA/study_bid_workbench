@@ -27,6 +27,41 @@ SBW.sections = [
   { id: "scorecard", label: "Site Scorecard", department: null }
 ];
 
+/** Hub shortcuts — BD/sales sell path + leadership snapshot path. */
+SBW.bdShortcuts = [
+  {
+    id: "intelligence",
+    title: "Indication benchmark",
+    blurb: "Ora vs industry PSM — for proposals and RFIs"
+  },
+  {
+    id: "scorecard",
+    title: "Site Scorecard",
+    blurb: "Rank sites and build a recommended slate"
+  },
+  {
+    id: "studies",
+    title: "Past bids",
+    blurb: "Open prior studies / fee history"
+  }
+];
+
+/** Prefill Ask Buddy from Hub (BD pitch vs leadership rollup). */
+SBW.buddyQuickAsks = [
+  {
+    id: "pitch",
+    label: "Draft pitch points",
+    prompt:
+      "For Dry Eye in the US, give me 3 short talking points comparing Ora median enrollment speed vs industry, plus geography and competitive recruiting. Proposal-ready."
+  },
+  {
+    id: "leadership",
+    label: "Leadership snapshot",
+    prompt:
+      "Give me a leadership snapshot of our uploaded bid portfolio: study count, average enrolled subjects, top clients by count, and which studies have the highest budgets. Headline numbers first."
+  }
+];
+
 /** Empty = same origin /api (Static Web App) */
 SBW.apiBase = "";
 
