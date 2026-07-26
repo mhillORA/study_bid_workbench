@@ -1018,9 +1018,20 @@
       } else if (sectionId) {
         text = `Opened ${(SBW.sections.find((s) => s.id === sectionId) || {}).label || sectionId}.`;
       } else {
-        text = "I did not return any text that time — try asking again.";
+        text =
+          "I need a bit more to help. Tell me the indication (e.g. Dry Eye), geography if it matters, and whether you want a portfolio rollup, a pitch/feasibility read, or help on the open study.";
       }
     }
+    const bare = text.replace(/\s+/g, " ").trim().toLowerCase();
+    if (
+      !bare ||
+      /^(null|\(null\)|undefined|n\/a|none)$/i.test(bare) ||
+      /^(i (have )?no answer( to that)?\.?|no answer( to that)?\.?)$/i.test(bare)
+    ) {
+      text =
+        "I need a bit more to help. Tell me the indication (e.g. Dry Eye), geography if it matters, and whether you want a portfolio rollup, a pitch/feasibility read, or help on the open study.";
+    }
+    text = text.replace(/(^|\s)\(?null\)?(?=\s|$)/gi, (m, lead) => `${lead}missing`);
     if (created.create) {
       pushCreateProposal(text, created.create);
     } else {

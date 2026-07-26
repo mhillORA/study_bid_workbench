@@ -60,6 +60,14 @@ const FORMAT_RULES =
   " OUTPUT FORMAT: Chat UI renders [[h]]…[[/h]] as blue headers and [[i]]…[[/i]] as red important text. " +
   "Never use markdown headings (#) or bold (** / ***). Prefer short paragraphs over outlines.";
 
+/** Never leave the user with silence, "null", or "no answer". */
+const ALWAYS_RESPOND_RULES =
+  " ALWAYS RESPOND: Every user message MUST get a real reply in plain sentences. " +
+  "Never answer with only null, (null), undefined, N/A, empty string, silence, or phrases like \"I have no answer\", \"no answer to that\", \"I cannot answer\", or \"nothing to say\". " +
+  "If data is missing, incomplete, or the ask is unclear: say what you do know (even if thin), then ask 1–3 concrete clarifying questions, and name the tab to open (Intelligence, Site Scorecard, Ops Dashboard, Studies, Reviews). " +
+  "If a field in context is null, say it is missing / not in the data — never print the word null or (null) to the user. " +
+  "When unsure which study or indication they mean, ask — do not refuse.";
+
 /** Prefer Foundry agent instructions pasted into SWA settings; else built-in default. */
 function buddyInstructionsBase() {
   const custom =
@@ -67,8 +75,14 @@ function buddyInstructionsBase() {
     envSet("FOUNDRY_AGENT_INSTRUCTIONS") ||
     envSet("AGENT_INSTRUCTIONS") ||
     envSet("SYSTEM_PROMPT");
-  // Always append portfolio + intelligence + format rules — SWA custom prompts often omit them
-  return (custom || SYSTEM_PROMPT_DEFAULT) + PORTFOLIO_RULES + INTELLIGENCE_RULES + FORMAT_RULES;
+  // Always append portfolio + intelligence + format + always-respond — SWA custom prompts often omit them
+  return (
+    (custom || SYSTEM_PROMPT_DEFAULT) +
+    PORTFOLIO_RULES +
+    INTELLIGENCE_RULES +
+    FORMAT_RULES +
+    ALWAYS_RESPOND_RULES
+  );
 }
 
 function systemPromptFor(context) {
@@ -79,7 +93,8 @@ function systemPromptFor(context) {
     " To create a new study from user-provided info end with CREATE_STUDY:{...json...} (clientName, protocol, phase, drivers, etc.); user must click Create before it is saved." +
     " For cross-study / all-studies / average / client / year questions: set answer from context.portfolio (averages + totals + byClient); cite matchedStudyCount; do not use openStudyInUi or workingStudy for those answers." +
     " For feasibility / PSM / TrialHub / competing trials / site performance / NCT / ophthalmology landscape: use context.intelligence; if absent, NAVIGATE:intelligence." +
-    " FORMAT reminder: no markdown # or **; use [[h]] for blue section labels and [[i]] for red important facts only.";
+    " FORMAT reminder: no markdown # or **; use [[h]] for blue section labels and [[i]] for red important facts only." +
+    " Never reply with null/(null)/empty/no answer — ask a clarifying question instead.";
   const focus = context?.answerFocus;
   const focusNote =
     focus === "portfolio"
@@ -193,7 +208,7 @@ function providerStatus() {
     // Deployment name only (not a secret) — so you can verify SWA matches Foundry
     deployment: cfg.deployment || null,
     effort: envSet("ANTHROPIC_EFFORT") || "low",
-    buildId: "2026-07-26T23-ops-dashboard",
+    buildId: "2026-07-26T24-always-respond",
     endpointKind: !cfg.endpoint
       ? null
       : isFoundryProjectEndpoint(cfg.endpoint)
@@ -469,7 +484,7 @@ async function askAzureOpenAI({ question, context, history }) {
     if (res.ok) {
       const text = extractAzureMessageText(respBody);
       return {
-        answer: text || "I did not return any text that time — try asking again.",
+        answer: ensureBuddyAnswer(text),
         model: respBody?.model || deployment,
         provider: "azure_openai",
         via: attempt.label,
@@ -542,12 +557,46 @@ async function askClaude({ question, context, history }) {
     .trim();
 
   return {
-    answer: text || "I did not return any text that time — try asking again.",
+    answer: ensureBuddyAnswer(text),
     model: body.model || model,
     provider: "claude",
     effort,
     usage: body.usage || null
   };
+}
+
+/** True when the model effectively refused or returned garbage. */
+function isEmptyOrRefusalAnswer(text) {
+  const t = String(text || "")
+    .replace(/\b(NAVIGATE|APPLY|CREATE_STUDY):[^\n]*/gi, "")
+    .replace(/\[\[[hi]\]\]|\[\[\/[hi]\]\]/gi, "")
+    .trim();
+  if (!t) return true;
+  const lower = t.toLowerCase().replace(/\s+/g, " ");
+  if (/^(null|\(null\)|undefined|n\/a|none|nil|\.|\-+)$/i.test(lower)) return true;
+  if (
+    /^(i (have )?no answer( to that)?\.?|no answer( to that)?\.?|i cannot answer\.?|i don't have (an )?answer\.?|nothing to say\.?|i('m| am) unable to (help|answer)\.?)$/i.test(
+      lower
+    )
+  ) {
+    return true;
+  }
+  // Bare null dumps in otherwise tiny replies
+  if (t.length < 40 && /\bnull\b/i.test(t) && !/\bmissing\b/i.test(t)) return true;
+  return false;
+}
+
+const BUDDY_FALLBACK_ANSWER =
+  "I need a bit more to help. [[h]]What I need[[/h]]\n" +
+  "Tell me the indication (e.g. Dry Eye), geography if it matters (e.g. US), and whether you want a portfolio rollup, a pitch/feasibility read, or help on the open study.\n" +
+  "You can also open Ora Clinical Intelligence, Site Scorecard, Ops Dashboard, or Studies and ask again from there.";
+
+function ensureBuddyAnswer(text) {
+  const raw = String(text == null ? "" : text).trim();
+  if (isEmptyOrRefusalAnswer(raw)) return BUDDY_FALLBACK_ANSWER;
+  // Never surface literal null tokens as the whole answer
+  if (/^\(?null\)?$/i.test(raw)) return BUDDY_FALLBACK_ANSWER;
+  return raw.replace(/(^|\s)\(?null\)?(?=\s|$)/gi, (m, lead) => `${lead}missing`);
 }
 
 /** Normalize Azure chat message content (string or multipart). */
@@ -572,11 +621,15 @@ function extractAzureMessageText(respBody) {
 /** Prefer Azure OpenAI (Ask Buddy); fall back to Claude only if Azure is unset. */
 async function askAi(opts) {
   const status = providerStatus();
-  if (status.active === "azure_openai") return askAzureOpenAI(opts);
-  if (status.active === "claude") return askClaude(opts);
-  throw new Error(
-    "Ask Buddy is not configured. Set Azure OpenAI (AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT) in SWA Application settings."
-  );
+  let result;
+  if (status.active === "azure_openai") result = await askAzureOpenAI(opts);
+  else if (status.active === "claude") result = await askClaude(opts);
+  else {
+    throw new Error(
+      "Ask Buddy is not configured. Set Azure OpenAI (AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT) in SWA Application settings."
+    );
+  }
+  return { ...result, answer: ensureBuddyAnswer(result.answer) };
 }
 
 module.exports = {
@@ -584,5 +637,6 @@ module.exports = {
   askClaude,
   askAzureOpenAI,
   getStudyContext,
-  providerStatus
+  providerStatus,
+  ensureBuddyAnswer
 };
