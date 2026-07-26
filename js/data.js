@@ -12,6 +12,7 @@ SBW.users = [
 
 SBW.sections = [
   { id: "hub", label: "Hub", department: null },
+  { id: "ops", label: "Ops Dashboard", department: null },
   { id: "studies", label: "Studies", department: null },
   { id: "versions", label: "Versions / Diff", department: null },
   { id: "intelligence", label: "Ora Clinical Intelligence", department: null },
@@ -27,7 +28,7 @@ SBW.sections = [
   { id: "scorecard", label: "Site Scorecard", department: null }
 ];
 
-/** Hub shortcuts — BD/sales sell path + leadership snapshot path. */
+/** Hub shortcuts — BD/sales, leadership, and ops. */
 SBW.bdShortcuts = [
   {
     id: "intelligence",
@@ -40,13 +41,18 @@ SBW.bdShortcuts = [
     blurb: "Rank sites and build a recommended slate"
   },
   {
+    id: "ops",
+    title: "Ops Dashboard",
+    blurb: "Workflow status, portfolio pulse, data health"
+  },
+  {
     id: "studies",
     title: "Past bids",
     blurb: "Open prior studies / fee history"
   }
 ];
 
-/** Prefill Ask Buddy from Hub (BD pitch vs leadership rollup). */
+/** Prefill Ask Buddy from Hub (BD pitch, leadership, ops). */
 SBW.buddyQuickAsks = [
   {
     id: "pitch",
@@ -59,6 +65,12 @@ SBW.buddyQuickAsks = [
     label: "Leadership snapshot",
     prompt:
       "Give me a leadership snapshot of our uploaded bid portfolio: study count, average enrolled subjects, top clients by count, and which studies have the highest budgets. Headline numbers first."
+  },
+  {
+    id: "ops",
+    label: "Ops briefing",
+    prompt:
+      "Ops briefing for the open study if one is selected: which departments are not started, in progress, ready for review, or approved; any open fill requests; key drivers (enrolled, sites, months). If no study is open, summarize portfolio study count and what I should check next on Reviews or Upload."
   }
 ];
 

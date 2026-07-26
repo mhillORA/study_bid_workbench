@@ -70,6 +70,12 @@
         picks: null,
         note: ""
       }
+    },
+    ops: {
+      quarantineCount: null,
+      learnings: null,
+      status: "",
+      loading: false
     }
   };
 
@@ -173,10 +179,41 @@
     if (sectionId === "intelligence") {
       ensureIntelligenceLoaded();
     }
+    if (sectionId === "ops") {
+      ensureOpsLoaded();
+    }
     if (sectionId === "scorecard" && state.intelligence.indication && !state.scorecard.indication) {
       state.scorecard.indication = state.intelligence.indication;
       state.scorecard.countries = [...(state.intelligence.countries || [])];
       state.scorecard.globalRegion = !!state.intelligence.globalRegion;
+    }
+  }
+
+  async function ensureOpsLoaded() {
+    state.ops.loading = true;
+    if (state.sectionId === "ops") render();
+    await Promise.all([
+      ensureStudiesLoaded(),
+      ensureIntelligenceLoaded(),
+      loadOpsQuarantinePulse()
+    ]);
+    state.ops.loading = false;
+    if (state.sectionId === "ops") render();
+  }
+
+  async function loadOpsQuarantinePulse() {
+    try {
+      const res = await fetch(apiUrl("/api/quarantine?limit=200"));
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        state.ops.quarantineCount = data.count != null ? Number(data.count) : (data.items || []).length;
+        state.ops.learnings = data.learnings || null;
+        state.ops.status = "";
+      } else {
+        state.ops.status = data.error || `Quarantine ${res.status}`;
+      }
+    } catch (err) {
+      state.ops.status = String(err.message || err);
     }
   }
 
@@ -345,6 +382,7 @@
       "psm"
     ],
     scorecard: ["scorecard", "site scorecard", "site scores", "sites"],
+    ops: ["ops", "ops dashboard", "operations", "operations dashboard", "workflow"],
     overview: ["overview", "inputs", "overview / inputs"],
     recruitment: ["recruitment", "recruit"],
     clinops: ["clinops", "clin ops", "soe", "clinops / soe"],
@@ -2951,9 +2989,10 @@
       state.compare = null;
       state.dirty = false;
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state.study));
-      state.sectionId = "overview";
+      if (state.sectionId !== "ops") state.sectionId = "overview";
       render();
       markSaved();
+      if (state.sectionId === "ops") ensureOpsLoaded();
     } catch (err) {
       if (panel) panel.innerHTML = `<pre class="formula-box">${escapeHtml(String(err))}</pre>`;
     }
@@ -3143,6 +3182,175 @@
     }
   }
 
+  function renderOpsDashboard() {
+    const deptSections = SBW.sections.filter((s) => s.department);
+    const counts = {
+      not_started: 0,
+      in_progress: 0,
+      ready_for_review: 0,
+      approved: 0
+    };
+    deptSections.forEach((s) => {
+      const st = (state.study.sectionStatus && state.study.sectionStatus[s.id]) || "not_started";
+      if (counts[st] != null) counts[st] += 1;
+      else counts.not_started += 1;
+    });
+    const openReqs = (state.study.requests || []).filter((r) => r.status !== "completed");
+    const d = state.study.drivers || {};
+    const list = state.studiesList || [];
+    const clients = new Set(list.map((s) => String(s.clientName || "").trim()).filter(Boolean));
+    const recent = [...list]
+      .sort((a, b) => String(b.updatedAt || b.importedAt || "").localeCompare(String(a.updatedAt || a.importedAt || "")))
+      .slice(0, 6);
+    const learn = state.ops.learnings || {};
+    const sync = state.intelligence.syncStatus || {};
+    const lastSync = sync.lastSuccessAt || sync.lastRunAt || sync.watermark || null;
+    const h = state.intelligence.health;
+    const intelOk = h && h.ok !== false && !h.error;
+
+    const statusRows = deptSections
+      .map((s) => {
+        const st = (state.study.sectionStatus && state.study.sectionStatus[s.id]) || "not_started";
+        const openReq = openReqs.find((r) => r.department === s.department);
+        return `<tr>
+          <td><button type="button" class="btn btn-secondary" data-jump="${s.id}">${escapeHtml(s.label)}</button></td>
+          <td>${escapeHtml(s.department)}</td>
+          <td><span class="badge ${escapeAttr(st)}">${escapeHtml(statusLabel(st))}</span></td>
+          <td>${openReq ? escapeHtml(openReq.note || "Open request") : "—"}</td>
+        </tr>`;
+      })
+      .join("");
+
+    const recentRows = recent.length
+      ? recent
+          .map(
+            (s) => `<tr>
+            <td><button type="button" class="btn btn-ghost" data-open-study="${escapeAttr(
+              s.studyId
+            )}">${escapeHtml(s.studyId)}</button></td>
+            <td>${escapeHtml(s.clientName || "—")}</td>
+            <td>${escapeHtml(s.indication || s.therapeuticArea || "—")}</td>
+            <td class="muted">${escapeHtml(String(s.updatedAt || s.importedAt || "—").slice(0, 10))}</td>
+          </tr>`
+          )
+          .join("")
+      : `<tr><td colspan="4" class="muted">${
+          state.ops.loading ? "Loading studies…" : "No studies loaded yet."
+        }</td></tr>`;
+
+    const meterTotal = deptSections.length || 1;
+    const meter = `
+      <div class="ops-meter" aria-hidden="true">
+        <span class="ops-seg approved" style="flex:${counts.approved}"></span>
+        <span class="ops-seg ready_for_review" style="flex:${counts.ready_for_review}"></span>
+        <span class="ops-seg in_progress" style="flex:${counts.in_progress}"></span>
+        <span class="ops-seg not_started" style="flex:${counts.not_started}"></span>
+      </div>
+      <p class="muted" style="margin:0.4rem 0 0;">${counts.approved}/${meterTotal} approved · ${
+      openReqs.length
+    } open fill request${openReqs.length === 1 ? "" : "s"}</p>`;
+
+    const studyBlock = hasOpenStudy()
+      ? `<div class="card wide">
+          <h3>Open study workflow</h3>
+          <p class="muted">${escapeHtml(state.study.studyId)} · ${escapeHtml(
+            state.study.clientName || "—"
+          )} · ${escapeHtml(state.study.versionLabel || "—")}</p>
+          ${meter}
+          <table class="table" style="margin-top:0.85rem;">
+            <thead><tr><th>Section</th><th>Dept</th><th>Status</th><th>Open request</th></tr></thead>
+            <tbody>${statusRows}</tbody>
+          </table>
+          <div style="margin-top:0.75rem;display:flex;gap:0.5rem;flex-wrap:wrap;">
+            <button type="button" class="btn btn-primary" data-jump="reviews">Go to Reviews</button>
+            <button type="button" class="btn btn-secondary" data-buddy-ask="ops">Ask Buddy for ops briefing</button>
+          </div>
+        </div>
+        <div class="card">
+          <h3>Enrolled</h3>
+          <div class="stat">${num(d.enrolledSubjects, 0)}</div>
+        </div>
+        <div class="card">
+          <h3>Core sites</h3>
+          <div class="stat">${num(d.coreSites, 0)}</div>
+        </div>
+        <div class="card">
+          <h3>Enrollment months</h3>
+          <div class="stat">${num(d.enrollmentMonths, 0)}</div>
+        </div>
+        <div class="card">
+          <h3>Grand total</h3>
+          <div class="stat">${money(state.results["summary.grandTotal"])}</div>
+        </div>`
+      : `<div class="card wide">
+          <h3>Open study workflow</h3>
+          <p class="muted">No study selected — open one from Studies to track department status and fill requests. Portfolio pulse below still works.</p>
+          <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.75rem;">
+            <button type="button" class="btn btn-primary" data-jump="studies">Browse studies</button>
+            <button type="button" class="btn btn-secondary" data-buddy-ask="ops">Ask Buddy for ops briefing</button>
+          </div>
+        </div>`;
+
+    const qCount = state.ops.quarantineCount;
+    const aliasLine =
+      learn.sheetAliasCount != null
+        ? `${learn.sheetAliasCount || 0} sheet · ${learn.fieldAliasCount || 0} field · ${
+            learn.siteHeaderAliasCount || 0
+          } site-header aliases`
+        : state.ops.loading
+          ? "Loading…"
+          : "—";
+
+    return `
+      <div class="grid">
+        <div class="card wide">
+          <h3>Ops Dashboard</h3>
+          <p class="muted">Day-to-day run view: bid workflow on the open study, portfolio pulse, and data-pipeline health (CT.gov / quarantine).</p>
+          <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.75rem;">
+            <button type="button" class="btn btn-secondary" data-jump="reviews">Reviews</button>
+            <button type="button" class="btn btn-secondary" data-jump="upload">Upload</button>
+            <button type="button" class="btn btn-secondary" data-jump="intelligence">Intelligence</button>
+            <button type="button" class="btn btn-secondary" data-jump="scorecard">Site Scorecard</button>
+            <button type="button" class="btn btn-ghost" id="btnOpsRefresh">${
+              state.ops.loading ? "Refreshing…" : "Refresh"
+            }</button>
+          </div>
+        </div>
+        ${studyBlock}
+        <div class="card">
+          <h3>Cosmos studies</h3>
+          <div class="stat">${list.length ? list.length.toLocaleString() : state.ops.loading ? "…" : "0"}</div>
+          <p class="muted">${clients.size} clients</p>
+        </div>
+        <div class="card">
+          <h3>Quarantine</h3>
+          <div class="stat">${qCount == null ? (state.ops.loading ? "…" : "—") : Number(qCount).toLocaleString()}</div>
+          <p class="muted">Needs parse attention</p>
+        </div>
+        <div class="card">
+          <h3>CT.gov sync</h3>
+          <div class="stat" style="font-size:1.05rem;">${
+            lastSync ? escapeHtml(String(lastSync).slice(0, 16)) : state.ops.loading ? "…" : "—"
+          }</div>
+          <p class="muted">${
+            sync.count != null ? `${Number(sync.count).toLocaleString()} trials` : intelOk ? "Status loaded" : "Check Intelligence"
+          }</p>
+        </div>
+        <div class="card">
+          <h3>Parse aliases</h3>
+          <div class="stat" style="font-size:1.05rem;">${escapeHtml(aliasLine)}</div>
+          <p class="muted">${state.ops.status ? escapeHtml(state.ops.status) : "From quarantine learnings"}</p>
+        </div>
+        <div class="card wide">
+          <h3>Recently updated studies</h3>
+          <table class="table">
+            <thead><tr><th>Study</th><th>Client</th><th>Indication / TA</th><th>Updated</th></tr></thead>
+            <tbody>${recentRows}</tbody>
+          </table>
+        </div>
+      </div>`;
+  }
+
   function renderHub() {
     const rows = SBW.sections
       .filter((s) => s.department)
@@ -3179,7 +3387,7 @@
       <div class="grid">
         <div class="card wide">
           <h3>Start here</h3>
-          <p class="muted">Built for BD and sales who need pitch-ready feasibility — and for leadership who need a fast portfolio snapshot. Open a study, query Intelligence, or ask Buddy.</p>
+          <p class="muted">Built for BD and sales (pitch-ready feasibility), leadership (portfolio snapshots), and ops (workflow + data health). Open a study, query Intelligence, or ask Buddy.</p>
           <div style="display:flex;gap:0.6rem;flex-wrap:wrap;margin-top:0.75rem;">
             <button type="button" class="btn btn-primary" id="btnNewStudyHub">New study</button>
             <button type="button" class="btn btn-secondary" data-jump="studies">Browse studies</button>
@@ -3187,8 +3395,8 @@
           </div>
         </div>
         <div class="card wide">
-          <h3>Sell &amp; lead</h3>
-          <p class="muted">Indication benchmarks and site slates for proposals · Ask Buddy for pitch points or an executive rollup.</p>
+          <h3>Sell, lead &amp; run</h3>
+          <p class="muted">Benchmarks and site slates for proposals · leadership rollups · ops workflow and data pulse.</p>
           <div style="display:flex;gap:0.6rem;flex-wrap:wrap;margin-top:0.75rem;">
             ${shortcuts}
             ${quickasks}
@@ -3884,6 +4092,7 @@
     let html = "";
     switch (section.id) {
       case "hub": html = renderHub(); break;
+      case "ops": html = renderOpsDashboard(); break;
       case "upload": html = renderUpload(); break;
       case "studies": html = renderStudies(); break;
       case "versions": html = renderVersions(); break;
@@ -4147,6 +4356,11 @@
       }
       if (e.target.id === "btnIntelRefresh") {
         loadIntelligenceHealth();
+        return;
+      }
+      if (e.target.id === "btnOpsRefresh") {
+        state.studiesList = [];
+        ensureOpsLoaded();
         return;
       }
       if (e.target.id === "btnCtgovSync") {
