@@ -64,13 +64,13 @@ const INTELLIGENCE_RULES = [
 const LEGACY_ANTERIOR_RULES = [
   " LEGACY ANTERIOR-SEGMENT DATA (Cosmos bd-budgets — separate containers, NOT Ora Veeva and NOT budget studies):",
   "Containers: legacy_studies, legacy_sites, legacy_study_site_outcomes (by studyId), legacy_site_study_outcomes (by siteId). dataset=legacy_anterior_segment.",
-  "When context.legacyAnterior is present, use it for historical anterior-segment site trust and feasibility:",
-  "• Site trust / preferred sites / relationship → legacyAnterior.trust.preferredSites, sitesWithTrustNotes (relationshipPreference, advantages, disadvantages, relationshipNotes).",
-  "• Site enrollment history → legacyAnterior.sites.items[].metrics (scheduled/screened/enrolled/attainmentPct) and legacyAnterior.siteOutcomes (per study at that site, PI, LPLV).",
-  "• Study × site mix → legacyAnterior.studyOutcomes.topByEnrolled / sample.",
-  " Label this source clearly as legacy anterior-segment overview (not Veeva PSM / not TrialHub). Cite n from counts or matched.",
-  " Null metrics mean missing — never treat as zero. Prefer relationship notes + attainment% for trust; do not invent fsi_trust from this dataset.",
-  " If the user asks about a named site/study and legacyAnterior.sites/studies.matched is 0, say it was not found in the legacy overview and ask for an alternate spelling."
+  "When context.legacyAnterior is present:",
+  "• You MAY use trust / relationship fields (relationshipPreference, advantages, disadvantages, relationshipNotes) without extra confirmation.",
+  "• Enrollment numbers (scheduled/screened/enrolled/attainmentPct/outcomes): ONLY if legacyAnterior.enrollmentIncluded is true. If enrollmentIncluded is false, ASK once: 'Want me to include legacy anterior-segment enrollment history (scheduled/screened/enrolled/%), or stick to Ora Veeva / Site Scorecard?' Do not invent or cite those enrollment metrics until they say yes.",
+  "• After they confirm, the next turn will set enrollmentIncluded true — then use sites.metrics / siteOutcomes / studyOutcomes.",
+  " Label this source as legacy anterior-segment overview (not Veeva PSM). Cite n. Null ≠ 0.",
+  " If a named site/study has matched=0, say it was not found and ask for another spelling.",
+  " Site Scorecard 'Include legacy recruitment data' is a separate UI toggle — when the user mentions they turned it on, treat enrollment as consented."
 ].join(" ");
 
 const FORMAT_RULES =
@@ -125,7 +125,9 @@ function systemPromptFor(context) {
     ? " context.intelligence IS attached for this turn — use indicationBenchmark / sponsorCrosswalk / nctLookup / ctgov as applicable."
     : " context.intelligence may be absent on this turn; for feasibility/PSM asks, say you need the Intelligence query or NAVIGATE:intelligence.";
   const legacyNote = context?.legacyAnterior
-    ? " context.legacyAnterior IS attached — use for anterior-segment site trust / historical enrollment by site or study."
+    ? context.legacyAnterior.enrollmentIncluded
+      ? " context.legacyAnterior IS attached WITH enrollment — you may cite scheduled/screened/enrolled."
+      : " context.legacyAnterior IS attached for trust notes only — ASK before citing legacy enrollment numbers (enrollmentIncluded=false)."
     : "";
   const dep = azureConfig().deployment;
   const modelNote = dep

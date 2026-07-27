@@ -906,6 +906,7 @@ async function buildSiteScorecard(getDb, opts = {}) {
     rawSource === "all" || rawSource === "compare" || rawSource === "industry"
       ? "compare"
       : "ora";
+  const includeLegacy = Boolean(opts.includeLegacy);
   const aliases = indication ? indicationAliases(indication) : [];
   const database = getDb();
   const started = Date.now();
@@ -949,6 +950,10 @@ async function buildSiteScorecard(getDb, opts = {}) {
         months: [],
         sfr: [],
         highTrust: 0,
+        trustHigh: 0,
+        trustLow: 0,
+        trustMedium: 0,
+        trustUnknown: 0,
         indications: new Set()
       };
       byKey.set(key, g);
@@ -958,21 +963,39 @@ async function buildSiteScorecard(getDb, opts = {}) {
     if (typeof r.total_enrolled === "number" && r.total_enrolled > 0) g.enrolled.push(r.total_enrolled);
     if (typeof r.site_enroll_months === "number" && r.site_enroll_months > 0) g.months.push(r.site_enroll_months);
     if (typeof r.screen_fail_rate === "number" && r.screen_fail_rate >= 0) g.sfr.push(r.screen_fail_rate);
-    if (String(r.fsi_trust || "").toLowerCase() === "high") g.highTrust += 1;
+    const trust = String(r.fsi_trust || "")
+      .trim()
+      .toLowerCase();
+    if (trust === "high") g.trustHigh += 1;
+    else if (trust === "low") g.trustLow += 1;
+    else if (trust === "medium" || trust === "med" || trust === "moderate") g.trustMedium += 1;
+    else g.trustUnknown += 1;
     if (r.indication) g.indications.add(r.indication);
   }
 
-  const aggregates = [...byKey.values()].map((g) => ({
-    org_clean: g.org_clean,
-    country: g.country,
-    studyCount: g.studyCount,
-    sitePsmMedian: round(median(g.psms)),
-    totalEnrolledSum: g.enrolled.reduce((a, b) => a + b, 0) || null,
-    enrollMonthsMedian: round(median(g.months), 2),
-    screenFailMedian: round(median(g.sfr), 3),
-    highTrustShare: g.studyCount ? round(g.highTrust / g.studyCount, 3) : 0,
-    indications: [...g.indications].slice(0, 6)
-  }));
+  const aggregates = [...byKey.values()].map((g) => {
+    const trustKnown = g.trustHigh + g.trustLow + g.trustMedium;
+    // Share of known labels only — missing fsi_trust must not count as "not high"
+    const highTrustShare = trustKnown > 0 ? round(g.trustHigh / trustKnown, 3) : null;
+    return {
+      org_clean: g.org_clean,
+      country: g.country,
+      studyCount: g.studyCount,
+      sitePsmMedian: round(median(g.psms)),
+      totalEnrolledSum: g.enrolled.reduce((a, b) => a + b, 0) || null,
+      enrollMonthsMedian: round(median(g.months), 2),
+      screenFailMedian: round(median(g.sfr), 3),
+      highTrustShare,
+      trustHigh: g.trustHigh,
+      trustLow: g.trustLow,
+      trustMedium: g.trustMedium,
+      trustUnknown: g.trustUnknown,
+      trustKnown,
+      // Display helper: "3/4" when known; null when no labels
+      trustHighOfKnown: trustKnown > 0 ? `${g.trustHigh}/${trustKnown}` : null,
+      indications: [...g.indications].slice(0, 6)
+    };
+  });
 
   const psmVals = aggregates.map((a) => a.sitePsmMedian).filter((n) => typeof n === "number");
   const volVals = aggregates.map((a) => a.totalEnrolledSum).filter((n) => typeof n === "number");
@@ -1038,7 +1061,14 @@ async function buildSiteScorecard(getDb, opts = {}) {
     const psmScore = normAsc(a.sitePsmMedian, psmMin, psmMax);
     const volScore = normAsc(a.totalEnrolledSum, volMin, volMax);
     const sfrScore = normDesc(a.screenFailMedian, sfrMin, sfrMax);
-    const trustScore = (a.highTrustShare || 0) * 100;
+    // Trust: % of rows with known fsi_trust that are "high". Missing labels → neutral 50 (not 0/100).
+    // Shrink toward 50 when few labeled rows so a single "high" study is not a free 100.
+    let trustScore = 50;
+    if (a.trustKnown > 0 && a.highTrustShare != null) {
+      const raw = a.highTrustShare * 100;
+      const w = Math.min(1, a.trustKnown / 3); // full weight at 3+ labeled studies
+      trustScore = round(50 + (raw - 50) * w, 1);
+    }
     // Weights: PSM 40%, volume 25%, screen-fail 20%, trust 15%
     const oraScore = round(
       0.4 * psmScore + 0.25 * volScore + 0.2 * sfrScore + 0.15 * trustScore,
@@ -1088,19 +1118,36 @@ async function buildSiteScorecard(getDb, opts = {}) {
 
   scored.sort((a, b) => (b.oraScore || b.score || 0) - (a.oraScore || a.score || 0));
 
+  let sites = scored.slice(0, 80);
+  let legacyMeta = null;
+  if (includeLegacy) {
+    try {
+      const { enrichSitesWithLegacy } = require("./legacyAnterior");
+      const enriched = await enrichSitesWithLegacy(database, sites);
+      sites = enriched.sites;
+      legacyMeta = enriched.meta;
+    } catch (err) {
+      legacyMeta = { error: String(err.message || err) };
+    }
+  }
+
   return {
     source,
     indication,
     countries: countries,
     countryFilterLabel: countries ? countries.join(", ") : "Global",
     aliasesUsed: aliases,
-    siteCount: scored.length,
+    siteCount: sites.length,
+    includeLegacy,
+    legacy: legacyMeta,
     weights: { psm: 0.4, volume: 0.25, screenFail: 0.2, trust: 0.15 },
+    trustNote:
+      "Trust = share of Veeva rows with a known fsi_trust label that are \"high\" (missing labels excluded). Display is high/known. Score component shrinks toward neutral when fewer than 3 labeled studies — a single high row is not 100% trust weight.",
     note:
       source === "ora"
         ? "Ora scores from Veeva site history (ora_fact_site)."
         : "Ora site score vs industry country score (TrialHub PSM by country). Industry has no named competitor sites — country-level benchmark only.",
-    sites: scored.slice(0, 80),
+    sites,
     elapsedMs: Date.now() - started
   };
 }

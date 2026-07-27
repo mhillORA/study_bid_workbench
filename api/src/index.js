@@ -11,7 +11,7 @@ const {
   extractIndicationFromQuestion,
   extractCountryFromQuestion
 } = require("./intelligence");
-const { isLegacyAnteriorQuestion, buildLegacyAnteriorContext } = require("./legacyAnterior");
+const { isLegacyAnteriorQuestion, buildLegacyAnteriorContext, userConsentedLegacyEnrollment } = require("./legacyAnterior");
 const { runCtgovSync, getCtgovSyncStatus } = require("./ctgovSync");
 const {
   isPricingQuestion,
@@ -857,6 +857,9 @@ app.http("intelligenceSiteScorecard", {
         request.query.get("global") === "true" ||
         String(countryRaw).toLowerCase() === "global";
       const source = request.query.get("source") || "ora";
+      const includeLegacy =
+        request.query.get("includeLegacy") === "true" ||
+        request.query.get("legacy") === "true";
       if (!String(q).trim() && !String(countryRaw).trim() && !global) {
         return json(400, { error: "q (indication) and/or country is required" });
       }
@@ -864,7 +867,8 @@ app.http("intelligenceSiteScorecard", {
         indication: String(q).trim() || null,
         countries: global ? null : countryRaw,
         global,
-        source
+        source,
+        includeLegacy
       });
       return json(card.error ? 400 : 200, card);
     } catch (err) {
@@ -1179,14 +1183,20 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
     try {
       const legacyHint =
         body.legacyHint && typeof body.legacyHint === "object" ? body.legacyHint : {};
+      const enrollmentConsent =
+        body.includeLegacyEnrollment === true ||
+        body.useLegacyEnrollment === true ||
+        userConsentedLegacyEnrollment(question, history);
       const forceLegacy =
         isLegacyAnteriorQuestion(question) ||
         Boolean(legacyHint.siteName || legacyHint.studyName || legacyHint.siteId || legacyHint.studyId) ||
-        Boolean(body.legacyPack && body.legacyPack.source === "legacy_anterior_segment");
+        Boolean(body.legacyPack && body.legacyPack.source === "legacy_anterior_segment") ||
+        enrollmentConsent;
       if (body.legacyPack && body.legacyPack.source === "legacy_anterior_segment" && !body.legacyPack.error) {
         legacyAnterior = {
           ...body.legacyPack,
           attachedFrom: "ui_legacy_pack",
+          enrollmentIncluded: Boolean(body.legacyPack.enrollmentIncluded || enrollmentConsent),
           note: "Legacy anterior-segment pack from client (not re-queried)."
         };
       } else if (
@@ -1199,8 +1209,17 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
           studyName: legacyHint.studyName || null,
           siteId: legacyHint.siteId || null,
           studyId: legacyHint.studyId || null,
-          force: forceLegacy
+          force: forceLegacy,
+          includeEnrollment: enrollmentConsent
         });
+        if (legacyAnterior && !legacyAnterior.error) {
+          legacyAnterior.enrollmentIncluded = enrollmentConsent;
+          legacyAnterior.enrollmentAvailable = true;
+          if (!enrollmentConsent) {
+            legacyAnterior.prompt =
+              "Ask the user once: include legacy anterior-segment enrollment (scheduled/screened/enrolled/%), or stick to Ora Veeva / Scorecard only? Do not cite legacy enrollment numbers until they say yes.";
+          }
+        }
       }
     } catch (err) {
       legacyAnterior = { source: "legacy_anterior_segment_error", error: String(err.message || err) };

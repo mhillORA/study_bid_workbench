@@ -304,6 +304,8 @@ async function buildLegacyAnteriorContext(getDb, opts = {}) {
   const intent = isLegacyAnteriorQuestion(question);
   const named = Boolean(siteName || studyName || siteId || studyId);
 
+  const includeEnrollment = opts.includeEnrollment !== false && Boolean(opts.includeEnrollment);
+
   if (!opts.force && !intent && !named) {
     return null;
   }
@@ -320,7 +322,9 @@ async function buildLegacyAnteriorContext(getDb, opts = {}) {
     dataset: DATASET,
     note:
       "Legacy anterior-segment overview (Excel import). Separate from Ora Veeva / TrialHub / budget studies. Use for historical site trust and enrollment feasibility. Null metrics mean missing — never treat as zero.",
-    query: { siteName, studyName, siteId, studyId, intent },
+    query: { siteName, studyName, siteId, studyId, intent, includeEnrollment },
+    enrollmentIncluded: includeEnrollment,
+    enrollmentAvailable: true,
     sites: null,
     studies: null,
     siteOutcomes: null,
@@ -340,9 +344,9 @@ async function buildLegacyAnteriorContext(getDb, opts = {}) {
     };
     out.trust = trustRollup(siteRows);
 
-    // Outcomes for best-matched site (PK /siteId)
+    // Outcomes for best-matched site (PK /siteId) — enrollment detail only with consent
     const primarySite = siteRows[0];
-    if (primarySite && (named || intent)) {
+    if (includeEnrollment && primarySite && (named || intent)) {
       const sid = primarySite.siteId || primarySite.id;
       const oc = await outcomesForSite(database, sid, 50);
       out.siteOutcomes = {
@@ -363,7 +367,7 @@ async function buildLegacyAnteriorContext(getDb, opts = {}) {
     };
 
     const primaryStudy = studyRows[0];
-    if (primaryStudy && (studyName || studyId || (intent && named))) {
+    if (includeEnrollment && primaryStudy && (studyName || studyId || (intent && named))) {
       const stid = primaryStudy.studyId || primaryStudy.id;
       const oc = await outcomesForStudy(database, stid, 50);
       out.studyOutcomes = {
@@ -371,6 +375,34 @@ async function buildLegacyAnteriorContext(getDb, opts = {}) {
         studyName: primaryStudy.studyName || primaryStudy.name || primaryStudy.title,
         ...summarizeOutcomes(oc)
       };
+    }
+
+    if (!includeEnrollment) {
+      // Trust / relationship only — strip enrollment metrics until user confirms
+      if (out.sites?.items) {
+        out.sites.items = out.sites.items.map((s) => ({
+          ...s,
+          metrics: s.metrics
+            ? {
+                nStudies: s.metrics.nStudies,
+                nPis: s.metrics.nPis,
+                studyNames: s.metrics.studyNames,
+                enrollmentHidden: true
+              }
+            : null
+        }));
+      }
+      if (out.studies?.items) {
+        out.studies.items = out.studies.items.map((s) => ({
+          ...s,
+          metrics: s.metrics
+            ? { nSites: s.metrics.nSites, nPis: s.metrics.nPis, enrollmentHidden: true }
+            : null
+        }));
+      }
+      if (out.trust) {
+        out.trust.topSitesByEnrolled = [];
+      }
     }
 
     // Counts for citation
@@ -403,9 +435,137 @@ async function buildLegacyAnteriorContext(getDb, opts = {}) {
   return out;
 }
 
+function normSiteName(s) {
+  return String(s || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+/**
+ * Match Ora scorecard sites (org_clean) to legacy_sites and attach recruitment metrics.
+ * Does not write to Cosmos.
+ */
+async function enrichSitesWithLegacy(database, sites = []) {
+  const legacyRows = await queryAll(
+    database.container("legacy_sites"),
+    `SELECT * FROM c WHERE c.docType = @t`,
+    [{ name: "@t", value: DOC_SITE }]
+  );
+  const byNorm = new Map();
+  for (const row of legacyRows) {
+    const names = [row.siteName, row.name, row.siteCode].filter(Boolean);
+    for (const n of names) {
+      const key = normSiteName(n);
+      if (key && !byNorm.has(key)) byNorm.set(key, row);
+    }
+  }
+
+  function findMatch(org) {
+    const key = normSiteName(org);
+    if (!key) return null;
+    if (byNorm.has(key)) return byNorm.get(key);
+    // contains either way (bounded)
+    for (const [k, row] of byNorm) {
+      if (k.length < 4 || key.length < 4) continue;
+      if (k.includes(key) || key.includes(k)) return row;
+    }
+    return null;
+  }
+
+  let matched = 0;
+  const outSites = (sites || []).map((s) => {
+    const hit = findMatch(s.org_clean);
+    if (!hit) {
+      return { ...s, legacy: null, legacyMatched: false };
+    }
+    matched += 1;
+    const m = hit.metrics || {};
+    const enrolled = num(m.enrolled);
+    const screened = num(m.screened);
+    const scheduled = num(m.scheduled);
+    const target = num(m.targetScheduled);
+    const screenPct = screened != null && scheduled > 0 ? roundPct(screened / scheduled) : null;
+    const enrollOfScreen =
+      enrolled != null && screened > 0 ? roundPct(enrolled / screened) : null;
+    return {
+      ...s,
+      legacyMatched: true,
+      legacy: {
+        siteId: hit.siteId || hit.id,
+        siteName: hit.siteName || hit.name,
+        relationshipPreference: hit.relationshipPreference || null,
+        advantages: hit.advantages || null,
+        disadvantages: hit.disadvantages || null,
+        targetScheduled: target,
+        scheduled,
+        screened,
+        enrolled,
+        nStudies: num(m.nStudies),
+        attainmentPct: attainment(enrolled, target),
+        screenedOfScheduledPct: screenPct,
+        enrolledOfScreenedPct: enrollOfScreen
+      }
+    };
+  });
+
+  return {
+    sites: outSites,
+    meta: {
+      source: DATASET,
+      legacySiteCount: legacyRows.length,
+      matched,
+      unmatched: outSites.length - matched,
+      note: "Legacy anterior-segment recruitment metrics matched by site name to Ora org_clean. Separate from Veeva PSM/trust."
+    }
+  };
+}
+
+function roundPct(x) {
+  if (x == null || !Number.isFinite(x)) return null;
+  return Math.round(x * 1000) / 10;
+}
+
+function userConsentedLegacyEnrollment(question, history = []) {
+  const texts = [
+    String(question || ""),
+    ...((history || []).slice(-6).map((h) => String(h.content || "")))
+  ].join("\n");
+  const q = String(question || "").toLowerCase();
+  // Explicit opt-in on this turn
+  if (
+    /\b(yes|yeah|yep|sure|ok|okay|please|include|use|pull|show)\b/.test(q) &&
+    /\b(legacy|anterior|enrollment|recruitment|historical)\b/.test(q)
+  ) {
+    return true;
+  }
+  if (/\b(include|use|with)\b.{0,40}\blegacy\b.{0,20}\b(enroll|recruit)/i.test(q)) return true;
+  if (/\blegacy\b.{0,20}\b(enroll|recruit).{0,20}\b(yes|please|include)\b/i.test(q)) return true;
+  // Recent assistant asked + user said yes
+  const turns = history || [];
+  for (let i = turns.length - 1; i >= 0 && i >= turns.length - 4; i--) {
+    const t = turns[i];
+    if (t.role === "user" && /\b(yes|yeah|yep|sure|ok|okay|please|include it|use it|go ahead)\b/i.test(t.content || "")) {
+      // look back for legacy enrollment ask
+      for (let j = i - 1; j >= 0 && j >= i - 3; j--) {
+        if (
+          turns[j].role === "assistant" &&
+          /\blegacy\b/i.test(turns[j].content || "") &&
+          /\b(enroll|recruit)/i.test(turns[j].content || "")
+        ) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
 module.exports = {
   DATASET,
   isLegacyAnteriorQuestion,
   extractLegacyNameHints,
-  buildLegacyAnteriorContext
+  buildLegacyAnteriorContext,
+  enrichSitesWithLegacy,
+  userConsentedLegacyEnrollment
 };

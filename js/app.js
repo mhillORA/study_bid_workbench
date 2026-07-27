@@ -59,6 +59,8 @@
       countryQuery: "",
       countrySuggestOpen: false,
       source: "ora",
+      tab: "ranked", // ranked | dive | legacy
+      includeLegacy: false,
       result: null,
       status: "",
       loading: false,
@@ -2212,6 +2214,7 @@
             countries: state.intelligence.globalRegion ? undefined : state.intelligence.countries,
             global: state.intelligence.globalRegion || undefined
           },
+          includeLegacyEnrollment: Boolean(state.scorecard.includeLegacy) || undefined,
           intelligencePack:
             state.intelligence.pack &&
             state.intelligence.pack.source === "ora_clinical_intelligence" &&
@@ -2843,7 +2846,9 @@
     const src = state.scorecard.source === "compare" || state.scorecard.source === "all" ? "compare" : "ora";
     state.scorecard.source = src;
     state.scorecard.loading = true;
-    state.scorecard.status = `Scoring sites (${src === "compare" ? "Ora vs industry" : "Ora"})…`;
+    state.scorecard.status = `Scoring sites (${src === "compare" ? "Ora vs industry" : "Ora"}${
+      state.scorecard.includeLegacy ? " + legacy recruitment" : ""
+    })…`;
     if (!state.scorecard.dive) {
       state.scorecard.dive = {
         open: false,
@@ -2863,6 +2868,7 @@
       if (global) params.set("global", "true");
       else if (countries.length) params.set("countries", countries.join(","));
       params.set("source", src);
+      if (state.scorecard.includeLegacy) params.set("includeLegacy", "true");
       const res = await fetch(apiUrl(`/api/intelligence/sitescorecard?${params.toString()}`));
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
@@ -2955,19 +2961,56 @@
   function renderScorecard() {
     const src =
       state.scorecard.source === "compare" || state.scorecard.source === "all" ? "compare" : "ora";
+    const tab = state.scorecard.tab || "ranked";
+    const includeLegacy = !!state.scorecard.includeLegacy;
     const status = state.scorecard.status
       ? `<p class="muted" style="margin-top:0.5rem;">${escapeHtml(state.scorecard.status)}</p>`
       : "";
     const result = state.scorecard.result;
     const compare = src === "compare";
-    let table = "";
+    const trustNote = result?.trustNote
+      ? `<p class="muted" style="margin-top:0.35rem;font-size:0.85rem;">${escapeHtml(result.trustNote)}</p>`
+      : `<p class="muted" style="margin-top:0.35rem;font-size:0.85rem;">Trust = high ÷ known fsi_trust labels (missing excluded). Shown as high/known.</p>`;
+
+    function trustCell(s) {
+      if (s.trustHighOfKnown) {
+        return `<td title="high / known fsi_trust labels">${escapeHtml(s.trustHighOfKnown)}${
+          s.highTrustShare != null ? ` · ${intelPct(s.highTrustShare)}` : ""
+        }</td>`;
+      }
+      if (s.highTrustShare != null) return `<td>${intelPct(s.highTrustShare)}</td>`;
+      return `<td class="muted">—</td>`;
+    }
+
+    function legacyCells(s) {
+      if (!includeLegacy) return "";
+      const L = s.legacy;
+      if (!L) return `<td class="muted">—</td><td class="muted">—</td><td class="muted">—</td><td class="muted">—</td><td class="muted">—</td>`;
+      return `<td>${intelStatNum(L.scheduled)}</td>
+        <td>${intelStatNum(L.screened)}</td>
+        <td>${intelStatNum(L.enrolled)}</td>
+        <td>${L.attainmentPct != null ? `${intelStatNum(L.attainmentPct)}%` : "—"}</td>
+        <td>${L.enrolledOfScreenedPct != null ? `${intelStatNum(L.enrolledOfScreenedPct)}%` : "—"}</td>`;
+    }
+
+    const legacyHead = includeLegacy
+      ? "<th>Leg. sched</th><th>Leg. screened</th><th>Leg. enrolled</th><th>Leg. attain %</th><th>Leg. enroll/screen %</th>"
+      : "";
+
+    let rankedTable = "";
     if (result && result.sites && result.sites.length) {
-      table = `
+      rankedTable = `
         <div class="card wide">
           <h3>Ranked sites · ${escapeHtml(result.countryFilterLabel || "Global")} · ${escapeHtml(
             result.indication || "—"
           )}</h3>
-          <p class="muted">${escapeHtml(result.note || "")} · n=${intelStatNum(result.siteCount)}</p>
+          <p class="muted">${escapeHtml(result.note || "")} · n=${intelStatNum(result.siteCount)}${
+            includeLegacy && result.legacy
+              ? ` · legacy matched ${intelStatNum(result.legacy.matched)}/${intelStatNum(result.siteCount)}`
+              : ""
+          }</p>
+          ${trustNote}
+          <div style="overflow:auto;">
           <table class="table">
             <thead><tr>
               <th>#</th><th>Site</th><th>Country</th>
@@ -2977,7 +3020,8 @@
                   ? "<th>Industry score</th><th>Δ</th><th>Ora PSM</th><th>Ind. PSM</th><th>vs Ind.</th><th>Recruiting</th>"
                   : "<th>Site PSM</th>"
               }
-              <th>Enrolled</th><th>Trust</th>
+              <th>Veeva enrolled</th><th>Trust (high/known)</th>
+              ${legacyHead}
             </tr></thead>
             <tbody>
               ${result.sites
@@ -3005,15 +3049,17 @@
                       : `<td>${intelStatNum(s.sitePsmMedian)}</td>`
                   }
                   <td>${intelStatNum(s.totalEnrolledSum)}</td>
-                  <td>${intelPct(s.highTrustShare)}</td>
+                  ${trustCell(s)}
+                  ${legacyCells(s)}
                 </tr>`;
                 })
                 .join("")}
             </tbody>
           </table>
+          </div>
         </div>`;
     } else if (result && !result.sites?.length) {
-      table = `<div class="card wide"><p class="muted">No scored sites for this filter.</p></div>`;
+      rankedTable = `<div class="card wide"><p class="muted">No scored sites for this filter.</p></div>`;
     }
 
     const dive = state.scorecard.dive || {
@@ -3024,7 +3070,6 @@
       picks: null,
       note: ""
     };
-    const diveOpen = !!dive.open;
     let diveTable = "";
     if (dive.picks && dive.picks.length) {
       diveTable = `
@@ -3033,6 +3078,7 @@
             <th>#</th><th>Recommended site</th><th>Country</th><th>Ora score</th><th>PSM / mo</th><th>Expected in ${intelStatNum(
               dive.enrollMonths
             )} mo</th>
+            ${includeLegacy ? "<th>Leg. enrolled</th><th>Leg. attain %</th>" : ""}
           </tr></thead>
           <tbody>
             ${dive.picks
@@ -3044,6 +3090,16 @@
                 <td><span class="buddy-i">${intelStatNum(s.oraScore != null ? s.oraScore : s.score)}</span></td>
                 <td>${intelStatNum(s.monthlyCapacity != null ? s.monthlyCapacity : s.sitePsmMedian)}</td>
                 <td>${intelStatNum(s.expectedEnrollment)}</td>
+                ${
+                  includeLegacy
+                    ? `<td>${s.legacy ? intelStatNum(s.legacy.enrolled) : "—"}</td>
+                       <td>${
+                         s.legacy && s.legacy.attainmentPct != null
+                           ? `${intelStatNum(s.legacy.attainmentPct)}%`
+                           : "—"
+                       }</td>`
+                    : ""
+                }
               </tr>`
               )
               .join("")}
@@ -3051,14 +3107,105 @@
         </table>`;
     }
 
+    const divePanel = `
+      <div class="card wide">
+        <h3>Deeper dive · site slate</h3>
+        <p class="muted">Build a recommended slate from the scored list using enrollment goal, target sites, and months. Uses Ora site PSM as monthly capacity.</p>
+        <div class="form-grid" style="margin-top:0.75rem;">
+          <div>
+            <label class="field-label" for="diveEnrolledGoal">Enrollment goal</label>
+            <input id="diveEnrolledGoal" class="input" type="number" min="1" value="${escapeAttr(
+              String(dive.enrolledGoal ?? 120)
+            )}" />
+          </div>
+          <div>
+            <label class="field-label" for="diveTargetSites">Target sites</label>
+            <input id="diveTargetSites" class="input" type="number" min="1" value="${escapeAttr(
+              String(dive.targetSites ?? 15)
+            )}" />
+          </div>
+          <div>
+            <label class="field-label" for="diveEnrollMonths">Enrollment months</label>
+            <input id="diveEnrollMonths" class="input" type="number" min="1" value="${escapeAttr(
+              String(dive.enrollMonths ?? 12)
+            )}" />
+          </div>
+        </div>
+        <div class="benchmark-actions">
+          <button type="button" class="btn btn-primary" id="btnScoreDiveRun">Build recommended slate</button>
+        </div>
+        ${dive.note ? `<p class="muted" style="margin-top:0.65rem;">${escapeHtml(dive.note)}</p>` : ""}
+        ${diveTable}
+      </div>`;
+
+    const legacyMatched =
+      includeLegacy && result?.sites ? result.sites.filter((s) => s.legacyMatched && s.legacy) : [];
+    const legacyPanel = `
+      <div class="card wide">
+        <h3>Legacy recruitment</h3>
+        <p class="muted">Anterior-segment overview metrics matched onto Ora sites by name. Turn on <strong>Include legacy recruitment data</strong> and Score sites. Does not change Ora scores.</p>
+        ${
+          !includeLegacy
+            ? `<p class="muted">Legacy columns are off. Enable the toggle above, then re-score.</p>`
+            : !result
+              ? `<p class="muted">Score sites first to see legacy matches.</p>`
+              : legacyMatched.length
+                ? `<p class="muted">${legacyMatched.length} of ${
+                    result.sites.length
+                  } scored sites matched a legacy site.${
+                    result.legacy?.note ? ` ${escapeHtml(result.legacy.note)}` : ""
+                  }</p>
+            <div style="overflow:auto;">
+            <table class="table">
+              <thead><tr>
+                <th>Ora site</th><th>Legacy site</th><th>Preference</th>
+                <th>Scheduled</th><th>Screened</th><th>Enrolled</th>
+                <th>Attain %</th><th>Enroll/screen %</th><th>Studies</th>
+              </tr></thead>
+              <tbody>
+                ${legacyMatched
+                  .map((s) => {
+                    const L = s.legacy;
+                    return `<tr>
+                    <td>${escapeHtml(s.org_clean || "—")}</td>
+                    <td>${escapeHtml(L.siteName || "—")}</td>
+                    <td>${escapeHtml(L.relationshipPreference || "—")}</td>
+                    <td>${intelStatNum(L.scheduled)}</td>
+                    <td>${intelStatNum(L.screened)}</td>
+                    <td>${intelStatNum(L.enrolled)}</td>
+                    <td>${L.attainmentPct != null ? `${intelStatNum(L.attainmentPct)}%` : "—"}</td>
+                    <td>${
+                      L.enrolledOfScreenedPct != null
+                        ? `${intelStatNum(L.enrolledOfScreenedPct)}%`
+                        : "—"
+                    }</td>
+                    <td>${intelStatNum(L.nStudies)}</td>
+                  </tr>`;
+                  })
+                  .join("")}
+              </tbody>
+            </table>
+            </div>`
+                : `<p class="muted">No name matches between Ora org_clean and legacy_sites for this score run.</p>`
+        }
+      </div>`;
+
+    const tabBody =
+      tab === "dive" ? divePanel : tab === "legacy" ? legacyPanel : rankedTable || `<div class="card wide"><p class="muted">Score sites to populate this tab.</p></div>`;
+
     return `
       <div class="grid">
         <div class="card wide">
           <h3>Site Scorecard</h3>
-          <p class="muted">BD/sales: rank Ora sites and build a recommended slate for the bid. Leadership: see how our sites stack up vs a country-level industry benchmark from TrialHub (market context — not named competitor sites).</p>
-          <div class="score-source-toggle" style="margin-top:0.75rem;display:flex;gap:0.5rem;flex-wrap:wrap;">
+          <p class="muted">BD/sales: rank Ora sites and build a recommended slate. Leadership: Ora vs country-level industry benchmark from TrialHub.</p>
+          <div class="score-source-toggle" style="margin-top:0.75rem;display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;">
             <button type="button" class="btn ${src === "ora" ? "btn-primary" : "btn-secondary"}" data-score-source="ora">Ora</button>
             <button type="button" class="btn ${src === "compare" ? "btn-primary" : "btn-secondary"}" data-score-source="compare">Ora vs industry</button>
+            <button type="button" class="btn ${
+              includeLegacy ? "btn-primary" : "btn-secondary"
+            }" id="btnScoreIncludeLegacy">${
+              includeLegacy ? "Legacy recruitment: on" : "Include legacy recruitment data"
+            }</button>
           </div>
           <div class="benchmark-filter-grid">
             <div class="benchmark-filter-field">
@@ -3075,46 +3222,21 @@
           </div>
           <div class="benchmark-actions">
             <button type="button" class="btn btn-primary" id="btnScoreQuery">Score sites</button>
-            <button type="button" class="btn btn-secondary" id="btnScoreDiveToggle">${
-              diveOpen ? "Hide deeper dive" : "Deeper dive"
-            }</button>
           </div>
           ${status}
+          <div class="scorecard-tabs" role="tablist" style="margin-top:1rem;display:flex;gap:0.4rem;flex-wrap:wrap;">
+            <button type="button" class="btn ${
+              tab === "ranked" ? "btn-primary" : "btn-ghost"
+            }" data-score-tab="ranked">Ranked sites</button>
+            <button type="button" class="btn ${
+              tab === "dive" ? "btn-primary" : "btn-ghost"
+            }" data-score-tab="dive">Deeper dive</button>
+            <button type="button" class="btn ${
+              tab === "legacy" ? "btn-primary" : "btn-ghost"
+            }" data-score-tab="legacy">Legacy recruitment</button>
+          </div>
         </div>
-        ${
-          diveOpen
-            ? `<div class="card wide">
-          <h3>Deeper dive · site slate</h3>
-          <p class="muted">Build a recommended slate from the scored list using enrollment goal, target sites, and months. Uses Ora site PSM as monthly capacity.</p>
-          <div class="form-grid" style="margin-top:0.75rem;">
-            <div>
-              <label class="field-label" for="diveEnrolledGoal">Enrollment goal</label>
-              <input id="diveEnrolledGoal" class="input" type="number" min="1" value="${escapeAttr(
-                String(dive.enrolledGoal ?? 120)
-              )}" />
-            </div>
-            <div>
-              <label class="field-label" for="diveTargetSites">Target sites</label>
-              <input id="diveTargetSites" class="input" type="number" min="1" value="${escapeAttr(
-                String(dive.targetSites ?? 15)
-              )}" />
-            </div>
-            <div>
-              <label class="field-label" for="diveEnrollMonths">Enrollment months</label>
-              <input id="diveEnrollMonths" class="input" type="number" min="1" value="${escapeAttr(
-                String(dive.enrollMonths ?? 12)
-              )}" />
-            </div>
-          </div>
-          <div class="benchmark-actions">
-            <button type="button" class="btn btn-primary" id="btnScoreDiveRun">Build recommended slate</button>
-          </div>
-          ${dive.note ? `<p class="muted" style="margin-top:0.65rem;">${escapeHtml(dive.note)}</p>` : ""}
-          ${diveTable}
-        </div>`
-            : ""
-        }
-        ${table}
+        ${tabBody}
       </div>`;
   }
 
@@ -5574,6 +5696,19 @@
         else render();
         return;
       }
+      if (e.target.id === "btnScoreIncludeLegacy") {
+        state.scorecard.includeLegacy = !state.scorecard.includeLegacy;
+        if (state.scorecard.result) runSiteScorecard();
+        else render();
+        return;
+      }
+      const scoreTab = e.target.closest("[data-score-tab]");
+      if (scoreTab) {
+        state.scorecard.tab = scoreTab.getAttribute("data-score-tab") || "ranked";
+        if (state.scorecard.tab === "dive" && state.scorecard.dive) state.scorecard.dive.open = true;
+        render();
+        return;
+      }
       if (e.target.id === "btnScoreDiveToggle") {
         if (!state.scorecard.dive) {
           state.scorecard.dive = {
@@ -5587,6 +5722,7 @@
         } else {
           state.scorecard.dive.open = !state.scorecard.dive.open;
         }
+        state.scorecard.tab = "dive";
         render();
         return;
       }
