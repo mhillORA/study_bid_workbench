@@ -783,6 +783,53 @@ h1 {
   font-weight: 600;
 }
 
+.lock-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid var(--border, rgba(0, 0, 0, 0.08));
+  margin-bottom: 0.75rem;
+}
+
+.lock-bar-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.lock-bar-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+.lock-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.2rem 0.55rem;
+  border-radius: 0.35rem;
+  font-size: 0.8rem;
+  background: var(--surface-2, rgba(0, 0, 0, 0.06));
+  border: 1px solid var(--border, rgba(0, 0, 0, 0.1));
+}
+
+.lock-chip.is-mine {
+  border-color: var(--accent, #0b6e4f);
+  background: color-mix(in srgb, var(--accent, #0b6e4f) 12%, transparent);
+}
+
+.lock-banner-text {
+  font-size: 0.9rem;
+}
+
+.lock-status {
+  margin: 0;
+  font-size: 0.85rem;
+}
+
 .field-note {
   font-size: 0.8rem;
   margin-top: 0.25rem;

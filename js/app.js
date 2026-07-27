@@ -1,18 +1,17 @@
 (() => {
-  const STORAGE_KEY = "sbw.study.v1";
   const USER_KEY = "sbw.user.v1";
 
   const state = {
     userId: localStorage.getItem(USER_KEY) || "u-admin",
     entraUser: null,
     sectionId: "hub",
-    study: loadStudy(),
+    study: SBW.defaultStudy(),
     dirty: false,
     results: {},
     askHistory: [],
     buddyOpen: false,
     buddyBusy: false,
-    source: "local", // local | cosmos
+    source: "none", // none | cosmos | buddy
     versions: [],
     lineItems: [],
     compare: null,
@@ -78,7 +77,12 @@
       loading: false
     },
     hlbpBaseline: null,
-    studiesFilter: localStorage.getItem("sbw.studiesFilter") || "all"
+    studiesFilter: localStorage.getItem("sbw.studiesFilter") || "all",
+    locks: [],
+    editingSectionId: null,
+    lockStatus: "",
+    _lockPollTimer: null,
+    _lockHeartbeatTimer: null
   };
 
   const els = {
@@ -116,14 +120,6 @@
     requestNote: document.getElementById("requestNote")
   };
 
-  function loadStudy() {
-    try {
-      const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) return JSON.parse(raw);
-    } catch (_) {}
-    return SBW.defaultStudy();
-  }
-
   function currentUser() {
     return SBW.users.find((u) => u.id === state.userId) || SBW.users[0];
   }
@@ -159,14 +155,22 @@
   }
 
   function save() {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state.study));
-    } catch (_) {}
     if (!hasOpenStudy()) {
-      markSaved();
+      if (els.saveStatus) {
+        els.saveStatus.textContent = "No study selected";
+        els.saveStatus.classList.remove("saved");
+      }
       return;
     }
-    saveStudyToCosmos({ mode: "update" }).catch(() => {});
+    const sectionId = state.editingSectionId || state.sectionId;
+    if (isLockableSection(sectionId) && !holdsEditLock(sectionId)) {
+      if (els.saveStatus) {
+        els.saveStatus.textContent = "Click Edit on this tab before saving";
+        els.saveStatus.classList.remove("saved");
+      }
+      return;
+    }
+    saveStudyToCosmos({ mode: "update", sectionId }).catch(() => {});
   }
 
   function studyPayloadForSave(extra = {}) {
@@ -205,12 +209,13 @@
     };
   }
 
-  async function saveStudyToCosmos({ mode = "update", versionLabel } = {}) {
+  async function saveStudyToCosmos({ mode = "update", versionLabel, sectionId } = {}) {
     if (!hasOpenStudy()) {
       if (els.saveStatus) els.saveStatus.textContent = "No study to save";
       return null;
     }
     const studyId = state.study.studyId;
+    const sec = sectionId || state.editingSectionId || state.sectionId;
     const creating = !state.study.currentVersionId && state.source !== "cosmos";
     if (els.saveStatus) {
       els.saveStatus.textContent = mode === "new" ? "Saving new version to Cosmos…" : "Saving to Cosmos…";
@@ -223,13 +228,12 @@
         versionLabel: versionLabel || state.study.versionLabel
       });
       if (creating && mode === "update") {
-        // First Cosmos write for a local HLBP / draft
         res = await fetch(apiUrl("/api/studies"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             ...body,
-            createdBy: state.entraUser?.email || state.userId || "ui"
+            createdBy: lockIdentity().email || lockIdentity().userId || "ui"
           })
         });
       } else if (mode === "new") {
@@ -238,6 +242,19 @@
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body)
         });
+      } else if (isLockableSection(sec) && holdsEditLock(sec)) {
+        res = await fetch(
+          apiUrl(`/api/studies/${encodeURIComponent(studyId)}/locks/${encodeURIComponent(sec)}`),
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              user: lockIdentity(),
+              mode: "update",
+              payload: body
+            })
+          }
+        );
       } else {
         res = await fetch(apiUrl(`/api/studies/${encodeURIComponent(studyId)}`), {
           method: "PUT",
@@ -264,7 +281,6 @@
       } else if (!state.hlbpBaseline) {
         captureHlbpBaseline();
       }
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state.study));
       markSaved();
       if (els.saveStatus) {
         els.saveStatus.textContent =
@@ -277,7 +293,7 @@
       return data;
     } catch (err) {
       if (els.saveStatus) {
-        els.saveStatus.textContent = `Local only — Cosmos save failed: ${String(err.message || err)}`;
+        els.saveStatus.textContent = `Cosmos save failed: ${String(err.message || err)}`;
         els.saveStatus.classList.remove("saved");
       }
       throw err;
@@ -410,8 +426,32 @@
   }
 
   function setSection(sectionId) {
+    if (
+      state.editingSectionId &&
+      state.editingSectionId !== sectionId &&
+      isLockableSection(state.editingSectionId)
+    ) {
+      const leave = window.confirm(
+        `You're still editing ${sectionLabel(state.editingSectionId)}. Save and Done before leaving?\n\nOK = Save & release lock, then switch tabs.\nCancel = stay here.`
+      );
+      if (!leave) return;
+      doneEditingSection().then(() => {
+        state.sectionId = sectionId;
+        afterSetSection(sectionId);
+      });
+      return;
+    }
     state.sectionId = sectionId;
+    afterSetSection(sectionId);
+  }
+
+  function afterSetSection(sectionId) {
     render();
+    if (hasOpenStudy()) {
+      refreshLocks().then(() => {
+        if (document.querySelector(".lock-bar")) render();
+      });
+    }
     if (sectionId === "versions" || sectionId === "studies") {
       ensureStudiesLoaded().then(() => {
         if (sectionId === "versions") {
@@ -520,6 +560,305 @@
     if (user.department === "Admin") return true;
     if (user.department === "Analyst" || user.department === "TAH") return true;
     return user.department === department;
+  }
+
+  function isLockableSection(sectionId) {
+    return (SBW.lockableSections || []).includes(sectionId);
+  }
+
+  function lockIdentity() {
+    const entra = state.entraUser || {};
+    const user = currentUser();
+    return {
+      userId: entra.userId || entra.email || state.userId,
+      email: entra.email || null,
+      displayName: entra.displayName || entra.firstName || user.name || user.department,
+      firstName: entra.firstName || null
+    };
+  }
+
+  function lockForSection(sectionId) {
+    return (state.locks || []).find((l) => l.sectionId === sectionId) || null;
+  }
+
+  function isMeLock(lock) {
+    if (!lock) return false;
+    const me = lockIdentity();
+    return (
+      lock.holderUserId === me.userId ||
+      (me.email && lock.holderEmail && lock.holderEmail === me.email)
+    );
+  }
+
+  function holdsEditLock(sectionId) {
+    return state.editingSectionId === sectionId && isMeLock(lockForSection(sectionId));
+  }
+
+  /** Role OK but fields stay read-only until Edit lock is claimed. */
+  function fieldsDisabledForSection(section) {
+    const roleLocked = !canEdit(section.department) && currentUser().department !== "Admin";
+    if (roleLocked) return true;
+    if (!isLockableSection(section.id)) return false;
+    return !holdsEditLock(section.id);
+  }
+
+  function sectionLabel(sectionId) {
+    return (SBW.sections.find((s) => s.id === sectionId) || {}).label || sectionId;
+  }
+
+  function renderLockBar(sectionId) {
+    if (!hasOpenStudy() || !isLockableSection(sectionId)) return "";
+    const lock = lockForSection(sectionId);
+    const mine = holdsEditLock(sectionId);
+    const other = lock && !isMeLock(lock) ? lock : null;
+    const isAdmin = currentUser().department === "Admin";
+    const chips = (state.locks || [])
+      .map(
+        (l) =>
+          `<span class="lock-chip ${isMeLock(l) ? "is-mine" : ""}">${escapeHtml(
+            l.holderName || l.holderEmail || "Someone"
+          )} · ${escapeHtml(sectionLabel(l.sectionId))}</span>`
+      )
+      .join("");
+
+    let actions = "";
+    if (mine) {
+      actions = `<button type="button" class="btn btn-primary" id="btnSectionSave">Save</button>
+        <button type="button" class="btn btn-secondary" id="btnSectionDone">Done (save &amp; release)</button>`;
+    } else if (other) {
+      actions = `<span class="lock-banner-text">${escapeHtml(
+        other.holderName || "Someone"
+      )} is editing this tab. Wait until they Save and click Done.</span>
+        ${
+          isAdmin
+            ? `<button type="button" class="btn btn-secondary" id="btnSectionTakeover">Admin take over</button>`
+            : ""
+        }`;
+    } else {
+      actions = `<button type="button" class="btn btn-primary" id="btnSectionEdit">Edit this tab</button>
+        <span class="muted">View only until you lock the tab.</span>`;
+    }
+
+    return `<div class="lock-bar" data-lock-section="${escapeAttr(sectionId)}">
+      <div class="lock-bar-actions">${actions}</div>
+      <div class="lock-bar-chips">${chips || `<span class="muted">No one else editing</span>`}</div>
+      ${state.lockStatus ? `<p class="muted lock-status">${escapeHtml(state.lockStatus)}</p>` : ""}
+    </div>`;
+  }
+
+  async function refreshLocks() {
+    if (!hasOpenStudy()) {
+      state.locks = [];
+      return;
+    }
+    try {
+      const res = await fetch(
+        apiUrl(`/api/studies/${encodeURIComponent(state.study.studyId)}/locks`)
+      );
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) state.locks = data.locks || [];
+    } catch (_) {}
+  }
+
+  function stopLockTimers() {
+    if (state._lockPollTimer) clearInterval(state._lockPollTimer);
+    if (state._lockHeartbeatTimer) clearInterval(state._lockHeartbeatTimer);
+    state._lockPollTimer = null;
+    state._lockHeartbeatTimer = null;
+  }
+
+  function startLockPolling() {
+    stopLockTimers();
+    if (!hasOpenStudy()) return;
+    state._lockPollTimer = setInterval(async () => {
+      const before = JSON.stringify(state.locks || []);
+      await refreshLocks();
+      const lock = state.editingSectionId ? lockForSection(state.editingSectionId) : null;
+      if (state.editingSectionId && (!lock || !isMeLock(lock))) {
+        // Lost lock (expired or taken over after remote save)
+        state.editingSectionId = null;
+        state.lockStatus = "Edit lock released — tab is view only.";
+        state.dirty = false;
+        render();
+        return;
+      }
+      if (lock && isMeLock(lock) && lock.pendingTakeover) {
+        await handlePendingTakeoverSave();
+        return;
+      }
+      if (JSON.stringify(state.locks || []) !== before && document.getElementById("viewRoot")) {
+        const bar = els.viewRoot.querySelector(".lock-bar");
+        if (bar) render();
+      }
+    }, 12000);
+
+    state._lockHeartbeatTimer = setInterval(() => {
+      if (state.editingSectionId) heartbeatEditLock().catch(() => {});
+    }, 20000);
+  }
+
+  async function handlePendingTakeoverSave() {
+    const sec = state.editingSectionId;
+    if (!sec) return;
+    state.lockStatus = "Admin take over requested — saving your work…";
+    try {
+      if (state.dirty) await saveStudyToCosmos({ mode: "update", sectionId: sec });
+      await releaseEditLock(sec);
+      state.lockStatus = "Your work was saved and the lock was released for Admin take over.";
+      render();
+    } catch (err) {
+      state.lockStatus = `Could not save before take over: ${String(err.message || err)}`;
+      render();
+    }
+  }
+
+  async function claimEditLock(sectionId) {
+    if (!hasOpenStudy() || !isLockableSection(sectionId)) return false;
+    state.lockStatus = "Claiming edit lock…";
+    try {
+      const res = await fetch(
+        apiUrl(
+          `/api/studies/${encodeURIComponent(state.study.studyId)}/locks/${encodeURIComponent(sectionId)}`
+        ),
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "claim", user: lockIdentity() })
+        }
+      );
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 409) {
+        state.lockStatus = data.error || "Someone else is editing this tab.";
+        await refreshLocks();
+        render();
+        return false;
+      }
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      state.editingSectionId = sectionId;
+      await refreshLocks();
+      window.alert(
+        `You're editing ${sectionLabel(sectionId)}. Save your changes, then click Done to release the lock so others can edit this tab.`
+      );
+      state.lockStatus = `Editing ${sectionLabel(sectionId)} — Save, then Done when finished.`;
+      render();
+      startLockPolling();
+      heartbeatEditLock().catch(() => {});
+      return true;
+    } catch (err) {
+      state.lockStatus = String(err.message || err);
+      render();
+      return false;
+    }
+  }
+
+  async function heartbeatEditLock() {
+    const sec = state.editingSectionId;
+    if (!sec || !hasOpenStudy()) return;
+    const res = await fetch(
+      apiUrl(`/api/studies/${encodeURIComponent(state.study.studyId)}/locks/${encodeURIComponent(sec)}`),
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "heartbeat",
+          user: lockIdentity(),
+          draft: studyPayloadForSave()
+        })
+      }
+    );
+    const data = await res.json().catch(() => ({}));
+    if (res.status === 403 || data.status === "expired" || data.status === "missing") {
+      state.editingSectionId = null;
+      state.lockStatus = "Edit lock lost — click Edit to reclaim.";
+      render();
+      return;
+    }
+    if (data.pendingTakeover) await handlePendingTakeoverSave();
+  }
+
+  async function releaseEditLock(sectionId) {
+    const sec = sectionId || state.editingSectionId;
+    if (!sec || !hasOpenStudy()) {
+      state.editingSectionId = null;
+      return;
+    }
+    try {
+      await fetch(
+        apiUrl(`/api/studies/${encodeURIComponent(state.study.studyId)}/locks/${encodeURIComponent(sec)}`),
+        {
+          method: "DELETE",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ user: lockIdentity() })
+        }
+      );
+    } catch (_) {}
+    if (state.editingSectionId === sec) state.editingSectionId = null;
+    await refreshLocks();
+  }
+
+  async function doneEditingSection() {
+    const sec = state.editingSectionId || state.sectionId;
+    if (!sec) return;
+    try {
+      if (state.dirty) await saveStudyToCosmos({ mode: "update", sectionId: sec });
+      await releaseEditLock(sec);
+      state.lockStatus = `Released ${sectionLabel(sec)}. Others can Edit this tab now.`;
+      render();
+    } catch (err) {
+      state.lockStatus = `Save before Done failed: ${String(err.message || err)}`;
+      render();
+    }
+  }
+
+  async function adminTakeoverSection(sectionId) {
+    if (currentUser().department !== "Admin") return;
+    const lock = lockForSection(sectionId);
+    const name = lock?.holderName || "the current editor";
+    const ok = window.confirm(
+      `Take over ${sectionLabel(sectionId)} from ${name}?\n\nTheir latest draft will be saved to Cosmos first (if available), then you get the lock.`
+    );
+    if (!ok) return;
+    state.lockStatus = "Requesting take over (saving their draft)…";
+    try {
+      // Soft request first so their browser can save
+      await fetch(
+        apiUrl(
+          `/api/studies/${encodeURIComponent(state.study.studyId)}/locks/${encodeURIComponent(sectionId)}`
+        ),
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "request_takeover", user: lockIdentity() })
+        }
+      );
+      await new Promise((r) => setTimeout(r, 2500));
+      const res = await fetch(
+        apiUrl(
+          `/api/studies/${encodeURIComponent(state.study.studyId)}/locks/${encodeURIComponent(sectionId)}`
+        ),
+        {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "takeover", force: true, user: lockIdentity() })
+        }
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      state.editingSectionId = sectionId;
+      if (data.savedForPrevious && !data.savedForPrevious.error) {
+        state.lockStatus = `Saved ${name}'s draft, then took over ${sectionLabel(sectionId)}.`;
+      } else if (data.savedForPrevious?.error) {
+        state.lockStatus = `Took over (draft save warning: ${data.savedForPrevious.error}).`;
+      } else {
+        state.lockStatus = `Took over ${sectionLabel(sectionId)}.`;
+      }
+      await refreshLocks();
+      render();
+      startLockPolling();
+    } catch (err) {
+      state.lockStatus = String(err.message || err);
+      render();
+    }
   }
 
   function canSeeSection(section) {
@@ -732,13 +1071,11 @@
     syncCoreSitesFromMix();
     state.lineItems = [];
     state.versions = [];
-    state.source = "local";
+    state.source = "cosmos";
     state.sectionId = "hlbp";
     state.hlbpBaseline = null;
     state.dirty = true;
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state.study));
-    } catch (_) {}
+    state.editingSectionId = null;
     render();
     if (els.saveStatus) {
       els.saveStatus.textContent = "Creating HLBP in Cosmos…";
@@ -748,9 +1085,11 @@
       await saveStudyToCosmos({ mode: "update", versionLabel: state.study.versionLabel || "v1" });
       captureHlbpBaseline();
       state.studiesList = [];
+      startLockPolling();
+      await claimEditLock("hlbp");
     } catch (err) {
       if (els.saveStatus) {
-        els.saveStatus.textContent = `HLBP local only — Cosmos create failed: ${String(err.message || err)}`;
+        els.saveStatus.textContent = `Cosmos create failed: ${String(err.message || err)}`;
       }
     }
   }
@@ -1536,16 +1875,20 @@
       const ok = window.confirm("Clear the open study? Unsaved changes will be discarded from the workspace.");
       if (!ok) return false;
     }
+    if (state.editingSectionId) {
+      releaseEditLock(state.editingSectionId);
+    }
+    stopLockTimers();
     state.study = SBW.defaultStudy();
     state.lineItems = [];
     state.versions = [];
     state.compare = null;
     state.source = "none";
     state.dirty = false;
-    try {
-      localStorage.removeItem(STORAGE_KEY);
-    } catch (_) {}
-    if (state.sectionId === "overview" || state.sectionId === "recruitment" || state.sectionId === "clinops" || state.sectionId === "monitoring" || state.sectionId === "smo" || state.sectionId === "summary" || state.sectionId === "formulas" || state.sectionId === "reviews") {
+    state.locks = [];
+    state.editingSectionId = null;
+    state.lockStatus = "";
+    if (state.sectionId === "overview" || state.sectionId === "recruitment" || state.sectionId === "clinops" || state.sectionId === "monitoring" || state.sectionId === "smo" || state.sectionId === "summary" || state.sectionId === "formulas" || state.sectionId === "reviews" || state.sectionId === "hlbp") {
       state.sectionId = "studies";
     }
     markSaved();
@@ -1611,12 +1954,13 @@
     state.askHistory = [];
     state.dirty = false;
     state.studiesList = [];
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state.study));
-    } catch (_) {}
+    state.editingSectionId = null;
     render();
-    if (cosmosOk) markSaved();
-    else if (els.saveStatus) els.saveStatus.classList.remove("saved");
+    if (cosmosOk) {
+      markSaved();
+      startLockPolling();
+      if (isLockableSection(state.sectionId)) claimEditLock(state.sectionId);
+    } else if (els.saveStatus) els.saveStatus.classList.remove("saved");
     if (els.saveStatus) {
       els.saveStatus.textContent = cosmosOk
         ? `Created in Cosmos · ${workspace.studyId}`
@@ -1666,9 +2010,7 @@
     state.source = cosmosOk ? "cosmos" : "buddy";
     state.sectionId = String(workspace.budgetType || "").toUpperCase() === "HLBP" ? "hlbp" : "overview";
     state.studiesList = [];
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state.study));
-    } catch (_) {}
+    state.editingSectionId = null;
     if (cosmosOk) {
       state.dirty = false;
       if (String(workspace.budgetType || "").toUpperCase() === "HLBP") captureHlbpBaseline();
@@ -1676,7 +2018,11 @@
       state.dirty = true;
     }
     render();
-    if (cosmosOk) markSaved();
+    if (cosmosOk) {
+      markSaved();
+      startLockPolling();
+      if (isLockableSection(state.sectionId)) claimEditLock(state.sectionId);
+    }
     openBuddy();
     const missing = hlbpMissingFields();
     pushAssistant(
@@ -1701,15 +2047,44 @@
   function applyProposal(id) {
     const proposal = findProposal(id);
     if (!proposal || proposal.status !== "pending") return;
+    if (proposal.kind === "create_study") {
+      applyCreateStudy(id);
+      return;
+    }
+    const blocked = [];
+    const allowed = [];
+    for (const patch of proposal.patches || []) {
+      const tab =
+        patch.tab ||
+        (SBW.sectionForFieldPath ? SBW.sectionForFieldPath(patch.path) : "overview");
+      const lock = lockForSection(tab);
+      if (lock && !isMeLock(lock) && isLockableSection(tab)) {
+        blocked.push({
+          patch,
+          holder: lock.holderName || lock.holderEmail || "Someone",
+          tab
+        });
+      } else {
+        allowed.push(patch);
+      }
+    }
+    if (blocked.length && !allowed.length) {
+      const first = blocked[0];
+      pushAssistant(
+        `${first.holder} is editing ${sectionLabel(first.tab)} — ask them to Save and click Done before I can change that tab.`
+      );
+      paintBuddyChat();
+      return;
+    }
     let applied = 0;
     let jumpTab = null;
-    for (const patch of proposal.patches) {
+    for (const patch of allowed) {
       if (writeFieldValue(patch)) {
         applied += 1;
         if (!jumpTab && patch.tab) jumpTab = patch.tab;
       }
     }
-    proposal.status = "applied";
+    proposal.status = allowed.length ? "applied" : "pending";
     if (applied) {
       markDirty();
       recalc();
@@ -1718,11 +2093,17 @@
       }
       render();
     }
-    pushAssistant(
-      applied
-        ? `Applied ${applied} field update${applied === 1 ? "" : "s"}. Save when you’re ready to keep them.`
-        : "Could not apply those fields — check the path labels and try again."
-    );
+    let msg = applied
+      ? `Applied ${applied} field update${applied === 1 ? "" : "s"}. Save when you’re ready to keep them.`
+      : "Could not apply those fields — check the path labels and try again.";
+    if (blocked.length) {
+      const holders = [...new Set(blocked.map((b) => `${b.holder} (${sectionLabel(b.tab)})`))];
+      msg += ` Skipped ${blocked.length} change${blocked.length === 1 ? "" : "s"} because ${holders.join(", ")} ${
+        holders.length === 1 ? "is" : "are"
+      } editing.`;
+      proposal.status = "applied";
+    }
+    pushAssistant(msg);
     paintBuddyChat();
   }
 
@@ -1791,7 +2172,12 @@
 
     state.buddyBusy = true;
     paintBuddyChat();
-    const catalog = buildEditableFieldCatalog();
+    const catalog = buildEditableFieldCatalog().filter((f) => {
+      const tab = f.tab || (SBW.sectionForFieldPath ? SBW.sectionForFieldPath(f.path) : null);
+      if (!tab || !isLockableSection(tab)) return true;
+      const lock = lockForSection(tab);
+      return !lock || isMeLock(lock);
+    });
     const qLower = question.toLowerCase();
     const portfolioMode = !hasOpenStudy();
     const askAcross =
@@ -1812,6 +2198,7 @@
           noStudy: portfolioMode || undefined,
           activeTab: state.sectionId,
           activeTabLabel: (SBW.sections.find((s) => s.id === state.sectionId) || {}).label || state.sectionId,
+          sectionLocks: wantPortfolio ? [] : state.locks || [],
           editableFields: wantPortfolio ? [] : catalog,
           fieldsByTab: wantPortfolio ? undefined : catalogByTab(catalog),
           user: state.entraUser || undefined,
@@ -3536,16 +3923,19 @@
       state.compare = null;
       state.dirty = false;
       state.hlbpBaseline = null;
+      state.editingSectionId = null;
+      state.lockStatus = "";
       if (String(state.study.budgetType || "").toUpperCase() === "HLBP") {
         captureHlbpBaseline();
         if (state.sectionId !== "ops") state.sectionId = "hlbp";
       }
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(state.study));
       if (state.sectionId !== "ops" && String(state.study.budgetType || "").toUpperCase() !== "HLBP") {
         state.sectionId = "overview";
       }
+      await refreshLocks();
       render();
       markSaved();
+      startLockPolling();
       if (state.sectionId === "ops") ensureOpsLoaded();
     } catch (err) {
       if (panel) panel.innerHTML = `<pre class="formula-box">${escapeHtml(String(err))}</pre>`;
@@ -3911,7 +4301,8 @@
   }
 
   function renderHlbp() {
-    const locked = !canEdit("Analyst") && currentUser().department !== "Admin";
+    const section = SBW.sections.find((s) => s.id === "hlbp") || { id: "hlbp", department: null };
+    const locked = fieldsDisabledForSection(section);
     const dis = locked ? "disabled" : "";
     const d = state.study.drivers || {};
     if (!state.study.totals || typeof state.study.totals !== "object") {
@@ -3987,7 +4378,8 @@
       <div class="grid">
         <div class="card wide">
           <h3>High Level Ballpark (HLBP)</h3>
-          <p class="muted">Save writes to Cosmos. Use <strong>Save as new version</strong> to copy v1 → v2 and keep a live $ / % diff against the baseline.</p>
+          <p class="muted">Cosmos is the source of truth. Click <strong>Edit this tab</strong> to lock it, then Save / Done when finished.</p>
+          ${hasOpenStudy() && isHlbp ? renderLockBar("hlbp") : ""}
           ${
             !hasOpenStudy()
               ? `<div style="margin-top:0.75rem;"><button type="button" class="btn btn-primary" id="btnStartHlbp">Start new HLBP</button></div>`
@@ -3995,16 +4387,13 @@
                 ? `<p class="muted" style="margin-top:0.5rem;">Open study is not marked HLBP. <button type="button" class="btn btn-secondary" id="btnMarkHlbp">Mark as HLBP</button> or <button type="button" class="btn btn-primary" id="btnStartHlbp">Start new HLBP</button></p>`
                 : `<p class="muted" style="margin-top:0.5rem;">Working HLBP · ${escapeHtml(
                     state.study.studyId
-                  )} · ${escapeHtml(state.study.versionLabel || "v1")} · ${
-                    state.source === "cosmos" ? "Cosmos" : "local until Save"
-                  }</p>`
+                  )} · ${escapeHtml(state.study.versionLabel || "v1")} · Cosmos</p>`
           }
           ${
             hasOpenStudy()
               ? `<div style="margin-top:0.75rem;display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;">
             <span class="muted">Versions:</span>
             ${versionChips}
-            <button type="button" class="btn btn-primary" id="btnHlbpSaveCosmos" ${dis}>Save to Cosmos</button>
             <button type="button" class="btn btn-secondary" id="btnHlbpSaveNewVersion" ${dis}>Save as new version</button>
             <button type="button" class="btn btn-ghost" id="btnHlbpSetBaseline" ${dis}>Set baseline</button>
           </div>`
@@ -4200,7 +4589,8 @@
 
   function renderOverview() {
     const d = state.study.drivers || {};
-    const locked = !canEdit("Analyst");
+    const section = SBW.sections.find((s) => s.id === "overview") || { id: "overview", department: "Analyst" };
+    const locked = fieldsDisabledForSection(section);
     const dis = locked ? "disabled" : "";
     const fields = state.study.inputFields || [];
     const sites = state.study.sites || [];
@@ -4285,6 +4675,7 @@
 
     return `
       <div class="grid">
+        ${hasOpenStudy() ? `<div class="card wide">${renderLockBar("overview")}</div>` : ""}
         <div class="card half">
           <h3>Study identity</h3>
           <div class="form-grid">
@@ -4572,7 +4963,7 @@
       state.study.assumptions[cfg.assumptionKey] = { ...(SBW.defaultStudy().assumptions[cfg.assumptionKey] || { notes: "" }) };
     }
     const bucket = state.study.assumptions[cfg.assumptionKey];
-    const locked = !canEdit(section.department);
+    const locked = fieldsDisabledForSection(section);
     const dis = locked ? "disabled" : "";
     const status = (ensureSectionStatus()[sectionId] || "not_started");
 
@@ -4614,7 +5005,8 @@
     return `
       <div class="grid">
         <div class="card wide">
-          <div style="display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap;align-items:center;">
+          ${renderLockBar(sectionId)}
+          <div style="display:flex;justify-content:space-between;gap:1rem;flex-wrap:wrap;align-items:center;margin-top:0.5rem;">
             <div>
               <h3>${escapeHtml(cfg.title)}</h3>
               <p class="muted">Status: <span class="badge ${escapeAttr(status)}">${escapeHtml(statusLabel(status))}</span></p>
@@ -5203,8 +5595,28 @@
         setSection("hlbp");
         return;
       }
+      if (e.target.id === "btnSectionEdit") {
+        const bar = e.target.closest("[data-lock-section]");
+        const sec = (bar && bar.getAttribute("data-lock-section")) || state.sectionId;
+        claimEditLock(sec);
+        return;
+      }
+      if (e.target.id === "btnSectionSave") {
+        save();
+        return;
+      }
+      if (e.target.id === "btnSectionDone") {
+        doneEditingSection();
+        return;
+      }
+      if (e.target.id === "btnSectionTakeover") {
+        const bar = e.target.closest("[data-lock-section]");
+        const sec = (bar && bar.getAttribute("data-lock-section")) || state.sectionId;
+        adminTakeoverSection(sec);
+        return;
+      }
       if (e.target.id === "btnHlbpSaveCosmos") {
-        saveStudyToCosmos({ mode: "update" })
+        saveStudyToCosmos({ mode: "update", sectionId: "hlbp" })
           .then(() => {
             if (!state.hlbpBaseline) captureHlbpBaseline();
             scheduleHlbpDiffRefresh();
@@ -5654,4 +6066,20 @@
   paintBuddyChat();
   markSaved();
   loadEntraUser();
+
+  window.addEventListener("beforeunload", () => {
+    if (!hasOpenStudy() || !state.editingSectionId) return;
+    const sec = state.editingSectionId;
+    const url = apiUrl(
+      `/api/studies/${encodeURIComponent(state.study.studyId)}/locks/${encodeURIComponent(sec)}`
+    );
+    try {
+      fetch(url, {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user: lockIdentity() }),
+        keepalive: true
+      });
+    } catch (_) {}
+  });
 })();

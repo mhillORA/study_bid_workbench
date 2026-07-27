@@ -1077,10 +1077,311 @@ async function saveStudyVersion(studyId, payload = {}) {
   };
 }
 
+const LOCK_TTL_SECONDS = 90;
+const LOCK_STALE_MS = LOCK_TTL_SECONDS * 1000;
+
+function lockDocId(studyId, sectionId) {
+  return `lock-${studyId}-${sectionId}`;
+}
+
+function isLockActive(lock) {
+  if (!lock || lock.docType !== "sectionLock") return false;
+  const seen = Date.parse(lock.lastSeenAt || lock.lockedAt || 0);
+  if (!Number.isFinite(seen)) return false;
+  return Date.now() - seen < LOCK_STALE_MS;
+}
+
+async function listSectionLocks(studyId) {
+  const id = String(studyId || "").trim();
+  if (!id) return [];
+  const database = getDb();
+  const { resources } = await database.container("studies").items
+    .query({
+      query: "SELECT * FROM c WHERE c.studyId = @id AND c.docType = @t",
+      parameters: [
+        { name: "@id", value: id },
+        { name: "@t", value: "sectionLock" }
+      ]
+    })
+    .fetchAll();
+  return (resources || []).filter(isLockActive);
+}
+
+async function getSectionLock(studyId, sectionId) {
+  const locks = await listSectionLocks(studyId);
+  return locks.find((l) => l.sectionId === sectionId) || null;
+}
+
+async function claimSectionLock(studyId, sectionId, holder = {}, { takeover = false, force = false } = {}) {
+  const sid = String(studyId || "").trim();
+  const section = String(sectionId || "").trim();
+  if (!sid || !section) throw new Error("studyId and sectionId are required");
+  const holderUserId = String(holder.userId || holder.email || "").trim();
+  if (!holderUserId) throw new Error("holder userId is required");
+
+  const database = getDb();
+  const now = new Date().toISOString();
+  const id = lockDocId(sid, section);
+  let existing = null;
+  try {
+    const { resource } = await database.container("studies").item(id, sid).read();
+    existing = resource;
+  } catch (_) {
+    existing = null;
+  }
+
+  const active = isLockActive(existing);
+  const sameHolder =
+    active &&
+    (existing.holderUserId === holderUserId ||
+      (holder.email && existing.holderEmail && existing.holderEmail === holder.email));
+
+  let savedForPrevious = null;
+  if (active && !sameHolder) {
+    if (!takeover && !force) {
+      const err = new Error(
+        `${existing.holderName || existing.holderEmail || "Someone"} is editing ${section}`
+      );
+      err.status = 409;
+      err.lock = existing;
+      throw err;
+    }
+    // Takeover: persist holder draft if present, then steal lock
+    if (existing.draft && typeof existing.draft === "object") {
+      try {
+        savedForPrevious = await saveSectionPatch(sid, section, {
+          ...existing.draft,
+          mode: "update",
+          source: "takeover_force_save",
+          createdBy: existing.holderUserId || existing.holderEmail || "takeover"
+        });
+      } catch (saveErr) {
+        savedForPrevious = { error: String(saveErr.message || saveErr) };
+      }
+    }
+  }
+
+  const lockDoc = {
+    id,
+    studyId: sid,
+    sectionId: section,
+    docType: "sectionLock",
+    holderUserId,
+    holderName: holder.displayName || holder.firstName || holder.email || holderUserId,
+    holderEmail: holder.email || null,
+    lockedAt: sameHolder && existing?.lockedAt ? existing.lockedAt : now,
+    lastSeenAt: now,
+    draft: sameHolder ? existing?.draft || null : null,
+    pendingTakeover: null,
+    ttl: LOCK_TTL_SECONDS
+  };
+
+  await database.container("studies").items.upsert(lockDoc);
+  return {
+    status: takeover || force ? "taken_over" : sameHolder ? "heartbeat" : "claimed",
+    lock: lockDoc,
+    savedForPrevious
+  };
+}
+
+async function heartbeatSectionLock(studyId, sectionId, holder = {}, draft = null) {
+  const sid = String(studyId || "").trim();
+  const section = String(sectionId || "").trim();
+  const holderUserId = String(holder.userId || holder.email || "").trim();
+  const database = getDb();
+  const id = lockDocId(sid, section);
+  let existing = null;
+  try {
+    const { resource } = await database.container("studies").item(id, sid).read();
+    existing = resource;
+  } catch (_) {
+    return { status: "missing", lock: null };
+  }
+  if (!isLockActive(existing)) {
+    return { status: "expired", lock: existing };
+  }
+  const same =
+    existing.holderUserId === holderUserId ||
+    (holder.email && existing.holderEmail && existing.holderEmail === holder.email);
+  if (!same) {
+    const err = new Error("You do not hold this lock");
+    err.status = 403;
+    err.lock = existing;
+    throw err;
+  }
+  const now = new Date().toISOString();
+  const lockDoc = {
+    ...existing,
+    lastSeenAt: now,
+    holderName: holder.displayName || holder.firstName || existing.holderName,
+    holderEmail: holder.email || existing.holderEmail,
+    draft: draft && typeof draft === "object" ? draft : existing.draft || null,
+    ttl: LOCK_TTL_SECONDS
+  };
+  await database.container("studies").items.upsert(lockDoc);
+  return {
+    status: "ok",
+    lock: lockDoc,
+    pendingTakeover: lockDoc.pendingTakeover || null
+  };
+}
+
+async function requestSectionTakeover(studyId, sectionId, by = {}) {
+  const sid = String(studyId || "").trim();
+  const section = String(sectionId || "").trim();
+  const database = getDb();
+  const id = lockDocId(sid, section);
+  let existing = null;
+  try {
+    const { resource } = await database.container("studies").item(id, sid).read();
+    existing = resource;
+  } catch (_) {
+    return { status: "free", lock: null };
+  }
+  if (!isLockActive(existing)) {
+    return { status: "free", lock: existing };
+  }
+  const now = new Date().toISOString();
+  const lockDoc = {
+    ...existing,
+    pendingTakeover: {
+      byUserId: by.userId || by.email || null,
+      byName: by.displayName || by.firstName || by.email || "Admin",
+      at: now
+    },
+    lastSeenAt: existing.lastSeenAt,
+    ttl: LOCK_TTL_SECONDS
+  };
+  await database.container("studies").items.upsert(lockDoc);
+  return { status: "takeover_requested", lock: lockDoc };
+}
+
+async function releaseSectionLock(studyId, sectionId, holder = {}, { force = false } = {}) {
+  const sid = String(studyId || "").trim();
+  const section = String(sectionId || "").trim();
+  const holderUserId = String(holder.userId || holder.email || "").trim();
+  const database = getDb();
+  const id = lockDocId(sid, section);
+  let existing = null;
+  try {
+    const { resource } = await database.container("studies").item(id, sid).read();
+    existing = resource;
+  } catch (_) {
+    return { status: "already_free" };
+  }
+  if (!force) {
+    const same =
+      existing.holderUserId === holderUserId ||
+      (holder.email && existing.holderEmail && existing.holderEmail === holder.email);
+    if (!same && isLockActive(existing)) {
+      const err = new Error("You do not hold this lock");
+      err.status = 403;
+      err.lock = existing;
+      throw err;
+    }
+  }
+  try {
+    await database.container("studies").item(id, sid).delete();
+  } catch (_) {}
+  return { status: "released", previous: existing };
+}
+
+/** Merge only fields owned by a section into the study + current version. */
+async function saveSectionPatch(studyId, sectionId, payload = {}) {
+  const existing = await getStudy(studyId);
+  if (!existing && payload.mode !== "create") {
+    // Fall back to full save path for brand-new studies
+    return saveStudyVersion(studyId, { ...payload, mode: payload.mode || "update" });
+  }
+
+  const section = String(sectionId || "").trim();
+  const merged = { ...(payload || {}), mode: payload.mode || "update" };
+
+  // Start from existing study values; overlay only section-owned keys from payload
+  const base = existing || {};
+  if (section === "hlbp" || section === "overview") {
+    for (const k of [
+      "clientName",
+      "title",
+      "protocol",
+      "phase",
+      "therapeuticArea",
+      "indication",
+      "enrollmentType",
+      "budgetType",
+      "category",
+      "versionLabel"
+    ]) {
+      if (payload[k] !== undefined) merged[k] = payload[k];
+      else if (base[k] !== undefined) merged[k] = base[k];
+    }
+    if (payload.drivers) merged.drivers = { ...(base.drivers || {}), ...payload.drivers };
+    else merged.drivers = base.drivers;
+    if (section === "hlbp") {
+      if (payload.sites) merged.sites = payload.sites;
+      else merged.sites = base.sites;
+      if (payload.totals) merged.totals = { ...(base.totals || {}), ...payload.totals };
+      else merged.totals = base.totals;
+    } else {
+      merged.sites = payload.sites || base.sites;
+      merged.totals = payload.totals || base.totals;
+      if (payload.inputFields) merged.inputFields = payload.inputFields;
+      else merged.inputFields = base.inputFields;
+    }
+  } else if (["recruitment", "clinops", "monitoring", "smo"].includes(section)) {
+    for (const k of [
+      "clientName",
+      "title",
+      "protocol",
+      "phase",
+      "therapeuticArea",
+      "indication",
+      "enrollmentType",
+      "budgetType",
+      "category",
+      "versionLabel",
+      "drivers",
+      "sites",
+      "totals",
+      "inputFields"
+    ]) {
+      merged[k] = payload[k] !== undefined ? payload[k] : base[k];
+    }
+    // Prefer payload drivers when present (dept tabs edit related drivers)
+    if (payload.drivers) merged.drivers = { ...(base.drivers || {}), ...payload.drivers };
+    const assumptions = { ...(base.assumptions || {}) };
+    if (payload.assumptions && payload.assumptions[section]) {
+      assumptions[section] = {
+        ...(assumptions[section] || {}),
+        ...payload.assumptions[section]
+      };
+    }
+    merged.assumptions = assumptions;
+    if (section === "monitoring" && payload.monitoringInputs) {
+      merged.monitoring = payload.monitoringInputs;
+    }
+    if (section === "smo") {
+      if (payload.vendors) merged.vendors = payload.vendors;
+      if (payload.payments) merged.payments = payload.payments;
+    }
+  } else {
+    return saveStudyVersion(studyId, { ...payload, mode: payload.mode || "update" });
+  }
+
+  if (payload.sectionStatus) {
+    merged.sectionStatus = { ...(base.sectionStatus || {}), ...payload.sectionStatus };
+  } else {
+    merged.sectionStatus = base.sectionStatus;
+  }
+  merged.source = payload.source || "section_save";
+  return saveStudyVersion(studyId, merged);
+}
+
 module.exports = {
   upsertCanonical,
   createManualStudy,
   saveStudyVersion,
+  saveSectionPatch,
   listStudies,
   listStudiesWithDrivers,
   buildPortfolioContext,
@@ -1093,5 +1394,12 @@ module.exports = {
   listQuarantine,
   getParseLearningsSummary,
   loadLearnings,
-  getDb
+  getDb,
+  listSectionLocks,
+  getSectionLock,
+  claimSectionLock,
+  heartbeatSectionLock,
+  requestSectionTakeover,
+  releaseSectionLock,
+  LOCK_TTL_SECONDS
 };

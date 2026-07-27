@@ -29,6 +29,21 @@ SBW.sections = [
   { id: "scorecard", label: "Site Scorecard", department: null }
 ];
 
+/** Tabs that require explicit Edit lock before changing fields. */
+SBW.lockableSections = ["hlbp", "overview", "recruitment", "clinops", "monitoring", "smo", "formulas"];
+
+/** Map APPLY path → section id for lock checks. */
+SBW.sectionForFieldPath = function (path) {
+  const p = String(path || "");
+  if (p.startsWith("assumptions.recruitment") || p === "recruitment") return "recruitment";
+  if (p.startsWith("assumptions.clinops")) return "clinops";
+  if (p.startsWith("assumptions.monitoring") || p.startsWith("monitoring")) return "monitoring";
+  if (p.startsWith("assumptions.smo") || p.startsWith("vendors") || p.startsWith("payments")) return "smo";
+  if (p.startsWith("totals.") || p.startsWith("sites.")) return "hlbp";
+  if (p.startsWith("formula")) return "formulas";
+  return "overview";
+};
+
 /** Simple High Level Ballpark (HLBP) v1 field checklist. */
 SBW.hlbpFields = {
   header: [

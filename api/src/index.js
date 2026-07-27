@@ -1,7 +1,7 @@
 const { app } = require("@azure/functions");
 const AdmZip = require("adm-zip");
 const { parseWorkbookBuffer } = require("./parseWorkbook");
-const { upsertCanonical, createManualStudy, saveStudyVersion, listStudies, getStudy, listVersions, getVersion, listLineItems, compareVersions, compareStudies, listQuarantine, getParseLearningsSummary, loadLearnings, getDb, buildPortfolioContext } = require("./cosmosLoad");
+const { upsertCanonical, createManualStudy, saveStudyVersion, saveSectionPatch, listStudies, getStudy, listVersions, getVersion, listLineItems, compareVersions, compareStudies, listQuarantine, getParseLearningsSummary, loadLearnings, getDb, buildPortfolioContext, listSectionLocks, claimSectionLock, heartbeatSectionLock, requestSectionTakeover, releaseSectionLock } = require("./cosmosLoad");
 const { askAi, getStudyContext, providerStatus } = require("./askClaude");
 const {
   buildIntelligenceContext,
@@ -536,6 +536,127 @@ app.http("studyVersionById", {
   }
 });
 
+app.http("studyLocks", {
+  methods: ["GET", "OPTIONS"],
+  authLevel: "anonymous",
+  route: "studies/{studyId}/locks",
+  handler: async (request, context) => {
+    if (request.method === "OPTIONS") {
+      return {
+        status: 204,
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, OPTIONS",
+          "Access-Control-Allow-Headers": "content-type"
+        }
+      };
+    }
+    try {
+      const locks = await listSectionLocks(request.params.studyId);
+      return json(200, { locks });
+    } catch (err) {
+      context.error(err);
+      return json(500, { error: String(err.message || err) });
+    }
+  }
+});
+
+app.http("studyLockBySection", {
+  methods: ["PUT", "DELETE", "POST", "OPTIONS"],
+  authLevel: "anonymous",
+  route: "studies/{studyId}/locks/{sectionId}",
+  handler: async (request, context) => {
+    if (request.method === "OPTIONS") {
+      return {
+        status: 204,
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "PUT, POST, DELETE, OPTIONS",
+          "Access-Control-Allow-Headers": "content-type"
+        }
+      };
+    }
+    try {
+      const { studyId, sectionId } = request.params;
+      const body = await request.json().catch(() => ({}));
+      const user = signedInUserFromRequest(request, body.user || null) || body.user || {};
+      const holder = {
+        userId: user.userId || user.email || body.userId || null,
+        email: user.email || body.email || null,
+        displayName: user.displayName || user.firstName || body.displayName || null,
+        firstName: user.firstName || null
+      };
+
+      if (request.method === "PUT") {
+        const action = String(body.action || "claim").toLowerCase();
+        if (action === "heartbeat") {
+          const result = await heartbeatSectionLock(studyId, sectionId, holder, body.draft || null);
+          return json(200, result);
+        }
+        if (action === "request_takeover") {
+          const result = await requestSectionTakeover(studyId, sectionId, holder);
+          return json(200, result);
+        }
+        if (action === "takeover" || action === "force") {
+          const result = await claimSectionLock(studyId, sectionId, holder, {
+            takeover: true,
+            force: action === "force" || Boolean(body.force)
+          });
+          return json(200, result);
+        }
+        try {
+          const result = await claimSectionLock(studyId, sectionId, holder, {});
+          return json(200, result);
+        } catch (err) {
+          if (err.status === 409) {
+            return json(409, { error: String(err.message || err), lock: err.lock || null });
+          }
+          throw err;
+        }
+      }
+
+      if (request.method === "POST") {
+        // Section save while holding lock
+        const locks = await listSectionLocks(studyId);
+        const lock = locks.find((l) => l.sectionId === sectionId);
+        const holderId = holder.userId || holder.email;
+        const holds =
+          lock &&
+          (lock.holderUserId === holderId ||
+            (holder.email && lock.holderEmail === holder.email));
+        if (!holds) {
+          return json(403, {
+            error: lock
+              ? `${lock.holderName || "Someone"} is editing this tab — Save is blocked until they Done or release.`
+              : "You must click Edit on this tab before saving.",
+            lock: lock || null
+          });
+        }
+        const result = await saveSectionPatch(studyId, sectionId, {
+          ...(body.payload || body),
+          mode: body.mode || "update",
+          source: "section_lock_save"
+        });
+        // refresh heartbeat draft clear optional
+        await heartbeatSectionLock(studyId, sectionId, holder, body.payload || body || null).catch(
+          () => null
+        );
+        return json(200, result);
+      }
+
+      // DELETE — release
+      const result = await releaseSectionLock(studyId, sectionId, holder, {
+        force: Boolean(body.force)
+      });
+      return json(200, result);
+    } catch (err) {
+      context.error(err);
+      const status = err.status || 500;
+      return json(status, { error: String(err.message || err), lock: err.lock || null });
+    }
+  }
+});
+
 app.http("studyCompare", {
   methods: ["GET", "OPTIONS"],
   authLevel: "anonymous",
@@ -919,8 +1040,16 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
     const clientStudy = answerFocus === "portfolio" ? null : body.studySnapshot || null;
 
     let cosmosContext = null;
+    let sectionLocks = [];
     if (studyId && answerFocus === "single_study") {
       cosmosContext = await getStudyContext(studyId, { getDb });
+      try {
+        sectionLocks = await listSectionLocks(studyId);
+      } catch (_) {
+        sectionLocks = Array.isArray(body.sectionLocks) ? body.sectionLocks : [];
+      }
+    } else if (Array.isArray(body.sectionLocks)) {
+      sectionLocks = body.sectionLocks;
     }
 
     // Prefer filtered portfolio when the question names a client/year; else full DB rollup
@@ -1091,6 +1220,12 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       user,
       activeTab,
       activeTabLabel,
+      sectionLocks: (sectionLocks || []).map((l) => ({
+        sectionId: l.sectionId,
+        holderName: l.holderName || l.holderEmail || l.holderUserId,
+        holderEmail: l.holderEmail || null,
+        lockedAt: l.lockedAt || null
+      })),
       queryHints: {
         studyId: studyId || null,
         clientName: hints.clientName || null,
