@@ -70,8 +70,44 @@ const FIELDS = [
   "LocationCountry",
   "LocationFacility",
   "WhyStopped",
-  "HasResults"
+  "HasResults",
+  "BriefSummary"
 ].join(",");
+
+/** Pull rough dollar mentions from free text (CT.gov has no structured CRO bid $). */
+function extractMentionedDollars(text) {
+  const src = String(text || "");
+  if (!src) return [];
+  const out = [];
+  const re =
+    /\$\s*([\d,]+(?:\.\d+)?)\s*(k|m|b|million|billion)?\b|\b([\d,]+(?:\.\d+)?)\s*(million|billion)\s*(?:usd|dollars?|\$)?\b/gi;
+  let m;
+  while ((m = re.exec(src)) !== null) {
+    let amount = null;
+    let raw = m[0].trim();
+    if (m[1] != null) {
+      const n = Number(String(m[1]).replace(/,/g, ""));
+      const suf = (m[2] || "").toLowerCase();
+      if (!Number.isNaN(n)) {
+        if (suf === "k") amount = n * 1e3;
+        else if (suf === "m" || suf === "million") amount = n * 1e6;
+        else if (suf === "b" || suf === "billion") amount = n * 1e9;
+        else amount = n;
+      }
+    } else if (m[3] != null) {
+      const n = Number(String(m[3]).replace(/,/g, ""));
+      const suf = (m[4] || "").toLowerCase();
+      if (!Number.isNaN(n)) {
+        amount = suf === "billion" ? n * 1e9 : n * 1e6;
+      }
+    }
+    if (amount != null && amount > 0) {
+      out.push({ raw, amountUsd: Math.round(amount) });
+    }
+    if (out.length >= 5) break;
+  }
+  return out;
+}
 
 function dig(obj, ...path) {
   let cur = obj;
@@ -121,6 +157,8 @@ function flattenStudy(raw, importedAt) {
     .map((i) => String(i.name).trim())
     .slice(0, 20);
   const enroll = dig(ps, "designModule", "enrollmentInfo") || {};
+  const briefSummary = dig(ps, "descriptionModule", "briefSummary") || "";
+  const mentionedDollars = extractMentionedDollars(briefSummary);
   const id = String(nct).toUpperCase();
   return {
     id,
@@ -150,6 +188,9 @@ function flattenStudy(raw, importedAt) {
     nLocations: locations.length,
     whyStopped: dig(ps, "statusModule", "whyStopped"),
     hasResults: Boolean(raw.hasResults),
+    briefSummary: briefSummary ? String(briefSummary).slice(0, 800) : null,
+    mentionedDollars,
+    hasMentionedDollars: mentionedDollars.length > 0,
     docType: DOC_TYPE,
     dataset: DATASET,
     schemaVersion: SCHEMA_VERSION,

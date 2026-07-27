@@ -366,7 +366,8 @@
     recruitment: { label: "Recruitment" },
     clinops: { label: "ClinOps / SOE" },
     monitoring: { label: "Clinical Monitoring" },
-    smo: { label: "Block Enrollment / SMO" }
+    smo: { label: "Block Enrollment / SMO" },
+    hlbp: { label: "HLBP" }
   };
 
   const SECTION_NAV_ALIASES = {
@@ -383,6 +384,13 @@
     ],
     scorecard: ["scorecard", "site scorecard", "site scores", "sites"],
     ops: ["ops", "ops dashboard", "operations", "operations dashboard", "workflow"],
+    hlbp: [
+      "hlbp",
+      "high level ballpark",
+      "high-level ballpark",
+      "ballpark form",
+      "hlbp form"
+    ],
     overview: ["overview", "inputs", "overview / inputs"],
     recruitment: ["recruitment", "recruit"],
     clinops: ["clinops", "clin ops", "soe", "clinops / soe"],
@@ -401,6 +409,97 @@
       .replace(/\s+/g, " ")
       .trim()
       .replace(/^./, (c) => c.toUpperCase());
+  }
+
+  function syncCoreSitesFromMix() {
+    if (!state.study.drivers) state.study.drivers = {};
+    const sites = state.study.sites || [];
+    const sum = sites.reduce((acc, s) => acc + (Number(s.coreSites) || 0), 0);
+    if (sum > 0) state.study.drivers.coreSites = sum;
+  }
+
+  function emptySiteRow() {
+    return {
+      country: "",
+      region: "",
+      coreSites: null,
+      backupSites: null,
+      enrolledPts: null,
+      screenedPts: null,
+      enrollmentMonths: null,
+      enrollmentRate: null,
+      notes: ""
+    };
+  }
+
+  function hlbpMissingFields() {
+    const study = state.study || {};
+    const d = study.drivers || {};
+    const missing = [];
+    for (const f of (SBW.hlbpFields && SBW.hlbpFields.header) || []) {
+      if (!f.required) continue;
+      const v = study[f.key];
+      if (v == null || String(v).trim() === "") missing.push(f.label);
+    }
+    for (const f of (SBW.hlbpFields && SBW.hlbpFields.drivers) || []) {
+      if (!f.required) continue;
+      const v = d[f.key];
+      if (v == null || v === "") missing.push(f.label);
+    }
+    const sites = study.sites || [];
+    const mixOk = sites.some((s) => String(s.country || "").trim() && Number(s.coreSites) > 0);
+    if (!mixOk) missing.push("Site country mix (at least one country + site count)");
+    return missing;
+  }
+
+  function startBlankHlbp(seed = {}) {
+    const base = SBW.defaultStudy();
+    const now = new Date().toISOString();
+    const studyId =
+      String(seed.studyId || "").trim() || `HLBP-${now.replace(/[-:.TZ]/g, "").slice(0, 14)}`;
+    const driversIn = seed.drivers && typeof seed.drivers === "object" ? seed.drivers : {};
+    const drivers = { ...base.drivers, ...driversIn };
+    let sites = Array.isArray(seed.sites) ? seed.sites.map((s) => ({ ...emptySiteRow(), ...s })) : [];
+    if (!sites.length) sites = [emptySiteRow(), emptySiteRow()];
+    state.study = {
+      ...base,
+      ...seed,
+      studyId,
+      clientName: seed.clientName || "",
+      title: seed.title || "",
+      protocol: seed.protocol || "",
+      phase: seed.phase || "",
+      therapeuticArea: seed.therapeuticArea || "",
+      indication: seed.indication || "",
+      budgetType: "HLBP",
+      versionLabel: seed.versionLabel || "HLBP draft",
+      drivers,
+      sites,
+      sectionStatus: { ...base.sectionStatus, hlbp: "in_progress" },
+      status: "draft",
+      source: "hlbp"
+    };
+    syncCoreSitesFromMix();
+    state.lineItems = [];
+    state.versions = [];
+    state.source = "local";
+    state.sectionId = "hlbp";
+    state.dirty = true;
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state.study));
+    } catch (_) {}
+    render();
+    markDirty();
+  }
+
+  function matchHlbpStart(question) {
+    const q = String(question || "").toLowerCase().trim();
+    if (!q) return false;
+    return (
+      /\b(need|want|start|create|open|new|begin)\b.{0,50}\b(hlbp|high[- ]?level[- ]?ballpark)\b/.test(q) ||
+      /^(hlbp|high[- ]?level[- ]?ballpark)(\s+form)?[.!?]*$/.test(q) ||
+      /\bopen (an? )?(hlbp|high[- ]?level[- ]?ballpark)\b/.test(q)
+    );
   }
 
   /** Full editable catalog with clean names + tab context for Buddy. */
@@ -445,6 +544,28 @@
         aliases: [key, humanizeKey(key)]
       });
     }
+
+    const sites = Array.isArray(study.sites) ? study.sites : [];
+    sites.forEach((s, i) => {
+      const country = s.country || `row ${i + 1}`;
+      for (const f of [
+        { key: "country", label: "Country" },
+        { key: "coreSites", label: "Core sites" },
+        { key: "backupSites", label: "Backup sites" },
+        { key: "enrolledPts", label: "Enrolled pts" },
+        { key: "notes", label: "Notes" }
+      ]) {
+        fields.push({
+          path: `sites.${i}.${f.key}`,
+          label: `${f.label} (${country})`,
+          tab: "hlbp",
+          tabLabel: "HLBP",
+          group: "Site country mix",
+          value: s[f.key] ?? null,
+          aliases: [f.key, f.label, `${country} ${f.label}`, `site mix ${f.label}`]
+        });
+      }
+    });
 
     for (const [group, defs] of Object.entries(ASSUMPTION_FIELDS)) {
       const tabLabel = (TAB_META[group] || {}).label || humanizeKey(group);
@@ -724,6 +845,12 @@
     if (path.startsWith("drivers.")) {
       return state.study.drivers?.[path.slice(8)];
     }
+    if (path.startsWith("sites.")) {
+      const parts = path.split(".");
+      const idx = Number(parts[1]);
+      const field = parts[2];
+      return state.study.sites?.[idx]?.[field];
+    }
     if (path.startsWith("assumptions.")) {
       const parts = path.split(".");
       const group = parts[1];
@@ -761,6 +888,27 @@
       const key = path.slice(8);
       if (!state.study.drivers) state.study.drivers = {};
       state.study.drivers[key] = value;
+      return true;
+    }
+    if (path.startsWith("sites.")) {
+      const parts = path.split(".");
+      const idx = Number(parts[1]);
+      const field = parts[2];
+      if (!Number.isFinite(idx) || !field) return false;
+      if (!Array.isArray(state.study.sites)) state.study.sites = [];
+      while (state.study.sites.length <= idx) {
+        state.study.sites.push({
+          country: "",
+          region: "",
+          coreSites: null,
+          backupSites: null,
+          enrolledPts: null,
+          screenedPts: null,
+          notes: ""
+        });
+      }
+      state.study.sites[idx][field] = value;
+      syncCoreSitesFromMix();
       return true;
     }
     if (path.startsWith("assumptions.")) {
@@ -916,11 +1064,20 @@
     add("Phase", payload.phase);
     add("TA", payload.therapeuticArea);
     add("Indication", payload.indication);
+    add("Budget type", payload.budgetType);
     const d = payload.drivers || {};
     add("Enrolled", d.enrolledSubjects ?? d.patients);
     add("Screened", d.screenedSubjects);
     add("Sites", d.coreSites ?? d.sites);
     add("Enrollment months", d.enrollmentMonths);
+    if (Array.isArray(payload.sites) && payload.sites.length) {
+      add(
+        "Country mix",
+        payload.sites
+          .map((s) => `${s.country || "?"}:${s.coreSites ?? "?"}`)
+          .join(", ")
+      );
+    }
     add("Notes", payload.notes);
     return lines.length ? lines : ["Draft study with provided details"];
   }
@@ -941,7 +1098,13 @@
       drivers[key] = typeof v === "number" ? v : coercePatchValue(v);
     }
 
-    return {
+    const budgetType = payload.budgetType || (payload.hlbp ? "HLBP" : "draft");
+    let sites = Array.isArray(payload.sites)
+      ? payload.sites.map((s) => ({ ...emptySiteRow(), ...(s || {}) }))
+      : [];
+    if (budgetType === "HLBP" && !sites.length) sites = [emptySiteRow(), emptySiteRow()];
+
+    const workspace = {
       ...base,
       studyId,
       clientName: payload.clientName || "",
@@ -951,9 +1114,10 @@
       therapeuticArea: payload.therapeuticArea || "",
       indication: payload.indication || "",
       enrollmentType: payload.enrollmentType || "",
-      budgetType: payload.budgetType || "draft",
-      versionLabel: payload.versionLabel || "draft",
+      budgetType,
+      versionLabel: payload.versionLabel || (budgetType === "HLBP" ? "HLBP draft" : "draft"),
       drivers,
+      sites,
       header: {
         ...base.header,
         clientName: payload.clientName || null,
@@ -963,11 +1127,18 @@
         therapeuticArea: payload.therapeuticArea || null,
         indication: payload.indication || null,
         opportunityId: studyId,
-        notes: payload.notes || null
+        notes: payload.notes || null,
+        budgetType
       },
       status: "draft",
       source: "buddy_create"
     };
+    if (budgetType === "HLBP") {
+      workspace.sectionStatus = { ...base.sectionStatus, hlbp: "in_progress" };
+      const sum = sites.reduce((acc, s) => acc + (Number(s.coreSites) || 0), 0);
+      if (sum > 0) workspace.drivers.coreSites = sum;
+    }
+    return workspace;
   }
 
   function pushCreateProposal(content, createPayload) {
@@ -1168,14 +1339,19 @@
     state.lineItems = [];
     state.versions = [];
     state.source = cosmosOk ? "cosmos" : "buddy";
-    state.sectionId = "overview";
+    state.sectionId = String(workspace.budgetType || "").toUpperCase() === "HLBP" ? "hlbp" : "overview";
     markDirty();
     save();
     render();
     openBuddy();
+    const missing = hlbpMissingFields();
     pushAssistant(
       cosmosOk
-        ? `Created ${workspace.studyId} in Cosmos and opened Overview. Fill remaining tabs or upload a budget workbook when you have one.`
+        ? String(workspace.budgetType || "").toUpperCase() === "HLBP"
+          ? `Created HLBP ${workspace.studyId} and opened the form.${
+              missing.length ? ` Still needed: ${missing.slice(0, 5).join(", ")}.` : " Core fields look filled."
+            } Tell me the next values and I will propose Apply fills.`
+          : `Created ${workspace.studyId} in Cosmos and opened Overview. Fill remaining tabs or upload a budget workbook when you have one.`
         : `Opened draft ${workspace.studyId} locally${cosmosError ? ` (Cosmos save failed: ${cosmosError})` : ""}. You can still edit and Save in the browser.`
     );
     paintBuddyChat();
@@ -1249,6 +1425,17 @@
       const label = (SBW.sections.find((s) => s.id === navOnly) || {}).label || navOnly;
       pushAssistant(`Opened ${label}.`);
       setSection(navOnly);
+      paintBuddyChat();
+      return;
+    }
+
+    if (matchHlbpStart(question)) {
+      startBlankHlbp();
+      openBuddy();
+      pushAssistant(
+        "Opened a High Level Ballpark (HLBP) form. [[h]]What I need[[/h]]\n" +
+          "Tell me client/sponsor, indication, phase, enrolled subjects, enrollment months, and site country mix (e.g. 12 United States, 4 United Kingdom). I will autofill the form for you to Apply/Save."
+      );
       paintBuddyChat();
       return;
     }
@@ -3362,6 +3549,144 @@
       </div>`;
   }
 
+  function renderHlbp() {
+    const locked = !canEdit("Analyst") && currentUser().department !== "Admin";
+    const dis = locked ? "disabled" : "";
+    const d = state.study.drivers || {};
+    if (!Array.isArray(state.study.sites)) state.study.sites = [];
+    const sites = state.study.sites;
+    const missing = hlbpMissingFields();
+    const isHlbp = String(state.study.budgetType || "").toUpperCase() === "HLBP";
+
+    const siteRows =
+      sites
+        .map(
+          (s, i) => `<tr>
+        <td><input class="input" data-site-idx="${i}" data-site-field="country" placeholder="e.g. United States" value="${escapeAttr(
+            s.country || ""
+          )}" ${dis} /></td>
+        <td><input class="input" type="number" min="0" data-site-idx="${i}" data-site-field="coreSites" value="${escapeAttr(
+            s.coreSites ?? ""
+          )}" ${dis} /></td>
+        <td><input class="input" type="number" min="0" data-site-idx="${i}" data-site-field="backupSites" value="${escapeAttr(
+            s.backupSites ?? ""
+          )}" ${dis} /></td>
+        <td><input class="input" type="number" min="0" data-site-idx="${i}" data-site-field="enrolledPts" value="${escapeAttr(
+            s.enrolledPts ?? ""
+          )}" ${dis} /></td>
+        <td><input class="input" data-site-idx="${i}" data-site-field="notes" value="${escapeAttr(
+            s.notes || ""
+          )}" ${dis} /></td>
+        <td><button type="button" class="btn btn-ghost" data-hlbp-remove-site="${i}" ${dis}>Remove</button></td>
+      </tr>`
+        )
+        .join("") ||
+      `<tr><td colspan="6" class="muted">No country rows yet — add one below.</td></tr>`;
+
+    return `
+      <div class="grid">
+        <div class="card wide">
+          <h3>High Level Ballpark (HLBP)</h3>
+          <p class="muted">Simple intake for early pricing conversations — identity, enrollment drivers, and site country mix. Ask Buddy “I need an HLBP” to open this and walk the fields.</p>
+          ${
+            !hasOpenStudy()
+              ? `<div style="margin-top:0.75rem;"><button type="button" class="btn btn-primary" id="btnStartHlbp">Start new HLBP</button></div>`
+              : !isHlbp
+                ? `<p class="muted" style="margin-top:0.5rem;">Open study is not marked HLBP. <button type="button" class="btn btn-secondary" id="btnMarkHlbp">Mark as HLBP</button> or <button type="button" class="btn btn-primary" id="btnStartHlbp">Start new HLBP</button></p>`
+                : `<p class="muted" style="margin-top:0.5rem;">Working HLBP · ${escapeHtml(
+                    state.study.studyId
+                  )}</p>`
+          }
+          ${
+            missing.length
+              ? `<p class="muted" style="margin-top:0.5rem;">Still needed: <strong>${escapeHtml(
+                  missing.join(", ")
+                )}</strong></p>`
+              : hasOpenStudy()
+                ? `<p class="muted" style="margin-top:0.5rem;">Required HLBP fields look complete.</p>`
+                : ""
+          }
+        </div>
+        ${
+          hasOpenStudy()
+            ? `<div class="card wide">
+          <h3>Study identity</h3>
+          <div class="form-grid" style="margin-top:0.75rem;">
+            <div><label class="field-label">Client / sponsor *</label><input class="input" data-study="clientName" value="${escapeAttr(
+              state.study.clientName || ""
+            )}" ${dis} /></div>
+            <div><label class="field-label">Opportunity</label><input class="input" data-study="studyId" value="${escapeAttr(
+              state.study.studyId || ""
+            )}" ${dis} /></div>
+            <div class="full"><label class="field-label">Title</label><input class="input" data-study="title" value="${escapeAttr(
+              state.study.title || ""
+            )}" ${dis} /></div>
+            <div><label class="field-label">Protocol</label><input class="input" data-study="protocol" value="${escapeAttr(
+              state.study.protocol || ""
+            )}" ${dis} /></div>
+            <div><label class="field-label">Phase *</label><input class="input" data-study="phase" value="${escapeAttr(
+              state.study.phase || ""
+            )}" ${dis} /></div>
+            <div><label class="field-label">Therapeutic area</label><input class="input" data-study="therapeuticArea" value="${escapeAttr(
+              state.study.therapeuticArea || ""
+            )}" ${dis} /></div>
+            <div><label class="field-label">Indication *</label><input class="input" data-study="indication" value="${escapeAttr(
+              state.study.indication || ""
+            )}" ${dis} /></div>
+            <div><label class="field-label">Budget type</label><input class="input" data-study="budgetType" value="${escapeAttr(
+              state.study.budgetType || "HLBP"
+            )}" ${dis} /></div>
+          </div>
+        </div>
+        <div class="card wide">
+          <h3>Enrollment &amp; timeline</h3>
+          <div class="form-grid" style="margin-top:0.75rem;">
+            <div><label class="field-label">Screened</label><input class="input" type="number" data-driver="screenedSubjects" value="${escapeAttr(
+              d.screenedSubjects ?? ""
+            )}" ${dis} /></div>
+            <div><label class="field-label">Enrolled *</label><input class="input" type="number" data-driver="enrolledSubjects" value="${escapeAttr(
+              d.enrolledSubjects ?? ""
+            )}" ${dis} /></div>
+            <div><label class="field-label">Completed</label><input class="input" type="number" data-driver="completedSubjects" value="${escapeAttr(
+              d.completedSubjects ?? ""
+            )}" ${dis} /></div>
+            <div><label class="field-label">Total core sites *</label><input class="input" type="number" data-driver="coreSites" value="${escapeAttr(
+              d.coreSites ?? ""
+            )}" ${dis} /></div>
+            <div><label class="field-label">Start-up months</label><input class="input" type="number" step="any" data-driver="startupMonths" value="${escapeAttr(
+              d.startupMonths ?? ""
+            )}" ${dis} /></div>
+            <div><label class="field-label">Enrollment months *</label><input class="input" type="number" step="any" data-driver="enrollmentMonths" value="${escapeAttr(
+              d.enrollmentMonths ?? ""
+            )}" ${dis} /></div>
+            <div><label class="field-label">Treatment months</label><input class="input" type="number" step="any" data-driver="treatmentMonths" value="${escapeAttr(
+              d.treatmentMonths ?? ""
+            )}" ${dis} /></div>
+            <div><label class="field-label">Screen-fail %</label><input class="input" type="number" step="any" data-driver="screenFailRate" value="${escapeAttr(
+              d.screenFailRate ?? ""
+            )}" ${dis} /></div>
+            <div><label class="field-label">Drop-out %</label><input class="input" type="number" step="any" data-driver="dropOutRate" value="${escapeAttr(
+              d.dropOutRate ?? ""
+            )}" ${dis} /></div>
+          </div>
+        </div>
+        <div class="card wide">
+          <h3>Site country mix *</h3>
+          <p class="muted">Countries and site counts for the ballpark. Total core sites syncs from this mix when you enter counts.</p>
+          <table class="table" style="margin-top:0.75rem;">
+            <thead><tr><th>Country</th><th>Core sites</th><th>Backup</th><th>Enrolled pts</th><th>Notes</th><th></th></tr></thead>
+            <tbody>${siteRows}</tbody>
+          </table>
+          <div style="margin-top:0.75rem;display:flex;gap:0.5rem;flex-wrap:wrap;">
+            <button type="button" class="btn btn-secondary" id="btnHlbpAddSite" ${dis}>Add country</button>
+            <button type="button" class="btn btn-secondary" data-buddy-ask="hlbp">Ask Buddy to guide</button>
+          </div>
+        </div>`
+            : ""
+        }
+      </div>`;
+  }
+
   function renderHub() {
     const rows = SBW.sections
       .filter((s) => s.department)
@@ -3401,6 +3726,7 @@
           <p class="muted">Built for BD and sales (pitch-ready feasibility), leadership (portfolio snapshots), and ops (workflow + data health). Open a study, query Intelligence, or ask Buddy.</p>
           <div style="display:flex;gap:0.6rem;flex-wrap:wrap;margin-top:0.75rem;">
             <button type="button" class="btn btn-primary" id="btnNewStudyHub">New study</button>
+            <button type="button" class="btn btn-primary" id="btnStartHlbpHub">New HLBP</button>
             <button type="button" class="btn btn-secondary" data-jump="studies">Browse studies</button>
             <button type="button" class="btn btn-secondary" data-jump="upload">Upload budgets</button>
           </div>
@@ -4103,6 +4429,7 @@
     let html = "";
     switch (section.id) {
       case "hub": html = renderHub(); break;
+      case "hlbp": html = renderHlbp(); break;
       case "ops": html = renderOpsDashboard(); break;
       case "upload": html = renderUpload(); break;
       case "studies": html = renderStudies(); break;
@@ -4250,6 +4577,15 @@
       const buddyAsk = e.target.closest("[data-buddy-ask]");
       if (buddyAsk) {
         const id = buddyAsk.getAttribute("data-buddy-ask");
+        if (id === "hlbp") {
+          startBlankHlbp();
+          openBuddy();
+          pushAssistant(
+            "Opened a High Level Ballpark (HLBP) form. Tell me client, indication, phase, enrolled subjects, enrollment months, and country mix (e.g. 12 US, 4 UK) and I will fill the fields."
+          );
+          paintBuddyChat();
+          return;
+        }
         const q = (SBW.buddyQuickAsks || []).find((x) => x.id === id);
         if (q) openBuddyWithPrompt(q.prompt);
         return;
@@ -4409,6 +4745,45 @@
         openNewStudyDialog();
         return;
       }
+      if (e.target.id === "btnStartHlbp" || e.target.id === "btnStartHlbpHub") {
+        startBlankHlbp();
+        openBuddy();
+        pushAssistant(
+          "Opened a High Level Ballpark (HLBP) form. Tell me client, indication, phase, enrolled subjects, enrollment months, and country mix (e.g. 12 US, 4 UK) and I will fill the fields."
+        );
+        paintBuddyChat();
+        return;
+      }
+      if (e.target.id === "btnMarkHlbp") {
+        state.study.budgetType = "HLBP";
+        if (!state.study.versionLabel) state.study.versionLabel = "HLBP draft";
+        if (!Array.isArray(state.study.sites) || !state.study.sites.length) {
+          state.study.sites = [emptySiteRow(), emptySiteRow()];
+        }
+        if (!state.study.sectionStatus) state.study.sectionStatus = {};
+        state.study.sectionStatus.hlbp = "in_progress";
+        markDirty();
+        setSection("hlbp");
+        return;
+      }
+      if (e.target.id === "btnHlbpAddSite") {
+        if (!Array.isArray(state.study.sites)) state.study.sites = [];
+        state.study.sites.push(emptySiteRow());
+        markDirty();
+        render();
+        return;
+      }
+      const rmSite = e.target.closest("[data-hlbp-remove-site]");
+      if (rmSite) {
+        const idx = Number(rmSite.getAttribute("data-hlbp-remove-site"));
+        if (Array.isArray(state.study.sites) && Number.isFinite(idx)) {
+          state.study.sites.splice(idx, 1);
+          syncCoreSitesFromMix();
+          markDirty();
+          render();
+        }
+        return;
+      }
       if (e.target.id === "btnClearStudyInline") {
         clearOpenStudy();
         return;
@@ -4545,9 +4920,11 @@
       if (t.dataset.siteIdx != null && t.dataset.siteField) {
         const i = Number(t.dataset.siteIdx);
         if (!state.study.sites) state.study.sites = [];
+        while (state.study.sites.length <= i) state.study.sites.push(emptySiteRow());
         if (state.study.sites[i]) {
           const field = t.dataset.siteField;
           state.study.sites[i][field] = t.type === "number" && t.value !== "" ? Number(t.value) : t.value;
+          if (field === "coreSites") syncCoreSitesFromMix();
         }
         markDirty();
         return;

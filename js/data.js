@@ -12,6 +12,7 @@ SBW.users = [
 
 SBW.sections = [
   { id: "hub", label: "Hub", department: null },
+  { id: "hlbp", label: "HLBP", department: null },
   { id: "ops", label: "Ops Dashboard", department: null },
   { id: "studies", label: "Studies", department: null },
   { id: "versions", label: "Versions / Diff", department: null },
@@ -28,8 +29,44 @@ SBW.sections = [
   { id: "scorecard", label: "Site Scorecard", department: null }
 ];
 
-/** Hub shortcuts — BD/sales, leadership, and ops. */
+/** Simple High Level Ballpark (HLBP) v1 field checklist. */
+SBW.hlbpFields = {
+  header: [
+    { key: "clientName", label: "Client / sponsor", required: true },
+    { key: "studyId", label: "Opportunity id", required: false },
+    { key: "title", label: "Study title", required: false },
+    { key: "protocol", label: "Protocol", required: false },
+    { key: "phase", label: "Phase", required: true },
+    { key: "therapeuticArea", label: "Therapeutic area", required: false },
+    { key: "indication", label: "Indication", required: true }
+  ],
+  drivers: [
+    { key: "screenedSubjects", label: "Screened subjects", required: false },
+    { key: "enrolledSubjects", label: "Enrolled subjects", required: true },
+    { key: "completedSubjects", label: "Completed subjects", required: false },
+    { key: "coreSites", label: "Total core sites", required: true },
+    { key: "startupMonths", label: "Start-up months", required: false },
+    { key: "enrollmentMonths", label: "Enrollment months", required: true },
+    { key: "treatmentMonths", label: "Treatment months", required: false },
+    { key: "screenFailRate", label: "Screen-fail %", required: false },
+    { key: "dropOutRate", label: "Drop-out %", required: false }
+  ],
+  siteMix: [
+    { key: "country", label: "Country", required: true },
+    { key: "coreSites", label: "Core sites", required: true },
+    { key: "backupSites", label: "Backup sites", required: false },
+    { key: "enrolledPts", label: "Enrolled pts (country)", required: false },
+    { key: "notes", label: "Notes", required: false }
+  ]
+};
+
+/** Hub shortcuts — BD/sales, leadership, ops, HLBP. */
 SBW.bdShortcuts = [
+  {
+    id: "hlbp",
+    title: "New HLBP",
+    blurb: "High Level Ballpark form — patients, timelines, site country mix"
+  },
   {
     id: "intelligence",
     title: "Indication benchmark",
@@ -52,8 +89,13 @@ SBW.bdShortcuts = [
   }
 ];
 
-/** Prefill Ask Buddy from Hub (BD pitch, leadership, ops). */
+/** Prefill Ask Buddy from Hub. */
 SBW.buddyQuickAsks = [
+  {
+    id: "hlbp",
+    label: "Start HLBP",
+    prompt: "I need a High Level Ballpark (HLBP). Open the form and guide me through the required fields including site country mix."
+  },
   {
     id: "pitch",
     label: "Draft pitch points",
@@ -107,6 +149,7 @@ SBW.defaultStudy = function () {
       inflationRate: null,
       discount: null
     },
+    sites: [],
     sectionStatus: {
       overview: "not_started",
       recruitment: "not_started",
@@ -114,7 +157,8 @@ SBW.defaultStudy = function () {
       monitoring: "not_started",
       smo: "not_started",
       summary: "not_started",
-      formulas: "not_started"
+      formulas: "not_started",
+      hlbp: "not_started"
     },
     assumptions: {
       recruitment: {

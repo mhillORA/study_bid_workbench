@@ -12,6 +12,11 @@ const {
   extractCountryFromQuestion
 } = require("./intelligence");
 const { runCtgovSync, getCtgovSyncStatus } = require("./ctgovSync");
+const {
+  isPricingQuestion,
+  extractRfpScenarioFromQuestion,
+  buildRfpPricingPack
+} = require("./rfpPricing");
 
 function nctFromQuestion(question) {
   const m = String(question || "").match(/\b(NCT\d{8})\b/i);
@@ -65,7 +70,8 @@ function isCrossStudyQuestion(question) {
     /\b(average|avg|mean|median|total|sum|rollup)\b.{0,60}\b(across|all|every|portfolio|studies)\b/.test(q) ||
     /\b(enroll|patient|subject|budget|fee).{0,40}\b(across|all studies|every study)\b/.test(q) ||
     /\bstudies\b.{0,40}\b(last year|this year|in 20\d{2}|overall|combined)\b/.test(q) ||
-    /\bcompare\b.{0,40}\bstud(y|ies)\b/.test(q)
+    /\bcompare\b.{0,40}\bstud(y|ies)\b/.test(q) ||
+    /\b(rfp|rfi|ballpark|pricing|goal bid|cost per patient|sets? of numbers)\b/.test(q)
   ) {
     return true;
   }
@@ -984,6 +990,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
 
       const forceIntel =
         isIntelligenceQuestion(question) ||
+        isPricingQuestion(question) ||
         Boolean(nctFromQuestion(question)) ||
         Boolean(country) ||
         Boolean(hintIndication) ||
@@ -997,17 +1004,50 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
           note: "Same Cosmos pack as Ora Clinical Intelligence tab (not re-queried)."
         };
       } else if (forceIntel || indication || hints.clientName || snapIndication || country) {
+        // Prefer RFP scenario indication when pricing ask names one
+        const rfpHint = extractRfpScenarioFromQuestion(question, body);
         intelligence = await buildIntelligenceContext(getDb, {
           question,
-          indication,
+          indication: rfpHint.indication || indication,
           country,
           clientName: hints.clientName || snapClient || null,
           sponsor: hints.clientName || snapClient || null,
-          force: forceIntel || Boolean(indication) || Boolean(country)
+          force: forceIntel || Boolean(indication) || Boolean(country) || Boolean(rfpHint.indication)
         });
       }
     } catch (err) {
       intelligence = { source: "ora_clinical_intelligence_error", error: String(err.message || err) };
+    }
+
+    // Past-bid RFP pricing tiers (High Level Ballpark / Moderate / Goal Bid)
+    let pricingScenarios = null;
+    try {
+      const rfp = extractRfpScenarioFromQuestion(question, body);
+      if (isPricingQuestion(question) || (rfp.wantsTiers && (rfp.enrolledSubjects || rfp.indication))) {
+        const studies =
+          (portfolio && portfolio.source === "cosmos_portfolio" && portfolio.studies) ||
+          (portfolioFull && portfolioFull.studies) ||
+          [];
+        pricingScenarios = buildRfpPricingPack(studies, {
+          indication:
+            rfp.indication ||
+            intelligence?.query?.indication ||
+            extractIndicationFromQuestion(question) ||
+            null,
+          enrolledSubjects: rfp.enrolledSubjects,
+          coreSites: rfp.coreSites
+        });
+        if (intelligence && intelligence.ctgov && intelligence.ctgov.dollarMentions) {
+          pricingScenarios.ctgovDollars = intelligence.ctgov.dollarMentions;
+        } else {
+          pricingScenarios.ctgovDollars = {
+            available: false,
+            note: "CT.gov has no structured CRO bid dollars. Mention free-text $ only when intelligence.ctgov.dollarMentions.available is true."
+          };
+        }
+      }
+    } catch (err) {
+      pricingScenarios = { source: "past_bid_pricing_error", error: String(err.message || err) };
     }
 
     const openStudyId = body.studyId ? String(body.studyId).trim() : null;
@@ -1020,7 +1060,8 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         databaseStudyCount: portfolio?.databaseStudyCount ?? null,
         matchedStudyCount: portfolio?.matchedStudyCount ?? null,
         intelligenceAttached: Boolean(intelligence && intelligence.source === "ora_clinical_intelligence"),
-        note: "portfolio = budget studies. intelligence = Ora Veeva + TrialHub reference (PSM/feasibility)."
+        pricingScenariosAttached: Boolean(pricingScenarios && pricingScenarios.tiers),
+        note: "portfolio = budget studies. pricingScenarios = past-bid RFP tiers. intelligence = Ora Veeva + TrialHub + CT.gov."
       },
       user,
       activeTab,
@@ -1043,6 +1084,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         : null,
       cosmos: cosmosContext,
       portfolio,
+      pricingScenarios,
       intelligence,
       workingStudy:
         answerFocus === "portfolio" || !clientStudy
@@ -1057,6 +1099,8 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
               indication: clientStudy.indication,
               versionLabel: clientStudy.versionLabel,
               drivers: clientStudy.drivers,
+              sites: clientStudy.sites,
+              budgetType: clientStudy.budgetType,
               sectionStatus: clientStudy.sectionStatus,
               assumptions: clientStudy.assumptions
             },

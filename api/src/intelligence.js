@@ -66,7 +66,8 @@ function isIntelligenceQuestion(question) {
     /\b(indication).{0,40}\b(benchmark|histor(y|ical)|industry|ora studies)\b/.test(q) ||
     /\b(how (fast|quickly)|typical).{0,40}\b(enroll|recruit|site)\b/.test(q) ||
     /\b(veeva|ora (histor|performance|sites?))\b/.test(q) ||
-    /\b(country|countries|region|geography|united states|usa|uk|europe|eu|japan|china|canada|australia)\b/.test(q)
+    /\b(country|countries|region|geography|united states|usa|uk|europe|eu|japan|china|canada|australia)\b/.test(q) ||
+    /\b(rfp|rfi|pricing|ballpark|goal bid|cost per patient)\b/.test(q)
   );
 }
 
@@ -735,7 +736,8 @@ async function ctgovByIndication(database, indication, country = null) {
         { name: "@ind", value: alias }
       ];
       let q = `SELECT TOP 40 c.nct, c.title, c.oraIndication, c.status, c.phase, c.sponsor, c.sponsorClass,
-                c.enrollment, c.countries, c.startDate, c.lastUpdatePostDate, c.hasResults
+                c.enrollment, c.countries, c.startDate, c.lastUpdatePostDate, c.hasResults,
+                c.hasMentionedDollars, c.mentionedDollars, c.briefSummary
          FROM c WHERE c.docType = @t AND c.oraIndication = @ind`;
       const geo = ctgovCountrySqlClause(countries, "cg");
       q += geo.sql;
@@ -746,6 +748,7 @@ async function ctgovByIndication(database, indication, country = null) {
       }
     }
     const recruiting = trials.filter((t) => /recruit/i.test(String(t.status || "")));
+    const withDollars = trials.filter((t) => t.hasMentionedDollars || (t.mentionedDollars || []).length);
     return {
       trialCount: trials.length,
       recruitingCount: recruiting.length,
@@ -753,6 +756,21 @@ async function ctgovByIndication(database, indication, country = null) {
       countryFilterLabel: countries ? countries.join(", ") : "Global",
       sample: trials.slice(0, 10),
       recruitingSample: recruiting.slice(0, 8),
+      dollarMentions: {
+        available: withDollars.length > 0,
+        trialCountWithMentions: withDollars.length,
+        sample: withDollars.slice(0, 6).map((t) => ({
+          nct: t.nct,
+          title: t.title,
+          enrollment: t.enrollment,
+          mentionedDollars: t.mentionedDollars || [],
+          note: "Free-text $ mentions in BriefSummary — NOT structured CRO bid pricing"
+        })),
+        note:
+          withDollars.length > 0
+            ? "CT.gov has no structured bid/cost fields. These are rare free-text dollar mentions only — cite NCT and say they are not Ora bid comps."
+            : "CT.gov usually has no dollar amounts. Do not invent costs from CT.gov; use past Ora bids for pricing tiers."
+      },
       note: "From ClinicalTrials.gov daily ophthalmology feed (ora_ctgov_trials)."
     };
   } catch (err) {
