@@ -830,6 +830,18 @@ h1 {
   font-size: 0.85rem;
 }
 
+.ctgov-delta-change {
+  font-size: 0.85rem;
+  margin: 0.15rem 0;
+  line-height: 1.35;
+}
+
+.ctgov-delta-field {
+  font-weight: 600;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.8rem;
+}
+
 .field-note {
   font-size: 0.8rem;
   margin-top: 0.25rem;

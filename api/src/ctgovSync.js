@@ -251,6 +251,67 @@ async function writeSyncState(database, doc) {
   await database.container("syncState").items.upsert(doc);
 }
 
+const DELTA_FIELDS = [
+  "status",
+  "phase",
+  "enrollment",
+  "sponsor",
+  "title",
+  "lastUpdatePostDate",
+  "oraIndication",
+  "hasResults",
+  "whyStopped",
+  "nCountries",
+  "enrollmentType"
+];
+
+function normDeltaVal(v) {
+  if (v == null || v === "") return null;
+  if (Array.isArray(v)) return v.map(String).join("|");
+  if (typeof v === "boolean") return v ? "true" : "false";
+  return String(v);
+}
+
+function diffTrial(prev, next) {
+  if (!prev) return null;
+  const changes = [];
+  for (const field of DELTA_FIELDS) {
+    const from = normDeltaVal(prev[field]);
+    const to = normDeltaVal(next[field]);
+    if (from !== to) changes.push({ field, from, to });
+  }
+  // countries list (readable)
+  const fromC = normDeltaVal((prev.countries || []).slice().sort());
+  const toC = normDeltaVal((next.countries || []).slice().sort());
+  if (fromC !== toC) {
+    changes.push({
+      field: "countries",
+      from: fromC,
+      to: toC
+    });
+  }
+  return changes;
+}
+
+async function readExistingTrial(container, nct) {
+  const id = String(nct || "").toUpperCase();
+  if (!id) return null;
+  try {
+    const { resources } = await container.items
+      .query({
+        query: "SELECT * FROM c WHERE c.id = @id AND c.docType = @t",
+        parameters: [
+          { name: "@id", value: id },
+          { name: "@t", value: DOC_TYPE }
+        ]
+      })
+      .fetchAll();
+    return resources[0] || null;
+  } catch (_) {
+    return null;
+  }
+}
+
 /**
  * @param {Function} getDb
  * @param {{ full?: boolean, maxPages?: number, triggeredBy?: string }} opts
@@ -313,9 +374,38 @@ async function runCtgovSync(getDb, opts = {}) {
   const container = database.container("ora_ctgov_trials");
   let upserted = 0;
   const errors = [];
-  // Sequential upserts — safer under SWA concurrency limits
+  const added = [];
+  const changed = [];
+  let unchanged = 0;
+
   for (const doc of docs) {
     try {
+      const prev = await readExistingTrial(container, doc.id);
+      if (!prev) {
+        added.push({
+          nct: doc.nct,
+          title: doc.title,
+          status: doc.status,
+          phase: doc.phase,
+          sponsor: doc.sponsor,
+          oraIndication: doc.oraIndication,
+          enrollment: doc.enrollment,
+          lastUpdatePostDate: doc.lastUpdatePostDate
+        });
+      } else {
+        const changes = diffTrial(prev, doc);
+        if (changes && changes.length) {
+          changed.push({
+            nct: doc.nct,
+            title: doc.title || prev.title,
+            status: doc.status,
+            oraIndication: doc.oraIndication || prev.oraIndication,
+            changes
+          });
+        } else {
+          unchanged += 1;
+        }
+      }
       await container.items.upsert(doc);
       upserted += 1;
     } catch (err) {
@@ -323,6 +413,20 @@ async function runCtgovSync(getDb, opts = {}) {
       if (errors.length >= 20) break;
     }
   }
+
+  const deltas = {
+    summary: {
+      added: added.length,
+      changed: changed.length,
+      unchanged,
+      fetched: docs.length
+    },
+    // Cap payload size for the UI
+    added: added.slice(0, 75),
+    changed: changed.slice(0, 75),
+    addedTruncated: added.length > 75,
+    changedTruncated: changed.length > 75
+  };
 
   const incomplete = Boolean(token);
   if (!errors.length && !incomplete) {
@@ -338,6 +442,7 @@ async function runCtgovSync(getDb, opts = {}) {
       lastRunAt: importedAt,
       lastTotalCount: total,
       lastUpserted: upserted,
+      lastDeltas: deltas.summary,
       lookbackStart: lookback,
       dataset: DATASET,
       schemaVersion: SCHEMA_VERSION,
@@ -354,6 +459,7 @@ async function runCtgovSync(getDb, opts = {}) {
       lastRunAt: importedAt,
       lastPartialUpserted: upserted,
       lastPartialTotalCount: total,
+      lastDeltas: deltas.summary,
       note: "Partial page fetch — watermark not advanced; next run will retry overlap window.",
       triggeredBy: opts.triggeredBy || "api"
     });
@@ -372,7 +478,8 @@ async function runCtgovSync(getDb, opts = {}) {
     errors: errors.slice(0, 10),
     elapsedMs: Date.now() - t0,
     watermarkAdvanced: !errors.length && !incomplete,
-    triggeredBy: opts.triggeredBy || "api"
+    triggeredBy: opts.triggeredBy || "api",
+    deltas
   };
 }
 
@@ -397,6 +504,7 @@ async function getCtgovSyncStatus(getDb) {
           lastSuccessfulSync: state.lastSuccessfulSync || null,
           lastRunAt: state.lastRunAt || null,
           lastUpserted: state.lastUpserted || null,
+          lastDeltas: state.lastDeltas || null,
           mode: state.mode || null,
           triggeredBy: state.triggeredBy || null,
           note: state.note || null

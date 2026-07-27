@@ -49,7 +49,8 @@
       loading: false,
       syncStatus: null,
       syncBusy: false,
-      syncMessage: ""
+      syncMessage: "",
+      syncDeltas: null
     },
     scorecard: {
       indication: "",
@@ -2338,6 +2339,7 @@
     if (state.intelligence.syncBusy) return;
     state.intelligence.syncBusy = true;
     state.intelligence.syncMessage = "Running ClinicalTrials.gov delta sync…";
+    state.intelligence.syncDeltas = null;
     if (state.sectionId === "intelligence") render();
     try {
       const res = await fetch(apiUrl("/api/ctgov/sync"), {
@@ -2348,19 +2350,110 @@
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         state.intelligence.syncMessage = data.error || `Sync failed (${res.status})`;
+        state.intelligence.syncDeltas = null;
       } else if (data.skipped) {
         state.intelligence.syncMessage = data.reason || "Sync skipped.";
+        state.intelligence.syncDeltas = null;
       } else {
-        state.intelligence.syncMessage = `Synced ${data.upserted ?? 0} trials (${data.mode || "delta"}${
-          data.incomplete ? ", partial — will catch up next run" : ""
-        }).`;
+        const d = data.deltas && data.deltas.summary ? data.deltas.summary : null;
+        state.intelligence.syncDeltas = data.deltas || null;
+        const parts = [
+          `Synced ${data.upserted ?? 0} trials (${data.mode || "delta"}${
+            data.incomplete ? ", partial — will catch up next run" : ""
+          })`
+        ];
+        if (d) {
+          parts.push(
+            `${d.added} new · ${d.changed} changed · ${d.unchanged} unchanged`
+          );
+        }
+        if (data.elapsedMs) parts.push(`${Math.round(data.elapsedMs / 1000)}s`);
+        state.intelligence.syncMessage = parts.join(" · ");
       }
       await loadIntelligenceHealth();
     } catch (err) {
       state.intelligence.syncMessage = `Sync error: ${String(err)}`;
+      state.intelligence.syncDeltas = null;
     }
     state.intelligence.syncBusy = false;
     if (state.sectionId === "intelligence") render();
+  }
+
+  function renderCtgovSyncDeltas(deltas) {
+    if (!deltas || !deltas.summary) return "";
+    const s = deltas.summary;
+    const added = deltas.added || [];
+    const changed = deltas.changed || [];
+    const summary = `<p class="muted" style="margin:0.5rem 0 0;">
+      <strong>${s.added}</strong> new ·
+      <strong>${s.changed}</strong> changed ·
+      <strong>${s.unchanged}</strong> unchanged
+      ${s.fetched != null ? ` · ${s.fetched} fetched this run` : ""}
+    </p>`;
+
+    const addedRows = added.length
+      ? added
+          .map(
+            (t) => `<tr>
+          <td><code>${escapeHtml(t.nct || "")}</code></td>
+          <td>${escapeHtml(t.title || "—")}</td>
+          <td>${escapeHtml(t.status || "—")}</td>
+          <td>${escapeHtml(t.phase || "—")}</td>
+          <td>${escapeHtml(t.oraIndication || "—")}</td>
+          <td>${t.enrollment != null ? escapeHtml(String(t.enrollment)) : "—"}</td>
+        </tr>`
+          )
+          .join("")
+      : `<tr><td colspan="6" class="muted">No new trials this run.</td></tr>`;
+
+    const changedRows = changed.length
+      ? changed
+          .map((t) => {
+            const ch = (t.changes || [])
+              .map(
+                (c) =>
+                  `<div class="ctgov-delta-change"><span class="ctgov-delta-field">${escapeHtml(
+                    c.field
+                  )}</span>: <span class="diff-old">${escapeHtml(
+                    c.from == null ? "—" : String(c.from)
+                  )}</span> → <span class="diff-new">${escapeHtml(
+                    c.to == null ? "—" : String(c.to)
+                  )}</span></div>`
+              )
+              .join("");
+            return `<tr>
+          <td><code>${escapeHtml(t.nct || "")}</code></td>
+          <td>${escapeHtml(t.title || "—")}</td>
+          <td>${ch || "—"}</td>
+        </tr>`;
+          })
+          .join("")
+      : `<tr><td colspan="3" class="muted">No field changes this run.</td></tr>`;
+
+    return `
+      <div class="ctgov-deltas" style="margin-top:1rem;">
+        <h4 style="margin:0 0 0.35rem;">CT.gov sync deltas</h4>
+        ${summary}
+        ${
+          deltas.addedTruncated || deltas.changedTruncated
+            ? `<p class="muted">Showing first 75 per list (more on server this run).</p>`
+            : ""
+        }
+        <div style="margin-top:0.75rem;overflow:auto;">
+          <h4 style="margin:0 0 0.35rem;">New trials (${s.added})</h4>
+          <table class="table">
+            <thead><tr><th>NCT</th><th>Title</th><th>Status</th><th>Phase</th><th>Indication</th><th>Enroll</th></tr></thead>
+            <tbody>${addedRows}</tbody>
+          </table>
+        </div>
+        <div style="margin-top:0.75rem;overflow:auto;">
+          <h4 style="margin:0 0 0.35rem;">Changed trials (${s.changed})</h4>
+          <table class="table">
+            <thead><tr><th>NCT</th><th>Title</th><th>Field deltas</th></tr></thead>
+            <tbody>${changedRows}</tbody>
+          </table>
+        </div>
+      </div>`;
   }
 
   function askBuddyAboutIndication(indication) {
@@ -2509,15 +2602,21 @@
 
   function renderIntelligenceHealthCard() {
     const h = state.intelligence.health;
-    const sync = state.intelligence.syncStatus || {};
+    const syncWrap = state.intelligence.syncStatus || {};
+    const sync = syncWrap.sync || syncWrap;
     const syncMsg = state.intelligence.syncMessage
       ? `<p class="muted" style="margin-top:0.5rem;">${escapeHtml(state.intelligence.syncMessage)}</p>`
       : "";
-    const lastSync = sync.lastSuccessAt || sync.lastRunAt || sync.watermark || null;
+    const lastSync = sync.lastSuccessfulSync || sync.lastSuccessAt || sync.lastRunAt || sync.watermark || null;
+    const trialCount = syncWrap.count != null ? syncWrap.count : sync.count;
     const syncMeta = lastSync
       ? `<p class="muted" style="margin:0.35rem 0 0;">Last CT.gov sync: ${escapeHtml(
           String(lastSync)
-        )}${sync.count != null ? ` · ${Number(sync.count).toLocaleString()} trials` : ""}</p>`
+        )}${trialCount != null ? ` · ${Number(trialCount).toLocaleString()} trials` : ""}${
+          sync.lastDeltas
+            ? ` · last run ${sync.lastDeltas.added || 0} new / ${sync.lastDeltas.changed || 0} changed`
+            : ""
+        }</p>`
       : `<p class="muted" style="margin:0.35rem 0 0;">CT.gov sync status unavailable yet.</p>`;
 
     if (!h) {
@@ -2561,6 +2660,7 @@
         </div>
         ${syncMeta}
         ${syncMsg}
+        ${renderCtgovSyncDeltas(state.intelligence.syncDeltas)}
       </div>`;
   }
 
