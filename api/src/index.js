@@ -1,7 +1,7 @@
 const { app } = require("@azure/functions");
 const AdmZip = require("adm-zip");
 const { parseWorkbookBuffer } = require("./parseWorkbook");
-const { upsertCanonical, createManualStudy, listStudies, getStudy, listVersions, getVersion, listLineItems, compareVersions, compareStudies, listQuarantine, getParseLearningsSummary, loadLearnings, getDb, buildPortfolioContext } = require("./cosmosLoad");
+const { upsertCanonical, createManualStudy, saveStudyVersion, listStudies, getStudy, listVersions, getVersion, listLineItems, compareVersions, compareStudies, listQuarantine, getParseLearningsSummary, loadLearnings, getDb, buildPortfolioContext } = require("./cosmosLoad");
 const { askAi, getStudyContext, providerStatus } = require("./askClaude");
 const {
   buildIntelligenceContext,
@@ -416,8 +416,21 @@ app.http("studies", {
         const result = await createManualStudy(body || {});
         return json(200, result);
       }
-      const studies = await listStudies(Number(new URL(request.url).searchParams.get("limit") || 500));
-      return json(200, { studies });
+      const url = new URL(request.url);
+      const limit = Number(url.searchParams.get("limit") || 500);
+      const budgetType = String(url.searchParams.get("budgetType") || url.searchParams.get("category") || "")
+        .trim()
+        .toLowerCase();
+      let studies = await listStudies(limit);
+      if (budgetType && budgetType !== "all") {
+        studies = studies.filter((s) => {
+          const bt = String(s.budgetType || s.category || "").toLowerCase();
+          if (budgetType === "hlbp") return bt === "hlbp" || bt.includes("ballpark");
+          if (budgetType === "uploaded") return bt && bt !== "hlbp" && bt !== "draft" && !bt.includes("ballpark");
+          return bt === budgetType || bt.includes(budgetType);
+        });
+      }
+      return json(200, { studies, filter: { budgetType: budgetType || "all" } });
     } catch (err) {
       context.error(err);
       return json(500, { error: String(err.message || err) });
@@ -426,7 +439,7 @@ app.http("studies", {
 });
 
 app.http("studyById", {
-  methods: ["GET", "OPTIONS"],
+  methods: ["GET", "PUT", "OPTIONS"],
   authLevel: "anonymous",
   route: "studies/{studyId}",
   handler: async (request, context) => {
@@ -435,12 +448,18 @@ app.http("studyById", {
         status: 204,
         headers: {
           "Access-Control-Allow-Origin": "*",
-          "Access-Control-Allow-Methods": "GET, OPTIONS"
+          "Access-Control-Allow-Methods": "GET, PUT, OPTIONS",
+          "Access-Control-Allow-Headers": "content-type"
         }
       };
     }
     try {
       const studyId = request.params.studyId;
+      if (request.method === "PUT") {
+        const body = await request.json().catch(() => ({}));
+        const result = await saveStudyVersion(studyId, { ...(body || {}), mode: body?.mode || "update" });
+        return json(200, result);
+      }
       const study = await getStudy(studyId);
       if (!study) return json(404, { error: `Study ${studyId} not found` });
       const versions = await listVersions(studyId);
@@ -460,7 +479,7 @@ app.http("studyById", {
 });
 
 app.http("studyVersions", {
-  methods: ["GET", "OPTIONS"],
+  methods: ["GET", "POST", "OPTIONS"],
   authLevel: "anonymous",
   route: "studies/{studyId}/versions",
   handler: async (request, context) => {
@@ -469,12 +488,18 @@ app.http("studyVersions", {
         status: 204,
         headers: {
           "Access-Control-Allow-Origin": "*",
-          "Access-Control-Allow-Methods": "GET, OPTIONS"
+          "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+          "Access-Control-Allow-Headers": "content-type"
         }
       };
     }
     try {
       const studyId = request.params.studyId;
+      if (request.method === "POST") {
+        const body = await request.json().catch(() => ({}));
+        const result = await saveStudyVersion(studyId, { ...(body || {}), mode: "new" });
+        return json(200, result);
+      }
       const versions = await listVersions(studyId);
       return json(200, { studyId, versions });
     } catch (err) {

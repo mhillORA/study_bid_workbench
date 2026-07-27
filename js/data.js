@@ -51,14 +51,19 @@ SBW.hlbpFields = {
     { key: "screenFailRate", label: "Screen-fail %", required: false },
     { key: "dropOutRate", label: "Drop-out %", required: false }
   ],
-  siteMix: [
-    { key: "country", label: "Country", required: true },
-    { key: "coreSites", label: "Core sites", required: true },
-    { key: "backupSites", label: "Backup sites", required: false },
-    { key: "enrolledPts", label: "Enrolled pts (country)", required: false },
-    { key: "notes", label: "Notes", required: false }
-  ]
-};
+    siteMix: [
+      { key: "country", label: "Country", required: true },
+      { key: "coreSites", label: "Core sites", required: true },
+      { key: "backupSites", label: "Backup sites", required: false },
+      { key: "enrolledPts", label: "Enrolled pts (country)", required: false },
+      { key: "notes", label: "Notes", required: false }
+    ],
+    fees: [
+      { key: "serviceFees", label: "Service fees (ballpark $)", required: false },
+      { key: "passThroughs", label: "Pass-throughs $", required: false },
+      { key: "grandTotal", label: "Grand total $", required: false }
+    ]
+  };
 
 /** Hub shortcuts — BD/sales, leadership, ops, HLBP. */
 SBW.bdShortcuts = [
@@ -132,6 +137,12 @@ SBW.defaultStudy = function () {
     indication: "",
     enrollmentType: "",
     budgetType: "",
+    category: "",
+    totals: {
+      serviceFees: null,
+      passThroughs: null,
+      grandTotal: null
+    },
     drivers: {
       screenedSubjects: null,
       enrolledSubjects: null,

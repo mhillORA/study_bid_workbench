@@ -190,7 +190,7 @@ async function listStudies(limit = 200) {
   const { resources } = await database.container("studies").items
     .query({
       query:
-        "SELECT c.studyId, c.clientName, c.title, c.protocol, c.phase, c.therapeuticArea, c.indication, c.status, c.currentVersionId, c.importedAt, c.updatedAt FROM c WHERE c.docType = @t",
+        "SELECT c.studyId, c.clientName, c.title, c.protocol, c.phase, c.therapeuticArea, c.indication, c.status, c.budgetType, c.category, c.currentVersionId, c.importedAt, c.updatedAt FROM c WHERE c.docType = @t",
       parameters: [{ name: "@t", value: "study" }]
     })
     .fetchAll();
@@ -832,6 +832,7 @@ async function createManualStudy(payload = {}) {
     indication: header.indication,
     enrollmentType: header.enrollmentType,
     budgetType: header.budgetType,
+    category: payload.category || header.budgetType || "draft",
     status: "draft",
     createdAt: now,
     updatedAt: now,
@@ -840,6 +841,10 @@ async function createManualStudy(payload = {}) {
     header,
     drivers,
     sites: Array.isArray(payload.sites) ? payload.sites : [],
+    totals:
+      payload.totals && typeof payload.totals === "object"
+        ? payload.totals
+        : { serviceFees: null, passThroughs: null, grandTotal: null },
     inputFields: [],
     resourceLeads: [],
     monitoring: {},
@@ -856,8 +861,8 @@ async function createManualStudy(payload = {}) {
     label: String(payload.versionLabel || "draft"),
     sourceSha256: `buddy-${studyId}`,
     sourceFileName: "buddy-created",
-    totals: {},
-    execSum: { totals: {}, serviceAreas: [] },
+    totals: studyDoc.totals,
+    execSum: { totals: studyDoc.totals, serviceAreas: [] },
     lineItemCount: 0,
     rateCount: 0,
     createdAt: now,
@@ -867,6 +872,7 @@ async function createManualStudy(payload = {}) {
       header,
       drivers,
       sites: studyDoc.sites,
+      totals: studyDoc.totals,
       inputFields: [],
       clientName: header.clientName,
       title: header.title,
@@ -875,7 +881,8 @@ async function createManualStudy(payload = {}) {
       therapeuticArea: header.therapeuticArea,
       indication: header.indication,
       enrollmentType: header.enrollmentType,
-      budgetType: header.budgetType
+      budgetType: header.budgetType,
+      category: studyDoc.category
     }
   };
 
@@ -891,9 +898,189 @@ async function createManualStudy(payload = {}) {
   };
 }
 
+function nextVersionLabel(existingLabels = [], preferred) {
+  const pref = String(preferred || "").trim();
+  if (pref) return pref;
+  const nums = (existingLabels || [])
+    .map((l) => {
+      const m = String(l || "").match(/^v(\d+)$/i);
+      return m ? Number(m[1]) : null;
+    })
+    .filter((n) => n != null);
+  const max = nums.length ? Math.max(...nums) : 0;
+  return `v${max + 1}`;
+}
+
+/**
+ * Upsert study header/drivers/sites and write a version snapshot to Cosmos.
+ * mode: "update" updates currentVersionId in place; "new" creates a new version (v2, v3…).
+ */
+async function saveStudyVersion(studyId, payload = {}) {
+  const id = String(studyId || payload.studyId || "").trim();
+  if (!id) throw new Error("studyId is required");
+  const database = getDb();
+  const now = new Date().toISOString();
+  const existing = await getStudy(id);
+  const versions = await listVersions(id);
+  const mode = String(payload.mode || "update").toLowerCase() === "new" ? "new" : "update";
+
+  const driversIn = payload.drivers && typeof payload.drivers === "object" ? payload.drivers : existing?.drivers || {};
+  const drivers = {
+    screenedSubjects: numOrNull(driversIn.screenedSubjects),
+    enrolledSubjects: numOrNull(driversIn.enrolledSubjects ?? driversIn.patients),
+    completedSubjects: numOrNull(driversIn.completedSubjects),
+    coreSites: numOrNull(driversIn.coreSites ?? driversIn.sites),
+    startupMonths: numOrNull(driversIn.startupMonths),
+    enrollmentMonths: numOrNull(driversIn.enrollmentMonths),
+    treatmentMonths: numOrNull(driversIn.treatmentMonths),
+    dblMonths: numOrNull(driversIn.dblMonths),
+    closeoutMonths: numOrNull(driversIn.closeoutMonths),
+    screenFailRate: numOrNull(driversIn.screenFailRate),
+    dropOutRate: numOrNull(driversIn.dropOutRate),
+    sdvPercent: numOrNull(driversIn.sdvPercent),
+    contingency: numOrNull(driversIn.contingency),
+    inflationRate: numOrNull(driversIn.inflationRate),
+    discount: numOrNull(driversIn.discount)
+  };
+
+  const totalsIn = payload.totals && typeof payload.totals === "object" ? payload.totals : existing?.totals || {};
+  const serviceFees = numOrNull(totalsIn.serviceFees ?? totalsIn["Total Service Fees"]);
+  const passThroughs = numOrNull(totalsIn.passThroughs ?? totalsIn["Pass-Throughs"]);
+  const grandTotal =
+    numOrNull(totalsIn.grandTotal) ??
+    (serviceFees != null ? serviceFees + (passThroughs || 0) : null);
+  const totals = {
+    ...(typeof totalsIn === "object" ? totalsIn : {}),
+    serviceFees,
+    passThroughs,
+    grandTotal,
+    "Total Service Fees": serviceFees,
+    "Pass-Throughs": passThroughs
+  };
+
+  const header = {
+    ...(existing?.header || {}),
+    clientName: payload.clientName ?? existing?.clientName ?? null,
+    title: payload.title ?? existing?.title ?? null,
+    protocol: payload.protocol ?? existing?.protocol ?? null,
+    phase: payload.phase ?? existing?.phase ?? null,
+    therapeuticArea: payload.therapeuticArea ?? existing?.therapeuticArea ?? null,
+    indication: payload.indication ?? existing?.indication ?? null,
+    enrollmentType: payload.enrollmentType ?? existing?.enrollmentType ?? null,
+    budgetType: payload.budgetType ?? existing?.budgetType ?? "draft",
+    opportunityId: id,
+    notes: payload.notes ?? existing?.header?.notes ?? null
+  };
+
+  const sites = Array.isArray(payload.sites)
+    ? payload.sites
+    : Array.isArray(existing?.sites)
+      ? existing.sites
+      : [];
+
+  const label = nextVersionLabel(
+    versions.map((v) => v.label),
+    payload.versionLabel || (mode === "new" ? null : existing?.versionLabel || payload.label)
+  );
+
+  let versionId =
+    mode === "update" && existing?.currentVersionId
+      ? existing.currentVersionId
+      : `ver-${id}-${label.replace(/[^a-zA-Z0-9._-]+/g, "-").toLowerCase()}-${Date.now().toString(36)}`;
+
+  // If updating but no current version, create one
+  if (mode === "update" && !existing?.currentVersionId) {
+    versionId = `ver-${id}-${label.replace(/[^a-zA-Z0-9._-]+/g, "-").toLowerCase()}`;
+  }
+
+  const studyDoc = {
+    ...(existing || {}),
+    id: existing?.id || `study-${id}`,
+    studyId: id,
+    opportunityId: id,
+    clientName: header.clientName,
+    title: header.title,
+    protocol: header.protocol,
+    phase: header.phase,
+    therapeuticArea: header.therapeuticArea,
+    indication: header.indication,
+    enrollmentType: header.enrollmentType,
+    budgetType: header.budgetType,
+    status: payload.status || existing?.status || "draft",
+    createdAt: existing?.createdAt || now,
+    updatedAt: now,
+    importedAt: existing?.importedAt || now,
+    currentVersionId: versionId,
+    header,
+    drivers,
+    sites,
+    totals,
+    inputFields: Array.isArray(payload.inputFields) ? payload.inputFields : existing?.inputFields || [],
+    assumptions: payload.assumptions || existing?.assumptions || {},
+    sectionStatus: payload.sectionStatus || existing?.sectionStatus || {},
+    docType: "study",
+    source: payload.source || existing?.source || "workbench_save",
+    category: payload.category || existing?.category || header.budgetType || "draft"
+  };
+
+  const prevVersion =
+    mode === "new" && existing?.currentVersionId
+      ? await getVersion(id, existing.currentVersionId).catch(() => null)
+      : null;
+
+  const versionDoc = {
+    id: versionId,
+    studyId: id,
+    label,
+    sourceSha256: `save-${id}-${now}`,
+    sourceFileName: payload.sourceFileName || "workbench-save",
+    totals,
+    execSum: { totals, serviceAreas: [] },
+    lineItemCount: 0,
+    rateCount: 0,
+    createdAt: mode === "update" ? existing?.updatedAt || now : now,
+    updatedAt: now,
+    confidence: 1,
+    docType: "version",
+    copiedFromVersionId: mode === "new" ? existing?.currentVersionId || null : null,
+    parentVersionId: prevVersion?.id || null,
+    snapshot: {
+      header,
+      drivers,
+      sites,
+      totals,
+      inputFields: studyDoc.inputFields,
+      assumptions: studyDoc.assumptions,
+      clientName: header.clientName,
+      title: header.title,
+      protocol: header.protocol,
+      phase: header.phase,
+      therapeuticArea: header.therapeuticArea,
+      indication: header.indication,
+      enrollmentType: header.enrollmentType,
+      budgetType: header.budgetType,
+      category: studyDoc.category
+    }
+  };
+
+  await database.container("studies").items.upsert(studyDoc);
+  await database.container("versions").items.upsert(versionDoc);
+
+  return {
+    status: mode === "new" ? "version_created" : "saved",
+    studyId: id,
+    versionId,
+    versionLabel: label,
+    study: studyDoc,
+    version: versionDoc,
+    versions: await listVersions(id)
+  };
+}
+
 module.exports = {
   upsertCanonical,
   createManualStudy,
+  saveStudyVersion,
   listStudies,
   listStudiesWithDrivers,
   buildPortfolioContext,

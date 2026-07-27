@@ -76,7 +76,9 @@
       learnings: null,
       status: "",
       loading: false
-    }
+    },
+    hlbpBaseline: null,
+    studiesFilter: localStorage.getItem("sbw.studiesFilter") || "all"
   };
 
   const els = {
@@ -157,8 +159,250 @@
   }
 
   function save() {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(state.study));
-    markSaved();
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state.study));
+    } catch (_) {}
+    if (!hasOpenStudy()) {
+      markSaved();
+      return;
+    }
+    saveStudyToCosmos({ mode: "update" }).catch(() => {});
+  }
+
+  function studyPayloadForSave(extra = {}) {
+    const s = state.study || {};
+    const totals = s.totals && typeof s.totals === "object" ? { ...s.totals } : {};
+    if (totals.serviceFees == null && state.results?.["summary.totalServiceFees"] != null) {
+      totals.serviceFees = state.results["summary.totalServiceFees"];
+    }
+    if (totals.passThroughs == null && state.results?.["summary.passThroughs"] != null) {
+      totals.passThroughs = state.results["summary.passThroughs"];
+    }
+    if (totals.grandTotal == null && state.results?.["summary.grandTotal"] != null) {
+      totals.grandTotal = state.results["summary.grandTotal"];
+    }
+    return {
+      studyId: s.studyId,
+      clientName: s.clientName,
+      title: s.title,
+      protocol: s.protocol,
+      phase: s.phase,
+      therapeuticArea: s.therapeuticArea,
+      indication: s.indication,
+      enrollmentType: s.enrollmentType,
+      budgetType: s.budgetType || "draft",
+      category: s.category || s.budgetType || "draft",
+      versionLabel: s.versionLabel,
+      drivers: s.drivers || {},
+      sites: s.sites || [],
+      totals,
+      assumptions: s.assumptions || {},
+      sectionStatus: s.sectionStatus || {},
+      inputFields: s.inputFields || [],
+      notes: (s.header && s.header.notes) || s.notes || null,
+      source: "workbench_save",
+      ...extra
+    };
+  }
+
+  async function saveStudyToCosmos({ mode = "update", versionLabel } = {}) {
+    if (!hasOpenStudy()) {
+      if (els.saveStatus) els.saveStatus.textContent = "No study to save";
+      return null;
+    }
+    const studyId = state.study.studyId;
+    const creating = !state.study.currentVersionId && state.source !== "cosmos";
+    if (els.saveStatus) {
+      els.saveStatus.textContent = mode === "new" ? "Saving new version to Cosmos…" : "Saving to Cosmos…";
+      els.saveStatus.classList.remove("saved");
+    }
+    try {
+      let res;
+      const body = studyPayloadForSave({
+        mode,
+        versionLabel: versionLabel || state.study.versionLabel
+      });
+      if (creating && mode === "update") {
+        // First Cosmos write for a local HLBP / draft
+        res = await fetch(apiUrl("/api/studies"), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ...body,
+            createdBy: state.entraUser?.email || state.userId || "ui"
+          })
+        });
+      } else if (mode === "new") {
+        res = await fetch(apiUrl(`/api/studies/${encodeURIComponent(studyId)}/versions`), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body)
+        });
+      } else {
+        res = await fetch(apiUrl(`/api/studies/${encodeURIComponent(studyId)}`), {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body)
+        });
+      }
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      if (data.studyId) state.study.studyId = data.studyId;
+      if (data.versionId) {
+        state.study.currentVersionId = data.versionId;
+        state.study.viewingVersionId = data.versionId;
+      }
+      if (data.versionLabel) state.study.versionLabel = data.versionLabel;
+      if (Array.isArray(data.versions)) state.versions = data.versions;
+      else if (data.version) {
+        const others = (state.versions || []).filter((v) => v.id !== data.version.id);
+        state.versions = [data.version, ...others];
+      }
+      state.source = "cosmos";
+      if (mode === "new" && state.hlbpBaseline) {
+        // keep existing baseline for live diff
+      } else if (!state.hlbpBaseline) {
+        captureHlbpBaseline();
+      }
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state.study));
+      markSaved();
+      if (els.saveStatus) {
+        els.saveStatus.textContent =
+          mode === "new"
+            ? `Cosmos · ${data.versionLabel || "new version"}`
+            : `Saved to Cosmos · ${data.versionLabel || state.study.versionLabel || ""}`;
+        els.saveStatus.classList.add("saved");
+      }
+      if (state.sectionId === "hlbp" || state.sectionId === "versions") render();
+      return data;
+    } catch (err) {
+      if (els.saveStatus) {
+        els.saveStatus.textContent = `Local only — Cosmos save failed: ${String(err.message || err)}`;
+        els.saveStatus.classList.remove("saved");
+      }
+      throw err;
+    }
+  }
+
+  function captureHlbpBaseline() {
+    const s = state.study || {};
+    state.hlbpBaseline = {
+      versionId: s.currentVersionId || null,
+      versionLabel: s.versionLabel || null,
+      capturedAt: new Date().toISOString(),
+      drivers: { ...(s.drivers || {}) },
+      totals: { ...(s.totals || {}) },
+      sites: Array.isArray(s.sites) ? s.sites.map((x) => ({ ...x })) : [],
+      clientName: s.clientName || "",
+      indication: s.indication || "",
+      phase: s.phase || ""
+    };
+  }
+
+  function scheduleHlbpDiffRefresh() {
+    if (state.sectionId !== "hlbp" || !state.hlbpBaseline) return;
+    clearTimeout(state._hlbpDiffTimer);
+    state._hlbpDiffTimer = setTimeout(() => {
+      const panel = document.getElementById("hlbpLiveDiffPanel");
+      if (!panel) return;
+      const baselineLabel =
+        state.hlbpBaseline?.versionLabel || state.hlbpBaseline?.capturedAt?.slice(0, 16) || null;
+      const diffRows = buildHlbpLiveDiffRows();
+      panel.innerHTML = !baselineLabel
+        ? `<p class="muted">Save v1 (or click Set baseline), then edit / copy to v2 — live $ and % deltas appear here.</p>`
+        : diffRows.length
+          ? `<p class="muted">Comparing to baseline <strong>${escapeHtml(baselineLabel)}</strong></p>
+        <table class="table" style="margin-top:0.5rem;">
+          <thead><tr><th>Field</th><th>Baseline</th><th>Current</th><th>Δ ($ or count / %)</th></tr></thead>
+          <tbody>${diffRows
+            .map(
+              (r) => `<tr>
+              <td>${escapeHtml(r.label)}</td>
+              <td class="diff-old">${escapeHtml(String(r.previous))}</td>
+              <td class="diff-new">${escapeHtml(String(r.current))}</td>
+              <td>${escapeHtml(r.deltaText)}</td>
+            </tr>`
+            )
+            .join("")}</tbody>
+        </table>`
+          : `<p class="muted">Baseline <strong>${escapeHtml(
+              baselineLabel
+            )}</strong> — no numeric differences yet.</p>`;
+    }, 200);
+  }
+
+  function formatDelta(prev, curr) {
+    const a = prev == null || prev === "" ? null : Number(prev);
+    const b = curr == null || curr === "" ? null : Number(curr);
+    if (a == null || b == null || Number.isNaN(a) || Number.isNaN(b)) {
+      return { abs: null, pct: null, text: "—" };
+    }
+    const abs = b - a;
+    const pct = a === 0 ? null : (abs / a) * 100;
+    const absText =
+      Math.abs(abs) >= 1000
+        ? abs.toLocaleString(undefined, { maximumFractionDigits: 0 })
+        : String(Math.round(abs * 100) / 100);
+    const pctText = pct == null ? "—" : `${pct >= 0 ? "+" : ""}${pct.toFixed(1)}%`;
+    const sign = abs > 0 ? "+" : "";
+    return {
+      abs,
+      pct,
+      text: pct == null ? `${sign}${absText}` : `${sign}${absText} (${pctText})`
+    };
+  }
+
+  function buildHlbpLiveDiffRows() {
+    const base = state.hlbpBaseline;
+    if (!base) return [];
+    const s = state.study || {};
+    const d = s.drivers || {};
+    const t = s.totals || {};
+    const bd = base.drivers || {};
+    const bt = base.totals || {};
+    const rows = [];
+    const pushNum = (label, prev, curr) => {
+      if (prev == null && (curr == null || curr === "")) return;
+      const delta = formatDelta(prev, curr);
+      const changed = String(prev ?? "") !== String(curr ?? "");
+      if (!changed && prev == null) return;
+      rows.push({
+        label,
+        previous: prev == null || prev === "" ? "—" : prev,
+        current: curr == null || curr === "" ? "—" : curr,
+        deltaText: changed ? delta.text : "—",
+        changed
+      });
+    };
+    pushNum("Service fees", bt.serviceFees, t.serviceFees);
+    pushNum("Pass-throughs", bt.passThroughs, t.passThroughs);
+    pushNum("Grand total", bt.grandTotal, t.grandTotal);
+    for (const key of [
+      "enrolledSubjects",
+      "screenedSubjects",
+      "coreSites",
+      "enrollmentMonths",
+      "startupMonths",
+      "treatmentMonths",
+      "screenFailRate",
+      "dropOutRate"
+    ]) {
+      pushNum(humanizeKey(key), bd[key], d[key]);
+    }
+    const baseSites = base.sites || [];
+    const curSites = s.sites || [];
+    const countries = [
+      ...new Set([
+        ...baseSites.map((x) => x.country).filter(Boolean),
+        ...curSites.map((x) => x.country).filter(Boolean)
+      ])
+    ];
+    for (const country of countries) {
+      const p = baseSites.find((x) => x.country === country);
+      const c = curSites.find((x) => x.country === country);
+      pushNum(`Sites · ${country}`, p?.coreSites, c?.coreSites);
+    }
+    return rows.filter((r) => r.changed);
   }
 
   function recalc() {
@@ -452,7 +696,7 @@
     return missing;
   }
 
-  function startBlankHlbp(seed = {}) {
+  async function startBlankHlbp(seed = {}) {
     const base = SBW.defaultStudy();
     const now = new Date().toISOString();
     const studyId =
@@ -472,7 +716,13 @@
       therapeuticArea: seed.therapeuticArea || "",
       indication: seed.indication || "",
       budgetType: "HLBP",
-      versionLabel: seed.versionLabel || "HLBP draft",
+      category: "HLBP",
+      versionLabel: seed.versionLabel || "v1",
+      totals: {
+        serviceFees: seed.totals?.serviceFees ?? null,
+        passThroughs: seed.totals?.passThroughs ?? null,
+        grandTotal: seed.totals?.grandTotal ?? null
+      },
       drivers,
       sites,
       sectionStatus: { ...base.sectionStatus, hlbp: "in_progress" },
@@ -484,12 +734,68 @@
     state.versions = [];
     state.source = "local";
     state.sectionId = "hlbp";
+    state.hlbpBaseline = null;
     state.dirty = true;
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state.study));
     } catch (_) {}
     render();
-    markDirty();
+    if (els.saveStatus) {
+      els.saveStatus.textContent = "Creating HLBP in Cosmos…";
+      els.saveStatus.classList.remove("saved");
+    }
+    try {
+      await saveStudyToCosmos({ mode: "update", versionLabel: state.study.versionLabel || "v1" });
+      captureHlbpBaseline();
+      state.studiesList = [];
+    } catch (err) {
+      if (els.saveStatus) {
+        els.saveStatus.textContent = `HLBP local only — Cosmos create failed: ${String(err.message || err)}`;
+      }
+    }
+  }
+
+  async function openHlbpVersion(versionId) {
+    if (!hasOpenStudy() || !versionId) return;
+    try {
+      const res = await fetch(
+        apiUrl(
+          `/api/studies/${encodeURIComponent(state.study.studyId)}/versions/${encodeURIComponent(versionId)}`
+        )
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      const v = data.version || data;
+      const snap = v.snapshot || {};
+      if (snap.drivers) state.study.drivers = { ...state.study.drivers, ...snap.drivers };
+      if (Array.isArray(snap.sites)) state.study.sites = snap.sites.map((s) => ({ ...emptySiteRow(), ...s }));
+      if (snap.totals) state.study.totals = { ...(state.study.totals || {}), ...snap.totals };
+      else if (v.totals) state.study.totals = { ...(state.study.totals || {}), ...v.totals };
+      if (snap.header) {
+        for (const k of [
+          "clientName",
+          "title",
+          "protocol",
+          "phase",
+          "therapeuticArea",
+          "indication",
+          "budgetType"
+        ]) {
+          if (snap.header[k] != null) state.study[k] = snap.header[k];
+        }
+      }
+      state.study.versionLabel = v.label || state.study.versionLabel;
+      state.study.currentVersionId = v.id || versionId;
+      state.study.viewingVersionId = v.id || versionId;
+      captureHlbpBaseline();
+      markDirty();
+      render();
+      if (els.saveStatus) {
+        els.saveStatus.textContent = `Opened ${state.study.versionLabel} (set as baseline)`;
+      }
+    } catch (err) {
+      if (els.saveStatus) els.saveStatus.textContent = `Could not open version: ${String(err.message || err)}`;
+    }
   }
 
   function matchHlbpStart(question) {
@@ -1099,6 +1405,7 @@
     }
 
     const budgetType = payload.budgetType || (payload.hlbp ? "HLBP" : "draft");
+    const category = payload.category || budgetType || "draft";
     let sites = Array.isArray(payload.sites)
       ? payload.sites.map((s) => ({ ...emptySiteRow(), ...(s || {}) }))
       : [];
@@ -1115,7 +1422,13 @@
       indication: payload.indication || "",
       enrollmentType: payload.enrollmentType || "",
       budgetType,
+      category,
       versionLabel: payload.versionLabel || (budgetType === "HLBP" ? "HLBP draft" : "draft"),
+      totals: {
+        serviceFees: payload.totals?.serviceFees ?? null,
+        passThroughs: payload.totals?.passThroughs ?? null,
+        grandTotal: payload.totals?.grandTotal ?? null
+      },
       drivers,
       sites,
       header: {
@@ -1264,11 +1577,13 @@
       title: (els.newStudyTitle && els.newStudyTitle.value.trim()) || undefined,
       versionLabel: "draft",
       budgetType: "draft",
+      category: "draft",
       createdBy: state.entraUser?.email || state.userId || "ui"
     };
     const workspace = buildWorkspaceFromCreate(payload);
     let cosmosOk = false;
     let cosmosError = null;
+    let createdVersions = [];
     try {
       const res = await fetch(apiUrl("/api/studies"), {
         method: "POST",
@@ -1283,24 +1598,30 @@
         workspace.currentVersionId = data.versionId;
         workspace.viewingVersionId = data.versionId;
       }
+      createdVersions = data.versions || (data.version ? [data.version] : []);
     } catch (err) {
       cosmosError = String(err.message || err);
     }
 
     state.study = workspace;
     state.lineItems = [];
-    state.versions = [];
+    state.versions = createdVersions;
     state.source = cosmosOk ? "cosmos" : "local";
     state.sectionId = "overview";
     state.askHistory = [];
-    markDirty();
-    save();
+    state.dirty = false;
+    state.studiesList = [];
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state.study));
+    } catch (_) {}
     render();
+    if (cosmosOk) markSaved();
+    else if (els.saveStatus) els.saveStatus.classList.remove("saved");
     if (els.saveStatus) {
       els.saveStatus.textContent = cosmosOk
-        ? `Created ${workspace.studyId}`
-        : `Draft ${workspace.studyId} (local${cosmosError ? " — Cosmos later" : ""})`;
-      els.saveStatus.classList.remove("saved");
+        ? `Created in Cosmos · ${workspace.studyId}`
+        : `Draft ${workspace.studyId} (Cosmos failed${cosmosError ? `: ${cosmosError}` : ""})`;
+      if (cosmosOk) els.saveStatus.classList.add("saved");
     }
   }
 
@@ -1313,6 +1634,7 @@
     const workspace = buildWorkspaceFromCreate(proposal.payload || {});
     let cosmosOk = false;
     let cosmosError = null;
+    let createdVersions = [];
     try {
       const res = await fetch(apiUrl("/api/studies"), {
         method: "POST",
@@ -1320,6 +1642,8 @@
         body: JSON.stringify({
           ...proposal.payload,
           studyId: workspace.studyId,
+          category: workspace.category || workspace.budgetType,
+          totals: workspace.totals,
           createdBy: state.entraUser?.email || state.userId || "buddy"
         })
       });
@@ -1331,28 +1655,38 @@
         workspace.currentVersionId = data.versionId;
         workspace.viewingVersionId = data.versionId;
       }
+      createdVersions = data.versions || (data.version ? [data.version] : []);
     } catch (err) {
       cosmosError = String(err.message || err);
     }
 
     state.study = workspace;
     state.lineItems = [];
-    state.versions = [];
+    state.versions = createdVersions;
     state.source = cosmosOk ? "cosmos" : "buddy";
     state.sectionId = String(workspace.budgetType || "").toUpperCase() === "HLBP" ? "hlbp" : "overview";
-    markDirty();
-    save();
+    state.studiesList = [];
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(state.study));
+    } catch (_) {}
+    if (cosmosOk) {
+      state.dirty = false;
+      if (String(workspace.budgetType || "").toUpperCase() === "HLBP") captureHlbpBaseline();
+    } else {
+      state.dirty = true;
+    }
     render();
+    if (cosmosOk) markSaved();
     openBuddy();
     const missing = hlbpMissingFields();
     pushAssistant(
       cosmosOk
         ? String(workspace.budgetType || "").toUpperCase() === "HLBP"
-          ? `Created HLBP ${workspace.studyId} and opened the form.${
+          ? `Created HLBP ${workspace.studyId} in Cosmos and opened the form.${
               missing.length ? ` Still needed: ${missing.slice(0, 5).join(", ")}.` : " Core fields look filled."
             } Tell me the next values and I will propose Apply fills.`
           : `Created ${workspace.studyId} in Cosmos and opened Overview. Fill remaining tabs or upload a budget workbook when you have one.`
-        : `Opened draft ${workspace.studyId} locally${cosmosError ? ` (Cosmos save failed: ${cosmosError})` : ""}. You can still edit and Save in the browser.`
+        : `Opened draft ${workspace.studyId} locally${cosmosError ? ` (Cosmos create failed: ${cosmosError})` : ""}. Click Save to retry Cosmos.`
     );
     paintBuddyChat();
   }
@@ -2770,6 +3104,7 @@
   function renderStudies(loadingHtml) {
     const sel = state.studyCompare.selected || [];
     const groupBy = state.studiesGroupBy || "client";
+    const filter = state.studiesFilter || "all";
     return `
       <div class="grid">
         <div class="card wide">
@@ -2784,6 +3119,13 @@
             </div>
             <div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;">
               <button type="button" class="btn btn-secondary" id="btnClearStudyInline" ${hasOpenStudy() ? "" : "disabled"}>All studies (clear)</button>
+              <label class="field-label" style="margin:0;" for="studiesFilter">Category</label>
+              <select id="studiesFilter" class="select" style="width:auto;min-width:9rem;">
+                <option value="all" ${filter === "all" ? "selected" : ""}>All</option>
+                <option value="hlbp" ${filter === "hlbp" ? "selected" : ""}>HLBP</option>
+                <option value="uploaded" ${filter === "uploaded" ? "selected" : ""}>Uploaded</option>
+                <option value="draft" ${filter === "draft" ? "selected" : ""}>Draft</option>
+              </select>
               <label class="field-label" style="margin:0;" for="studiesGroupBy">Group by</label>
               <select id="studiesGroupBy" class="select" style="width:auto;min-width:11rem;">
                 <option value="client" ${groupBy === "client" ? "selected" : ""}>Client</option>
@@ -2850,6 +3192,7 @@
       <td>${escapeHtml(s.therapeuticArea || "—")}</td>
       <td>${escapeHtml(s.title || "—")}</td>
       <td>${escapeHtml(s.phase || "—")}</td>
+      <td>${escapeHtml(s.budgetType || s.category || "—")}</td>
       <td>${escapeHtml(studyYear(s))}</td>
       <td>${escapeHtml(s.status || "—")}</td>
       <td class="muted">${escapeHtml((s.updatedAt || s.importedAt || "").slice(0, 19).replace("T", " "))}</td>
@@ -2864,7 +3207,7 @@
     }
 
     const head = `<thead>
-      <tr><th>Compare</th><th></th><th>Study</th><th>Client</th><th>TA</th><th>Title</th><th>Phase</th><th>Year</th><th>Status</th><th>Updated</th></tr>
+      <tr><th>Compare</th><th></th><th>Study</th><th>Client</th><th>TA</th><th>Title</th><th>Phase</th><th>Type</th><th>Year</th><th>Status</th><th>Updated</th></tr>
     </thead>`;
 
     if (groupBy === "none") {
@@ -3135,6 +3478,7 @@
       indication: s.indication || snap.indication || "",
       enrollmentType: s.enrollmentType || snap.enrollmentType || "",
       budgetType: s.budgetType || snap.budgetType || "",
+      category: s.category || snap.category || s.budgetType || snap.budgetType || "",
       versionLabel: v.label || "imported",
       drivers,
       header: { ...(base.header || {}), ...(snap.header || {}), ...(s.header || {}) },
@@ -3151,7 +3495,12 @@
       vendors: (Array.isArray(snap.vendors) && snap.vendors.length ? snap.vendors : null) || s.vendors || [],
       payments: { ...(snap.payments || {}), ...(s.payments || {}) },
       sheetHarvestSummary: s.sheetHarvestSummary || snap.sheetHarvestSummary || v.sheetHarvestSummary || null,
-      totals: v.totals || {},
+      totals: {
+        ...(base.totals || {}),
+        ...(s.totals || {}),
+        ...(snap.totals || {}),
+        ...(v.totals || {})
+      },
       execSum: v.execSum || {},
       rates: { ...base.rates, ...(s.rates || {}) },
       factors: { ...base.factors },
@@ -3186,8 +3535,15 @@
       state.source = "cosmos";
       state.compare = null;
       state.dirty = false;
+      state.hlbpBaseline = null;
+      if (String(state.study.budgetType || "").toUpperCase() === "HLBP") {
+        captureHlbpBaseline();
+        if (state.sectionId !== "ops") state.sectionId = "hlbp";
+      }
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state.study));
-      if (state.sectionId !== "ops") state.sectionId = "overview";
+      if (state.sectionId !== "ops" && String(state.study.budgetType || "").toUpperCase() !== "HLBP") {
+        state.sectionId = "overview";
+      }
       render();
       markSaved();
       if (state.sectionId === "ops") ensureOpsLoaded();
@@ -3201,7 +3557,12 @@
     if (!panel) return;
     panel.innerHTML = "<p class=\"muted\">Loading…</p>";
     try {
-      const res = await fetch(apiUrl("/api/studies?limit=500"));
+      const filter = state.studiesFilter || "all";
+      const q =
+        filter && filter !== "all"
+          ? `/api/studies?limit=500&budgetType=${encodeURIComponent(filter)}`
+          : "/api/studies?limit=500";
+      const res = await fetch(apiUrl(q));
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         panel.innerHTML = `<pre class="formula-box">${escapeHtml(JSON.stringify(data, null, 2))}</pre>`;
@@ -3553,10 +3914,17 @@
     const locked = !canEdit("Analyst") && currentUser().department !== "Admin";
     const dis = locked ? "disabled" : "";
     const d = state.study.drivers || {};
+    if (!state.study.totals || typeof state.study.totals !== "object") {
+      state.study.totals = { serviceFees: null, passThroughs: null, grandTotal: null };
+    }
+    const t = state.study.totals;
     if (!Array.isArray(state.study.sites)) state.study.sites = [];
     const sites = state.study.sites;
     const missing = hlbpMissingFields();
     const isHlbp = String(state.study.budgetType || "").toUpperCase() === "HLBP";
+    const versions = state.versions || [];
+    const diffRows = buildHlbpLiveDiffRows();
+    const baselineLabel = state.hlbpBaseline?.versionLabel || state.hlbpBaseline?.capturedAt?.slice(0, 16) || null;
 
     const siteRows =
       sites
@@ -3583,11 +3951,43 @@
         .join("") ||
       `<tr><td colspan="6" class="muted">No country rows yet — add one below.</td></tr>`;
 
+    const versionChips = versions.length
+      ? versions
+          .map((v) => {
+            const on = v.id === state.study.currentVersionId;
+            return `<button type="button" class="btn ${on ? "btn-primary" : "btn-ghost"}" data-hlbp-open-version="${escapeAttr(
+              v.id
+            )}">${escapeHtml(v.label || v.id)}</button>`;
+          })
+          .join("")
+      : `<span class="muted">${escapeHtml(state.study.versionLabel || "v1")} (unsaved or local)</span>`;
+
+    const diffTable = !baselineLabel
+      ? `<p class="muted">Save v1 (or click Set baseline), then edit / copy to v2 — live $ and % deltas appear here.</p>`
+      : diffRows.length
+        ? `<p class="muted">Comparing to baseline <strong>${escapeHtml(baselineLabel)}</strong></p>
+        <table class="table" style="margin-top:0.5rem;">
+          <thead><tr><th>Field</th><th>Baseline</th><th>Current</th><th>Δ ($ or count / %)</th></tr></thead>
+          <tbody>${diffRows
+            .map(
+              (r) => `<tr>
+              <td>${escapeHtml(r.label)}</td>
+              <td class="diff-old">${escapeHtml(String(r.previous))}</td>
+              <td class="diff-new">${escapeHtml(String(r.current))}</td>
+              <td>${escapeHtml(r.deltaText)}</td>
+            </tr>`
+            )
+            .join("")}</tbody>
+        </table>`
+        : `<p class="muted">Baseline <strong>${escapeHtml(
+            baselineLabel
+          )}</strong> — no numeric differences yet.</p>`;
+
     return `
       <div class="grid">
         <div class="card wide">
           <h3>High Level Ballpark (HLBP)</h3>
-          <p class="muted">Simple intake for early pricing conversations — identity, enrollment drivers, and site country mix. Ask Buddy “I need an HLBP” to open this and walk the fields.</p>
+          <p class="muted">Save writes to Cosmos. Use <strong>Save as new version</strong> to copy v1 → v2 and keep a live $ / % diff against the baseline.</p>
           ${
             !hasOpenStudy()
               ? `<div style="margin-top:0.75rem;"><button type="button" class="btn btn-primary" id="btnStartHlbp">Start new HLBP</button></div>`
@@ -3595,7 +3995,20 @@
                 ? `<p class="muted" style="margin-top:0.5rem;">Open study is not marked HLBP. <button type="button" class="btn btn-secondary" id="btnMarkHlbp">Mark as HLBP</button> or <button type="button" class="btn btn-primary" id="btnStartHlbp">Start new HLBP</button></p>`
                 : `<p class="muted" style="margin-top:0.5rem;">Working HLBP · ${escapeHtml(
                     state.study.studyId
-                  )}</p>`
+                  )} · ${escapeHtml(state.study.versionLabel || "v1")} · ${
+                    state.source === "cosmos" ? "Cosmos" : "local until Save"
+                  }</p>`
+          }
+          ${
+            hasOpenStudy()
+              ? `<div style="margin-top:0.75rem;display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;">
+            <span class="muted">Versions:</span>
+            ${versionChips}
+            <button type="button" class="btn btn-primary" id="btnHlbpSaveCosmos" ${dis}>Save to Cosmos</button>
+            <button type="button" class="btn btn-secondary" id="btnHlbpSaveNewVersion" ${dis}>Save as new version</button>
+            <button type="button" class="btn btn-ghost" id="btnHlbpSetBaseline" ${dis}>Set baseline</button>
+          </div>`
+              : ""
           }
           ${
             missing.length
@@ -3632,6 +4045,9 @@
             )}" ${dis} /></div>
             <div><label class="field-label">Indication *</label><input class="input" data-study="indication" value="${escapeAttr(
               state.study.indication || ""
+            )}" ${dis} /></div>
+            <div><label class="field-label">Version label</label><input class="input" data-study="versionLabel" value="${escapeAttr(
+              state.study.versionLabel || "v1"
             )}" ${dis} /></div>
             <div><label class="field-label">Budget type</label><input class="input" data-study="budgetType" value="${escapeAttr(
               state.study.budgetType || "HLBP"
@@ -3671,6 +4087,21 @@
           </div>
         </div>
         <div class="card wide">
+          <h3>Ballpark fees</h3>
+          <p class="muted">Enter service fees / pass-throughs for iteration diffs (e.g. PTC 150,000 → 175,000).</p>
+          <div class="form-grid" style="margin-top:0.75rem;">
+            <div><label class="field-label">Service fees $</label><input class="input" type="number" step="any" data-total="serviceFees" value="${escapeAttr(
+              t.serviceFees ?? ""
+            )}" ${dis} /></div>
+            <div><label class="field-label">Pass-throughs $</label><input class="input" type="number" step="any" data-total="passThroughs" value="${escapeAttr(
+              t.passThroughs ?? ""
+            )}" ${dis} /></div>
+            <div><label class="field-label">Grand total $</label><input class="input" type="number" step="any" data-total="grandTotal" value="${escapeAttr(
+              t.grandTotal ?? ""
+            )}" ${dis} /></div>
+          </div>
+        </div>
+        <div class="card wide">
           <h3>Site country mix *</h3>
           <p class="muted">Countries and site counts for the ballpark. Total core sites syncs from this mix when you enter counts.</p>
           <table class="table" style="margin-top:0.75rem;">
@@ -3681,6 +4112,10 @@
             <button type="button" class="btn btn-secondary" id="btnHlbpAddSite" ${dis}>Add country</button>
             <button type="button" class="btn btn-secondary" data-buddy-ask="hlbp">Ask Buddy to guide</button>
           </div>
+        </div>
+        <div class="card wide">
+          <h3>Live vs baseline</h3>
+          <div id="hlbpLiveDiffPanel">${diffTable}</div>
         </div>`
             : ""
         }
@@ -4756,14 +5191,52 @@
       }
       if (e.target.id === "btnMarkHlbp") {
         state.study.budgetType = "HLBP";
+        state.study.category = "HLBP";
         if (!state.study.versionLabel) state.study.versionLabel = "HLBP draft";
         if (!Array.isArray(state.study.sites) || !state.study.sites.length) {
           state.study.sites = [emptySiteRow(), emptySiteRow()];
         }
         if (!state.study.sectionStatus) state.study.sectionStatus = {};
         state.study.sectionStatus.hlbp = "in_progress";
+        if (!state.study.totals) state.study.totals = { serviceFees: null, passThroughs: null, grandTotal: null };
         markDirty();
         setSection("hlbp");
+        return;
+      }
+      if (e.target.id === "btnHlbpSaveCosmos") {
+        saveStudyToCosmos({ mode: "update" })
+          .then(() => {
+            if (!state.hlbpBaseline) captureHlbpBaseline();
+            scheduleHlbpDiffRefresh();
+            pushAssistant(`Saved ${state.study.studyId} (${state.study.versionLabel || "version"}) to Cosmos.`);
+            paintBuddyChat();
+          })
+          .catch(() => {});
+        return;
+      }
+      if (e.target.id === "btnHlbpSaveNewVersion") {
+        if (!state.hlbpBaseline) captureHlbpBaseline();
+        saveStudyToCosmos({ mode: "new" })
+          .then((data) => {
+            pushAssistant(
+              `Created ${data?.versionLabel || "new version"} on ${state.study.studyId}. Baseline kept for live $/% diffs — edit fees or drivers to see changes.`
+            );
+            paintBuddyChat();
+            render();
+          })
+          .catch(() => {});
+        return;
+      }
+      if (e.target.id === "btnHlbpSetBaseline") {
+        captureHlbpBaseline();
+        scheduleHlbpDiffRefresh();
+        if (els.saveStatus) els.saveStatus.textContent = `Baseline set · ${state.hlbpBaseline.versionLabel || "current"}`;
+        return;
+      }
+      const openVer = e.target.closest("[data-hlbp-open-version]");
+      if (openVer) {
+        const vid = openVer.getAttribute("data-hlbp-open-version");
+        openHlbpVersion(vid);
         return;
       }
       if (e.target.id === "btnHlbpAddSite") {
@@ -4875,6 +5348,12 @@
         state.studiesCollapsed = {};
         paintStudiesPanel();
       }
+      if (e.target.id === "studiesFilter") {
+        state.studiesFilter = e.target.value || "all";
+        localStorage.setItem("sbw.studiesFilter", state.studiesFilter);
+        state.studiesList = [];
+        loadStudiesIntoPanel();
+      }
     });
 
     els.viewRoot.addEventListener("input", (e) => {
@@ -4884,6 +5363,25 @@
         state.study.drivers[t.dataset.driver] = raw === "" ? null : (t.type === "number" ? Number(raw) : raw);
         markDirty();
         recalc();
+        scheduleHlbpDiffRefresh();
+        return;
+      }
+      if (t.dataset.total) {
+        if (!state.study.totals) state.study.totals = {};
+        const raw = t.value;
+        const key = t.dataset.total;
+        state.study.totals[key] = raw === "" ? null : Number(raw);
+        if (
+          key !== "grandTotal" &&
+          state.study.totals.serviceFees != null &&
+          state.study.totals.grandTotal == null
+        ) {
+          const fees = Number(state.study.totals.serviceFees) || 0;
+          const pt = Number(state.study.totals.passThroughs) || 0;
+          state.study.totals.grandTotal = fees + pt;
+        }
+        markDirty();
+        scheduleHlbpDiffRefresh();
         return;
       }
       if (t.dataset.study) {
@@ -4927,6 +5425,7 @@
           if (field === "coreSites") syncCoreSitesFromMix();
         }
         markDirty();
+        scheduleHlbpDiffRefresh();
         return;
       }
       if (t.dataset.monitoringKey) {
