@@ -11,6 +11,7 @@ const {
   extractIndicationFromQuestion,
   extractCountryFromQuestion
 } = require("./intelligence");
+const { isLegacyAnteriorQuestion, buildLegacyAnteriorContext } = require("./legacyAnterior");
 const { runCtgovSync, getCtgovSyncStatus } = require("./ctgovSync");
 const {
   isPricingQuestion,
@@ -1173,6 +1174,38 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       intelligence = { source: "ora_clinical_intelligence_error", error: String(err.message || err) };
     }
 
+    // Legacy anterior-segment site/study trust & feasibility (separate containers — read only)
+    let legacyAnterior = null;
+    try {
+      const legacyHint =
+        body.legacyHint && typeof body.legacyHint === "object" ? body.legacyHint : {};
+      const forceLegacy =
+        isLegacyAnteriorQuestion(question) ||
+        Boolean(legacyHint.siteName || legacyHint.studyName || legacyHint.siteId || legacyHint.studyId) ||
+        Boolean(body.legacyPack && body.legacyPack.source === "legacy_anterior_segment");
+      if (body.legacyPack && body.legacyPack.source === "legacy_anterior_segment" && !body.legacyPack.error) {
+        legacyAnterior = {
+          ...body.legacyPack,
+          attachedFrom: "ui_legacy_pack",
+          note: "Legacy anterior-segment pack from client (not re-queried)."
+        };
+      } else if (
+        forceLegacy ||
+        /\b(site|sites|feasib|trust|prefer|enroll|pi|investigator)\b/i.test(question)
+      ) {
+        legacyAnterior = await buildLegacyAnteriorContext(getDb, {
+          question,
+          siteName: legacyHint.siteName || null,
+          studyName: legacyHint.studyName || null,
+          siteId: legacyHint.siteId || null,
+          studyId: legacyHint.studyId || null,
+          force: forceLegacy
+        });
+      }
+    } catch (err) {
+      legacyAnterior = { source: "legacy_anterior_segment_error", error: String(err.message || err) };
+    }
+
     // Past-bid RFP pricing tiers (High Level Ballpark / Moderate / Goal Bid)
     let pricingScenarios = null;
     try {
@@ -1214,8 +1247,9 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         databaseStudyCount: portfolio?.databaseStudyCount ?? null,
         matchedStudyCount: portfolio?.matchedStudyCount ?? null,
         intelligenceAttached: Boolean(intelligence && intelligence.source === "ora_clinical_intelligence"),
+        legacyAnteriorAttached: Boolean(legacyAnterior && legacyAnterior.source === "legacy_anterior_segment"),
         pricingScenariosAttached: Boolean(pricingScenarios && pricingScenarios.tiers),
-        note: "portfolio = budget studies. pricingScenarios = past-bid RFP tiers. intelligence = Ora Veeva + TrialHub + CT.gov."
+        note: "portfolio = budget studies. pricingScenarios = past-bid RFP tiers. intelligence = Ora Veeva + TrialHub + CT.gov. legacyAnterior = anterior-segment overview site/study trust."
       },
       user,
       activeTab,
@@ -1231,7 +1265,8 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         clientName: hints.clientName || null,
         year: hints.year || null,
         crossStudy,
-        intelligence: Boolean(intelligence && !intelligence.error)
+        intelligence: Boolean(intelligence && !intelligence.error),
+        legacyAnterior: Boolean(legacyAnterior && !legacyAnterior.error)
       },
       openStudyInUi: openStudyId
         ? {
@@ -1246,6 +1281,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       portfolio,
       pricingScenarios,
       intelligence,
+      legacyAnterior,
       workingStudy:
         answerFocus === "portfolio" || !clientStudy
           ? null
