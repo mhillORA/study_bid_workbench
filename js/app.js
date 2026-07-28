@@ -898,8 +898,8 @@
     const top = visible.filter((s) => !s.navGroup);
     const budgetKids = budgetSectionsVisible();
     const budgetActive = isBudgetSection(state.sectionId);
-    if (budgetActive) state.budgetNavOpen = true;
-    const open = Boolean(state.budgetNavOpen || budgetActive);
+    // Stay collapsed by default; only open when the user expands Budget.
+    const open = Boolean(state.budgetNavOpen);
     const budgetStatusDots = budgetKids
       .map((s) => state.study.sectionStatus[s.id])
       .filter(Boolean);
@@ -922,7 +922,7 @@
             <span class="nav-group-label">Budget</span>
             <span class="nav-group-meta">${groupDot}<span class="nav-chevron" aria-hidden="true"></span></span>
           </button>
-          <div class="nav-group-children" ${open ? "" : "hidden"}>
+          <div class="nav-group-children"${open ? "" : " hidden"}>
             ${budgetKids.map(renderNavSectionButton).join("")}
           </div>
         </div>`
@@ -5639,11 +5639,11 @@
     els.sectionNav.addEventListener("click", (e) => {
       const toggle = e.target.closest("[data-nav-group]");
       if (toggle) {
+        e.preventDefault();
         const groupId = toggle.dataset.navGroup;
         if (groupId === "budget") {
-          const willOpen = !state.budgetNavOpen;
-          state.budgetNavOpen = willOpen;
-          if (willOpen && !isBudgetSection(state.sectionId)) {
+          state.budgetNavOpen = !state.budgetNavOpen;
+          if (state.budgetNavOpen && !isBudgetSection(state.sectionId)) {
             const def =
               (SBW.navGroups && SBW.navGroups.budget && SBW.navGroups.budget.defaultSection) ||
               "overview";
@@ -5660,6 +5660,8 @@
       }
       const btn = e.target.closest("[data-section]");
       if (!btn) return;
+      // Keep group expanded while picking a child from the sidebar list
+      if (btn.closest(".nav-group-children")) state.budgetNavOpen = true;
       setSection(btn.dataset.section);
     });
 
