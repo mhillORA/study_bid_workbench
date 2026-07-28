@@ -4,6 +4,8 @@ name: CT.gov ophthalmology sync (app ping)
 # During EST (UTC−5) this fires at 8:00 local — accept seasonal shift or adjust cron.
 # Calls the Static Web App API (uses App Settings Cosmos). No COSMOS_* in Actions.
 # Auth: COPILOT_ASK_KEY secret → x-copilot-key header (same key as SWA App Setting).
+# If the secret is missing, scheduled runs soft-skip (warning, exit 0); manual dispatch still fails.
+# /api/ctgov/sync allows anonymous at SWA edge; the Function still requires key or signed-in user.
 
 on:
   schedule:
@@ -28,8 +30,13 @@ jobs:
         run: |
           set -euo pipefail
           if [ -z "${COPILOT_ASK_KEY:-}" ]; then
-            echo "Missing Actions secret COPILOT_ASK_KEY (same value as SWA App Setting)"
-            exit 1
+            echo "::warning::Missing Actions secret COPILOT_ASK_KEY (same value as SWA App Setting COPILOT_ASK_KEY)."
+            echo "Daily ping skipped. Sync from the signed-in app UI, or set the secret when Azure Portal is reachable (VPN / allowlisted IP)."
+            # Soft-skip so the schedule is not a daily red failure while Azure is IP-locked.
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+              exit 1
+            fi
+            exit 0
           fi
           URL="${CTGOV_SYNC_URL:-https://white-river-0de1aed0f.7.azurestaticapps.net/api/ctgov/sync}"
           FULL="${{ github.event_name == 'workflow_dispatch' && inputs.full || false }}"

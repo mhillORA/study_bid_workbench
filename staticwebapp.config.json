@@ -33,6 +33,10 @@
       "allowedRoles": ["anonymous", "authenticated"]
     },
     {
+      "route": "/api/ctgov/sync",
+      "allowedRoles": ["anonymous", "authenticated"]
+    },
+    {
       "route": "/api/*",
       "allowedRoles": ["authenticated"]
     },
