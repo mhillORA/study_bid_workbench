@@ -54,20 +54,37 @@ function isLegacyAnteriorQuestion(question) {
   );
 }
 
-/** Pull a quoted name or "site X" / "study X" phrase. */
+const HINT_STOP =
+  /^(trust|notes?|for|with|that|which|the|a|an|our|preferred|prefer|best|top|legacy|anterior|enrollment|recruitment|history|historical|data|overview)\b/i;
+
+function cleanHintName(raw) {
+  let s = String(raw || "")
+    .trim()
+    .replace(/[?.!,;:]+$/, "")
+    .replace(/\s+(and|or|vs|versus|in|for|with|from)\s+.*$/i, "")
+    .trim();
+  if (!s || s.length < 3 || HINT_STOP.test(s)) return null;
+  return s;
+}
+
+/** Pull a quoted name or "site named X" / "study called X" phrase. */
 function extractLegacyNameHints(question) {
   const q = String(question || "");
   const out = { siteName: null, studyName: null, siteId: null, studyId: null };
   const quoted = [...q.matchAll(/"([^"]{2,80})"|'([^']{2,80})'/g)].map((m) => m[1] || m[2]);
-  const siteM = q.match(/\bsite\s+(?:named\s+|called\s+)?["']?([A-Za-z0-9][\w .,&'\-/]{2,60})["']?/i);
-  const studyM = q.match(/\bstudy\s+(?:named\s+|called\s+)?["']?([A-Za-z0-9][\w .,&'\-/]{2,60})["']?/i);
-  if (siteM) out.siteName = siteM[1].trim().replace(/[?.!,;:]+$/, "");
-  if (studyM) out.studyName = studyM[1].trim().replace(/[?.!,;:]+$/, "");
-  if (!out.siteName && quoted[0] && /\bsite\b/i.test(q)) out.siteName = quoted[0].trim();
-  if (!out.studyName && quoted[0] && /\bstudy\b/i.test(q)) out.studyName = quoted[0].trim();
+  // Prefer explicit named/called — bare "site trust notes…" must not become a siteName
+  const siteM = q.match(
+    /\bsites?\s+(?:named|called)\s+["']?([A-Za-z0-9][\w .,&'\-/]{2,60})["']?/i
+  );
+  const studyM = q.match(
+    /\bstud(?:y|ies)\s+(?:named|called)\s+["']?([A-Za-z0-9][\w .,&'\-/]{2,60})["']?/i
+  );
+  if (siteM) out.siteName = cleanHintName(siteM[1]);
+  if (studyM) out.studyName = cleanHintName(studyM[1]);
+  if (!out.siteName && quoted[0] && /\bsite\b/i.test(q)) out.siteName = cleanHintName(quoted[0]);
+  if (!out.studyName && quoted[0] && /\bstudy\b/i.test(q)) out.studyName = cleanHintName(quoted[0]);
   if (!out.siteName && !out.studyName && quoted[0]) {
-    // Ambiguous quote — try as site first (trust asks are usually site-centric)
-    out.siteName = quoted[0].trim();
+    out.siteName = cleanHintName(quoted[0]);
   }
   const idSite = q.match(/\bsiteId\s*[:=]\s*([A-Za-z0-9_\-]+)/i);
   const idStudy = q.match(/\bstudyId\s*[:=]\s*([A-Za-z0-9_\-]+)/i);
@@ -155,20 +172,22 @@ async function findSites(database, { siteId, siteName, limit = 15 } = {}) {
   }
   if (siteName) {
     const needle = String(siteName).trim();
+    if (needle.length < 3) return [];
     const rows = await queryAll(
       container,
       `SELECT TOP @lim * FROM c WHERE c.docType = @t AND (
-         CONTAINS(LOWER(c.siteName), LOWER(@n)) OR
-         CONTAINS(LOWER(c.name), LOWER(@n)) OR
-         CONTAINS(LOWER(c.siteCode), LOWER(@n))
+         (IS_DEFINED(c.siteName) AND CONTAINS(LOWER(c.siteName), LOWER(@n))) OR
+         (IS_DEFINED(c.name) AND CONTAINS(LOWER(c.name), LOWER(@n))) OR
+         (IS_DEFINED(c.siteCode) AND CONTAINS(LOWER(c.siteCode), LOWER(@n)))
        )`,
       [
         { name: "@t", value: DOC_SITE },
         { name: "@n", value: needle },
-        { name: "@lim", value: limit }
+        { name: "@lim", value: Math.max(limit * 4, 40) }
       ]
     );
-    return rows;
+    const key = normSiteName(needle);
+    return rankNameMatches(rows, key, (r) => [r.siteName, r.name, r.siteCode]).slice(0, limit);
   }
   // Top sites by enrolled for portfolio-style trust asks
   const rows = await queryAll(
@@ -194,19 +213,22 @@ async function findStudies(database, { studyId, studyName, limit = 15 } = {}) {
   }
   if (studyName) {
     const needle = String(studyName).trim();
-    return queryAll(
+    if (needle.length < 3) return [];
+    const rows = await queryAll(
       container,
       `SELECT TOP @lim * FROM c WHERE c.docType = @t AND (
-         CONTAINS(LOWER(c.studyName), LOWER(@n)) OR
-         CONTAINS(LOWER(c.name), LOWER(@n)) OR
-         CONTAINS(LOWER(c.title), LOWER(@n))
+         (IS_DEFINED(c.studyName) AND CONTAINS(LOWER(c.studyName), LOWER(@n))) OR
+         (IS_DEFINED(c.name) AND CONTAINS(LOWER(c.name), LOWER(@n))) OR
+         (IS_DEFINED(c.title) AND CONTAINS(LOWER(c.title), LOWER(@n)))
        )`,
       [
         { name: "@t", value: DOC_STUDY },
         { name: "@n", value: needle },
-        { name: "@lim", value: limit }
+        { name: "@lim", value: Math.max(limit * 4, 40) }
       ]
     );
+    const key = normSiteName(needle);
+    return rankNameMatches(rows, key, (r) => [r.studyName, r.name, r.title]).slice(0, limit);
   }
   const rows = await queryAll(
     container,
@@ -442,9 +464,71 @@ function normSiteName(s) {
     .trim();
 }
 
+/** Score how well a needle matches any of a row's name fields (higher = better). */
+function nameMatchScore(needleNorm, candidateNorm) {
+  if (!needleNorm || !candidateNorm) return 0;
+  if (needleNorm === candidateNorm) return 1000 + candidateNorm.length;
+  const tokens = (s) => s.split(/\s+/).filter((t) => t.length >= 3);
+  const nt = tokens(needleNorm);
+  const ct = tokens(candidateNorm);
+  if (nt.length && ct.length) {
+    const cset = new Set(ct);
+    const overlap = nt.filter((t) => cset.has(t)).length;
+    if (overlap) {
+      const ratio = overlap / Math.max(nt.length, ct.length);
+      if (ratio >= 0.6 || overlap >= 2) return 400 + Math.round(ratio * 100) + overlap * 10;
+    }
+  }
+  // Substring only when the shorter side is long enough to avoid "core"/"eye" false hits
+  const shorter = needleNorm.length <= candidateNorm.length ? needleNorm : candidateNorm;
+  const longer = needleNorm.length <= candidateNorm.length ? candidateNorm : needleNorm;
+  if (shorter.length >= 8 && longer.includes(shorter)) return 200 + shorter.length;
+  if (shorter.length >= 5 && longer.startsWith(shorter)) return 150 + shorter.length;
+  return 0;
+}
+
+function rankNameMatches(rows, needleNorm, namesOf) {
+  return (rows || [])
+    .map((row) => {
+      let best = 0;
+      for (const n of namesOf(row) || []) {
+        best = Math.max(best, nameMatchScore(needleNorm, normSiteName(n)));
+      }
+      return { row, score: best };
+    })
+    .filter((x) => x.score > 0)
+    .sort((a, b) => b.score - a.score || (num(b.row?.metrics?.enrolled) || 0) - (num(a.row?.metrics?.enrolled) || 0))
+    .map((x) => x.row);
+}
+
+function legacyMetricsPayload(hit) {
+  const m = hit.metrics || {};
+  const enrolled = num(m.enrolled);
+  const screened = num(m.screened);
+  const scheduled = num(m.scheduled);
+  const target = num(m.targetScheduled);
+  const screenPct = screened != null && scheduled > 0 ? roundPct(screened / scheduled) : null;
+  const enrollOfScreen = enrolled != null && screened > 0 ? roundPct(enrolled / screened) : null;
+  return {
+    siteId: hit.siteId || hit.id,
+    siteName: hit.siteName || hit.name,
+    relationshipPreference: hit.relationshipPreference || null,
+    advantages: hit.advantages || null,
+    disadvantages: hit.disadvantages || null,
+    targetScheduled: target,
+    scheduled,
+    screened,
+    enrolled,
+    nStudies: num(m.nStudies),
+    attainmentPct: attainment(enrolled, target),
+    screenedOfScheduledPct: screenPct,
+    enrolledOfScreenedPct: enrollOfScreen
+  };
+}
+
 /**
  * Match Ora scorecard sites (org_clean) to legacy_sites and attach recruitment metrics.
- * Does not write to Cosmos.
+ * Does not write to Cosmos. Also returns the true legacy_sites leaderboard (by enrolled).
  */
 async function enrichSitesWithLegacy(database, sites = []) {
   const legacyRows = await queryAll(
@@ -452,62 +536,57 @@ async function enrichSitesWithLegacy(database, sites = []) {
     `SELECT * FROM c WHERE c.docType = @t`,
     [{ name: "@t", value: DOC_SITE }]
   );
-  const byNorm = new Map();
+  const entries = [];
   for (const row of legacyRows) {
     const names = [row.siteName, row.name, row.siteCode].filter(Boolean);
     for (const n of names) {
       const key = normSiteName(n);
-      if (key && !byNorm.has(key)) byNorm.set(key, row);
+      if (key) entries.push({ key, row });
     }
   }
 
   function findMatch(org) {
     const key = normSiteName(org);
     if (!key) return null;
-    if (byNorm.has(key)) return byNorm.get(key);
-    // contains either way (bounded)
-    for (const [k, row] of byNorm) {
-      if (k.length < 4 || key.length < 4) continue;
-      if (k.includes(key) || key.includes(k)) return row;
+    let best = null;
+    let bestScore = 0;
+    for (const { key: k, row } of entries) {
+      const score = nameMatchScore(key, k);
+      if (score > bestScore) {
+        bestScore = score;
+        best = row;
+      }
     }
-    return null;
+    // Require a real match — reject weak substring noise
+    return bestScore >= 150 ? best : null;
   }
 
   let matched = 0;
+  const usedLegacyIds = new Set();
   const outSites = (sites || []).map((s) => {
     const hit = findMatch(s.org_clean);
     if (!hit) {
       return { ...s, legacy: null, legacyMatched: false };
     }
     matched += 1;
-    const m = hit.metrics || {};
-    const enrolled = num(m.enrolled);
-    const screened = num(m.screened);
-    const scheduled = num(m.scheduled);
-    const target = num(m.targetScheduled);
-    const screenPct = screened != null && scheduled > 0 ? roundPct(screened / scheduled) : null;
-    const enrollOfScreen =
-      enrolled != null && screened > 0 ? roundPct(enrolled / screened) : null;
+    usedLegacyIds.add(String(hit.siteId || hit.id));
     return {
       ...s,
       legacyMatched: true,
-      legacy: {
-        siteId: hit.siteId || hit.id,
-        siteName: hit.siteName || hit.name,
-        relationshipPreference: hit.relationshipPreference || null,
-        advantages: hit.advantages || null,
-        disadvantages: hit.disadvantages || null,
-        targetScheduled: target,
-        scheduled,
-        screened,
-        enrolled,
-        nStudies: num(m.nStudies),
-        attainmentPct: attainment(enrolled, target),
-        screenedOfScheduledPct: screenPct,
-        enrolledOfScreenedPct: enrollOfScreen
-      }
+      legacyMatchQuality: "name",
+      legacy: legacyMetricsPayload(hit)
     };
   });
+
+  const leaderboard = [...legacyRows]
+    .map((r) => slimSite(r))
+    .filter(Boolean)
+    .sort((a, b) => (b.metrics?.enrolled || 0) - (a.metrics?.enrolled || 0))
+    .slice(0, 60)
+    .map((s) => ({
+      ...s,
+      matchedToOra: usedLegacyIds.has(String(s.siteId))
+    }));
 
   return {
     sites: outSites,
@@ -516,7 +595,9 @@ async function enrichSitesWithLegacy(database, sites = []) {
       legacySiteCount: legacyRows.length,
       matched,
       unmatched: outSites.length - matched,
-      note: "Legacy anterior-segment recruitment metrics matched by site name to Ora org_clean. Separate from Veeva PSM/trust."
+      leaderboard,
+      note:
+        "Legacy recruitment tab lists legacy_sites ranked by enrolled. Ora columns use strict name match (exact / strong token overlap) — short substring hits are ignored."
     }
   };
 }

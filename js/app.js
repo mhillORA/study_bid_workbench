@@ -3140,21 +3140,45 @@
 
     const legacyMatched =
       includeLegacy && result?.sites ? result.sites.filter((s) => s.legacyMatched && s.legacy) : [];
-    const legacyPanel = `
-      <div class="card wide">
-        <h3>Legacy recruitment</h3>
-        <p class="muted">Anterior-segment overview metrics matched onto Ora sites by name. Turn on <strong>Include legacy recruitment data</strong> and Score sites. Does not change Ora scores.</p>
-        ${
-          !includeLegacy
-            ? `<p class="muted">Legacy columns are off. Enable the toggle above, then re-score.</p>`
-            : !result
-              ? `<p class="muted">Score sites first to see legacy matches.</p>`
-              : legacyMatched.length
-                ? `<p class="muted">${legacyMatched.length} of ${
-                    result.sites.length
-                  } scored sites matched a legacy site.${
-                    result.legacy?.note ? ` ${escapeHtml(result.legacy.note)}` : ""
-                  }</p>
+    const legacyBoard = includeLegacy && Array.isArray(result?.legacy?.leaderboard)
+      ? result.legacy.leaderboard
+      : [];
+    const legacyBoardTable = legacyBoard.length
+      ? `<p class="muted" style="margin-top:0.75rem;">Top ${legacyBoard.length} of ${
+          intelStatNum(result.legacy?.legacySiteCount) || legacyBoard.length
+        } legacy_sites by enrolled (anterior-segment overview — not filtered by indication).</p>
+            <div style="overflow:auto;">
+            <table class="table">
+              <thead><tr>
+                <th>#</th><th>Legacy site</th><th>Preference</th>
+                <th>Scheduled</th><th>Screened</th><th>Enrolled</th>
+                <th>Attain %</th><th>Studies</th><th>Ora match</th>
+              </tr></thead>
+              <tbody>
+                ${legacyBoard
+                  .map((L, i) => {
+                    const m = L.metrics || {};
+                    return `<tr>
+                    <td>${i + 1}</td>
+                    <td>${escapeHtml(L.siteName || "—")}</td>
+                    <td>${escapeHtml(L.relationshipPreference || "—")}</td>
+                    <td>${intelStatNum(m.scheduled)}</td>
+                    <td>${intelStatNum(m.screened)}</td>
+                    <td>${intelStatNum(m.enrolled)}</td>
+                    <td>${m.attainmentPct != null ? `${intelStatNum(m.attainmentPct)}%` : "—"}</td>
+                    <td>${intelStatNum(m.nStudies)}</td>
+                    <td>${L.matchedToOra ? "yes" : "—"}</td>
+                  </tr>`;
+                  })
+                  .join("")}
+              </tbody>
+            </table>
+            </div>`
+      : "";
+    const legacyOraMatchesTable = legacyMatched.length
+      ? `<p class="muted" style="margin-top:1rem;">${legacyMatched.length} of ${
+          result.sites.length
+        } scored Ora sites matched a legacy site (strict name match).</p>
             <div style="overflow:auto;">
             <table class="table">
               <thead><tr>
@@ -3186,7 +3210,21 @@
               </tbody>
             </table>
             </div>`
-                : `<p class="muted">No name matches between Ora org_clean and legacy_sites for this score run.</p>`
+      : includeLegacy && result
+        ? `<p class="muted" style="margin-top:1rem;">No strict name matches between Ora org_clean and legacy_sites for this score run.</p>`
+        : "";
+    const legacyPanel = `
+      <div class="card wide">
+        <h3>Legacy recruitment</h3>
+        <p class="muted">True anterior-segment <code>legacy_sites</code> leaderboard (by enrolled), plus optional Ora name matches. Turn on <strong>Include legacy recruitment data</strong> and Score sites. Does not change Ora scores.</p>
+        ${
+          !includeLegacy
+            ? `<p class="muted">Legacy columns are off. Enable the toggle above, then re-score.</p>`
+            : !result
+              ? `<p class="muted">Score sites first to load legacy_sites.</p>`
+              : result.legacy?.error
+                ? `<p class="muted">Legacy load error: ${escapeHtml(result.legacy.error)}</p>`
+                : `${legacyBoardTable}${legacyOraMatchesTable}`
         }
       </div>`;
 
@@ -4782,7 +4820,7 @@
           <p class="muted">Benchmarks and site slates for proposals · leadership rollups · ops workflow and data pulse.</p>
           <div style="display:flex;gap:0.6rem;flex-wrap:wrap;margin-top:0.75rem;">
             ${shortcuts}
-            ${quickasks}
+            ${quickAsks}
           </div>
         </div>
         <div class="card">
