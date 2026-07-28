@@ -2899,11 +2899,75 @@
       </div>`;
   }
 
+  function canRunSiteScorecard() {
+    const ind = String(state.scorecard.indication || "").trim();
+    const global = !!state.scorecard.globalRegion;
+    const countries = global ? [] : [...(state.scorecard.countries || [])];
+    return Boolean(ind || global || countries.length);
+  }
+
+  async function loadLegacyBoardOnly() {
+    state.scorecard.includeLegacy = true;
+    state.scorecard.loading = true;
+    state.scorecard.status = "Loading legacy recruitment board…";
+    if (state.sectionId === "scorecard") render();
+    try {
+      const res = await fetch(
+        apiUrl("/api/intelligence/sitescorecard?includeLegacy=true&legacyOnly=true")
+      );
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        state.scorecard.status = data.error || `Legacy board failed (${res.status})`;
+        if (!state.scorecard.result) state.scorecard.result = { includeLegacy: true, sites: [], legacy: data.legacy || { error: state.scorecard.status } };
+        else {
+          state.scorecard.result = {
+            ...state.scorecard.result,
+            includeLegacy: true,
+            legacy: data.legacy || { error: state.scorecard.status }
+          };
+        }
+      } else {
+        // Keep any prior Ora ranked sites; attach/replace legacy meta + flag
+        const prev = state.scorecard.result;
+        state.scorecard.result = {
+          ...(prev && !prev.legacyOnly ? prev : {}),
+          ...data,
+          sites: prev && prev.sites && prev.sites.length && !prev.legacyOnly ? prev.sites : data.sites || [],
+          siteCount:
+            prev && prev.sites && prev.sites.length && !prev.legacyOnly
+              ? prev.siteCount
+              : data.siteCount || 0,
+          includeLegacy: true,
+          legacy: data.legacy
+        };
+        state.scorecard.status = "";
+      }
+    } catch (err) {
+      state.scorecard.status = String(err);
+    }
+    state.scorecard.loading = false;
+    if (state.sectionId === "scorecard") render();
+  }
+
+  async function enableLegacyRecruitment({ rescore = true } = {}) {
+    state.scorecard.includeLegacy = true;
+    state.scorecard.tab = "legacy";
+    if (rescore && canRunSiteScorecard()) {
+      await runSiteScorecard();
+      return;
+    }
+    await loadLegacyBoardOnly();
+  }
+
   async function runSiteScorecard() {
     const ind = String(state.scorecard.indication || "").trim();
     const global = !!state.scorecard.globalRegion;
     const countries = global ? [] : [...(state.scorecard.countries || [])];
     if (!ind && !global && !countries.length) {
+      if (state.scorecard.includeLegacy) {
+        await loadLegacyBoardOnly();
+        return;
+      }
       state.scorecard.status = "Pick an indication and/or country (or Global) first.";
       if (state.sectionId === "scorecard") render();
       return;
@@ -2941,6 +3005,7 @@
         state.scorecard.status = data.error || `Scorecard failed (${res.status})`;
       } else {
         state.scorecard.result = data;
+        state.scorecard.includeLegacy = Boolean(data.includeLegacy) || state.scorecard.includeLegacy;
         state.scorecard.status = "";
       }
     } catch (err) {
@@ -3027,11 +3092,11 @@
     const src =
       state.scorecard.source === "compare" || state.scorecard.source === "all" ? "compare" : "ora";
     const tab = state.scorecard.tab || "ranked";
-    const includeLegacy = !!state.scorecard.includeLegacy;
+    const result = state.scorecard.result;
+    const includeLegacy = !!(state.scorecard.includeLegacy || result?.includeLegacy);
     const status = state.scorecard.status
       ? `<p class="muted" style="margin-top:0.5rem;">${escapeHtml(state.scorecard.status)}</p>`
       : "";
-    const result = state.scorecard.result;
     const compare = src === "compare";
     const trustNote = result?.trustNote
       ? `<p class="muted" style="margin-top:0.35rem;font-size:0.85rem;">${escapeHtml(result.trustNote)}</p>`
@@ -3281,15 +3346,17 @@
     const legacyPanel = `
       <div class="card wide">
         <h3>Legacy recruitment</h3>
-        <p class="muted">True anterior-segment <code>legacy_sites</code> leaderboard (by enrolled), plus optional Ora name matches. Turn on <strong>Include legacy recruitment data</strong> and Score sites. Does not change Ora scores.</p>
+        <p class="muted">True anterior-segment <code>legacy_sites</code> leaderboard (by enrolled), plus optional Ora name matches. Does not change Ora scores.</p>
         ${
           !includeLegacy
-            ? `<p class="muted">Legacy columns are off. Enable the toggle above, then re-score.</p>`
-            : !result
-              ? `<p class="muted">Score sites first to load legacy_sites.</p>`
-              : result.legacy?.error
-                ? `<p class="muted">Legacy load error: ${escapeHtml(result.legacy.error)}</p>`
-                : `${legacyBoardTable}${legacyOraMatchesTable}`
+            ? `<p class="muted">Legacy is off. <button type="button" class="btn btn-primary" id="btnScoreLegacyEnable">Include legacy recruitment data</button></p>`
+            : state.scorecard.loading
+              ? `<p class="muted">Loading legacy recruitment…</p>`
+              : !result || (!result.legacy && !result.legacyOnly)
+                ? `<p class="muted">Loading…</p>`
+                : result.legacy?.error
+                  ? `<p class="muted">Legacy load error: ${escapeHtml(result.legacy.error)}</p>`
+                  : `${legacyBoardTable}${legacyOraMatchesTable}`
         }
       </div>`;
 
@@ -5822,16 +5889,45 @@
         else render();
         return;
       }
-      if (e.target.id === "btnScoreIncludeLegacy") {
-        state.scorecard.includeLegacy = !state.scorecard.includeLegacy;
-        if (state.scorecard.result) runSiteScorecard();
-        else render();
+      const legacyBtn = e.target.closest("#btnScoreIncludeLegacy, #btnScoreLegacyEnable");
+      if (legacyBtn) {
+        const turningOn = legacyBtn.id === "btnScoreLegacyEnable" || !state.scorecard.includeLegacy;
+        if (turningOn) {
+          enableLegacyRecruitment({ rescore: true });
+        } else {
+          state.scorecard.includeLegacy = false;
+          if (state.scorecard.result) {
+            state.scorecard.result = {
+              ...state.scorecard.result,
+              includeLegacy: false,
+              legacy: null,
+              sites: (state.scorecard.result.sites || []).map((s) => ({
+                ...s,
+                legacy: null,
+                legacyMatched: false
+              }))
+            };
+          }
+          render();
+        }
         return;
       }
       const scoreTab = e.target.closest("[data-score-tab]");
       if (scoreTab) {
         state.scorecard.tab = scoreTab.getAttribute("data-score-tab") || "ranked";
         if (state.scorecard.tab === "dive" && state.scorecard.dive) state.scorecard.dive.open = true;
+        if (state.scorecard.tab === "legacy" && !state.scorecard.includeLegacy) {
+          enableLegacyRecruitment({ rescore: true });
+          return;
+        }
+        if (
+          state.scorecard.tab === "legacy" &&
+          state.scorecard.includeLegacy &&
+          (!state.scorecard.result || !state.scorecard.result.legacy)
+        ) {
+          enableLegacyRecruitment({ rescore: true });
+          return;
+        }
         render();
         return;
       }

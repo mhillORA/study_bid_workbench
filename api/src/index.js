@@ -6,6 +6,7 @@ const { askAi, getStudyContext, providerStatus } = require("./askClaude");
 const {
   buildIntelligenceContext,
   buildSiteScorecard,
+  buildLegacyRecruitmentBoard,
   getIntelligenceHealth,
   isIntelligenceQuestion,
   extractIndicationFromQuestion,
@@ -860,6 +861,13 @@ app.http("intelligenceSiteScorecard", {
       const includeLegacy =
         request.query.get("includeLegacy") === "true" ||
         request.query.get("legacy") === "true";
+      const legacyOnly =
+        request.query.get("legacyOnly") === "true" ||
+        request.query.get("legacyBoard") === "true";
+      if (legacyOnly || (includeLegacy && !String(q).trim() && !String(countryRaw).trim() && !global)) {
+        const board = await buildLegacyRecruitmentBoard(getDb);
+        return json(board.legacy?.error ? 500 : 200, board);
+      }
       if (!String(q).trim() && !String(countryRaw).trim() && !global) {
         return json(400, { error: "q (indication) and/or country is required" });
       }

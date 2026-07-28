@@ -1152,6 +1152,34 @@ async function buildSiteScorecard(getDb, opts = {}) {
   };
 }
 
+/** Legacy recruitment board only (no Ora rescore required). */
+async function buildLegacyRecruitmentBoard(getDb) {
+  const started = Date.now();
+  const database = await getDb();
+  try {
+    const { enrichSitesWithLegacy } = require("./legacyAnterior");
+    const enriched = await enrichSitesWithLegacy(database, []);
+    return {
+      includeLegacy: true,
+      legacyOnly: true,
+      siteCount: 0,
+      sites: [],
+      legacy: enriched.meta,
+      note: "Legacy anterior-segment sites ranked by enrolled. Turn on Score sites with an indication to also match onto Ora rankings.",
+      elapsedMs: Date.now() - started
+    };
+  } catch (err) {
+    return {
+      includeLegacy: true,
+      legacyOnly: true,
+      siteCount: 0,
+      sites: [],
+      legacy: { error: String(err.message || err) },
+      elapsedMs: Date.now() - started
+    };
+  }
+}
+
 module.exports = {
   DATASET,
   INDICATION_GROUPS,
@@ -1164,6 +1192,7 @@ module.exports = {
   getIntelligenceHealth,
   buildIntelligenceContext,
   buildSiteScorecard,
+  buildLegacyRecruitmentBoard,
   benchmarkIndication,
   lookupSponsorCrosswalk
 };
