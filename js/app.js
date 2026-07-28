@@ -80,6 +80,7 @@
       loading: false
     },
     hlbpBaseline: null,
+    budgetNavOpen: false,
     studiesFilter: localStorage.getItem("sbw.studiesFilter") || "all",
     locks: [],
     editingSectionId: null,
@@ -876,13 +877,77 @@
     return (s || "not_started").replaceAll("_", " ");
   }
 
+  function budgetSectionsVisible() {
+    return SBW.sections.filter((s) => s.navGroup === "budget" && canSeeSection(s));
+  }
+
+  function isBudgetSection(sectionId) {
+    const s = SBW.sections.find((x) => x.id === sectionId);
+    return Boolean(s && s.navGroup === "budget");
+  }
+
+  function renderNavSectionButton(s) {
+    const st = state.study.sectionStatus[s.id];
+    const active = s.id === state.sectionId ? "active" : "";
+    const dot = st ? `<span class="status-dot ${st}"></span>` : "";
+    return `<button type="button" data-section="${s.id}" class="${active}">${escapeHtml(s.label)}${dot}</button>`;
+  }
+
   function renderNav() {
-    els.sectionNav.innerHTML = SBW.sections.filter(canSeeSection).map((s) => {
-      const st = state.study.sectionStatus[s.id];
-      const active = s.id === state.sectionId ? "active" : "";
-      const dot = st ? `<span class="status-dot ${st}"></span>` : "";
-      return `<button type="button" data-section="${s.id}" class="${active}">${s.label}${dot}</button>`;
-    }).join("");
+    const visible = SBW.sections.filter(canSeeSection);
+    const top = visible.filter((s) => !s.navGroup);
+    const budgetKids = budgetSectionsVisible();
+    const budgetActive = isBudgetSection(state.sectionId);
+    if (budgetActive) state.budgetNavOpen = true;
+    const open = Boolean(state.budgetNavOpen || budgetActive);
+    const budgetStatusDots = budgetKids
+      .map((s) => state.study.sectionStatus[s.id])
+      .filter(Boolean);
+    const anyInProgress = budgetStatusDots.some((st) => st && st !== "not_started");
+    const groupDot = anyInProgress
+      ? `<span class="status-dot ${
+          budgetStatusDots.includes("approved")
+            ? "approved"
+            : budgetStatusDots.includes("ready_for_review")
+              ? "ready_for_review"
+              : "in_progress"
+        }"></span>`
+      : "";
+
+    const budgetBlock = budgetKids.length
+      ? `<div class="nav-group ${open ? "open" : ""} ${budgetActive ? "has-active" : ""}">
+          <button type="button" class="nav-group-toggle ${budgetActive ? "active" : ""}" data-nav-group="budget" aria-expanded="${
+            open ? "true" : "false"
+          }">
+            <span class="nav-group-label">Budget</span>
+            <span class="nav-group-meta">${groupDot}<span class="nav-chevron" aria-hidden="true"></span></span>
+          </button>
+          <div class="nav-group-children" ${open ? "" : "hidden"}>
+            ${budgetKids.map(renderNavSectionButton).join("")}
+          </div>
+        </div>`
+      : "";
+
+    els.sectionNav.innerHTML = `${top.map(renderNavSectionButton).join("")}${budgetBlock}`;
+  }
+
+  function renderBudgetSubtabs() {
+    if (!isBudgetSection(state.sectionId)) return "";
+    const kids = budgetSectionsVisible();
+    if (kids.length < 2) return "";
+    return `<div class="budget-subtabs" role="tablist" aria-label="Budget categories">
+      ${kids
+        .map((s) => {
+          const st = state.study.sectionStatus[s.id];
+          const dot = st ? `<span class="status-dot ${st}"></span>` : "";
+          return `<button type="button" role="tab" class="budget-subtab ${
+            s.id === state.sectionId ? "active" : ""
+          }" data-jump="${s.id}" aria-selected="${s.id === state.sectionId ? "true" : "false"}">${escapeHtml(
+            s.label
+          )}${dot}</button>`;
+        })
+        .join("")}
+    </div>`;
   }
 
   function apiUrl(path) {
@@ -5533,7 +5598,7 @@
       case "formulas": html = renderFormulas(); break;
       default: html = renderHub();
     }
-    els.viewRoot.innerHTML = html;
+    els.viewRoot.innerHTML = renderBudgetSubtabs() + html;
     if (section.id === "studies") {
       loadStudiesIntoPanel();
     }
@@ -5572,6 +5637,27 @@
     });
 
     els.sectionNav.addEventListener("click", (e) => {
+      const toggle = e.target.closest("[data-nav-group]");
+      if (toggle) {
+        const groupId = toggle.dataset.navGroup;
+        if (groupId === "budget") {
+          const willOpen = !state.budgetNavOpen;
+          state.budgetNavOpen = willOpen;
+          if (willOpen && !isBudgetSection(state.sectionId)) {
+            const def =
+              (SBW.navGroups && SBW.navGroups.budget && SBW.navGroups.budget.defaultSection) ||
+              "overview";
+            const kids = budgetSectionsVisible();
+            const target = kids.find((s) => s.id === def) || kids[0];
+            if (target) {
+              setSection(target.id);
+              return;
+            }
+          }
+          renderNav();
+        }
+        return;
+      }
       const btn = e.target.closest("[data-section]");
       if (!btn) return;
       setSection(btn.dataset.section);

@@ -12,22 +12,31 @@ SBW.users = [
 
 SBW.sections = [
   { id: "hub", label: "Hub", department: null },
-  { id: "hlbp", label: "HLBP", department: null },
   { id: "ops", label: "Ops Dashboard", department: null },
   { id: "studies", label: "Studies", department: null },
   { id: "versions", label: "Versions / Diff", department: null },
   { id: "intelligence", label: "Ora Clinical Intelligence", department: null },
-  { id: "overview", label: "Overview / Inputs", department: "Analyst" },
-  { id: "recruitment", label: "Recruitment", department: "Recruitment" },
-  { id: "clinops", label: "ClinOps / SOE", department: "ClinOps" },
-  { id: "monitoring", label: "Clinical Monitoring", department: "Monitoring" },
-  { id: "smo", label: "Block Enrollment / SMO", department: "SMO" },
-  { id: "summary", label: "Exec Summary", department: null },
-  { id: "reviews", label: "Reviews", department: null },
-  { id: "formulas", label: "Formulas", department: "Analyst" },
-  { id: "upload", label: "Upload budgets", department: "Analyst" },
-  { id: "scorecard", label: "Site Scorecard", department: null }
+  { id: "scorecard", label: "Site Scorecard", department: null },
+  { id: "hlbp", label: "HLBP", department: null, navGroup: "budget" },
+  { id: "overview", label: "Overview / Inputs", department: "Analyst", navGroup: "budget" },
+  { id: "recruitment", label: "Recruitment", department: "Recruitment", navGroup: "budget" },
+  { id: "clinops", label: "ClinOps / SOE", department: "ClinOps", navGroup: "budget" },
+  { id: "monitoring", label: "Clinical Monitoring", department: "Monitoring", navGroup: "budget" },
+  { id: "smo", label: "Block Enrollment / SMO", department: "SMO", navGroup: "budget" },
+  { id: "summary", label: "Exec Summary", department: null, navGroup: "budget" },
+  { id: "reviews", label: "Reviews", department: null, navGroup: "budget" },
+  { id: "formulas", label: "Formulas", department: "Analyst", navGroup: "budget" },
+  { id: "upload", label: "Upload budgets", department: "Analyst", navGroup: "budget" }
 ];
+
+/** Sidebar groups — budget categories collapse under one dropdown. */
+SBW.navGroups = {
+  budget: {
+    id: "budget",
+    label: "Budget",
+    defaultSection: "overview"
+  }
+};
 
 /** Tabs that require explicit Edit lock before changing fields. */
 SBW.lockableSections = ["hlbp", "overview", "recruitment", "clinops", "monitoring", "smo", "formulas"];
