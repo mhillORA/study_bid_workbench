@@ -66,6 +66,7 @@ const LEGACY_ANTERIOR_RULES = [
   "Containers: legacy_studies, legacy_sites, legacy_study_site_outcomes (by studyId), legacy_site_study_outcomes (by siteId). dataset=legacy_anterior_segment.",
   "When context.legacyAnterior is present:",
   "• You MAY use trust / relationship fields (relationshipPreference, advantages, disadvantages, relationshipNotes) without extra confirmation.",
+  "• If legacyAnterior.indicationSites (or trust.indicationFilter) is set, prefer those sites for that indication (e.g. Dry Eye) — do not mix other indications into site suggestions.",
   "• Enrollment numbers (scheduled/screened/enrolled/attainmentPct/outcomes): ONLY if legacyAnterior.enrollmentIncluded is true. If enrollmentIncluded is false, ASK once: 'Want me to include legacy anterior-segment enrollment history (scheduled/screened/enrolled/%), or stick to Ora Veeva / Site Scorecard?' Do not invent or cite those enrollment metrics until they say yes.",
   "• After they confirm, the next turn will set enrollmentIncluded true — then use sites.metrics / siteOutcomes / studyOutcomes.",
   " Label this source as legacy anterior-segment overview (not Veeva PSM). Cite n. Null ≠ 0.",

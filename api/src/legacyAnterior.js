@@ -314,7 +314,7 @@ function trustRollup(sites) {
 /**
  * Build a bounded Buddy pack from legacy anterior-segment containers.
  * @param {Function} getDb
- * @param {{ question?: string, siteName?: string, studyName?: string, siteId?: string, studyId?: string, force?: boolean }} opts
+ * @param {{ question?: string, siteName?: string, studyName?: string, siteId?: string, studyId?: string, indication?: string, force?: boolean, includeEnrollment?: boolean }} opts
  */
 async function buildLegacyAnteriorContext(getDb, opts = {}) {
   const question = String(opts.question || "");
@@ -323,12 +323,13 @@ async function buildLegacyAnteriorContext(getDb, opts = {}) {
   const studyName = opts.studyName || hints.studyName || null;
   const siteId = opts.siteId || hints.siteId || null;
   const studyId = opts.studyId || hints.studyId || null;
+  const indication = String(opts.indication || "").trim() || null;
   const intent = isLegacyAnteriorQuestion(question);
   const named = Boolean(siteName || studyName || siteId || studyId);
 
   const includeEnrollment = opts.includeEnrollment !== false && Boolean(opts.includeEnrollment);
 
-  if (!opts.force && !intent && !named) {
+  if (!opts.force && !intent && !named && !indication) {
     return null;
   }
 
@@ -339,22 +340,63 @@ async function buildLegacyAnteriorContext(getDb, opts = {}) {
     return { source: DATASET, error: String(err.message || err) };
   }
 
+  let aliases = indication ? [indication] : [];
+  if (indication) {
+    try {
+      const { indicationAliases } = require("./intelligence");
+      aliases = indicationAliases(indication);
+    } catch (_) {
+      /* keep [indication] */
+    }
+  }
+
   const out = {
     source: DATASET,
     dataset: DATASET,
     note:
-      "Legacy anterior-segment overview (Excel import). Separate from Ora Veeva / TrialHub / budget studies. Use for historical site trust and enrollment feasibility. Null metrics mean missing — never treat as zero.",
-    query: { siteName, studyName, siteId, studyId, intent, includeEnrollment },
+      "Legacy anterior-segment overview (Excel import). Separate from Ora Veeva / TrialHub / budget studies. Use for historical site trust and enrollment feasibility. Null metrics mean missing — never treat as zero." +
+      (indication
+        ? ` Filtered to indication "${indication}" (budget-tool vocabulary via study indication).`
+        : ""),
+    query: { siteName, studyName, siteId, studyId, indication, intent, includeEnrollment },
     enrollmentIncluded: includeEnrollment,
     enrollmentAvailable: true,
     sites: null,
     studies: null,
     siteOutcomes: null,
     studyOutcomes: null,
-    trust: null
+    trust: null,
+    indicationSites: null
   };
 
   try {
+    if (indication || includeEnrollment) {
+      try {
+        const enriched = await enrichSitesWithLegacy(database, [], {
+          indication,
+          indicationAliases: aliases
+        });
+        out.indicationSites = {
+          indication: enriched.meta?.indicationFilter || indication,
+          matchingStudyCount: enriched.meta?.matchingStudyCount,
+          topByEnrolled: (enriched.meta?.leaderboard || []).slice(0, 15),
+          note: enriched.meta?.note
+        };
+        if (!named && enriched.meta?.leaderboard?.length) {
+          out.trust = {
+            sitesSampled: enriched.meta.leaderboard.length,
+            withRelationshipPreference: 0,
+            preferredSites: [],
+            sitesWithTrustNotes: [],
+            topSitesByEnrolled: enriched.meta.leaderboard.slice(0, 12),
+            indicationFilter: enriched.meta.indicationFilter
+          };
+        }
+      } catch (err) {
+        out.indicationSites = { error: String(err.message || err) };
+      }
+    }
+
     const siteRows = await findSites(database, {
       siteId,
       siteName,
@@ -364,9 +406,8 @@ async function buildLegacyAnteriorContext(getDb, opts = {}) {
       matched: siteRows.length,
       items: siteRows.map(slimSite).slice(0, 15)
     };
-    out.trust = trustRollup(siteRows);
+    if (!out.trust) out.trust = trustRollup(siteRows);
 
-    // Outcomes for best-matched site (PK /siteId) — enrollment detail only with consent
     const primarySite = siteRows[0];
     if (includeEnrollment && primarySite && (named || intent)) {
       const sid = primarySite.siteId || primarySite.id;
@@ -378,11 +419,16 @@ async function buildLegacyAnteriorContext(getDb, opts = {}) {
       };
     }
 
-    const studyRows = await findStudies(database, {
+    let studyRows = await findStudies(database, {
       studyId,
       studyName,
-      limit: named ? 10 : 15
+      limit: named ? 10 : 40
     });
+    if (indication && aliases.length) {
+      studyRows = studyRows.filter((s) =>
+        indicationMatches(s.oraIndication || s.indication, aliases)
+      );
+    }
     out.studies = {
       matched: studyRows.length,
       items: studyRows.map(slimStudy).slice(0, 12)
@@ -400,7 +446,6 @@ async function buildLegacyAnteriorContext(getDb, opts = {}) {
     }
 
     if (!includeEnrollment) {
-      // Trust / relationship only — strip enrollment metrics until user confirms
       if (out.sites?.items) {
         out.sites.items = out.sites.items.map((s) => ({
           ...s,
@@ -422,12 +467,20 @@ async function buildLegacyAnteriorContext(getDb, opts = {}) {
             : null
         }));
       }
-      if (out.trust) {
-        out.trust.topSitesByEnrolled = [];
+      if (out.trust) out.trust.topSitesByEnrolled = [];
+      if (out.indicationSites?.topByEnrolled) {
+        out.indicationSites.topByEnrolled = out.indicationSites.topByEnrolled.map((s) => ({
+          siteId: s.siteId,
+          siteName: s.siteName,
+          relationshipPreference: s.relationshipPreference,
+          indication: s.indication,
+          metrics: s.metrics
+            ? { nStudies: s.metrics.nStudies, studyNames: s.metrics.studyNames }
+            : null
+        }));
       }
     }
 
-    // Counts for citation
     try {
       const [sc, tc, oc] = await Promise.all([
         queryAll(database.container("legacy_sites"), "SELECT VALUE COUNT(1) FROM c WHERE c.docType = @t", [
@@ -501,8 +554,8 @@ function rankNameMatches(rows, needleNorm, namesOf) {
     .map((x) => x.row);
 }
 
-function legacyMetricsPayload(hit) {
-  const m = hit.metrics || {};
+function legacyMetricsPayload(hit, overrideMetrics = null) {
+  const m = overrideMetrics || hit.metrics || {};
   const enrolled = num(m.enrolled);
   const screened = num(m.screened);
   const scheduled = num(m.scheduled);
@@ -515,6 +568,8 @@ function legacyMetricsPayload(hit) {
     relationshipPreference: hit.relationshipPreference || null,
     advantages: hit.advantages || null,
     disadvantages: hit.disadvantages || null,
+    indication: m.indication || hit.indication || null,
+    indications: Array.isArray(m.indications) ? m.indications : null,
     targetScheduled: target,
     scheduled,
     screened,
@@ -526,18 +581,115 @@ function legacyMetricsPayload(hit) {
   };
 }
 
+function normIndication(s) {
+  return String(s || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function indicationMatches(value, aliases = []) {
+  const v = normIndication(value);
+  if (!v || !aliases.length) return false;
+  for (const a of aliases) {
+    const na = normIndication(a);
+    if (!na) continue;
+    if (v === na) return true;
+    if (na.length > 3 && (v.includes(na) || na.includes(v))) return true;
+  }
+  return false;
+}
+
 /**
  * Match Ora scorecard sites (org_clean) to legacy_sites and attach recruitment metrics.
- * Does not write to Cosmos. Also returns the true legacy_sites leaderboard (by enrolled).
+ * When indicationAliases are provided, metrics are rolled up from site×study outcomes
+ * for studies whose indication matches (same vocabulary as the budget tool).
  */
-async function enrichSitesWithLegacy(database, sites = []) {
-  const legacyRows = await queryAll(
-    database.container("legacy_sites"),
-    `SELECT * FROM c WHERE c.docType = @t`,
-    [{ name: "@t", value: DOC_SITE }]
-  );
+async function enrichSitesWithLegacy(database, sites = [], opts = {}) {
+  const aliases = Array.isArray(opts.indicationAliases)
+    ? opts.indicationAliases.filter(Boolean)
+    : opts.indication
+      ? [opts.indication]
+      : [];
+  const filterIndication = Boolean(aliases.length);
+
+  const [legacyRows, studyRows, outcomeRows] = await Promise.all([
+    queryAll(database.container("legacy_sites"), `SELECT * FROM c WHERE c.docType = @t`, [
+      { name: "@t", value: DOC_SITE }
+    ]),
+    queryAll(database.container("legacy_studies"), `SELECT * FROM c WHERE c.docType = @t`, [
+      { name: "@t", value: DOC_STUDY }
+    ]),
+    queryAll(
+      database.container("legacy_site_study_outcomes"),
+      `SELECT * FROM c WHERE c.docType = @t`,
+      [{ name: "@t", value: DOC_BY_SITE }]
+    )
+  ]);
+
+  const studyIndById = new Map();
+  const matchingStudyIds = new Set();
+  for (const st of studyRows) {
+    const ind = st.oraIndication || st.indication || null;
+    const id = String(st.studyId || st.id);
+    studyIndById.set(id, ind);
+    if (!filterIndication || indicationMatches(ind, aliases)) matchingStudyIds.add(id);
+  }
+
+  // Per-site rollup — either all outcomes, or only studies matching indication
+  const metricsBySiteId = new Map();
+  for (const o of outcomeRows) {
+    const studyId = String(o.studyId || "");
+    if (filterIndication && !matchingStudyIds.has(studyId)) continue;
+    const siteId = String(o.siteId || "");
+    if (!siteId) continue;
+    let g = metricsBySiteId.get(siteId);
+    if (!g) {
+      g = {
+        targetScheduled: 0,
+        scheduled: 0,
+        screened: 0,
+        enrolled: 0,
+        nStudies: new Set(),
+        indications: new Set(),
+        studyNames: []
+      };
+      metricsBySiteId.set(siteId, g);
+    }
+    g.targetScheduled += num(o.targetScheduled) || 0;
+    g.scheduled += num(o.scheduled) || 0;
+    g.screened += num(o.screened) || 0;
+    g.enrolled += num(o.enrolled) || 0;
+    if (studyId) g.nStudies.add(studyId);
+    const ind = studyIndById.get(studyId);
+    if (ind) g.indications.add(ind);
+    if (o.studyName && g.studyNames.length < 12) g.studyNames.push(o.studyName);
+  }
+
+  function metricsForSite(row) {
+    const siteId = String(row.siteId || row.id);
+    const g = metricsBySiteId.get(siteId);
+    if (!g) {
+      if (filterIndication) return null; // no outcomes for this indication
+      return null;
+    }
+    if (filterIndication && g.nStudies.size === 0) return null;
+    return {
+      targetScheduled: g.targetScheduled || null,
+      scheduled: g.scheduled || null,
+      screened: g.screened || null,
+      enrolled: g.enrolled || null,
+      nStudies: g.nStudies.size,
+      indication: filterIndication ? aliases[0] : [...g.indications][0] || null,
+      indications: [...g.indications],
+      studyNames: g.studyNames
+    };
+  }
+
   const entries = [];
+  const siteById = new Map();
   for (const row of legacyRows) {
+    siteById.set(String(row.siteId || row.id), row);
     const names = [row.siteName, row.name, row.siteCode].filter(Boolean);
     for (const n of names) {
       const key = normSiteName(n);
@@ -557,7 +709,6 @@ async function enrichSitesWithLegacy(database, sites = []) {
         best = row;
       }
     }
-    // Require a real match — reject weak substring noise
     return bestScore >= 150 ? best : null;
   }
 
@@ -565,29 +716,40 @@ async function enrichSitesWithLegacy(database, sites = []) {
   const usedLegacyIds = new Set();
   const outSites = (sites || []).map((s) => {
     const hit = findMatch(s.org_clean);
-    if (!hit) {
-      return { ...s, legacy: null, legacyMatched: false };
-    }
+    if (!hit) return { ...s, legacy: null, legacyMatched: false };
+    const m = metricsForSite(hit);
+    if (filterIndication && !m) return { ...s, legacy: null, legacyMatched: false };
     matched += 1;
     usedLegacyIds.add(String(hit.siteId || hit.id));
     return {
       ...s,
       legacyMatched: true,
       legacyMatchQuality: "name",
-      legacy: legacyMetricsPayload(hit)
+      legacy: legacyMetricsPayload(hit, m || hit.metrics)
     };
   });
 
-  const leaderboard = [...legacyRows]
-    .map((r) => slimSite(r))
-    .filter(Boolean)
-    .sort((a, b) => (b.metrics?.enrolled || 0) - (a.metrics?.enrolled || 0))
-    .slice(0, 60)
-    .map((s) => ({
-      ...s,
-      matchedToOra: usedLegacyIds.has(String(s.siteId))
-    }));
+  // Leaderboard: sites with indication-filtered metrics, else site-level rollup
+  const leaderboard = [];
+  for (const row of legacyRows) {
+    const m = metricsForSite(row);
+    if (filterIndication && !m) continue;
+    const metrics = m || row.metrics || {};
+    const slim = slimSite({ ...row, metrics: { ...(row.metrics || {}), ...metrics } });
+    if (!slim) continue;
+    if (slim.metrics) {
+      slim.metrics.indication = metrics.indication || null;
+      slim.metrics.indications = metrics.indications || null;
+    }
+    slim.indication = metrics.indication || null;
+    leaderboard.push({
+      ...slim,
+      matchedToOra: usedLegacyIds.has(String(slim.siteId))
+    });
+  }
+  leaderboard.sort((a, b) => (b.metrics?.enrolled || 0) - (a.metrics?.enrolled || 0));
 
+  const matchedStudyCount = matchingStudyIds.size;
   return {
     sites: outSites,
     meta: {
@@ -595,9 +757,13 @@ async function enrichSitesWithLegacy(database, sites = []) {
       legacySiteCount: legacyRows.length,
       matched,
       unmatched: outSites.length - matched,
-      leaderboard,
-      note:
-        "Legacy recruitment tab lists legacy_sites ranked by enrolled. Ora columns use strict name match (exact / strong token overlap) — short substring hits are ignored."
+      indicationFilter: filterIndication ? aliases[0] : null,
+      indicationAliases: filterIndication ? aliases : null,
+      matchingStudyCount: filterIndication ? matchedStudyCount : studyRows.length,
+      leaderboard: leaderboard.slice(0, 60),
+      note: filterIndication
+        ? `Legacy sites filtered to indication "${aliases[0]}" via study outcomes (${matchedStudyCount} studies). Ranked by enrolled for that indication.`
+        : "Legacy recruitment lists sites ranked by enrolled across all anterior-segment studies. Pass an indication to filter."
     }
   };
 }

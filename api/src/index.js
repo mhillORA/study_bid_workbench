@@ -865,7 +865,9 @@ app.http("intelligenceSiteScorecard", {
         request.query.get("legacyOnly") === "true" ||
         request.query.get("legacyBoard") === "true";
       if (legacyOnly || (includeLegacy && !String(q).trim() && !String(countryRaw).trim() && !global)) {
-        const board = await buildLegacyRecruitmentBoard(getDb);
+        const board = await buildLegacyRecruitmentBoard(getDb, {
+          indication: String(q).trim() || null
+        });
         return json(board.legacy?.error ? 500 : 200, board);
       }
       if (!String(q).trim() && !String(countryRaw).trim() && !global) {
@@ -1197,7 +1199,13 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         userConsentedLegacyEnrollment(question, history);
       const forceLegacy =
         isLegacyAnteriorQuestion(question) ||
-        Boolean(legacyHint.siteName || legacyHint.studyName || legacyHint.siteId || legacyHint.studyId) ||
+        Boolean(
+          legacyHint.siteName ||
+            legacyHint.studyName ||
+            legacyHint.siteId ||
+            legacyHint.studyId ||
+            legacyHint.indication
+        ) ||
         Boolean(body.legacyPack && body.legacyPack.source === "legacy_anterior_segment") ||
         enrollmentConsent;
       if (body.legacyPack && body.legacyPack.source === "legacy_anterior_segment" && !body.legacyPack.error) {
@@ -1211,13 +1219,23 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         forceLegacy ||
         /\b(site|sites|feasib|trust|prefer|enroll|pi|investigator)\b/i.test(question)
       ) {
+        const snap = body.studySnapshot || clientStudy || null;
+        const legacyIndication =
+          legacyHint.indication ||
+          (body.intelligenceHint && body.intelligenceHint.indication) ||
+          body.indication ||
+          (snap && snap.indication) ||
+          (cosmosContext && cosmosContext.study && cosmosContext.study.indication) ||
+          extractIndicationFromQuestion(question) ||
+          null;
         legacyAnterior = await buildLegacyAnteriorContext(getDb, {
           question,
           siteName: legacyHint.siteName || null,
           studyName: legacyHint.studyName || null,
           siteId: legacyHint.siteId || null,
           studyId: legacyHint.studyId || null,
-          force: forceLegacy,
+          indication: legacyIndication ? String(legacyIndication).trim() : null,
+          force: forceLegacy || Boolean(legacyIndication),
           includeEnrollment: enrollmentConsent
         });
         if (legacyAnterior && !legacyAnterior.error) {

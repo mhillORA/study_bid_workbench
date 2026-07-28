@@ -19,11 +19,13 @@ const INDICATION_GROUPS = [
   ["Glaucoma / Ocular Hypertension", "Glaucoma", "Primary Open-Angle Glaucoma or Ocular Hypertension", "Ocular Hypertension", "POAG"],
   ["Retinitis Pigmentosa", "RP"],
   ["Presbyopia"],
-  ["Allergic Conjunctivitis"],
+  ["Allergic Conjunctivitis", "Allergy", "Allergic Conjunctivitis (CAC)", "CAC"],
+  ["Eye Redness", "Ocular Redness", "Redness"],
   ["Diabetic Retinopathy", "DR"],
   ["Thyroid Eye Disease", "TED"],
   ["Myopia"],
-  ["Blepharitis"]
+  ["Blepharitis"],
+  ["Safety", "Safety study"]
 ];
 
 function normText(s) {
@@ -1123,7 +1125,10 @@ async function buildSiteScorecard(getDb, opts = {}) {
   if (includeLegacy) {
     try {
       const { enrichSitesWithLegacy } = require("./legacyAnterior");
-      const enriched = await enrichSitesWithLegacy(database, sites);
+      const enriched = await enrichSitesWithLegacy(database, sites, {
+        indication,
+        indicationAliases: aliases
+      });
       sites = enriched.sites;
       legacyMeta = enriched.meta;
     } catch (err) {
@@ -1152,26 +1157,36 @@ async function buildSiteScorecard(getDb, opts = {}) {
   };
 }
 
-/** Legacy recruitment board only (no Ora rescore required). */
-async function buildLegacyRecruitmentBoard(getDb) {
+/** Legacy recruitment board (optionally filtered by indication). */
+async function buildLegacyRecruitmentBoard(getDb, opts = {}) {
   const started = Date.now();
   const database = await getDb();
+  const indication = String(opts.indication || "").trim() || null;
+  const aliases = indication ? indicationAliases(indication) : [];
   try {
     const { enrichSitesWithLegacy } = require("./legacyAnterior");
-    const enriched = await enrichSitesWithLegacy(database, []);
+    const enriched = await enrichSitesWithLegacy(database, [], {
+      indication,
+      indicationAliases: aliases
+    });
     return {
       includeLegacy: true,
       legacyOnly: true,
+      indication,
+      aliasesUsed: aliases,
       siteCount: 0,
       sites: [],
       legacy: enriched.meta,
-      note: "Legacy anterior-segment sites ranked by enrolled. Turn on Score sites with an indication to also match onto Ora rankings.",
+      note: indication
+        ? `Legacy anterior-segment sites for indication "${indication}" (matched via study indication).`
+        : "Legacy anterior-segment sites ranked by enrolled. Pass an indication (e.g. Dry Eye) to filter.",
       elapsedMs: Date.now() - started
     };
   } catch (err) {
     return {
       includeLegacy: true,
       legacyOnly: true,
+      indication,
       siteCount: 0,
       sites: [],
       legacy: { error: String(err.message || err) },

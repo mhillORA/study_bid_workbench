@@ -2272,12 +2272,25 @@
           user: state.entraUser || undefined,
           // Same indication/region as Ora Clinical Intelligence tab (and pack already on screen)
           intelligenceHint: {
-            indication: String(state.intelligence.indication || state.scorecard.indication || "").trim() || undefined,
+            indication: String(
+              state.intelligence.indication ||
+                state.scorecard.indication ||
+                state.study.indication ||
+                ""
+            ).trim() || undefined,
             country: state.intelligence.globalRegion
               ? "Global"
               : (state.intelligence.countries || []).join(", ") || undefined,
             countries: state.intelligence.globalRegion ? undefined : state.intelligence.countries,
             global: state.intelligence.globalRegion || undefined
+          },
+          legacyHint: {
+            indication: String(
+              state.intelligence.indication ||
+                state.scorecard.indication ||
+                state.study.indication ||
+                ""
+            ).trim() || undefined
           },
           includeLegacyEnrollment: Boolean(state.scorecard.includeLegacy) || undefined,
           intelligencePack:
@@ -2909,12 +2922,15 @@
   async function loadLegacyBoardOnly() {
     state.scorecard.includeLegacy = true;
     state.scorecard.loading = true;
-    state.scorecard.status = "Loading legacy recruitment board…";
+    const ind = String(state.scorecard.indication || "").trim();
+    state.scorecard.status = ind
+      ? `Loading legacy recruitment for ${ind}…`
+      : "Loading legacy recruitment board…";
     if (state.sectionId === "scorecard") render();
     try {
-      const res = await fetch(
-        apiUrl("/api/intelligence/sitescorecard?includeLegacy=true&legacyOnly=true")
-      );
+      const params = new URLSearchParams({ includeLegacy: "true", legacyOnly: "true" });
+      if (ind) params.set("q", ind);
+      const res = await fetch(apiUrl(`/api/intelligence/sitescorecard?${params.toString()}`));
       const data = await res.json().catch(() => ({}));
       if (!res.ok) {
         state.scorecard.status = data.error || `Legacy board failed (${res.status})`;
@@ -2927,7 +2943,6 @@
           };
         }
       } else {
-        // Keep any prior Ora ranked sites; attach/replace legacy meta + flag
         const prev = state.scorecard.result;
         state.scorecard.result = {
           ...(prev && !prev.legacyOnly ? prev : {}),
@@ -3273,14 +3288,19 @@
     const legacyBoard = includeLegacy && Array.isArray(result?.legacy?.leaderboard)
       ? result.legacy.leaderboard
       : [];
+    const indFilter = result?.legacy?.indicationFilter || null;
     const legacyBoardTable = legacyBoard.length
-      ? `<p class="muted" style="margin-top:0.75rem;">Top ${legacyBoard.length} of ${
-          intelStatNum(result.legacy?.legacySiteCount) || legacyBoard.length
-        } legacy_sites by enrolled (anterior-segment overview — not filtered by indication).</p>
+      ? `<p class="muted" style="margin-top:0.75rem;">${
+          indFilter
+            ? `Top ${legacyBoard.length} legacy sites for <strong>${escapeHtml(
+                indFilter
+              )}</strong> (${intelStatNum(result.legacy?.matchingStudyCount)} studies) by enrolled.`
+            : `Top ${legacyBoard.length} legacy sites by enrolled — pick an indication above to filter (e.g. Dry Eye).`
+        }${result.legacy?.note ? ` ${escapeHtml(result.legacy.note)}` : ""}</p>
             <div style="overflow:auto;">
             <table class="table">
               <thead><tr>
-                <th>#</th><th>Legacy site</th><th>Preference</th>
+                <th>#</th><th>Legacy site</th><th>Indication</th><th>Preference</th>
                 <th>Scheduled</th><th>Screened</th><th>Enrolled</th>
                 <th>Attain %</th><th>Studies</th><th>Ora match</th>
               </tr></thead>
@@ -3291,6 +3311,9 @@
                     return `<tr>
                     <td>${i + 1}</td>
                     <td>${escapeHtml(L.siteName || "—")}</td>
+                    <td>${escapeHtml(
+                      L.indication || m.indication || (m.indications && m.indications[0]) || "—"
+                    )}</td>
                     <td>${escapeHtml(L.relationshipPreference || "—")}</td>
                     <td>${intelStatNum(m.scheduled)}</td>
                     <td>${intelStatNum(m.screened)}</td>
@@ -3304,7 +3327,11 @@
               </tbody>
             </table>
             </div>`
-      : "";
+      : includeLegacy && result?.legacy && !result.legacy.error
+        ? `<p class="muted" style="margin-top:0.75rem;">No legacy sites matched${
+            indFilter ? ` for indication <strong>${escapeHtml(indFilter)}</strong>` : ""
+          }. Check study indications were backfilled.</p>`
+        : "";
     const legacyOraMatchesTable = legacyMatched.length
       ? `<p class="muted" style="margin-top:1rem;">${legacyMatched.length} of ${
           result.sites.length
