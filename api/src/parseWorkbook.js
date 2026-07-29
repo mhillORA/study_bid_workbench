@@ -96,9 +96,246 @@ function opportunityFromFilename(name) {
   return null;
 }
 
+/** Ora project number often embedded as YY-NNN-NNNN (e.g. 24-150-0003). */
+function projectNumberFromFilename(name) {
+  const m = String(name || "").match(/(?:^|[^0-9])(\d{2}-\d{3}-\d{4})(?:[^0-9]|$)/);
+  return m ? m[1] : null;
+}
+
+function isJunkIdentityValue(v) {
+  const s = String(v || "").trim();
+  if (!s) return true;
+  if (s.length > 120) return true;
+  const low = s.toLowerCase();
+  if (
+    /^(client name|sponsor|sponsor name|study title|study description|title|n\/?a|tbd|yes|no|none|null|unknown)$/i.test(
+      s
+    )
+  ) {
+    return true;
+  }
+  // Instructional / geography placeholders wrongly pulled from Input Tab
+  if (/^for us only\b/i.test(s)) return true;
+  if (/^north america$/i.test(s) || /^europe$/i.test(s) || /^global$/i.test(s)) return true;
+  if (/submissions to fda/i.test(s)) return true;
+  if (/requires separate regulatory/i.test(s)) return true;
+  if (low === "study description") return true;
+  return false;
+}
+
+function cleanTitleFromFilenameBits(raw) {
+  let t = String(raw || "")
+    .replace(/\.xlsx$/i, "")
+    .replace(/_/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  // Drop trailing version / CO / date noise
+  t = t
+    .replace(
+      /\s+(?:Ph(?:ase)?\s*\d[a-z]?|P\d[a-z]?|CO\s*#?\s*\d+|SOW\s*\d*|Scenario\s*\d+|v\d+(?:\.\d+)?|reduced)\b.*$/i,
+      ""
+    )
+    .replace(/\s+\d{1,2}[A-Za-z]{3}\d{2,4}\s*$/g, "")
+    .replace(/\s*[\(\[\{].*$/, "")
+    .replace(/\s+-\s*$/, "")
+    .trim();
+  return t || null;
+}
+
+/**
+ * Pull sponsor / study title / protocol from common Ora SharePoint / INTERNAL names
+ * when Input Tab headers are missing or junk.
+ *
+ * Examples:
+ *  - 1. Active Projects_04. Posterior_Roche - BP45328SNOWBALL - 24-150-0003_OOS Log….xlsx
+ *  - INTERNAL_Alcon_DEF512-E002_P3b_DED_v5_CO1_25Mar2025.xlsx
+ *  - Internal_Budget_Beacon_AGTC-CNGA3-002_CO3_(17Sep2025).xlsx
+ */
+function metaFromFilename(name) {
+  const original = String(name || "");
+  let base = original.replace(/\.xlsx$/i, "").trim();
+  base = base.replace(/^(?:Copy of\s+)+/i, "").trim();
+
+  const out = {
+    clientName: null,
+    title: null,
+    protocol: null,
+    therapeuticArea: null,
+    projectNumber: null,
+    kind: null,
+    source: null
+  };
+
+  if (/oos\s*log/i.test(original)) out.kind = "oos_log";
+  else if (/active projects/i.test(original)) out.kind = "active_projects";
+  else if (/^INTERNAL|^BUDGET|^Internal/i.test(base)) out.kind = "internal_budget";
+
+  // Active Projects_NN. <Area>_<Sponsor> - <Study> - <YY-NNN-NNNN>_…
+  let m = base.match(
+    /Active Projects[_\s]*\d+\.\s*([^_\/]+?)_([^-\/]+?)\s*-\s*(.+?)\s*-\s*(\d{2}-\d{3}-\d{4})/i
+  );
+  if (m) {
+    out.therapeuticArea = m[1].trim();
+    out.clientName = m[2].trim();
+    out.title = cleanTitleFromFilenameBits(m[3]);
+    out.projectNumber = m[4];
+    out.protocol = m[4];
+    out.source = "active_projects_filename";
+    out.kind = out.kind || "active_projects";
+    return out;
+  }
+
+  // Looser: Sponsor - Study - YY-NNN-NNNN anywhere (folder crumbs ok)
+  m = base.match(
+    /(?:^|[_\s])([A-Za-z][A-Za-z0-9&.]*(?:\s+[A-Za-z][A-Za-z0-9&.]*){0,2})\s*-\s*([^-]+?)\s*-\s*(\d{2}-\d{3}-\d{4})/
+  );
+  if (m && /active projects/i.test(base)) {
+    out.clientName = m[1].trim();
+    out.title = cleanTitleFromFilenameBits(m[2]);
+    out.projectNumber = m[3];
+    out.protocol = m[3];
+    out.source = "active_projects_loose";
+    return out;
+  }
+
+  const proj = projectNumberFromFilename(base);
+  if (proj) {
+    out.projectNumber = proj;
+    out.protocol = out.protocol || proj;
+  }
+
+  // Internal_Budget_<Sponsor>_<rest>
+  m = base.match(/^Internal[_\s-]*Budget[_\s-]+([^_\/]+)[_\s-]+(.+)$/i);
+  if (m) {
+    out.clientName = m[1].trim();
+    out.title = cleanTitleFromFilenameBits(m[2]);
+    out.source = "internal_budget_filename";
+    out.kind = "internal_budget";
+    return out;
+  }
+
+  // INTERNAL_<Sponsor>_<rest>  /  BUDGET_<…>
+  m = base.match(/^(?:INTERNAL|BUDGET)_(.+)$/i);
+  if (m) {
+    let rest = m[1];
+    const opp = opportunityFromFilename(original);
+    const cut = rest.search(
+      /_(?:Ph(?:ase)?\d[a-z]?|P\d[a-b]?|CO(?:#?\d+)?|SOW\d*|Scenario\d*|v\d+)/i
+    );
+    const head = cut > 0 ? rest.slice(0, cut) : rest;
+    const parts = head.split("_").filter(Boolean);
+    if (parts.length) {
+      // First underscore-token is sponsor; trailing Inc/LLC/MA continue the sponsor.
+      // Exception: BUDGET_<vendor>_<sponsor>_O-##### → prefer sponsor after known vendor/CRO.
+      let i = 1;
+      const sponsorParts = [parts[0]];
+      while (i < parts.length && /^(?:MA|Inc|INC|LLC|Ltd|Corp|Bio|Therapeutics|Pharma|Medical|Vision)$/i.test(parts[i])) {
+        sponsorParts.push(parts[i]);
+        i += 1;
+      }
+      if (
+        /^(?:medtrials|vendor|cro)$/i.test(String(sponsorParts[0]).replace(/\s+/g, "")) ||
+        /^medtrials\b/i.test(sponsorParts.join(" "))
+      ) {
+        if (parts[i]) {
+          const sponsorFromSecond = [parts[i]];
+          i += 1;
+          while (
+            i < parts.length &&
+            /^(?:MA|Inc|INC|LLC|Ltd|Corp|Bio|Therapeutics|Pharma|Medical|Vision)$/i.test(parts[i])
+          ) {
+            sponsorFromSecond.push(parts[i]);
+            i += 1;
+          }
+          out.clientName = sponsorFromSecond.join(" ").trim();
+        } else {
+          out.clientName = sponsorParts.join(" ").trim();
+        }
+      } else {
+        out.clientName = sponsorParts.join(" ").trim() || null;
+      }
+      const titleBits = parts.slice(i).join("_");
+      out.title =
+        cleanTitleFromFilenameBits(titleBits) ||
+        (opp ? opp : null) ||
+        cleanTitleFromFilenameBits(parts.slice(1).join("_"));
+      if (opp) {
+        out.protocol = opp;
+        if (!out.title || out.title === out.clientName) out.title = opp;
+      }
+      out.source = "internal_filename";
+      out.kind = out.kind || "internal_budget";
+      return out;
+    }
+  }
+
+  // 2CTech_Phase2RP_Budget_… style
+  m = base.match(/^([A-Za-z0-9][A-Za-z0-9&.]*)[_\s-]+(.+)$/i);
+  if (m && /budget/i.test(base) && !out.clientName) {
+    out.clientName = m[1];
+    out.title = cleanTitleFromFilenameBits(m[2]);
+    out.source = "generic_budget_filename";
+    out.kind = "internal_budget";
+    return out;
+  }
+
+  return out.clientName || out.title || out.projectNumber ? out : out;
+}
+
+function applyFilenameMetaToHeader(header, fileName, warnings) {
+  const meta = metaFromFilename(fileName);
+  const h = header && typeof header === "object" ? header : {};
+  const notes = [];
+
+  if (isJunkIdentityValue(h.clientName)) {
+    if (h.clientName) notes.push(`Cleared junk clientName "${String(h.clientName).slice(0, 40)}"`);
+    h.clientName = null;
+  }
+  if (isJunkIdentityValue(h.title)) {
+    if (h.title) notes.push(`Cleared junk title "${String(h.title).slice(0, 40)}"`);
+    h.title = null;
+  }
+
+  if (!h.clientName && meta.clientName) {
+    h.clientName = meta.clientName;
+    h.clientNameSource = meta.source;
+    notes.push(`Filled clientName from filename: ${meta.clientName}`);
+  }
+  if (!h.title && meta.title) {
+    h.title = meta.title;
+    h.titleSource = meta.source;
+    notes.push(`Filled title from filename: ${meta.title}`);
+  }
+  if ((!h.protocol || isJunkIdentityValue(h.protocol)) && (meta.protocol || meta.projectNumber)) {
+    h.protocol = meta.protocol || meta.projectNumber;
+    notes.push(`Filled protocol from filename: ${h.protocol}`);
+  }
+  if (!h.therapeuticArea && meta.therapeuticArea) {
+    h.therapeuticArea = meta.therapeuticArea;
+    notes.push(`Filled therapeuticArea from filename: ${meta.therapeuticArea}`);
+  }
+  if (meta.kind === "oos_log") {
+    h.budgetType = h.budgetType || "oos_log";
+    notes.push("Filename looks like an OOS log (not an Ora budget workbook)");
+  }
+
+  if (warnings && notes.length) for (const n of notes) warnings.push(n);
+  return { header: h, meta, notes };
+}
+
 function studyIdFromFilename(name) {
   const opp = opportunityFromFilename(name);
   if (opp) return opp;
+  const meta = metaFromFilename(name);
+  // Prefer compact project-number ids over FILE-1._Active_Projects_…
+  if (meta.projectNumber) {
+    const sponsor = meta.clientName
+      ? String(meta.clientName)
+          .replace(/[^\w]+/g, "")
+          .slice(0, 16)
+      : "";
+    return sponsor ? `PN-${meta.projectNumber}_${sponsor}` : `PN-${meta.projectNumber}`;
+  }
   const stem = String(name || "workbook")
     .replace(/\.xlsx$/i, "")
     .replace(/[^\w.\-]+/g, "_")
@@ -307,6 +544,12 @@ async function parseWorkbookBuffer(buffer, fileName, options = {}) {
   drivers = bags.drivers;
   const normalizedCount = fields.filter((f) => f.normalized).length;
 
+  const warnings = [];
+  // Fill / repair sponsor + study name from SharePoint / INTERNAL filenames when Input Tab is empty or junk
+  const fileMetaApply = applyFilenameMetaToHeader(header, fileName, warnings);
+  header = fileMetaApply.header;
+  const fileMeta = fileMetaApply.meta;
+
   const lineItems = parseInternalBudget(budgetRows);
   const execSum = parseExecSum(execRows);
   const rates = parseKeyRates(keyRows);
@@ -330,7 +573,6 @@ async function parseWorkbookBuffer(buffer, fileName, options = {}) {
 
   const harvestLabelTotal = sheetInventory.reduce((n, s) => n + (s.labelValueCount || 0), 0);
 
-  const warnings = [];
   let conf = fp.score;
   const matched = matchedKnown;
   if (matched < 8) {
@@ -408,9 +650,16 @@ async function parseWorkbookBuffer(buffer, fileName, options = {}) {
   if (!fp.matched) quarantineReasons.push(`missing_sheets:${missing.join("|") || "none"}`);
   if (conf < 0.45) quarantineReasons.push("low_confidence");
   if (!hasContent) quarantineReasons.push("no_recognizable_content");
+  if (fileMeta?.kind === "oos_log" || /oos\s*log/i.test(String(fileName || ""))) {
+    quarantineReasons.push("not_a_budget_workbook:oos_log");
+  }
 
   // Similar → Cosmos. Unsure / empty → quarantine (still mined for learnings).
   let quarantine = !(hasId && hasContent);
+  // OOS logs / non-budget Active Projects crumbs should never auto-load as studies
+  if (fileMeta?.kind === "oos_log" || quarantineReasons.some((r) => String(r).startsWith("not_a_budget"))) {
+    quarantine = true;
+  }
 
   if (hasId && hasContent) {
     warnings.push(
@@ -535,5 +784,9 @@ async function parseWorkbookBuffer(buffer, fileName, options = {}) {
 module.exports = {
   parseWorkbookBuffer,
   opportunityFromFilename,
-  studyIdFromFilename
+  studyIdFromFilename,
+  metaFromFilename,
+  applyFilenameMetaToHeader,
+  isJunkIdentityValue,
+  projectNumberFromFilename
 };

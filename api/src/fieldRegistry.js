@@ -6,7 +6,7 @@
 const CANONICAL_FIELDS = {
   // Header / study identity
   clientName: { domain: "header", aliases: ["client name", "sponsor", "sponsor name", "client"] },
-  title: { domain: "header", aliases: ["study title/description", "study title", "title", "study description"] },
+  title: { domain: "header", aliases: ["study title/description", "study title", "title", "study description", "study name"] },
   protocol: { domain: "header", aliases: ["protocol number", "protocol #", "protocol"] },
   opportunityId: {
     domain: "header",
@@ -127,11 +127,23 @@ function applyCanonicalToBags(header, drivers, fields) {
     if (!f.canonicalKey || f.value == null || f.value === "") continue;
     const meta = CANONICAL_FIELDS[f.canonicalKey];
     if (!meta) continue;
+    const val = f.value;
+    const valStr = String(val).trim();
+    // Skip instructional / placeholder values that look like labels, not real data
+    if (
+      meta.domain === "header" &&
+      (f.canonicalKey === "clientName" || f.canonicalKey === "title") &&
+      (/^for us only\b/i.test(valStr) ||
+        /submissions to fda/i.test(valStr) ||
+        /^(north america|europe|global|study description|client name|sponsor)$/i.test(valStr))
+    ) {
+      continue;
+    }
     if (meta.domain === "header" && (h[f.canonicalKey] == null || h[f.canonicalKey] === "")) {
-      h[f.canonicalKey] = f.value;
+      h[f.canonicalKey] = val;
     }
     if (meta.domain === "driver" && (d[f.canonicalKey] == null || d[f.canonicalKey] === "")) {
-      d[f.canonicalKey] = f.value;
+      d[f.canonicalKey] = val;
     }
   }
   return { header: h, drivers: d };
