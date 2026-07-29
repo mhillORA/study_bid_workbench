@@ -51,18 +51,34 @@ COND_QUERY = (
     "cataract OR diabetic macular OR diabetic retinopathy OR geographic atrophy OR "
     "retinitis pigmentosa OR uveitis OR myopia OR allergic conjunctivitis OR "
     "thyroid eye OR keratoconus OR presbyopia OR blepharitis OR ocular hypertension OR "
-    "retinal vein OR corneal OR conjunctivitis OR AMD OR nAMD)"
+    "retinal vein OR corneal OR conjunctivitis OR AMD OR nAMD OR neuroprotection OR "
+    "optic neuropathy OR optic neuritis OR LHON OR NAION OR neurotrophic keratitis OR "
+    "meibomian OR Stargardt OR macular hole OR epiretinal OR central serous OR "
+    "amblyopia OR strabismus OR uveal melanoma OR ocular melanoma OR Fuchs)"
 )
 
 # Map CT.gov condition strings → Ora-ish indication labels for partition + joins.
+# Order matters: more specific patterns first.
 INDICATION_RULES: list[tuple[str, str]] = [
+    ("neurotrophic kerat", "Neurotrophic Keratitis"),
+    ("neuroprotection", "Neuroprotection"),
+    ("retinal neuroprotect", "Neuroprotection"),
+    ("optic nerve neuroprotect", "Neuroprotection"),
+    ("leber.?s?\\s*hereditary\\s*optic", "Optic Neuropathy"),
+    ("\\blhon\\b", "Optic Neuropathy"),
+    ("\\bnaion\\b", "Optic Neuropathy"),
+    ("non.?arteritic.*optic", "Optic Neuropathy"),
+    ("optic neuritis", "Optic Neuropathy"),
+    ("optic neuropath", "Optic Neuropathy"),
     ("dry eye", "Dry Eye"),
     ("keratoconjunctivitis sicca", "Dry Eye"),
-    ("glaucoma", "Glaucoma"),
+    ("meibomian gland", "Meibomian Gland Dysfunction"),
+    ("\\bmgd\\b", "Meibomian Gland Dysfunction"),
     ("ocular hypertension", "Glaucoma / Ocular Hypertension"),
+    ("glaucoma", "Glaucoma / Ocular Hypertension"),
     ("cataract", "Cataract"),
     ("diabetic macular", "Diabetic Macular Edema (DME)"),
-    ("dme", "Diabetic Macular Edema (DME)"),
+    ("\\bdme\\b", "Diabetic Macular Edema (DME)"),
     ("diabetic retinopathy", "Diabetic Retinopathy"),
     ("geographic atrophy", "Geographic Atrophy / Dry AMD"),
     ("dry amd", "Geographic Atrophy / Dry AMD"),
@@ -70,15 +86,32 @@ INDICATION_RULES: list[tuple[str, str]] = [
     ("neovascular.*macular", "Wet AMD"),
     ("age.?related macular", "Wet AMD"),
     ("macular degeneration", "Wet AMD"),
+    ("central serous", "Central Serous Chorioretinopathy"),
+    ("\\bcscr\\b", "Central Serous Chorioretinopathy"),
+    ("epiretinal membrane", "Macular Hole / ERM"),
+    ("macular hole", "Macular Hole / ERM"),
+    ("\\berm\\b", "Macular Hole / ERM"),
+    ("stargardt", "Inherited Retinal Disease"),
+    ("leber congenital amaurosis", "Inherited Retinal Disease"),
+    ("inherited retinal", "Inherited Retinal Disease"),
     ("retinitis pigmentosa", "Retinitis Pigmentosa"),
     ("presbyopia", "Presbyopia"),
     ("allergic conjunctivitis", "Allergic Conjunctivitis"),
     ("thyroid eye", "Thyroid Eye Disease"),
     ("graves.*orbit", "Thyroid Eye Disease"),
+    ("pathologic myopia|myopic cnv", "Myopia"),
     ("myopia", "Myopia"),
-    ("uveitis", "Uveitis"),
+    ("uveitis|panuveitis", "Uveitis"),
     ("blepharitis", "Blepharitis"),
     ("keratoconus", "Keratoconus"),
+    ("fuchs", "Ocular Surface / Cornea"),
+    ("corneal dystroph", "Ocular Surface / Cornea"),
+    ("infectious keratit|bacterial keratit|fungal keratit", "Ocular Surface / Cornea"),
+    ("central retinal vein|branch retinal vein|\\bcrvo\\b|\\bbrvo\\b|retinal vein occlusion", "Retinal Vein Occlusion"),
+    ("uveal melanoma|ocular melanoma|choroidal melanoma", "Uveal Melanoma"),
+    ("amblyopia", "Amblyopia"),
+    ("strabismus", "Strabismus"),
+    ("ocular redness|eye redness", "Eye Redness"),
 ]
 
 FIELDS = [

@@ -21,13 +21,28 @@ const COND_QUERY =
   "cataract OR diabetic macular OR diabetic retinopathy OR geographic atrophy OR " +
   "retinitis pigmentosa OR uveitis OR myopia OR allergic conjunctivitis OR " +
   "thyroid eye OR keratoconus OR presbyopia OR blepharitis OR ocular hypertension OR " +
-  "retinal vein OR corneal OR conjunctivitis OR AMD OR nAMD)";
+  "retinal vein OR corneal OR conjunctivitis OR AMD OR nAMD OR neuroprotection OR " +
+  "optic neuropathy OR optic neuritis OR LHON OR NAION OR neurotrophic keratitis OR " +
+  "meibomian OR Stargardt OR macular hole OR epiretinal OR central serous OR " +
+  "amblyopia OR strabismus OR uveal melanoma OR ocular melanoma OR Fuchs)";
 
 const INDICATION_RULES = [
+  [/neurotrophic kerat/i, "Neurotrophic Keratitis"],
+  [/neuroprotection/i, "Neuroprotection"],
+  [/retinal neuroprotect/i, "Neuroprotection"],
+  [/optic nerve neuroprotect/i, "Neuroprotection"],
+  [/leber.?s?\s*hereditary\s*optic/i, "Optic Neuropathy"],
+  [/\blhon\b/i, "Optic Neuropathy"],
+  [/\bnaion\b/i, "Optic Neuropathy"],
+  [/non.?arteritic.*optic/i, "Optic Neuropathy"],
+  [/optic neuritis/i, "Optic Neuropathy"],
+  [/optic neuropath/i, "Optic Neuropathy"],
   [/dry eye/i, "Dry Eye"],
   [/keratoconjunctivitis sicca/i, "Dry Eye"],
-  [/glaucoma/i, "Glaucoma"],
+  [/meibomian gland/i, "Meibomian Gland Dysfunction"],
+  [/\bmgd\b/i, "Meibomian Gland Dysfunction"],
   [/ocular hypertension/i, "Glaucoma / Ocular Hypertension"],
+  [/glaucoma/i, "Glaucoma / Ocular Hypertension"],
   [/cataract/i, "Cataract"],
   [/diabetic macular/i, "Diabetic Macular Edema (DME)"],
   [/\bdme\b/i, "Diabetic Macular Edema (DME)"],
@@ -38,15 +53,32 @@ const INDICATION_RULES = [
   [/neovascular.*macular/i, "Wet AMD"],
   [/age.?related macular/i, "Wet AMD"],
   [/macular degeneration/i, "Wet AMD"],
+  [/central serous/i, "Central Serous Chorioretinopathy"],
+  [/\bcscr\b/i, "Central Serous Chorioretinopathy"],
+  [/epiretinal membrane/i, "Macular Hole / ERM"],
+  [/macular hole/i, "Macular Hole / ERM"],
+  [/\berm\b/i, "Macular Hole / ERM"],
+  [/stargardt/i, "Inherited Retinal Disease"],
+  [/leber congenital amaurosis/i, "Inherited Retinal Disease"],
+  [/inherited retinal/i, "Inherited Retinal Disease"],
   [/retinitis pigmentosa/i, "Retinitis Pigmentosa"],
   [/presbyopia/i, "Presbyopia"],
   [/allergic conjunctivitis/i, "Allergic Conjunctivitis"],
   [/thyroid eye/i, "Thyroid Eye Disease"],
   [/graves.*orbit/i, "Thyroid Eye Disease"],
+  [/pathologic myopia|myopic cnv/i, "Myopia"],
   [/myopia/i, "Myopia"],
-  [/uveitis/i, "Uveitis"],
+  [/uveitis|panuveitis/i, "Uveitis"],
   [/blepharitis/i, "Blepharitis"],
-  [/keratoconus/i, "Keratoconus"]
+  [/keratoconus/i, "Keratoconus"],
+  [/fuchs/i, "Ocular Surface / Cornea"],
+  [/corneal dystroph/i, "Ocular Surface / Cornea"],
+  [/infectious keratit|bacterial keratit|fungal keratit/i, "Ocular Surface / Cornea"],
+  [/central retinal vein|branch retinal vein|\bcrvo\b|\bbrvo\b|retinal vein occlusion/i, "Retinal Vein Occlusion"],
+  [/uveal melanoma|ocular melanoma|choroidal melanoma/i, "Uveal Melanoma"],
+  [/amblyopia/i, "Amblyopia"],
+  [/strabismus/i, "Strabismus"],
+  [/ocular redness|eye redness/i, "Eye Redness"]
 ];
 
 const FIELDS = [

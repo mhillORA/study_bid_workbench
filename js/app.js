@@ -2371,18 +2371,36 @@
   }
 
   // ---- Ora Clinical Intelligence tab -------------------------------------
+  // Keep in sync with api/src/intelligence.js INDICATION_GROUPS preferred labels
   const INTEL_COMMON_INDICATIONS = [
     "Dry Eye",
-    "Glaucoma",
+    "Glaucoma / Ocular Hypertension",
     "Cataract",
     "Diabetic Macular Edema (DME)",
     "Wet AMD",
-    "Geographic Atrophy",
+    "Geographic Atrophy / Dry AMD",
+    "Neuroprotection",
+    "Optic Neuropathy",
+    "Diabetic Retinopathy",
+    "Retinal Vein Occlusion",
     "Retinitis Pigmentosa",
+    "Inherited Retinal Disease",
+    "Uveitis",
     "Presbyopia",
     "Allergic Conjunctivitis",
     "Myopia",
-    "Thyroid Eye Disease"
+    "Thyroid Eye Disease",
+    "Blepharitis",
+    "Meibomian Gland Dysfunction",
+    "Neurotrophic Keratitis",
+    "Keratoconus",
+    "Ocular Surface / Cornea",
+    "Macular Hole / ERM",
+    "Central Serous Chorioretinopathy",
+    "Amblyopia",
+    "Strabismus",
+    "Uveal Melanoma",
+    "Eye Redness"
   ];
 
   async function ensureIntelligenceLoaded() {

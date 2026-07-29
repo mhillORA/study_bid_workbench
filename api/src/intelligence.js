@@ -11,7 +11,7 @@ const DATASET = "ora_clinical_intelligence";
 
 /** Synonym groups — first entry is preferred display label when matched. */
 const INDICATION_GROUPS = [
-  ["Dry Eye", "Dry Eye Disease", "DED"],
+  ["Dry Eye", "Dry Eye Disease", "DED", "Keratoconjunctivitis Sicca"],
   ["Cataract", "Cataracts"],
   ["Diabetic Macular Edema (DME)", "DME", "Diabetic Macular Edema"],
   ["Wet AMD", "Neovascular (Wet) Age-Related Macular Degeneration", "nAMD", "Wet Age-Related Macular Degeneration"],
@@ -22,11 +22,28 @@ const INDICATION_GROUPS = [
   ["Allergic Conjunctivitis", "Allergy", "Allergic Conjunctivitis (CAC)", "CAC"],
   ["Eye Redness", "Ocular Redness", "Redness"],
   ["Diabetic Retinopathy", "DR"],
-  ["Thyroid Eye Disease", "TED"],
-  ["Myopia"],
-  ["Blepharitis"],
+  ["Thyroid Eye Disease", "TED", "Graves Orbitopathy", "Graves' Ophthalmopathy"],
+  ["Myopia", "Pathologic Myopia", "Myopic CNV"],
+  ["Blepharitis", "Demodex Blepharitis"],
+  ["Neuroprotection", "Optic Nerve Neuroprotection", "Retinal Neuroprotection"],
+  ["Optic Neuropathy", "Optic Neuritis", "NAION", "LHON", "Leber Hereditary Optic Neuropathy"],
+  ["Uveitis", "Anterior Uveitis", "Intermediate Uveitis", "Posterior Uveitis", "Panuveitis"],
+  ["Keratoconus"],
+  ["Retinal Vein Occlusion", "RVO", "CRVO", "BRVO", "Central Retinal Vein Occlusion", "Branch Retinal Vein Occlusion"],
+  ["Neurotrophic Keratitis", "Neurotrophic Keratopathy"],
+  ["Meibomian Gland Dysfunction", "MGD"],
+  ["Inherited Retinal Disease", "IRD", "Stargardt", "Stargardt Disease", "Leber Congenital Amaurosis"],
+  ["Ocular Surface / Cornea", "Corneal Dystrophy", "Fuchs Endothelial Dystrophy", "Fuchs Dystrophy", "Infectious Keratitis"],
+  ["Macular Hole / ERM", "Macular Hole", "Epiretinal Membrane", "ERM"],
+  ["Central Serous Chorioretinopathy", "CSCR", "CSC"],
+  ["Amblyopia"],
+  ["Strabismus"],
+  ["Uveal Melanoma", "Ocular Melanoma", "Choroidal Melanoma"],
   ["Safety", "Safety study"]
 ];
+
+/** Preferred labels for UI pills (Intelligence + Scorecard). */
+const INDICATION_UI_LABELS = INDICATION_GROUPS.map((g) => g[0]).filter((l) => l !== "Safety");
 
 function normText(s) {
   return String(s || "")
@@ -1201,6 +1218,7 @@ async function buildLegacyRecruitmentBoard(getDb, opts = {}) {
 module.exports = {
   DATASET,
   INDICATION_GROUPS,
+  INDICATION_UI_LABELS,
   isIntelligenceQuestion,
   indicationAliases,
   extractIndicationFromQuestion,
