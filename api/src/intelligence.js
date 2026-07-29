@@ -63,6 +63,9 @@ function isIntelligenceQuestion(question) {
     /\b(feasibility|site (mix|selection|performance|capacity)|competing trials?|competitor|competitive landscape)\b/.test(
       q
     ) ||
+    /\b(which|best|top|recommend(?:ed)?|list|name|suggest)\b.{0,40}\bsites?\b/.test(q) ||
+    /\bsites?\b.{0,40}\b(for|in|with|under|performing|preferred)\b/.test(q) ||
+    /\b(preferred|high[- ]performing|perform(?:ing)?)\s+sites?\b/.test(q) ||
     /\b(trialhub|trial hub|industry (benchmark|trial|psm)|nct\d*|clinicaltrials\.gov|ct\.gov|ctgov)\b/.test(q) ||
     /\b(screen[- ]?fail|dropout|recruit(ment)? (rate|days|benchmark))\b/.test(q) ||
     /\b(indication).{0,40}\b(benchmark|histor(y|ical)|industry|ora studies)\b/.test(q) ||
@@ -593,7 +596,7 @@ async function benchmarkIndication(database, indication, country = null) {
     const sorted = [...rows].sort((a, b) => (b.site_psm || 0) - (a.site_psm || 0));
     for (const r of sorted) {
       if (typeof r.site_psm === "number") sitePsms.push(r.site_psm);
-      if (topSites.length < 12 && r.org_clean) {
+      if (topSites.length < 20 && r.org_clean) {
         if (!topSites.some((x) => x.org_clean === r.org_clean && x.country === r.country)) {
           topSites.push({
             org_clean: r.org_clean,
@@ -682,7 +685,7 @@ async function benchmarkIndication(database, indication, country = null) {
       sitesWithPsmSampled: sitePsms.length,
       sitePsmMedian: round(median(sitePsms)),
       sitePsmP75: round(percentile(sitePsms, 75)),
-      topSitesByPsm: topSites.slice(0, 10),
+      topSitesByPsm: topSites.slice(0, 15),
       countryFilter: countries,
       countryFilterLabel: countries ? countries.join(", ") : "Global",
       note: "High null rates on site_psm are expected Veeva gaps — null ≠ 0."

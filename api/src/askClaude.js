@@ -43,7 +43,7 @@ const INTELLIGENCE_RULES = [
   " USE CASES — match the ask to the right source:",
   "• Feasibility / \"how fast do we enroll\" / typical PSM for an indication → context.intelligence.indicationBenchmark (Ora median PSM + TrialHub median psm_common + site medians). Prefer medians; cite studiesWithPsm / trialsWithPsm counts.",
   "• Competing / recruiting industry trials → intelligence.indicationBenchmark.trialhub.recruitingSample / sampleTrials (NCT + sponsor + status).",
-  "• Site selection / which sites perform → intelligence.indicationBenchmark.sites.topSitesByPsm or Site Scorecard tab (NAVIGATE:scorecard). Filter by country when query.country / countryFilter is set.",
+  "• Site selection / which sites perform → LIST real site names from context.intelligence.indicationBenchmark.sites.topSitesByPsm (org_clean + country + site_psm + fsi_trust). Also use countrySites.topSites when present. Optional: NAVIGATE:scorecard for the full scorecard UI — never as a substitute for naming sites.",
   "• Region / country feasibility (US, UK, Germany, Japan, …) → use countryFilter on sites + ctgov + TrialHub countries; cite geography explicitly.",
   "• Site Scorecard (Ora vs industry) → oraScore vs industryScore/Δ; Deeper dive = recommended site slate for enrollment goals. Prefer medians; null ≠ 0.",
   "• BD/sales pitch asks (\"why Ora\", \"what do I tell the sponsor\", RFI bullets) → lead with Ora median vs industry, geography, top sites, competitive recruiting; end with 3 short talking points.",
@@ -57,8 +57,9 @@ const INTELLIGENCE_RULES = [
   "• RFP / pricing numbers from past bids → context.pricingScenarios when present (comparable service-fee ranges scaled to N). Cite comparableCount. Not a formal quote.",
   "• Open bid drivers / fields → workingStudy / cosmos study.",
   " QUALITY RULES: null PSM or enrollment means missing Veeva/registry data — NEVER treat null as zero. Prefer fsi_trust=high for site_psm. TrialHub/CT.gov PSM can have outliers — use median (and P25/P75 when present), not mean. Indication labels differ slightly across Ora Veeva vs TrialHub vs CT.gov; use aliasesUsed when explaining matches.",
-  " If the user asks about feasibility/PSM/TrialHub/competitors/sites/NCT and context.intelligence is missing or thin, say so and NAVIGATE:intelligence so they can query the Ora Clinical Intelligence tab.",
-  " When answering intelligence or sales questions: short executive tone — one [[h]]Summary[[/h]], then 3–6 plain lines, highlight key medians/n with [[i]]…[[/i]]. For BD, add a final [[h]]Talking points[[/h]] with 3 bullets. No ###, no **, no long section lists."
+  " SITE LISTING RULE (critical): If context.intelligence.indicationBenchmark.sites.topSitesByPsm OR countrySites.topSites OR legacyAnterior sites/leaderboard has rows, you MUST name at least 5–10 real sites (org_clean) with country and site_psm or enrolled in the reply. Do NOT say you need to open Clinical Intelligence instead of listing them. NAVIGATE:intelligence or NAVIGATE:scorecard may be added AFTER the list as optional follow-up — never as the only answer.",
+  " If the user asks about sites/feasibility/PSM and those site arrays are empty/missing: (1) if indication is unknown, ask for indication (e.g. Dry Eye) in the reply; (2) only then suggest opening Intelligence/Scorecard. Do not NAVIGATE alone with no site names and no clarifying question.",
+  " When answering intelligence or sales questions: short executive tone — one [[h]]Summary[[/h]], then 3–6 plain lines, highlight key medians/n with [[i]]…[[/i]]. For site asks add [[h]]Sites[[/h]] then a short list. For BD, add a final [[h]]Talking points[[/h]] with 3 bullets. No ###, no **, no long section lists."
 ].join(" ");
 
 const LEGACY_ANTERIOR_RULES = [
@@ -112,7 +113,7 @@ function systemPromptFor(context) {
     " If context.sectionLocks shows another person on a tab, do not APPLY that tab — say who is editing it and that they must Save and Done first." +
     " To create a new study or HLBP from user-provided info end with CREATE_STUDY:{...json...} (set budgetType:\"HLBP\" and sites:[{country,coreSites}] for HLBP); user must click Create before it is saved." +
     " For cross-study / all-studies / average / client / year questions: set answer from context.portfolio (averages + totals + byClient); cite matchedStudyCount; do not use openStudyInUi or workingStudy for those answers." +
-    " For feasibility / PSM / TrialHub / competing trials / site performance / NCT / ophthalmology landscape: use context.intelligence; if absent, NAVIGATE:intelligence." +
+    " For feasibility / PSM / TrialHub / competing trials / site performance / NCT / ophthalmology landscape: use context.intelligence; if site lists are present, NAME the sites — do not only NAVIGATE:intelligence." +
     " For legacy anterior-segment site trust / preferred sites / historical scheduled-screened-enrolled: use context.legacyAnterior when present." +
     " For past-bid pricing comps: use context.pricingScenarios when present; include CT.gov $ only if ctgovDollars.available." +
     " FORMAT reminder: no markdown # or **; use [[h]] for blue section labels and [[i]] for red important facts only." +
@@ -122,9 +123,17 @@ function systemPromptFor(context) {
     focus === "portfolio"
       ? " CRITICAL: answerFocus=portfolio — answer from context.portfolio (Cosmos DB) only; you may still use context.intelligence / context.legacyAnterior for feasibility if present."
       : " If the user asks about all studies or averages across studies, switch to context.portfolio even if a workingStudy is present.";
+  const hasSiteList = Boolean(
+    context?.intelligence?.indicationBenchmark?.sites?.topSitesByPsm?.length ||
+      context?.intelligence?.countrySites?.topSites?.length ||
+      context?.legacyAnterior?.indicationSites?.topByEnrolled?.length ||
+      context?.legacyAnterior?.trust?.leaderboard?.length
+  );
   const intelNote = context?.intelligence
-    ? " context.intelligence IS attached for this turn — use indicationBenchmark / sponsorCrosswalk / nctLookup / ctgov as applicable."
-    : " context.intelligence may be absent on this turn; for feasibility/PSM asks, say you need the Intelligence query or NAVIGATE:intelligence.";
+    ? hasSiteList
+      ? " context.intelligence IS attached WITH site rows — you MUST list org_clean names from topSitesByPsm or countrySites.topSites in this reply. NAVIGATE is optional after the list."
+      : " context.intelligence IS attached but site lists are empty — give medians/NCT/crosswalk if present, then ask for indication/geography if needed. Do not pretend a tab open will magically list sites without data."
+    : " context.intelligence may be absent on this turn; for site/feasibility asks, ask for indication if missing, or say data was not attached — do not only NAVIGATE:intelligence with no substance.";
   const legacyNote = context?.legacyAnterior
     ? context.legacyAnterior.enrollmentIncluded
       ? " context.legacyAnterior IS attached WITH enrollment — you may cite scheduled/screened/enrolled."

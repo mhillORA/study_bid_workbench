@@ -1929,7 +1929,26 @@
       pushAssistant(text, extracted.patches);
     }
     if (sectionId === "__buddy__") openBuddy();
-    else if (sectionId) setSection(sectionId);
+    else if (sectionId) {
+      setSection(sectionId);
+      // Buddy used to NAVIGATE:intelligence without answering — actually run the query so the tab isn't empty
+      if (sectionId === "intelligence") {
+        const ind = String(
+          state.intelligence.indication || state.scorecard.indication || state.study.indication || ""
+        ).trim();
+        if (ind || state.intelligence.globalRegion || (state.intelligence.countries || []).length) {
+          if (ind && !state.intelligence.indication) state.intelligence.indication = ind;
+          runIntelligenceQuery(ind || state.intelligence.indication).catch(() => {});
+        }
+      }
+      if (sectionId === "scorecard") {
+        const ind = String(
+          state.scorecard.indication || state.intelligence.indication || state.study.indication || ""
+        ).trim();
+        if (ind && !state.scorecard.indication) state.scorecard.indication = ind;
+        if (canRunSiteScorecard()) runSiteScorecard().catch(() => {});
+      }
+    }
     paintBuddyChat();
   }
 
@@ -2280,9 +2299,20 @@
             ).trim() || undefined,
             country: state.intelligence.globalRegion
               ? "Global"
-              : (state.intelligence.countries || []).join(", ") || undefined,
-            countries: state.intelligence.globalRegion ? undefined : state.intelligence.countries,
-            global: state.intelligence.globalRegion || undefined
+              : (
+                  (state.intelligence.countries || []).join(", ") ||
+                  (state.scorecard.globalRegion
+                    ? "Global"
+                    : (state.scorecard.countries || []).join(", "))
+                ) || undefined,
+            countries: state.intelligence.globalRegion
+              ? undefined
+              : state.intelligence.countries?.length
+                ? state.intelligence.countries
+                : state.scorecard.globalRegion
+                  ? undefined
+                  : state.scorecard.countries,
+            global: state.intelligence.globalRegion || state.scorecard.globalRegion || undefined
           },
           legacyHint: {
             indication: String(
