@@ -15,6 +15,7 @@ const {
 const { isLegacyAnteriorQuestion, buildLegacyAnteriorContext, userConsentedLegacyEnrollment, wantsHtmlVisual, isLegacyTableAsk } = require("./legacyAnterior");
 const { loadLiveContext, saveLiveContext } = require("./buddyLiveContext");
 const { runCtgovSync, getCtgovSyncStatus, remapCtgovIndications } = require("./ctgovSync");
+const { ingestTrialHubUpload } = require("./trialhubIngest");
 const {
   isPricingQuestion,
   extractRfpScenarioFromQuestion,
@@ -929,6 +930,67 @@ app.http("buddyContext", {
     } catch (err) {
       context.error(err);
       return json(500, { ok: false, error: String(err.message || err) });
+    }
+  }
+});
+
+app.http("trialhubUpload", {
+  methods: ["POST", "OPTIONS"],
+  authLevel: "anonymous",
+  route: "trialhub/upload",
+  handler: async (request, context) => {
+    if (request.method === "OPTIONS") {
+      return {
+        status: 204,
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "POST, OPTIONS",
+          "Access-Control-Allow-Headers": "content-type, x-file-name, x-copilot-key"
+        }
+      };
+    }
+    try {
+      const auth = authorizeCtgovSync(request);
+      if (!auth.ok) {
+        return json(401, {
+          error: "Unauthorized — sign in, or pass x-copilot-key (same as Copilot Ask key)"
+        });
+      }
+
+      const dryRun =
+        String(request.query.get("dry") || "").toLowerCase() === "true" ||
+        String(request.query.get("dryRun") || "").toLowerCase() === "true";
+
+      const { files } = await collectXlsxFromRequest(request);
+      const xlsx = (files || []).find((f) => isParseableExcel(f.name));
+      if (!xlsx) {
+        return json(400, {
+          error: "Upload a TrialHub .xlsx export (Trials Search Data)."
+        });
+      }
+
+      const uploadedBy =
+        (auth.user && (auth.user.email || auth.user.displayName)) ||
+        auth.via ||
+        null;
+
+      context.log(
+        `TrialHub upload ${xlsx.name} (${xlsx.buffer.length} bytes) dryRun=${dryRun} via=${auth.via}`
+      );
+      const result = await ingestTrialHubUpload(getDb, xlsx.buffer, {
+        fileName: xlsx.name,
+        uploadedBy,
+        dryRun
+      });
+      return json(result.ok || dryRun ? 200 : 500, result);
+    } catch (err) {
+      context.error(err);
+      let msg = String(err.message || err);
+      if (/firewall|blocked by your Cosmos|through public internet/i.test(msg)) {
+        msg =
+          "COSMOS_FIREWALL: Azure blocked the API IP. Cosmos → Networking → allow Azure datacenters (or All networks).";
+      }
+      return json(500, { ok: false, error: msg });
     }
   }
 });

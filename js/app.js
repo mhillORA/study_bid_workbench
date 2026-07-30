@@ -50,7 +50,10 @@
       syncStatus: null,
       syncBusy: false,
       syncMessage: "",
-      syncDeltas: null
+      syncDeltas: null,
+      trialhubUploadBusy: false,
+      trialhubUploadMessage: "",
+      trialhubUploadResult: null
     },
     scorecard: {
       indication: "",
@@ -78,6 +81,8 @@
       append: "",
       dept: "general",
       category: "playbook",
+      viewDept: "*",
+      viewCategory: "*",
       departments: [],
       categories: [],
       organized: { byDepartment: [], entryCount: 0, charCount: 0 },
@@ -2557,6 +2562,61 @@
     if (state.sectionId === "intelligence") render();
   }
 
+  async function runTrialhubUpload({ dryRun = false } = {}) {
+    if (state.intelligence.trialhubUploadBusy) return;
+    const input = document.getElementById("trialhubUploadInput");
+    if (!input || !input.files || !input.files.length) {
+      state.intelligence.trialhubUploadMessage = "Choose a TrialHub .xlsx first.";
+      state.intelligence.trialhubUploadResult = null;
+      if (state.sectionId === "intelligence") render();
+      return;
+    }
+    const file = input.files[0];
+    state.intelligence.trialhubUploadBusy = true;
+    state.intelligence.trialhubUploadMessage = dryRun
+      ? `Parsing ${file.name} (dry run)…`
+      : `Ingesting ${file.name} into Cosmos (dedupe by NCT)…`;
+    state.intelligence.trialhubUploadResult = null;
+    if (state.sectionId === "intelligence") render();
+    try {
+      const buf = await file.arrayBuffer();
+      const url = apiUrl(`/api/trialhub/upload${dryRun ? "?dry=true" : ""}`);
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+          "x-file-name": file.name
+        },
+        body: buf
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        state.intelligence.trialhubUploadMessage = data.error || `Upload failed (${res.status})`;
+        state.intelligence.trialhubUploadResult = data;
+      } else if (dryRun) {
+        state.intelligence.trialhubUploadMessage = `Dry run OK · ${Number(
+          data.uniqueTrials || 0
+        ).toLocaleString()} unique NCTs on sheet “${data.sheet || "Trials"}”`;
+        state.intelligence.trialhubUploadResult = data;
+      } else {
+        state.intelligence.trialhubUploadMessage = `Ingested ${Number(
+          data.upserted || 0
+        ).toLocaleString()} trials · removed ${Number(
+          data.priorDocsRemoved || 0
+        ).toLocaleString()} prior NCT copies · container now ${
+          data.containerCount != null ? Number(data.containerCount).toLocaleString() : "—"
+        }${data.failed ? ` · ${data.failed} failed` : ""}`;
+        state.intelligence.trialhubUploadResult = data;
+        await loadIntelligenceHealth();
+      }
+    } catch (err) {
+      state.intelligence.trialhubUploadMessage = `Upload error: ${String(err)}`;
+      state.intelligence.trialhubUploadResult = null;
+    }
+    state.intelligence.trialhubUploadBusy = false;
+    if (state.sectionId === "intelligence") render();
+  }
+
   function renderCtgovSyncDeltas(deltas) {
     if (!deltas || !deltas.summary) return "";
     const s = deltas.summary;
@@ -2821,14 +2881,33 @@
         )}</td><td>${exp.toLocaleString()}</td><td>${badge}</td></tr>`;
       })
       .join("");
+    const thCount = h.trialhub?.count ?? counts.ora_trialhub_trials;
+    const cgCount = h.ctgov?.count ?? counts.ora_ctgov_trials;
+    const liveRows = `
+      <tr><td><code>ora_trialhub_trials</code></td><td>${intelStatNum(
+        typeof thCount === "number" ? thCount : null
+      )}</td><td>live upload</td><td><span class="badge" style="background:#E0E7FF;color:#3730A3;">live</span></td></tr>
+      <tr><td><code>ora_ctgov_trials</code></td><td>${intelStatNum(
+        typeof cgCount === "number" ? cgCount : null
+      )}</td><td>live sync</td><td><span class="badge" style="background:#E0E7FF;color:#3730A3;">live</span></td></tr>`;
     const syncDisabled = state.intelligence.syncBusy ? "disabled" : "";
+    const thBusy = state.intelligence.trialhubUploadBusy;
+    const thMsg = state.intelligence.trialhubUploadMessage
+      ? `<p class="muted" style="margin-top:0.5rem;">${escapeHtml(state.intelligence.trialhubUploadMessage)}</p>`
+      : "";
+    const thResult = state.intelligence.trialhubUploadResult;
+    const thResultBlock = thResult
+      ? `<pre class="buddy-ctx-body" style="margin-top:0.65rem;max-height:220px;overflow:auto;">${escapeHtml(
+          JSON.stringify(thResult, null, 2)
+        )}</pre>`
+      : "";
     return `
       <div class="card wide">
         <h3>Data status ${h.ok ? "· loaded" : "· check counts"}</h3>
         <p class="muted">Ora Veeva + TrialHub reference tables in Cosmos (<code>bd-budgets</code>). Buddy reads summaries from these.</p>
         <table class="table">
           <thead><tr><th>Container</th><th>Loaded</th><th>Expected</th><th>Status</th></tr></thead>
-          <tbody>${rows}</tbody>
+          <tbody>${rows}${liveRows}</tbody>
         </table>
         <div style="margin-top:0.85rem;display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap;">
           <button type="button" class="btn btn-secondary" id="btnIntelRefresh">Refresh</button>
@@ -2839,6 +2918,22 @@
         ${syncMeta}
         ${syncMsg}
         ${renderCtgovSyncDeltas(state.intelligence.syncDeltas)}
+      </div>
+      <div class="card wide" style="margin-top:1rem;">
+        <h3>Upload TrialHub export</h3>
+        <p class="muted">Drop the full TrialHub <code>Trials Search Data</code> .xlsx (uses sheet <strong>Trials (Detailed)</strong>). Each upload ingests the whole file and upserts by NCT — <strong>no duplicate trials</strong>. Chunked 3k exports can be uploaded one after another; overlapping NCTs update in place.</p>
+        <label class="field" style="margin-top:0.75rem;">
+          <span>TrialHub .xlsx</span>
+          <input type="file" id="trialhubUploadInput" accept=".xlsx,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" />
+        </label>
+        <div style="margin-top:0.65rem;display:flex;gap:0.6rem;flex-wrap:wrap;">
+          <button type="button" class="btn btn-primary" id="btnTrialhubUpload" ${thBusy ? "disabled" : ""}>${
+            thBusy ? "Ingesting…" : "Ingest TrialHub file"
+          }</button>
+          <button type="button" class="btn btn-secondary" id="btnTrialhubDryRun" ${thBusy ? "disabled" : ""}>Dry run (parse only)</button>
+        </div>
+        ${thMsg}
+        ${thResultBlock}
       </div>`;
   }
 
@@ -3293,15 +3388,33 @@
     }
   }
 
-  function renderBuddyContextOrganized(organized) {
+  function renderBuddyContextOrganized(organized, filterDept, filterCategory) {
     const depts = (organized && organized.byDepartment) || [];
     if (!depts.length) {
       return `<p class="muted" style="margin-top:0.75rem;">Nothing in live context yet.</p>`;
     }
-    return depts
+    const filtered = depts
+      .filter((d) => !filterDept || filterDept === "*" || d.id === filterDept)
+      .map((d) => {
+        const cats = (d.categories || []).filter(
+          (c) => !filterCategory || filterCategory === "*" || c.id === filterCategory
+        );
+        return { ...d, categories: cats };
+      })
+      .filter((d) => (d.categories || []).length > 0);
+
+    if (!filtered.length) {
+      return `<p class="muted" style="margin-top:0.75rem;">No entries in this department + category yet. Append below or pick another filter.</p>`;
+    }
+    return filtered
       .map((d) => {
         const cats = (d.categories || [])
           .map((c) => {
+            const entryCount = Number(c.entryCount || (c.entries || []).length || 0);
+            const charCount = Number(
+              c.charCount ||
+                (c.entries || []).reduce((n, e) => n + String(e.text || "").length, 0)
+            );
             const items = (c.entries || [])
               .map((e) => {
                 const meta = [e.at, e.by].filter(Boolean).join(" · ");
@@ -3312,16 +3425,29 @@
               })
               .join("");
             return `<section class="buddy-ctx-cat">
-              <h5>${escapeHtml(c.name || c.id || "Other")} <span class="muted">· ${intelStatNum(c.entryCount)} · ${intelStatNum(
-                c.charCount
+              <h5>${escapeHtml(c.name || c.id || "Other")} <span class="muted">· ${intelStatNum(entryCount)} · ${intelStatNum(
+                charCount
               )} chars</span></h5>
               ${items}
             </section>`;
           })
           .join("");
+        const deptEntryCount = (d.categories || []).reduce(
+          (n, c) => n + Number(c.entryCount || (c.entries || []).length || 0),
+          0
+        );
+        const deptCharCount = (d.categories || []).reduce(
+          (n, c) =>
+            n +
+            Number(
+              c.charCount ||
+                (c.entries || []).reduce((m, e) => m + String(e.text || "").length, 0)
+            ),
+          0
+        );
         return `<section class="buddy-ctx-dept">
-          <h4>${escapeHtml(d.name || d.id || "General")} <span class="muted">· ${intelStatNum(d.entryCount)} · ${intelStatNum(
-            d.charCount
+          <h4>${escapeHtml(d.name || d.id || "General")} <span class="muted">· ${intelStatNum(deptEntryCount)} · ${intelStatNum(
+            deptCharCount
           )} chars</span></h4>
           ${cats}
         </section>`;
@@ -3347,18 +3473,35 @@
           { id: "ous", name: "OUS / geography" },
           { id: "other", name: "Other" }
         ];
-    const deptOpts = depts
-      .map(
+    const viewDept = bc.viewDept != null ? bc.viewDept : "*";
+    const viewCategory = bc.viewCategory != null ? bc.viewCategory : "*";
+    const appendDept = viewDept !== "*" ? viewDept : bc.dept || "general";
+    const appendCategory = viewCategory !== "*" ? viewCategory : bc.category || "other";
+    const deptOpts = [
+      `<option value="*" ${viewDept === "*" ? "selected" : ""}>All departments</option>`,
+      ...depts.map(
         (d) =>
-          `<option value="${escapeAttr(d.id)}" ${bc.dept === d.id ? "selected" : ""}>${escapeHtml(d.name)}</option>`
+          `<option value="${escapeAttr(d.id)}" ${viewDept === d.id ? "selected" : ""}>${escapeHtml(d.name)}</option>`
       )
-      .join("");
-    const catOpts = cats
-      .map(
+    ].join("");
+    const catOpts = [
+      `<option value="*" ${viewCategory === "*" ? "selected" : ""}>All categories</option>`,
+      ...cats.map(
         (c) =>
-          `<option value="${escapeAttr(c.id)}" ${bc.category === c.id ? "selected" : ""}>${escapeHtml(c.name)}</option>`
+          `<option value="${escapeAttr(c.id)}" ${viewCategory === c.id ? "selected" : ""}>${escapeHtml(c.name)}</option>`
       )
-      .join("");
+    ].join("");
+    const deptLabel =
+      viewDept === "*"
+        ? "All departments"
+        : (depts.find((d) => d.id === viewDept) || {}).name || viewDept;
+    const catLabel =
+      viewCategory === "*"
+        ? "All categories"
+        : (cats.find((c) => c.id === viewCategory) || {}).name || viewCategory;
+    const appendDeptLabel = (depts.find((d) => d.id === appendDept) || {}).name || appendDept;
+    const appendCatLabel = (cats.find((c) => c.id === appendCategory) || {}).name || appendCategory;
+    const needsSpecific = viewDept === "*" || viewCategory === "*";
     return `
       <div class="card wide">
         <h3>Buddy live context</h3>
@@ -3377,21 +3520,27 @@
           </label>
         </div>
         <label class="field" style="margin-top:0.75rem;">
-          <span>Append new material</span>
-          <textarea id="buddyCtxAppend" class="input" rows="8" placeholder="Paste notes to add under the selected department + category…">${escapeHtml(
-            bc.append || ""
-          )}</textarea>
+          <span>Append new material${
+            needsSpecific
+              ? ` <span class="muted">(pick a specific dept + category first)</span>`
+              : ` <span class="muted">→ ${escapeHtml(appendDeptLabel)} / ${escapeHtml(appendCatLabel)}</span>`
+          }</span>
+          <textarea id="buddyCtxAppend" class="input" rows="8" placeholder="Paste notes to add under the selected department + category…"${
+            needsSpecific ? " disabled" : ""
+          }>${escapeHtml(bc.append || "")}</textarea>
         </label>
         <div style="display:flex;gap:0.6rem;flex-wrap:wrap;margin-top:0.65rem;">
-          <button type="button" class="btn btn-primary" id="btnBuddyCtxAppend" ${bc.saving ? "disabled" : ""}>${
+          <button type="button" class="btn btn-primary" id="btnBuddyCtxAppend" ${bc.saving || needsSpecific ? "disabled" : ""}>${
             bc.saving ? "Saving…" : "Append to Buddy context"
           }</button>
           <button type="button" class="btn btn-secondary" id="btnBuddyCtxRefresh" ${bc.loading ? "disabled" : ""}>Refresh</button>
         </div>
         <div class="buddy-ctx-existing" style="margin-top:1.5rem;">
           <h3>Current live context</h3>
-          <p class="muted">Organized by department, then category. This is what Buddy already has.</p>
-          ${renderBuddyContextOrganized(bc.organized)}
+          <p class="muted">Showing <strong>${escapeHtml(deptLabel)}</strong> → <strong>${escapeHtml(
+            catLabel
+          )}</strong>. Switch department/category above to browse other buckets.</p>
+          ${renderBuddyContextOrganized(bc.organized, viewDept, viewCategory)}
         </div>
       </div>`;
   }
@@ -6380,8 +6529,17 @@
         const dept = document.getElementById("buddyCtxDept");
         const cat = document.getElementById("buddyCtxCategory");
         const ap = document.getElementById("buddyCtxAppend");
-        if (dept) state.buddyContext.dept = dept.value;
-        if (cat) state.buddyContext.category = cat.value;
+        const deptVal = dept ? dept.value : state.buddyContext.viewDept;
+        const catVal = cat ? cat.value : state.buddyContext.viewCategory;
+        if (deptVal === "*" || catVal === "*") {
+          state.buddyContext.status = "Pick a specific department and category before appending.";
+          render();
+          return;
+        }
+        state.buddyContext.dept = deptVal;
+        state.buddyContext.category = catVal;
+        state.buddyContext.viewDept = deptVal;
+        state.buddyContext.viewCategory = catVal;
         if (ap) state.buddyContext.append = ap.value;
         saveBuddyContext();
         return;
@@ -6393,6 +6551,14 @@
       }
       if (e.target.id === "btnCtgovSync") {
         runCtgovSyncManual();
+        return;
+      }
+      if (e.target.id === "btnTrialhubUpload") {
+        runTrialhubUpload({ dryRun: false });
+        return;
+      }
+      if (e.target.id === "btnTrialhubDryRun") {
+        runTrialhubUpload({ dryRun: true });
         return;
       }
       const completeReq = e.target.closest("[data-complete-request]");
@@ -6619,6 +6785,19 @@
         localStorage.setItem("sbw.studiesFilter", state.studiesFilter);
         state.studiesList = [];
         loadStudiesIntoPanel();
+      }
+      if (e.target.id === "buddyCtxDept" || e.target.id === "buddyCtxCategory") {
+        const ap = document.getElementById("buddyCtxAppend");
+        if (ap) state.buddyContext.append = ap.value;
+        const dept = document.getElementById("buddyCtxDept");
+        const cat = document.getElementById("buddyCtxCategory");
+        const deptVal = dept ? dept.value : "*";
+        const catVal = cat ? cat.value : "*";
+        state.buddyContext.viewDept = deptVal;
+        state.buddyContext.viewCategory = catVal;
+        if (deptVal !== "*") state.buddyContext.dept = deptVal;
+        if (catVal !== "*") state.buddyContext.category = catVal;
+        render();
       }
     });
 

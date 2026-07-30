@@ -766,12 +766,16 @@ async function getIntelligenceHealth(getDb) {
   for (const id of containers) {
     counts[id] = await safeCount(database, id);
   }
+  // Fixed packs (Veeva/crosswalk). TrialHub + CT.gov grow via upload/sync — not fixed expected.
   const expected = {
     ora_fact_site: 3613,
     ora_fact_study: 249,
-    ora_trialhub_trials: 1682,
     ora_sponsor_crosswalk: 642,
     ora_site_alias_table: 46
+  };
+  const liveCounts = {
+    ora_trialhub_trials: counts.ora_trialhub_trials,
+    ora_ctgov_trials: counts.ora_ctgov_trials
   };
   const fixedOk = Object.keys(expected).every((id) => counts[id] === expected[id]);
   let syncState = null;
@@ -793,6 +797,11 @@ async function getIntelligenceHealth(getDb) {
     ok: fixedOk,
     counts,
     expected,
+    liveCounts,
+    trialhub: {
+      count: counts.ora_trialhub_trials,
+      note: "Grows via TrialHub .xlsx upload on this page — upsert by NCT, no duplicates."
+    },
     ctgov: {
       count: counts.ora_ctgov_trials,
       sync: syncState,
