@@ -12,7 +12,8 @@ const {
   extractIndicationFromQuestion,
   extractCountryFromQuestion
 } = require("./intelligence");
-const { isLegacyAnteriorQuestion, buildLegacyAnteriorContext, userConsentedLegacyEnrollment } = require("./legacyAnterior");
+const { isLegacyAnteriorQuestion, buildLegacyAnteriorContext, userConsentedLegacyEnrollment, wantsHtmlVisual, isLegacyTableAsk } = require("./legacyAnterior");
+const { loadLiveContext, saveLiveContext } = require("./buddyLiveContext");
 const { runCtgovSync, getCtgovSyncStatus, remapCtgovIndications } = require("./ctgovSync");
 const {
   isPricingQuestion,
@@ -888,6 +889,48 @@ app.http("intelligenceSiteScorecard", {
   }
 });
 
+app.http("buddyContext", {
+  methods: ["GET", "POST", "OPTIONS"],
+  authLevel: "anonymous",
+  route: "buddy/context",
+  handler: async (request, context) => {
+    if (request.method === "OPTIONS") {
+      return {
+        status: 204,
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+          "Access-Control-Allow-Headers": "content-type"
+        }
+      };
+    }
+    try {
+      if (request.method === "GET") {
+        const pack = await loadLiveContext(getDb);
+        return json(200, pack);
+      }
+      let body = {};
+      try {
+        body = (await request.json()) || {};
+      } catch (_) {
+        body = {};
+      }
+      const user = signedInUserFromRequest(request, null);
+      const result = await saveLiveContext(getDb, {
+        password: body.password || body.contextPassword || body.key,
+        text: body.text != null ? body.text : undefined,
+        append: body.append || body.addition || null,
+        title: body.title,
+        user
+      });
+      return json(result.ok ? 200 : 401, result);
+    } catch (err) {
+      context.error(err);
+      return json(500, { ok: false, error: String(err.message || err) });
+    }
+  }
+});
+
 app.http("ctgovSync", {
   methods: ["GET", "POST", "OPTIONS"],
   authLevel: "anonymous",
@@ -1174,9 +1217,12 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       const enrollmentConsent =
         body.includeLegacyEnrollment === true ||
         body.useLegacyEnrollment === true ||
-        userConsentedLegacyEnrollment(question, history);
+        userConsentedLegacyEnrollment(question, history) ||
+        isLegacyTableAsk(question) ||
+        (wantsHtmlVisual(question) && isLegacyAnteriorQuestion(question));
       const forceLegacy =
         isLegacyAnteriorQuestion(question) ||
+        isLegacyTableAsk(question) ||
         Boolean(
           legacyHint.siteName ||
             legacyHint.studyName ||
@@ -1260,11 +1306,22 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       pricingScenarios = { source: "past_bid_pricing_error", error: String(err.message || err) };
     }
 
+    // Live Buddy context (Cosmos) — SME additions without redeploy
+    let buddyLiveContext = null;
+    try {
+      buddyLiveContext = await loadLiveContext(getDb);
+      if (buddyLiveContext && !buddyLiveContext.text) buddyLiveContext = { ...buddyLiveContext, empty: true };
+    } catch (err) {
+      buddyLiveContext = { source: "error", error: String(err.message || err) };
+    }
+
+    const visualAsk = wantsHtmlVisual(question);
     const openStudyId = body.studyId ? String(body.studyId).trim() : null;
     const contextPayload = {
       askedAt: new Date().toISOString(),
       source: requireCopilotKey ? "copilot_studio" : "workbench",
       answerFocus,
+      wantsHtmlVisual: visualAsk,
       dataSources: {
         cosmosPortfolioQueried: Boolean(portfolio && portfolio.source === "cosmos_portfolio"),
         databaseStudyCount: portfolio?.databaseStudyCount ?? null,
@@ -1272,7 +1329,8 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         intelligenceAttached: Boolean(intelligence && intelligence.source === "ora_clinical_intelligence"),
         legacyAnteriorAttached: Boolean(legacyAnterior && legacyAnterior.source === "legacy_anterior_segment"),
         pricingScenariosAttached: Boolean(pricingScenarios && pricingScenarios.tiers),
-        note: "portfolio = budget studies. pricingScenarios = past-bid RFP tiers. intelligence = Ora Veeva + TrialHub + CT.gov. legacyAnterior = anterior-segment overview site/study trust."
+        buddyLiveContextAttached: Boolean(buddyLiveContext && buddyLiveContext.text),
+        note: "portfolio = budget studies. pricingScenarios = past-bid RFP tiers. intelligence = Ora Veeva + TrialHub + CT.gov. legacyAnterior = anterior-segment overview. buddyLiveContext = SME text from Buddy Context tab."
       },
       user,
       activeTab,
@@ -1289,7 +1347,8 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         year: hints.year || null,
         crossStudy,
         intelligence: Boolean(intelligence && !intelligence.error),
-        legacyAnterior: Boolean(legacyAnterior && !legacyAnterior.error)
+        legacyAnterior: Boolean(legacyAnterior && !legacyAnterior.error),
+        wantsHtmlVisual: visualAsk
       },
       openStudyInUi: openStudyId
         ? {
@@ -1305,6 +1364,17 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       pricingScenarios,
       intelligence,
       legacyAnterior,
+      buddyLiveContext:
+        buddyLiveContext && buddyLiveContext.text
+          ? {
+              source: buddyLiveContext.source,
+              updatedAt: buddyLiveContext.updatedAt,
+              updatedBy: buddyLiveContext.updatedBy,
+              text: String(buddyLiveContext.text).slice(0, 60000)
+            }
+          : buddyLiveContext
+            ? { source: buddyLiveContext.source, empty: true, note: "No live additions yet — use Buddy Context tab to paste." }
+            : null,
       workingStudy:
         answerFocus === "portfolio" || !clientStudy
           ? null

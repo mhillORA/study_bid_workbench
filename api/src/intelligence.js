@@ -1293,6 +1293,8 @@ async function buildSiteScorecard(getDb, opts = {}) {
       : "ora";
   const includeLegacy = Boolean(opts.includeLegacy);
   const aliases = indication ? indicationAliases(indication) : [];
+  const related = indication ? relatedIndicationLabels(indication) : [];
+  const preferred = indication ? preferredIndicationLabel(indication) || indication : null;
   const database = getDb();
   const started = Date.now();
 
@@ -1301,21 +1303,63 @@ async function buildSiteScorecard(getDb, opts = {}) {
   }
 
   const siteRows = [];
-  const indList = aliases.length ? aliases.slice(0, 6) : [null];
-  for (const alias of indList) {
+  const mergeSite = (r) => {
+    if (!r) return;
+    const org = r.org_clean || r.organization;
+    if (!org) return;
+    const key = `${org}||${r.country || "_unknown"}||${r.study_name || ""}||${r.site_psm || ""}`;
+    if (siteRows.some((x) => `${x.org_clean || x.organization}||${x.country || "_unknown"}||${x.study_name || ""}||${x.site_psm || ""}` === key)) {
+      return;
+    }
+    siteRows.push(r);
+  };
+
+  const querySites = async ({ exactInd, containsNeedle, requirePsm }) => {
     const params = [{ name: "@t", value: "ora_fact_site" }];
     let q = `SELECT TOP 400 c.org_clean, c.organization, c.country, c.indication, c.phase,
               c.site_psm, c.total_enrolled, c.site_enroll_months, c.fsi_trust, c.screen_fail_rate, c.study_name
-       FROM c WHERE c.docType = @t AND IS_DEFINED(c.site_psm) AND c.site_psm > 0`;
-    if (alias) {
+       FROM c WHERE c.docType = @t`;
+    if (requirePsm) q += ` AND IS_DEFINED(c.site_psm) AND c.site_psm > 0`;
+    if (exactInd) {
       q += ` AND c.indication = @ind`;
-      params.push({ name: "@ind", value: alias });
+      params.push({ name: "@ind", value: exactInd });
+    } else if (containsNeedle) {
+      q += ` AND CONTAINS(LOWER(c.indication), @n)`;
+      params.push({ name: "@n", value: String(containsNeedle).toLowerCase() });
     }
     const geo = countrySqlClause("c.country", countries, "geo");
     q += geo.sql;
     params.push(...geo.params);
     const rows = await queryAll(database.container("ora_fact_site"), q, params);
-    for (const r of rows) siteRows.push(r);
+    for (const r of rows) mergeSite(r);
+  };
+
+  const indList = aliases.length ? aliases.slice(0, 6) : [null];
+  for (const alias of indList) {
+    await querySites({ exactInd: alias, requirePsm: true });
+  }
+  // Related labels (e.g. Neuroprotection → Optic neuropathies / Glaucoma)
+  if (!siteRows.length && related.length) {
+    for (const alias of related.slice(0, 4)) {
+      await querySites({ exactInd: alias, requirePsm: true });
+    }
+  }
+  // Fuzzy CONTAINS when Veeva labels don't match pill names
+  if (!siteRows.length && preferred) {
+    for (const needle of indicationContainsNeedles(preferred).slice(0, 5)) {
+      await querySites({ containsNeedle: needle, requirePsm: true });
+    }
+  }
+  // Last resort: include null-PSM site rows so pills aren't empty
+  if (!siteRows.length && (aliases.length || related.length || preferred)) {
+    for (const alias of [...aliases, ...related].slice(0, 6)) {
+      await querySites({ exactInd: alias, requirePsm: false });
+    }
+    if (!siteRows.length && preferred) {
+      for (const needle of indicationContainsNeedles(preferred).slice(0, 4)) {
+        await querySites({ containsNeedle: needle, requirePsm: false });
+      }
+    }
   }
 
   // Aggregate by org_clean + country
@@ -1360,7 +1404,6 @@ async function buildSiteScorecard(getDb, opts = {}) {
 
   const aggregates = [...byKey.values()].map((g) => {
     const trustKnown = g.trustHigh + g.trustLow + g.trustMedium;
-    // Share of known labels only — missing fsi_trust must not count as "not high"
     const highTrustShare = trustKnown > 0 ? round(g.trustHigh / trustKnown, 3) : null;
     return {
       org_clean: g.org_clean,
@@ -1376,7 +1419,6 @@ async function buildSiteScorecard(getDb, opts = {}) {
       trustMedium: g.trustMedium,
       trustUnknown: g.trustUnknown,
       trustKnown,
-      // Display helper: "3/4" when known; null when no labels
       trustHighOfKnown: trustKnown > 0 ? `${g.trustHigh}/${trustKnown}` : null,
       indications: [...g.indications].slice(0, 6)
     };
@@ -1401,10 +1443,11 @@ async function buildSiteScorecard(getDb, opts = {}) {
     return Math.max(0, Math.min(100, (1 - (v - lo) / (hi - lo)) * 100));
   }
 
-  // Industry by country (compare mode) — TrialHub country medians, not named competitor sites
+  // Industry by country (compare mode) — TrialHub country medians
   const industryByCountry = {};
-  if (source === "compare" && aliases.length) {
-    for (const alias of aliases.slice(0, 4)) {
+  const thLabels = [...new Set([...aliases.slice(0, 4), ...related.slice(0, 3)])];
+  if (source === "compare" && thLabels.length) {
+    for (const alias of thLabels) {
       const thRows = await queryAll(
         database.container("ora_trialhub_trials"),
         `SELECT c.countries, c.psm_common, c.th_actual_psm, c.status
@@ -1415,7 +1458,7 @@ async function buildSiteScorecard(getDb, opts = {}) {
         ]
       );
       for (const t of thRows) {
-        const list = Array.isArray(t.countries) ? t.countries : [];
+        const list = parseCountryList(t.countries);
         const psm =
           typeof t.psm_common === "number" && t.psm_common > 0 && t.psm_common < 500
             ? t.psm_common
@@ -1446,15 +1489,12 @@ async function buildSiteScorecard(getDb, opts = {}) {
     const psmScore = normAsc(a.sitePsmMedian, psmMin, psmMax);
     const volScore = normAsc(a.totalEnrolledSum, volMin, volMax);
     const sfrScore = normDesc(a.screenFailMedian, sfrMin, sfrMax);
-    // Trust: % of rows with known fsi_trust that are "high". Missing labels → neutral 50 (not 0/100).
-    // Shrink toward 50 when few labeled rows so a single "high" study is not a free 100.
     let trustScore = 50;
     if (a.trustKnown > 0 && a.highTrustShare != null) {
       const raw = a.highTrustShare * 100;
-      const w = Math.min(1, a.trustKnown / 3); // full weight at 3+ labeled studies
+      const w = Math.min(1, a.trustKnown / 3);
       trustScore = round(50 + (raw - 50) * w, 1);
     }
-    // Weights: PSM 40%, volume 25%, screen-fail 20%, trust 15%
     const oraScore = round(
       0.4 * psmScore + 0.25 * volScore + 0.2 * sfrScore + 0.15 * trustScore,
       1
@@ -1462,7 +1502,6 @@ async function buildSiteScorecard(getDb, opts = {}) {
     const industry = industryByCountry[a.country] || null;
     const industryMedianPsm = industry ? round(median(industry.psms)) : null;
     const recruitingTrials = industry ? industry.recruiting : null;
-    // Industry score = how strong industry enrollment looks in this country (same 0–100 scale)
     const industryScore =
       source === "compare" && industryMedianPsm != null
         ? round(normAsc(industryMedianPsm, indPsmMin, indPsmMax), 1)
@@ -1519,12 +1558,14 @@ async function buildSiteScorecard(getDb, opts = {}) {
     }
   }
 
+  const usedRelated = related.length && aliases.every((a) => !siteRows.some((r) => r.indication === a));
   return {
     source,
     indication,
     countries: countries,
     countryFilterLabel: countries ? countries.join(", ") : "Global",
     aliasesUsed: aliases,
+    relatedIndicationsQueried: related.length ? related : undefined,
     siteCount: sites.length,
     includeLegacy,
     legacy: legacyMeta,
@@ -1532,9 +1573,13 @@ async function buildSiteScorecard(getDb, opts = {}) {
     trustNote:
       "Trust = share of Veeva rows with a known fsi_trust label that are \"high\" (missing labels excluded). Display is high/known. Score component shrinks toward neutral when fewer than 3 labeled studies — a single high row is not 100% trust weight.",
     note:
-      source === "ora"
-        ? "Ora scores from Veeva site history (ora_fact_site)."
-        : "Ora site score vs industry country score (TrialHub PSM by country). Industry has no named competitor sites — country-level benchmark only.",
+      sites.length === 0
+        ? `No Ora Veeva site rows matched "${indication || "filter"}". Try a broader indication (e.g. Glaucoma) or Global geography.`
+        : usedRelated || related.length
+          ? `Matched via related/fuzzy Veeva labels when exact "${indication}" had few/no site_psm rows. Ora scores from ora_fact_site.`
+          : source === "ora"
+            ? "Ora scores from Veeva site history (ora_fact_site)."
+            : "Ora site score vs industry country score (TrialHub PSM by country). Industry has no named competitor sites — country-level benchmark only.",
     sites,
     elapsedMs: Date.now() - started
   };

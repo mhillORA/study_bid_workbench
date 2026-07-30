@@ -73,6 +73,17 @@
         note: ""
       }
     },
+    buddyContext: {
+      text: "",
+      append: "",
+      password: "",
+      updatedAt: null,
+      updatedBy: null,
+      status: "",
+      loading: false,
+      saving: false,
+      entries: []
+    },
     ops: {
       quarantineCount: null,
       learnings: null,
@@ -1034,6 +1045,7 @@
       "psm"
     ],
     scorecard: ["scorecard", "site scorecard", "site scores", "sites"],
+    "buddy-context": ["buddy context", "context", "live context", "ingest context", "buddy ingest"],
     ops: ["ops", "ops dashboard", "operations", "operations dashboard", "workflow"],
     hlbp: [
       "hlbp",
@@ -3181,6 +3193,118 @@
         ? `Projected ~${Math.round(projected)} enrolled in ${months} mo across ${picks.length} sites — short of goal ${goal}. Add countries or lower goal.`
         : `Projected ~${Math.round(projected)} enrolled in ${months} mo across ${picks.length} sites (goal ${goal}).`;
     if (state.sectionId === "scorecard") render();
+  }
+
+  async function loadBuddyContext() {
+    state.buddyContext.loading = true;
+    state.buddyContext.status = "Loading…";
+    render();
+    try {
+      const res = await fetch(apiUrl("/api/buddy/context"));
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      state.buddyContext.text = data.text || "";
+      state.buddyContext.updatedAt = data.updatedAt || null;
+      state.buddyContext.updatedBy = data.updatedBy || null;
+      state.buddyContext.entries = Array.isArray(data.entries) ? data.entries : [];
+      state.buddyContext.status = data.charCount
+        ? `Loaded · ${Number(data.charCount).toLocaleString()} chars`
+        : "Empty — paste additions below";
+    } catch (err) {
+      state.buddyContext.status = `Could not load: ${err.message || err}`;
+    }
+    state.buddyContext.loading = false;
+    render();
+  }
+
+  async function saveBuddyContext({ replace = false } = {}) {
+    const password = String(state.buddyContext.password || "").trim();
+    if (!password) {
+      state.buddyContext.status = "Enter the context password (BUDDY_CONTEXT_KEY from SWA settings).";
+      render();
+      return;
+    }
+    state.buddyContext.saving = true;
+    state.buddyContext.status = "Saving…";
+    render();
+    try {
+      const body = {
+        password,
+        user: state.entraUser || undefined
+      };
+      if (replace) body.text = state.buddyContext.text || "";
+      else body.append = state.buddyContext.append || "";
+      const res = await fetch(apiUrl("/api/buddy/context"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body)
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
+      state.buddyContext.append = "";
+      state.buddyContext.status = data.note || `Saved · ${Number(data.charCount || 0).toLocaleString()} chars`;
+      await loadBuddyContext();
+    } catch (err) {
+      state.buddyContext.status = `Save failed: ${err.message || err}`;
+      state.buddyContext.saving = false;
+      render();
+    }
+  }
+
+  function renderBuddyContext() {
+    const bc = state.buddyContext;
+    const entries = (bc.entries || [])
+      .slice()
+      .reverse()
+      .slice(0, 12)
+      .map(
+        (e) =>
+          `<li><span class="muted">${escapeHtml(e.at || "")}</span> · ${escapeHtml(e.by || "—")} · ${intelStatNum(
+            e.chars
+          )} chars — ${escapeHtml(e.preview || "")}</li>`
+      )
+      .join("");
+    return `
+      <div class="card wide">
+        <h3>Buddy live context</h3>
+        <p class="muted">Paste SME notes, OUS playbook updates, or HTML excerpts here. Saved to Cosmos and attached on every Buddy ask — <strong>no redeploy</strong>. The base Ora Intelligence Context file still ships with the app; this tab is for on-the-fly additions.</p>
+        <p class="muted" style="margin-top:0.35rem;">Requires SWA App Setting <code>BUDDY_CONTEXT_KEY</code> (same password you enter below).</p>
+        <p class="muted" style="margin-top:0.35rem;">${escapeHtml(bc.status || "")}${
+          bc.updatedAt ? ` · last update ${escapeHtml(bc.updatedAt)}${bc.updatedBy ? ` by ${escapeHtml(bc.updatedBy)}` : ""}` : ""
+        }</p>
+        <label class="field" style="margin-top:0.75rem;">
+          <span>Context password</span>
+          <input id="buddyCtxPassword" class="input" type="password" autocomplete="off" value="${escapeAttr(
+            bc.password || ""
+          )}" placeholder="BUDDY_CONTEXT_KEY" />
+        </label>
+        <label class="field" style="margin-top:0.75rem;">
+          <span>Append new material</span>
+          <textarea id="buddyCtxAppend" class="input" rows="8" placeholder="Paste notes, tables, or HTML excerpts to add…">${escapeHtml(
+            bc.append || ""
+          )}</textarea>
+        </label>
+        <div style="display:flex;gap:0.6rem;flex-wrap:wrap;margin-top:0.65rem;">
+          <button type="button" class="btn btn-primary" id="btnBuddyCtxAppend" ${bc.saving ? "disabled" : ""}>${
+            bc.saving ? "Saving…" : "Append to Buddy context"
+          }</button>
+          <button type="button" class="btn btn-secondary" id="btnBuddyCtxRefresh" ${bc.loading ? "disabled" : ""}>Refresh</button>
+        </div>
+        <label class="field" style="margin-top:1.25rem;">
+          <span>Full live context (edit + replace)</span>
+          <textarea id="buddyCtxText" class="input" rows="14" placeholder="Full live context text…">${escapeHtml(
+            bc.text || ""
+          )}</textarea>
+        </label>
+        <div style="display:flex;gap:0.6rem;flex-wrap:wrap;margin-top:0.65rem;">
+          <button type="button" class="btn btn-ghost" id="btnBuddyCtxReplace" ${bc.saving ? "disabled" : ""}>Replace entire live context</button>
+        </div>
+        ${
+          entries
+            ? `<div style="margin-top:1rem;"><h4>Recent appends</h4><ul class="muted">${entries}</ul></div>`
+            : ""
+        }
+      </div>`;
   }
 
   function renderScorecard() {
@@ -5762,6 +5886,7 @@
       case "versions": html = renderVersions(); break;
       case "intelligence": html = renderIntelligence(); break;
       case "scorecard": html = renderScorecard(); break;
+      case "buddy-context": html = renderBuddyContext(); break;
       case "overview": html = renderOverview(); break;
       case "recruitment": html = renderDepartmentTab("recruitment"); break;
       case "clinops": html = renderDepartmentTab("clinops"); break;
@@ -5783,6 +5908,9 @@
         newer.selectedIndex = 0;
         older.selectedIndex = 1;
       }
+    }
+    if (section.id === "buddy-context" && !state.buddyContext.text && !state.buddyContext.loading) {
+      loadBuddyContext().catch(() => {});
     }
   }
 
@@ -6095,6 +6223,27 @@
       }
       if (e.target.id === "btnIntelRefresh") {
         loadIntelligenceHealth();
+        return;
+      }
+      if (e.target.id === "btnBuddyCtxRefresh") {
+        loadBuddyContext();
+        return;
+      }
+      if (e.target.id === "btnBuddyCtxAppend") {
+        const pw = document.getElementById("buddyCtxPassword");
+        const ap = document.getElementById("buddyCtxAppend");
+        if (pw) state.buddyContext.password = pw.value;
+        if (ap) state.buddyContext.append = ap.value;
+        saveBuddyContext({ replace: false });
+        return;
+      }
+      if (e.target.id === "btnBuddyCtxReplace") {
+        const pw = document.getElementById("buddyCtxPassword");
+        const tx = document.getElementById("buddyCtxText");
+        if (pw) state.buddyContext.password = pw.value;
+        if (tx) state.buddyContext.text = tx.value;
+        if (!window.confirm("Replace the entire live Buddy context with the full text box?")) return;
+        saveBuddyContext({ replace: true });
         return;
       }
       if (e.target.id === "btnOpsRefresh") {

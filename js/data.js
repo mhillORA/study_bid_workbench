@@ -17,6 +17,7 @@ SBW.sections = [
   { id: "versions", label: "Versions / Diff", department: null },
   { id: "intelligence", label: "Ora Clinical Intelligence", department: null },
   { id: "scorecard", label: "Site Scorecard", department: null },
+  { id: "buddy-context", label: "Buddy Context", department: null },
   { id: "hlbp", label: "HLBP", department: null, navGroup: "budget" },
   { id: "overview", label: "Overview / Inputs", department: "Analyst", navGroup: "budget" },
   { id: "recruitment", label: "Recruitment", department: "Recruitment", navGroup: "budget" },

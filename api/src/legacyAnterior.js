@@ -45,12 +45,40 @@ function isLegacyAnteriorQuestion(question) {
   if (!q) return false;
   return (
     /\b(legacy|anterior[\s-]?segment|as overview|anterior overview)\b/.test(q) ||
+    /\blegacy\b.{0,40}\b(table|board|list|recruit|enroll|visual|html|report|data)\b/.test(q) ||
+    /\b(table|board|list|visual|html|report)\b.{0,40}\blegacy\b/.test(q) ||
     /\b(site trust|trusted sites?|relationship preference|preferred sites?)\b/.test(q) ||
     /\b(advantages|disadvantages|relationship notes)\b/.test(q) ||
     /\b(which sites?).{0,40}\b(trust|prefer|perform|enroll|feasib)/.test(q) ||
     /\b(site|sites?).{0,30}\b(feasib|histor|legacy|anterior|scheduled|screened|enrolled)\b/.test(q) ||
     /\b(pi|principal investigator).{0,40}\b(site|study|enroll)/.test(q) ||
     /\b(target scheduled|lplv|visit ?1)\b/.test(q)
+  );
+}
+
+/** User wants a visual artifact — Buddy must emit HTML_REPORT. */
+function wantsHtmlVisual(question) {
+  const q = String(question || "").toLowerCase();
+  if (!q) return false;
+  return (
+    /\b(visual|html(\s+report)?|chart|graph|graphic|dashboard|slide|deck|print(?:able)?|pdf|heatmap|matrix|one[- ]pager|onepager)\b/.test(
+      q
+    ) ||
+    /\b(make|produce|build|create|generate|render|show|give|draw)\b.{0,50}\b(visual|html|chart|graph|table|report|deck|slide)\b/.test(
+      q
+    ) ||
+    /\b(table|board)\b.{0,30}\b(html|visual|report|printable)\b/.test(q)
+  );
+}
+
+/** Asking for the legacy recruitment/site table itself implies enrollment consent. */
+function isLegacyTableAsk(question) {
+  const q = String(question || "").toLowerCase();
+  if (!q) return false;
+  return (
+    /\blegacy\b.{0,50}\b(table|board|leaderboard|recruit|enroll|matrix|spreadsheet)\b/.test(q) ||
+    /\b(table|board|leaderboard|recruit|enroll)\b.{0,50}\blegacy\b/.test(q) ||
+    (wantsHtmlVisual(q) && /\blegacy\b/.test(q))
   );
 }
 
@@ -370,7 +398,8 @@ async function buildLegacyAnteriorContext(getDb, opts = {}) {
   };
 
   try {
-    if (indication || includeEnrollment) {
+    // Always attach a leaderboard for legacy asks (table/visual/trust) — Cosmos is the source
+    if (indication || includeEnrollment || intent || opts.force) {
       try {
         const enriched = await enrichSitesWithLegacy(database, [], {
           indication,
@@ -379,16 +408,46 @@ async function buildLegacyAnteriorContext(getDb, opts = {}) {
         out.indicationSites = {
           indication: enriched.meta?.indicationFilter || indication,
           matchingStudyCount: enriched.meta?.matchingStudyCount,
-          topByEnrolled: (enriched.meta?.leaderboard || []).slice(0, 15),
+          topByEnrolled: (enriched.meta?.leaderboard || []).slice(0, 40),
           note: enriched.meta?.note
         };
+        if (includeEnrollment) {
+          out.htmlTable = {
+            title: indication
+              ? `Legacy anterior-segment sites — ${indication}`
+              : "Legacy anterior-segment recruitment leaderboard",
+            columns: [
+              "siteName",
+              "relationshipPreference",
+              "enrolled",
+              "scheduled",
+              "screened",
+              "targetScheduled",
+              "attainmentPct",
+              "nStudies",
+              "indication"
+            ],
+            rows: (enriched.meta?.leaderboard || []).slice(0, 40).map((s) => ({
+              siteName: s.siteName,
+              relationshipPreference: s.relationshipPreference || null,
+              enrolled: s.metrics?.enrolled ?? null,
+              scheduled: s.metrics?.scheduled ?? null,
+              screened: s.metrics?.screened ?? null,
+              targetScheduled: s.metrics?.targetScheduled ?? null,
+              attainmentPct: s.metrics?.attainmentPct ?? null,
+              nStudies: s.metrics?.nStudies ?? null,
+              indication: s.indication || s.metrics?.indication || indication || null
+            })),
+            note: "Queried live from Cosmos legacy_sites / legacy outcomes. Never ask the user to paste this table."
+          };
+        }
         if (!named && enriched.meta?.leaderboard?.length) {
           out.trust = {
             sitesSampled: enriched.meta.leaderboard.length,
             withRelationshipPreference: 0,
             preferredSites: [],
             sitesWithTrustNotes: [],
-            topSitesByEnrolled: enriched.meta.leaderboard.slice(0, 12),
+            topSitesByEnrolled: enriched.meta.leaderboard.slice(0, 25),
             indicationFilter: enriched.meta.indicationFilter
           };
         }
@@ -468,6 +527,7 @@ async function buildLegacyAnteriorContext(getDb, opts = {}) {
         }));
       }
       if (out.trust) out.trust.topSitesByEnrolled = [];
+      if (out.htmlTable) out.htmlTable = null;
       if (out.indicationSites?.topByEnrolled) {
         out.indicationSites.topByEnrolled = out.indicationSites.topByEnrolled.map((s) => ({
           siteId: s.siteId,
@@ -774,31 +834,29 @@ function roundPct(x) {
 }
 
 function userConsentedLegacyEnrollment(question, history = []) {
-  const texts = [
-    String(question || ""),
-    ...((history || []).slice(-6).map((h) => String(h.content || "")))
-  ].join("\n");
   const q = String(question || "").toLowerCase();
+  // Asking for the legacy table / visual is consent to use enrollment columns
+  if (isLegacyTableAsk(question)) return true;
+  if (wantsHtmlVisual(question) && /\blegacy\b/.test(q)) return true;
   // Explicit opt-in on this turn
   if (
-    /\b(yes|yeah|yep|sure|ok|okay|please|include|use|pull|show)\b/.test(q) &&
-    /\b(legacy|anterior|enrollment|recruitment|historical)\b/.test(q)
+    /\b(yes|yeah|yep|sure|ok|okay|please|include|use|pull|show|produce|build|make|generate)\b/.test(q) &&
+    /\b(legacy|anterior|enrollment|recruitment|historical|table|board)\b/.test(q)
   ) {
     return true;
   }
-  if (/\b(include|use|with)\b.{0,40}\blegacy\b.{0,20}\b(enroll|recruit)/i.test(q)) return true;
-  if (/\blegacy\b.{0,20}\b(enroll|recruit).{0,20}\b(yes|please|include)\b/i.test(q)) return true;
+  if (/\b(include|use|with|show|pull)\b.{0,40}\blegacy\b/i.test(q)) return true;
+  if (/\blegacy\b.{0,30}\b(enroll|recruit|table|board|data|visual|html)\b/i.test(q)) return true;
   // Recent assistant asked + user said yes
   const turns = history || [];
   for (let i = turns.length - 1; i >= 0 && i >= turns.length - 4; i--) {
     const t = turns[i];
     if (t.role === "user" && /\b(yes|yeah|yep|sure|ok|okay|please|include it|use it|go ahead)\b/i.test(t.content || "")) {
-      // look back for legacy enrollment ask
       for (let j = i - 1; j >= 0 && j >= i - 3; j--) {
         if (
           turns[j].role === "assistant" &&
           /\blegacy\b/i.test(turns[j].content || "") &&
-          /\b(enroll|recruit)/i.test(turns[j].content || "")
+          /\b(enroll|recruit|table)\b/i.test(turns[j].content || "")
         ) {
           return true;
         }
@@ -811,6 +869,8 @@ function userConsentedLegacyEnrollment(question, history = []) {
 module.exports = {
   DATASET,
   isLegacyAnteriorQuestion,
+  isLegacyTableAsk,
+  wantsHtmlVisual,
   extractLegacyNameHints,
   buildLegacyAnteriorContext,
   enrichSitesWithLegacy,

@@ -18,7 +18,7 @@ const SYSTEM_PROMPT_DEFAULT = [
   "When both cosmos and portfolio exist, use cosmos for study-specific detail and portfolio for rollups/averages.",
   "HLBP / High Level Ballpark: when the user says they need an HLBP / high-level ballpark form, create or continue an HLBP draft. End with CREATE_STUDY:{\"budgetType\":\"HLBP\",\"clientName\":\"...\",\"phase\":\"...\",\"indication\":\"...\",\"drivers\":{\"enrolledSubjects\":100,\"enrollmentMonths\":12,\"coreSites\":16},\"sites\":[{\"country\":\"United States\",\"coreSites\":12},{\"country\":\"United Kingdom\",\"coreSites\":4}],\"versionLabel\":\"HLBP draft\"} including only fields they gave, then NAVIGATE:hlbp. Guide missing required fields one batch at a time (client, indication, phase, enrolled, enrollment months, site country mix). When they answer, APPLY those fields (drivers.*, sites.N.country, sites.N.coreSites, clientName, etc.). Do not invent a full detailed Internal Budget.",
   "When the user wants a new study / draft bid (not HLBP) and provides details, briefly confirm, then end with exactly one line: CREATE_STUDY:{\"studyId\":\"O-12345 or omit\",\"clientName\":\"...\",\"title\":\"...\",\"protocol\":\"...\",\"phase\":\"...\",\"therapeuticArea\":\"...\",\"indication\":\"...\",\"drivers\":{\"enrolledSubjects\":120,\"screenedSubjects\":180,\"coreSites\":15,\"enrollmentMonths\":12},\"notes\":\"...\",\"versionLabel\":\"draft\"}. Only include fields the user gave. studyId optional — system will assign NEW-… if missing. Do not claim the study exists until the user clicks Create in the UI.",
-  "When the user asks to open, go to, or show a tab/section (Hub, HLBP, Ops Dashboard, Studies, Versions, Ora Clinical Intelligence, Site Scorecard, Overview, Recruitment, ClinOps, Monitoring, SMO, Summary, Reviews, Formulas, Upload), put exactly one line at the end of your reply: NAVIGATE:<sectionId> using one of: hub, hlbp, ops, studies, versions, intelligence, scorecard, overview, recruitment, clinops, monitoring, smo, summary, reviews, formulas, upload.",
+  "When the user asks to open, go to, or show a tab/section (Hub, HLBP, Ops Dashboard, Studies, Versions, Ora Clinical Intelligence, Site Scorecard, Buddy Context, Overview, Recruitment, ClinOps, Monitoring, SMO, Summary, Reviews, Formulas, Upload), put exactly one line at the end of your reply: NAVIGATE:<sectionId> using one of: hub, hlbp, ops, studies, versions, intelligence, scorecard, buddy-context, overview, recruitment, clinops, monitoring, smo, summary, reviews, formulas, upload.",
   "When the user asks you to set, fill, change, or update a field on the open study, briefly confirm what you will change, then put exactly one line at the end: APPLY:[{\"path\":\"assumptions.recruitment.notes\",\"value\":\"text\",\"label\":\"Notes (Recruitment)\"}].",
   "Section locks: context.sectionLocks lists tabs currently locked for editing (sectionId + holderName). You may READ and discuss locked tabs. Do NOT emit APPLY (or claim you changed values) for any path whose tab is in sectionLocks and held by someone else — instead say clearly e.g. 'Alex is editing Recruitment — ask them to Save and click Done before I can change that tab.' CREATE_STUDY for a new study is still allowed.",
   "APPLY paths must come from context.editableFields (path + label + tab). Prefer the activeTab when the user says a generic name like Notes. Examples: assumptions.recruitment.notes, drivers.enrolledSubjects, sites.0.country, sites.0.coreSites, clientName. Never invent paths. Do not claim the value is saved until the user clicks Apply in the UI.",
@@ -71,15 +71,16 @@ const INTELLIGENCE_RULES = [
 
 const LEGACY_ANTERIOR_RULES = [
   " LEGACY ANTERIOR-SEGMENT DATA (Cosmos bd-budgets — separate containers, NOT Ora Veeva and NOT budget studies):",
-  "Containers: legacy_studies, legacy_sites, legacy_study_site_outcomes (by studyId), legacy_site_study_outcomes (by siteId). dataset=legacy_anterior_segment.",
+  " Containers: legacy_studies, legacy_sites, legacy_study_site_outcomes (by studyId), legacy_site_study_outcomes (by siteId). dataset=legacy_anterior_segment. Buddy queries these from Cosmos — never ask the user to paste a legacy table.",
   "When context.legacyAnterior is present:",
   "• You MAY use trust / relationship fields (relationshipPreference, advantages, disadvantages, relationshipNotes) without extra confirmation.",
   "• If legacyAnterior.indicationSites (or trust.indicationFilter) is set, prefer those sites for that indication (e.g. Dry Eye) — do not mix other indications into site suggestions.",
-  "• Enrollment numbers (scheduled/screened/enrolled/attainmentPct/outcomes): ONLY if legacyAnterior.enrollmentIncluded is true. If enrollmentIncluded is false, ASK once: 'Want me to include legacy anterior-segment enrollment history (scheduled/screened/enrolled/%), or stick to Ora Veeva / Site Scorecard?' Do not invent or cite those enrollment metrics until they say yes.",
-  "• After they confirm, the next turn will set enrollmentIncluded true — then use sites.metrics / siteOutcomes / studyOutcomes.",
+  "• Enrollment numbers (scheduled/screened/enrolled/attainmentPct/outcomes): use when legacyAnterior.enrollmentIncluded is true OR when htmlTable/rows are attached (table/visual asks auto-consent). If enrollmentIncluded is false and no htmlTable, ASK once — do not invent numbers.",
+  "• After they confirm, the next turn will set enrollmentIncluded true — then use sites.metrics / siteOutcomes / studyOutcomes / htmlTable.",
   " Label this source as legacy anterior-segment overview (not Veeva PSM). Cite n. Null ≠ 0.",
   " If a named site/study has matched=0, say it was not found and ask for another spelling.",
-  " Site Scorecard 'Include legacy recruitment data' is a separate UI toggle — when the user mentions they turned it on, treat enrollment as consented."
+  " Site Scorecard 'Include legacy recruitment data' is a separate UI toggle — when the user mentions they turned it on, treat enrollment as consented.",
+  " LIVE CONTEXT: context.buddyLiveContext (from the Buddy Context tab) is SME-authored additions — prefer it alongside the always-on Ora playbook."
 ].join(" ");
 
 /** Ora Intelligence Context Document (always-on SME + HTML report design system). */
@@ -98,15 +99,16 @@ function loadOraIntelligenceContext() {
 }
 
 const HTML_REPORT_RULES = [
-  " HTML REPORT PROTOCOL: When the user asks for a feasibility report, site recommendation report, BD prep memo, competitive landscape, ELT / executive deck, sponsor-facing HTML, or any downloadable / printable report:",
+  " HTML REPORT PROTOCOL (critical): When the user asks for a visual, chart, graph, graphic, table view, dashboard, slide, deck, printable/PDF, HTML report, feasibility report, site recommendation, BD prep memo, competitive landscape, ELT deck, legacy table, or says make/produce/build/show a visual:",
   "(1) Give a short chat summary first using [[h]] / [[i]] (2–6 lines).",
-  "(2) Then emit a full single-file HTML document between exactly these markers:",
+  "(2) You MUST also emit a full single-file HTML document between exactly these markers — chat-only is not enough when they asked for a visual:",
   "HTML_REPORT_START",
   "<!DOCTYPE html>…complete document…",
   "HTML_REPORT_END",
   "Use the Ora navy/teal design system from the always-on Ora Intelligence Context (Section 9): page bg #F0F4F8, navy #1B2A4A, teal #1A7F8E, inline <style>, .header / .card / .card-hdr / .kpi / tables / alerts. Chrome print-to-PDF ready. No external CSS/JS.",
   "Apply sponsor-facing vs internal rules from that context (Section 10). Populate numbers only from Context JSON — never invent PSM, enrollment, or NCT rows.",
-  "Chat-only asks do not need HTML_REPORT blocks."
+  " LEGACY TABLE: context.legacyAnterior.htmlTable / indicationSites.topByEnrolled / trust.topSitesByEnrolled is queried from Cosmos (legacy_sites). Never ask the user to paste the legacy table. If those arrays are present, render them in the HTML_REPORT. If empty, say Cosmos returned no legacy rows — still emit an HTML shell with that message.",
+  "Chat-only asks (no visual/table/report wording) do not need HTML_REPORT blocks."
 ].join(" ");
 
 const FORMAT_RULES =
@@ -149,7 +151,7 @@ function buddyInstructionsBase() {
 function systemPromptFor(context) {
   const base = buddyInstructionsBase();
   const protocols =
-    " Machine protocols: for tab navigation end with NAVIGATE:<sectionId> (hub,hlbp,ops,studies,versions,intelligence,scorecard,overview,recruitment,clinops,monitoring,smo,summary,reviews,formulas,upload)." +
+    " Machine protocols: for tab navigation end with NAVIGATE:<sectionId> (hub,hlbp,ops,studies,versions,intelligence,scorecard,buddy-context,overview,recruitment,clinops,monitoring,smo,summary,reviews,formulas,upload)." +
     " For field fills end with APPLY:[{\"path\":\"drivers.enrolledSubjects\",\"value\":100,\"label\":\"Enrolled subjects\"}] using only context.editableFields paths; prefer activeTab for ambiguous names; the user must click Apply before values write." +
     " If context.sectionLocks shows another person on a tab, do not APPLY that tab — say who is editing it and that they must Save and Done first." +
     " To create a new study or HLBP from user-provided info end with CREATE_STUDY:{...json...} (set budgetType:\"HLBP\" and sites:[{country,coreSites}] for HLBP); user must click Create before it is saved." +
@@ -186,9 +188,16 @@ function systemPromptFor(context) {
       : context?.intelligence?.query?.enrollmentPlan?.sitesExact != null
         ? ` enrollmentPlan is on intelligence.query — use those site counts.`
         : "";
+  const visualNote = context?.wantsHtmlVisual
+    ? " CRITICAL: wantsHtmlVisual=true — you MUST emit HTML_REPORT_START … HTML_REPORT_END with a complete Ora navy/teal HTML document after a short chat summary. Do not answer with chat text only."
+    : "";
+  const liveNote =
+    context?.buddyLiveContext?.text
+      ? " context.buddyLiveContext.text has SME live additions from the Buddy Context tab — treat as authoritative playbook additions."
+      : "";
   const legacyNote = context?.legacyAnterior
-    ? context.legacyAnterior.enrollmentIncluded
-      ? " context.legacyAnterior IS attached WITH enrollment — you may cite scheduled/screened/enrolled."
+    ? context.legacyAnterior.enrollmentIncluded || context.legacyAnterior.htmlTable
+      ? " context.legacyAnterior IS attached WITH enrollment/htmlTable from Cosmos — use it; never ask the user to paste the legacy table."
       : " context.legacyAnterior IS attached for trust notes only — ASK before citing legacy enrollment numbers (enrollmentIncluded=false)."
     : "";
   const dep = azureConfig().deployment;
@@ -197,7 +206,7 @@ function systemPromptFor(context) {
     : "";
   const user = context?.user;
   if (!user?.firstName && !user?.displayName && !user?.email) {
-    return base + protocols + focusNote + intelNote + planNote + legacyNote + modelNote;
+    return base + protocols + focusNote + intelNote + planNote + visualNote + liveNote + legacyNote + modelNote;
   }
   const label = user.firstName
     ? `${user.firstName}${user.email ? ` (${user.email})` : ""}`
@@ -208,6 +217,8 @@ function systemPromptFor(context) {
     focusNote +
     intelNote +
     planNote +
+    visualNote +
+    liveNote +
     legacyNote +
     modelNote +
     ` The signed-in user is ${label}. Prefer addressing them as ${user.firstName || "their first name"}.` +
