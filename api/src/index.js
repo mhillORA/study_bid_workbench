@@ -916,14 +916,16 @@ app.http("buddyContext", {
         body = {};
       }
       const user = signedInUserFromRequest(request, null);
+      // Append-only — no password; full replace (body.text without append) is rejected in saveLiveContext
       const result = await saveLiveContext(getDb, {
-        password: body.password || body.contextPassword || body.key,
         text: body.text != null ? body.text : undefined,
         append: body.append || body.addition || null,
+        dept: body.dept || body.department || null,
+        category: body.category || null,
         title: body.title,
         user
       });
-      return json(result.ok ? 200 : 401, result);
+      return json(result.ok ? 200 : 400, result);
     } catch (err) {
       context.error(err);
       return json(500, { ok: false, error: String(err.message || err) });
@@ -1370,10 +1372,22 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
               source: buddyLiveContext.source,
               updatedAt: buddyLiveContext.updatedAt,
               updatedBy: buddyLiveContext.updatedBy,
-              text: String(buddyLiveContext.text).slice(0, 60000)
+              appendOnly: true,
+              entryCount: buddyLiveContext.entryCount || null,
+              charCount: buddyLiveContext.charCount || null,
+              organized: buddyLiveContext.organized || null,
+              text: String(buddyLiveContext.text).slice(0, 60000),
+              note:
+                "Append-only SME live context from Buddy Context tab, grouped by department then category. When asked what is in current/live context, summarize organized by dept/category from this object — do not invent entries."
             }
           : buddyLiveContext
-            ? { source: buddyLiveContext.source, empty: true, note: "No live additions yet — use Buddy Context tab to paste." }
+            ? {
+                source: buddyLiveContext.source,
+                empty: true,
+                appendOnly: true,
+                organized: { byDepartment: [], entryCount: 0, charCount: 0 },
+                note: "No live additions yet — use Buddy Context tab to append by department + category."
+              }
             : null,
       workingStudy:
         answerFocus === "portfolio" || !clientStudy

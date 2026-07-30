@@ -48,7 +48,23 @@ const INDICATION_GROUPS = [
   ["Retinal Vein Occlusion", "RVO", "CRVO", "BRVO", "Central Retinal Vein Occlusion", "Branch Retinal Vein Occlusion"],
   ["Neurotrophic Keratitis", "Neurotrophic Keratopathy"],
   ["Meibomian Gland Dysfunction", "MGD"],
-  ["Inherited Retinal Disease", "IRD", "Stargardt", "Stargardt Disease", "Leber Congenital Amaurosis"],
+  [
+    "Inherited Retinal Disease",
+    "IRD",
+    "Stargardt",
+    "Stargardt Disease",
+    "Stargardt's Disease",
+    "Stargardt's",
+    "Stargardt's Macular Dystrophy",
+    "Stargardt Macular Dystrophy",
+    "STGD1",
+    "Stargardt Disease Type 1",
+    "Leber Congenital Amaurosis",
+    "Choroideremia",
+    "Achromatopsia",
+    "Best Disease",
+    "X-linked Retinoschisis"
+  ],
   ["Ocular Surface / Cornea", "Corneal Dystrophy", "Fuchs Endothelial Dystrophy", "Fuchs Dystrophy", "Infectious Keratitis"],
   ["Macular Hole / ERM", "Macular Hole", "Epiretinal Membrane", "ERM"],
   ["Central Serous Chorioretinopathy", "CSCR", "CSC"],
@@ -64,6 +80,9 @@ const INDICATION_UI_LABELS = INDICATION_GROUPS.map((g) => g[0]).filter((l) => l 
 function normText(s) {
   return String(s || "")
     .toLowerCase()
+    // Collapse possessives so Stargardt's ≈ stargardt
+    .replace(/['’]s\b/g, "s")
+    .replace(/['’]/g, "")
     .replace(/[^a-z0-9]+/g, " ")
     .trim();
 }
@@ -537,9 +556,11 @@ function indicationContainsNeedles(indication) {
     needles.add("brvo");
   }
   if (n.includes("meibomian") || n === "mgd") needles.add("meibomian");
-  if (n.includes("inherited retinal") || n === "ird") {
+  if (n.includes("inherited retinal") || n === "ird" || n.includes("stargardt")) {
     needles.add("stargardt");
     needles.add("inherited retinal");
+    needles.add("choroideremia");
+    needles.add("achromatopsia");
   }
   // Always include a compact form of the preferred label (min length 5)
   if (preferred.replace(/[^a-zA-Z0-9]/g, "").length >= 5) {

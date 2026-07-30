@@ -76,7 +76,11 @@
     buddyContext: {
       text: "",
       append: "",
-      password: "",
+      dept: "general",
+      category: "playbook",
+      departments: [],
+      categories: [],
+      organized: { byDepartment: [], entryCount: 0, charCount: 0 },
       updatedAt: null,
       updatedBy: null,
       status: "",
@@ -2429,6 +2433,7 @@
     "Retinal Vein Occlusion",
     "Retinitis Pigmentosa",
     "Inherited Retinal Disease",
+    "Stargardt's Disease",
     "Uveitis",
     "Presbyopia",
     "Allergic Conjunctivitis",
@@ -3207,9 +3212,14 @@
       state.buddyContext.updatedAt = data.updatedAt || null;
       state.buddyContext.updatedBy = data.updatedBy || null;
       state.buddyContext.entries = Array.isArray(data.entries) ? data.entries : [];
-      state.buddyContext.status = data.charCount
-        ? `Loaded · ${Number(data.charCount).toLocaleString()} chars`
-        : "Empty — paste additions below";
+      state.buddyContext.organized = data.organized || { byDepartment: [], entryCount: 0, charCount: 0 };
+      state.buddyContext.departments = Array.isArray(data.departments) ? data.departments : [];
+      state.buddyContext.categories = Array.isArray(data.categories) ? data.categories : [];
+      const n = Number(data.entryCount || state.buddyContext.organized.entryCount || 0);
+      const chars = Number(data.charCount || 0);
+      state.buddyContext.status = n
+        ? `Loaded · ${n} entr${n === 1 ? "y" : "ies"} · ${chars.toLocaleString()} chars (append-only)`
+        : "Empty — append the first note below (by department + category)";
     } catch (err) {
       state.buddyContext.status = `Could not load: ${err.message || err}`;
     }
@@ -3217,10 +3227,10 @@
     render();
   }
 
-  async function saveBuddyContext({ replace = false } = {}) {
-    const password = String(state.buddyContext.password || "").trim();
-    if (!password) {
-      state.buddyContext.status = "Enter the context password (BUDDY_CONTEXT_KEY from SWA settings).";
+  async function saveBuddyContext() {
+    const append = String(state.buddyContext.append || "").trim();
+    if (!append) {
+      state.buddyContext.status = "Paste something to append first.";
       render();
       return;
     }
@@ -3228,21 +3238,20 @@
     state.buddyContext.status = "Saving…";
     render();
     try {
-      const body = {
-        password,
-        user: state.entraUser || undefined
-      };
-      if (replace) body.text = state.buddyContext.text || "";
-      else body.append = state.buddyContext.append || "";
       const res = await fetch(apiUrl("/api/buddy/context"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body)
+        body: JSON.stringify({
+          append,
+          dept: state.buddyContext.dept || "general",
+          category: state.buddyContext.category || "other",
+          user: state.entraUser || undefined
+        })
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
       state.buddyContext.append = "";
-      state.buddyContext.status = data.note || `Saved · ${Number(data.charCount || 0).toLocaleString()} chars`;
+      state.buddyContext.status = data.note || `Appended · ${Number(data.charCount || 0).toLocaleString()} chars`;
       await loadBuddyContext();
     } catch (err) {
       state.buddyContext.status = `Save failed: ${err.message || err}`;
@@ -3251,36 +3260,92 @@
     }
   }
 
+  function renderBuddyContextOrganized(organized) {
+    const depts = (organized && organized.byDepartment) || [];
+    if (!depts.length) {
+      return `<p class="muted" style="margin-top:0.75rem;">Nothing in live context yet.</p>`;
+    }
+    return depts
+      .map((d) => {
+        const cats = (d.categories || [])
+          .map((c) => {
+            const items = (c.entries || [])
+              .map((e) => {
+                const meta = [e.at, e.by].filter(Boolean).join(" · ");
+                return `<article class="buddy-ctx-entry">
+                  ${meta ? `<p class="muted buddy-ctx-meta">${escapeHtml(meta)}</p>` : ""}
+                  <pre class="buddy-ctx-body">${escapeHtml(e.text || "")}</pre>
+                </article>`;
+              })
+              .join("");
+            return `<section class="buddy-ctx-cat">
+              <h5>${escapeHtml(c.name || c.id || "Other")} <span class="muted">· ${intelStatNum(c.entryCount)} · ${intelStatNum(
+                c.charCount
+              )} chars</span></h5>
+              ${items}
+            </section>`;
+          })
+          .join("");
+        return `<section class="buddy-ctx-dept">
+          <h4>${escapeHtml(d.name || d.id || "General")} <span class="muted">· ${intelStatNum(d.entryCount)} · ${intelStatNum(
+            d.charCount
+          )} chars</span></h4>
+          ${cats}
+        </section>`;
+      })
+      .join("");
+  }
+
   function renderBuddyContext() {
     const bc = state.buddyContext;
-    const entries = (bc.entries || [])
-      .slice()
-      .reverse()
-      .slice(0, 12)
+    const depts = bc.departments.length
+      ? bc.departments
+      : [
+          { id: "general", name: "General" },
+          { id: "bd", name: "BD" },
+          { id: "ops", name: "Ops" },
+          { id: "feasibility", name: "Feasibility / Intelligence" }
+        ];
+    const cats = bc.categories.length
+      ? bc.categories
+      : [
+          { id: "playbook", name: "Playbook / process" },
+          { id: "talking-points", name: "Talking points" },
+          { id: "ous", name: "OUS / geography" },
+          { id: "other", name: "Other" }
+        ];
+    const deptOpts = depts
       .map(
-        (e) =>
-          `<li><span class="muted">${escapeHtml(e.at || "")}</span> · ${escapeHtml(e.by || "—")} · ${intelStatNum(
-            e.chars
-          )} chars — ${escapeHtml(e.preview || "")}</li>`
+        (d) =>
+          `<option value="${escapeAttr(d.id)}" ${bc.dept === d.id ? "selected" : ""}>${escapeHtml(d.name)}</option>`
+      )
+      .join("");
+    const catOpts = cats
+      .map(
+        (c) =>
+          `<option value="${escapeAttr(c.id)}" ${bc.category === c.id ? "selected" : ""}>${escapeHtml(c.name)}</option>`
       )
       .join("");
     return `
       <div class="card wide">
         <h3>Buddy live context</h3>
-        <p class="muted">Paste SME notes, OUS playbook updates, or HTML excerpts here. Saved to Cosmos and attached on every Buddy ask — <strong>no redeploy</strong>. The base Ora Intelligence Context file still ships with the app; this tab is for on-the-fly additions.</p>
-        <p class="muted" style="margin-top:0.35rem;">Requires SWA App Setting <code>BUDDY_CONTEXT_KEY</code> (same password you enter below).</p>
+        <p class="muted">Append SME notes, OUS playbook updates, or excerpts here. Saved to Cosmos and attached on every Buddy ask — <strong>no redeploy</strong>. Append-only: you cannot replace the whole context. Ask Buddy “what’s in live context?” anytime for a summary.</p>
         <p class="muted" style="margin-top:0.35rem;">${escapeHtml(bc.status || "")}${
           bc.updatedAt ? ` · last update ${escapeHtml(bc.updatedAt)}${bc.updatedBy ? ` by ${escapeHtml(bc.updatedBy)}` : ""}` : ""
         }</p>
-        <label class="field" style="margin-top:0.75rem;">
-          <span>Context password</span>
-          <input id="buddyCtxPassword" class="input" type="password" autocomplete="off" value="${escapeAttr(
-            bc.password || ""
-          )}" placeholder="BUDDY_CONTEXT_KEY" />
-        </label>
+        <div class="buddy-ctx-form-grid" style="display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:0.75rem;margin-top:0.75rem;">
+          <label class="field">
+            <span>Department</span>
+            <select id="buddyCtxDept" class="select">${deptOpts}</select>
+          </label>
+          <label class="field">
+            <span>Category</span>
+            <select id="buddyCtxCategory" class="select">${catOpts}</select>
+          </label>
+        </div>
         <label class="field" style="margin-top:0.75rem;">
           <span>Append new material</span>
-          <textarea id="buddyCtxAppend" class="input" rows="8" placeholder="Paste notes, tables, or HTML excerpts to add…">${escapeHtml(
+          <textarea id="buddyCtxAppend" class="input" rows="8" placeholder="Paste notes to add under the selected department + category…">${escapeHtml(
             bc.append || ""
           )}</textarea>
         </label>
@@ -3290,20 +3355,11 @@
           }</button>
           <button type="button" class="btn btn-secondary" id="btnBuddyCtxRefresh" ${bc.loading ? "disabled" : ""}>Refresh</button>
         </div>
-        <label class="field" style="margin-top:1.25rem;">
-          <span>Full live context (edit + replace)</span>
-          <textarea id="buddyCtxText" class="input" rows="14" placeholder="Full live context text…">${escapeHtml(
-            bc.text || ""
-          )}</textarea>
-        </label>
-        <div style="display:flex;gap:0.6rem;flex-wrap:wrap;margin-top:0.65rem;">
-          <button type="button" class="btn btn-ghost" id="btnBuddyCtxReplace" ${bc.saving ? "disabled" : ""}>Replace entire live context</button>
+        <div class="buddy-ctx-existing" style="margin-top:1.5rem;">
+          <h3>Current live context</h3>
+          <p class="muted">Organized by department, then category. This is what Buddy already has.</p>
+          ${renderBuddyContextOrganized(bc.organized)}
         </div>
-        ${
-          entries
-            ? `<div style="margin-top:1rem;"><h4>Recent appends</h4><ul class="muted">${entries}</ul></div>`
-            : ""
-        }
       </div>`;
   }
 
@@ -3319,11 +3375,11 @@
     const compare = src === "compare";
     const trustNote = result?.trustNote
       ? `<p class="muted" style="margin-top:0.35rem;font-size:0.85rem;">${escapeHtml(result.trustNote)}</p>`
-      : `<p class="muted" style="margin-top:0.35rem;font-size:0.85rem;">Trust = high ÷ known fsi_trust labels (missing excluded). Shown as high/known.</p>`;
+      : `<p class="muted" style="margin-top:0.35rem;font-size:0.85rem;">Trust = high ÷ known FSI trust labels (missing excluded). Shown as high/known.</p>`;
 
     function trustCell(s) {
       if (s.trustHighOfKnown) {
-        return `<td title="high / known fsi_trust labels">${escapeHtml(s.trustHighOfKnown)}${
+        return `<td title="high / known FSI trust labels">${escapeHtml(s.trustHighOfKnown)}${
           s.highTrustShare != null ? ` · ${intelPct(s.highTrustShare)}` : ""
         }</td>`;
       }
@@ -5812,38 +5868,92 @@
     s = s.replace(/\*\*([^*\n]+)\*\*/g, "[[i]]$1[[/i]]");
     s = s.replace(/__([^_\n]+)__/g, "[[i]]$1[[/i]]");
     s = s.replace(/<\/?(?:strong|b)>/gi, (m) => (/^<\//.test(m) ? "[[/i]]" : "[[i]]"));
-    s = s.replace(/<\/?(?:em|i)>/gi, (m) => (/^<\//.test(m) ? "[[/i]]" : "[[i]]"));
-    // Normalize spaced double-bracket tags first: [[ i ]] → [[i]]
-    s = s.replace(/\[\[\s*(h|i)\s*\]\]/gi, (_, t) => `[[${t.toLowerCase()}]]`);
-    s = s.replace(/\[\[\s*\/\s*(h|i)\s*\]\]/gi, (_, t) => `[[/${t.toLowerCase()}]]`);
-    // ((i))…((/i)) → canonical (safe; does not collide with [[i]])
-    s = s.replace(/\(\(\s*(h|i)\s*\)\)([\s\S]*?)\(\(\s*\/\s*\1\s*\)\)/gi, (_, t, body) => {
-      const tag = String(t).toLowerCase();
-      return `[[${tag}]]${body}[[/${tag}]]`;
-    });
-    // Single [i]…[/i] only when NOT already double-bracketed
-    s = s.replace(
-      /(?<!\[)\[\s*(h|i)\s*\](?!\[)([\s\S]*?)(?<!\[)\[\s*\/\s*\1\s*\](?!\])/gi,
-      (_, t, body) => {
-        const tag = String(t).toLowerCase();
-        return `[[${tag}]]${body}[[/${tag}]]`;
-      }
-    );
+    // Do NOT convert bare HTML <i> — collides with leftover [i] noise; only strong/b above
 
+    // Humanize DB/JSON field keys that leak into chat
+    const fieldLabels = [
+      [/fsi_trust/gi, "FSI trust"],
+      [/fs_trust/gi, "FSI trust"],
+      [/org_clean/gi, "site"],
+      [/site_psm/gi, "site PSM"],
+      [/study_psm/gi, "study PSM"],
+      [/psm_common/gi, "industry PSM"],
+      [/th_actual_psm/gi, "TrialHub PSM"],
+      [/screen_fail_rate(?:_recomputed)?/gi, "screen-fail rate"],
+      [/study_number/gi, "study number"],
+      [/total_enrolled/gi, "total enrolled"],
+      [/site_enroll_months/gi, "site enrollment months"],
+      [/trialMentions/g, "trial mentions"],
+      [/countryRankOus/g, "OUS country rank"],
+      [/topSitesByPsm/g, "top sites by PSM"],
+      [/topOusSites/g, "top OUS sites"],
+      [/enrollmentPlan/g, "enrollment plan"],
+      [/sitesExact/g, "exact site count"],
+      [/sitesRecommendedWith20pctBuffer/g, "recommended sites (20% buffer)"],
+      [/oraIndication/g, "Ora indication"],
+      [/lead_sponsor_type/gi, "lead sponsor type"],
+      [/crosswalk_status/gi, "crosswalk status"],
+      [/highTrustShare/g, "high-trust share"]
+    ];
+    for (const [re, label] of fieldLabels) s = s.replace(re, label);
+    // Brand casing — model sometimes emits ORa / ORA
+    s = s.replace(/\bORa\b/g, "Ora");
+    s = s.replace(/\bORA\b(?=\s+(?:Clinical|Veeva|sites?|median|PSM|history|score|vs)\b)/g, "Ora");
+
+    // Normalize open/close markers to [[h]] / [[i]] (double, single, spaced, (( )))
+    const toOpen = (t) => `[[${String(t).toLowerCase()}]]`;
+    const toClose = (t) => `[[/${String(t).toLowerCase()}]]`;
+    s = s.replace(/\[\[\s*\/\s*(h|i)\s*\]\]/gi, (_, t) => toClose(t));
+    s = s.replace(/\[\[\s*(h|i)\s*\]\]/gi, (_, t) => toOpen(t));
+    s = s.replace(/\(\(\s*\/\s*(h|i)\s*\)\)/gi, (_, t) => toClose(t));
+    s = s.replace(/\(\(\s*(h|i)\s*\)\)/gi, (_, t) => toOpen(t));
+    s = s.replace(/(?<!\[)\[\s*\/\s*(h|i)\s*\](?!\])/gi, (_, t) => toClose(t));
+    s = s.replace(/(?<!\[)\[\s*(h|i)\s*\](?!\])/gi, (_, t) => toOpen(t));
+
+    // Pair open→close; auto-close unclosed tags at next opposite tag or end
     const chunks = [];
-    const re = /\[\[(h|i)\]\]([\s\S]*?)\[\[\/\1\]\]/gi;
+    const tokenRe = /\[\[(\/?)(h|i)\]\]/gi;
     let last = 0;
+    let open = null; // { type, startContent }
     let m;
-    while ((m = re.exec(s))) {
-      if (m.index > last) chunks.push({ type: "text", value: s.slice(last, m.index) });
-      chunks.push({ type: m[1].toLowerCase(), value: m[2] });
+    while ((m = tokenRe.exec(s))) {
+      const isClose = Boolean(m[1]);
+      const tag = m[2].toLowerCase();
+      const before = s.slice(last, m.index);
+      if (open) {
+        if (isClose && tag === open.type) {
+          chunks.push({ type: open.type, value: open.buf + before });
+          open = null;
+        } else if (!isClose) {
+          // New open while open — close previous with accumulated text
+          chunks.push({ type: open.type, value: open.buf + before });
+          open = { type: tag, buf: "" };
+        } else {
+          // Mismatched close — treat as text
+          open.buf += before + m[0];
+        }
+      } else if (!isClose) {
+        if (before) chunks.push({ type: "text", value: before });
+        open = { type: tag, buf: "" };
+      } else {
+        // Orphan close — drop the tag, keep text
+        if (before) chunks.push({ type: "text", value: before });
+      }
       last = m.index + m[0].length;
     }
-    if (last < s.length) chunks.push({ type: "text", value: s.slice(last) });
+    const tail = s.slice(last);
+    if (open) chunks.push({ type: open.type, value: open.buf + tail });
+    else if (tail) chunks.push({ type: "text", value: tail });
+
+    const stripTagNoise = (v) =>
+      String(v || "")
+        .replace(/\[\[\s*\/?\s*[hi]\s*\]\]/gi, "")
+        .replace(/(?<!\[)\[\s*\/?\s*[hi]\s*\](?!\])/gi, "")
+        .replace(/\(\(\s*\/?\s*[hi]\s*\)\)/gi, "");
 
     return chunks
       .map((c) => {
-        const body = escapeHtml(c.value).replaceAll("\n", "<br>");
+        const body = escapeHtml(stripTagNoise(c.value)).replaceAll("\n", "<br>");
         if (c.type === "h") return `<div class="buddy-h">${body}</div>`;
         if (c.type === "i") return `<span class="buddy-i">${body}</span>`;
         return body;
@@ -5909,8 +6019,12 @@
         older.selectedIndex = 1;
       }
     }
-    if (section.id === "buddy-context" && !state.buddyContext.text && !state.buddyContext.loading) {
-      loadBuddyContext().catch(() => {});
+    if (section.id === "buddy-context" && !state.buddyContext.loading) {
+      const empty =
+        !(state.buddyContext.organized && state.buddyContext.organized.entryCount) &&
+        !state.buddyContext.text &&
+        !state.buddyContext.status;
+      if (empty) loadBuddyContext().catch(() => {});
     }
   }
 
@@ -6230,20 +6344,13 @@
         return;
       }
       if (e.target.id === "btnBuddyCtxAppend") {
-        const pw = document.getElementById("buddyCtxPassword");
+        const dept = document.getElementById("buddyCtxDept");
+        const cat = document.getElementById("buddyCtxCategory");
         const ap = document.getElementById("buddyCtxAppend");
-        if (pw) state.buddyContext.password = pw.value;
+        if (dept) state.buddyContext.dept = dept.value;
+        if (cat) state.buddyContext.category = cat.value;
         if (ap) state.buddyContext.append = ap.value;
-        saveBuddyContext({ replace: false });
-        return;
-      }
-      if (e.target.id === "btnBuddyCtxReplace") {
-        const pw = document.getElementById("buddyCtxPassword");
-        const tx = document.getElementById("buddyCtxText");
-        if (pw) state.buddyContext.password = pw.value;
-        if (tx) state.buddyContext.text = tx.value;
-        if (!window.confirm("Replace the entire live Buddy context with the full text box?")) return;
-        saveBuddyContext({ replace: true });
+        saveBuddyContext();
         return;
       }
       if (e.target.id === "btnOpsRefresh") {

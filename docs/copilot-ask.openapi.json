@@ -2,8 +2,8 @@
   "openapi": "3.0.1",
   "info": {
     "title": "Study Bid Buddy (Copilot)",
-    "description": "Ask Buddy with full Cosmos portfolio context (all studies) plus optional single-study detail. Use for client rollups (e.g. Alcon patients last year), study lists, and budget questions. Always call this tool for Ora bid/study questions; return the answer field.",
-    "version": "1.1.0"
+    "description": "Ask Buddy with full Cosmos portfolio context (all studies) plus optional single-study detail. Use for client rollups (e.g. Alcon patients last year), study lists, and budget questions. Always call this tool for Ora bid/study questions; return the answer field.\n\nAuth: API key in header x-copilot-key (SWA setting COPILOT_ASK_KEY). In Copilot Studio / Power Platform connector Security, set Authentication = API Key and use Maker-provided credentials so end users are never prompted.",
+    "version": "1.2.0"
   },
   "servers": [
     {
@@ -16,13 +16,9 @@
         "operationId": "AskBuddy",
         "summary": "Ask Buddy about studies or the full portfolio",
         "description": "Answers questions using Cosmos study data. Supports cross-study queries by client name and year (portfolio totals) and single-study detail when studyId is known. Examples: 'How many enrolled patients with Alcon last year?', 'List studies for Regeneron', 'What are enrollment drivers on O-12345?'",
-        "parameters": [
+        "security": [
           {
-            "name": "x-copilot-key",
-            "in": "header",
-            "required": true,
-            "schema": { "type": "string" },
-            "description": "Shared secret from SWA setting COPILOT_ASK_KEY"
+            "CopilotAskKey": []
           }
         ],
         "requestBody": {
@@ -77,5 +73,20 @@
         }
       }
     }
-  }
+  },
+  "components": {
+    "securitySchemes": {
+      "CopilotAskKey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "x-copilot-key",
+        "description": "Shared secret — same value as SWA Application setting COPILOT_ASK_KEY. Store once on the connector connection (maker-provided). Do not pass as a chat parameter."
+      }
+    }
+  },
+  "security": [
+    {
+      "CopilotAskKey": []
+    }
+  ]
 }

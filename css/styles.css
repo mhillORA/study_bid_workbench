@@ -862,6 +862,53 @@ h1 {
   }
 }
 
+.buddy-ctx-dept {
+  margin-top: 1rem;
+  padding-top: 0.75rem;
+  border-top: 1px solid var(--line);
+}
+
+.buddy-ctx-dept h4 {
+  margin: 0 0 0.5rem;
+}
+
+.buddy-ctx-cat {
+  margin: 0.65rem 0 0.85rem 0.35rem;
+}
+
+.buddy-ctx-cat h5 {
+  margin: 0 0 0.4rem;
+  font-size: 0.95rem;
+}
+
+.buddy-ctx-entry {
+  margin: 0.4rem 0 0.65rem;
+  padding: 0.55rem 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--card-bg, #fff);
+}
+
+.buddy-ctx-meta {
+  margin: 0 0 0.35rem;
+  font-size: 0.8rem;
+}
+
+.buddy-ctx-body {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+@media (max-width: 720px) {
+  .buddy-ctx-form-grid {
+    grid-template-columns: 1fr !important;
+  }
+}
+
 .buddy-compose {
   padding: 0.85rem 1rem 1rem;
   border-top: 1px solid var(--line);

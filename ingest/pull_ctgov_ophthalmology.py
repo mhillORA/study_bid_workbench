@@ -45,16 +45,18 @@ OVERLAP_HOURS = 36
 REQUEST_PAUSE_S = 0.15
 USER_AGENT = "OraStudyBidWorkbench/1.0 (ctgov-delta; contact=bd-budgets)"
 
-# Ophthalmic / Ora-relevant condition expression (Essie).
+# Full ophthalmology condition search — MeSH Eye Diseases + broad ocular/retinal terms (not a curated shortlist).
 COND_QUERY = (
-    "(eye diseases OR ophthalmology OR dry eye OR macular degeneration OR glaucoma OR "
-    "cataract OR diabetic macular OR diabetic retinopathy OR geographic atrophy OR "
-    "retinitis pigmentosa OR uveitis OR myopia OR allergic conjunctivitis OR "
-    "thyroid eye OR keratoconus OR presbyopia OR blepharitis OR ocular hypertension OR "
-    "retinal vein OR corneal OR conjunctivitis OR AMD OR nAMD OR neuroprotection OR "
-    "optic neuropathy OR optic neuritis OR LHON OR NAION OR neurotrophic keratitis OR "
-    "meibomian OR Stargardt OR macular hole OR epiretinal OR central serous OR "
-    "amblyopia OR strabismus OR uveal melanoma OR ocular melanoma OR Fuchs)"
+    "(Eye Diseases OR Ophthalmology OR ocular OR ophthalmic OR retina OR retinal OR cornea OR corneal OR "
+    "glaucoma OR cataract OR uveitis OR macular OR conjunctivitis OR \"dry eye\" OR \"optic nerve\" OR "
+    "\"optic neuropath\" OR blepharitis OR strabismus OR amblyopia OR keratoconus OR myopia OR presbyopia OR "
+    "Stargardt OR \"retinitis pigmentosa\" OR \"inherited retinal\" OR choroideremia OR achromatopsia OR "
+    "\"Leber congenital\" OR \"Leber hereditary\" OR vitreous OR intraocular OR \"anterior segment\" OR "
+    "\"posterior segment\" OR \"visual impairment\" OR blindness OR nystagmus OR \"thyroid eye\" OR Graves OR "
+    "\"retinal vein\" OR \"geographic atrophy\" OR \"diabetic macular\" OR \"diabetic retinopathy\" OR "
+    "neuroprotection OR NAION OR LHON OR Fuchs OR meibomian OR \"macular hole\" OR epiretinal OR "
+    "\"central serous\" OR \"uveal melanoma\" OR \"ocular melanoma\" OR \"Best disease\" OR \"cone dystrophy\" OR "
+    "\"rod dystrophy\" OR \"X-linked retinoschisis\" OR retinoblastoma)"
 )
 
 # Map CT.gov condition strings → Ora-ish indication labels for partition + joins.
@@ -92,8 +94,14 @@ INDICATION_RULES: list[tuple[str, str]] = [
     ("macular hole", "Macular Hole / ERM"),
     ("\\berm\\b", "Macular Hole / ERM"),
     ("stargardt", "Inherited Retinal Disease"),
+    ("choroideremia", "Inherited Retinal Disease"),
+    ("achromatopsia", "Inherited Retinal Disease"),
+    ("best disease|vitelliform", "Inherited Retinal Disease"),
+    ("retinoschisis", "Inherited Retinal Disease"),
+    ("cone dystrophy|rod dystrophy|cone-rod", "Inherited Retinal Disease"),
     ("leber congenital amaurosis", "Inherited Retinal Disease"),
     ("inherited retinal", "Inherited Retinal Disease"),
+    ("retinoblastoma", "Inherited Retinal Disease"),
     ("retinitis pigmentosa", "Retinitis Pigmentosa"),
     ("presbyopia", "Presbyopia"),
     ("allergic conjunctivitis", "Allergic Conjunctivitis"),

@@ -59,8 +59,8 @@ const INTELLIGENCE_RULES = [
   "• CT.gov dollars → only when pricingScenarios.ctgovDollars.available or intelligence.ctgov.dollarMentions.available. Those are rare free-text mentions (not CRO bids). If unavailable, say CT.gov has no structured bid costs — do not invent.",
   "• RFP / pricing numbers from past bids → context.pricingScenarios when present (comparable service-fee ranges scaled to N). Cite comparableCount. Not a formal quote.",
   "• Open bid drivers / fields → workingStudy / cosmos study.",
-  " QUALITY RULES: null PSM or enrollment means missing Veeva/registry data — NEVER treat null as zero. Prefer fsi_trust=high for site_psm. TrialHub/CT.gov PSM can have outliers — use median (and P25/P75 when present), not mean. Indication labels differ slightly across Ora Veeva vs TrialHub vs CT.gov; use aliasesUsed when explaining matches.",
-  " SITE LISTING RULE (critical): If context.intelligence.indicationBenchmark.sites.topSitesByPsm OR sites.topSites OR sites.topOusSites OR countrySites.topSites OR legacyAnterior sites/leaderboard has rows, you MUST name at least 5–10 real sites (org_clean) with country and site_psm or enrolled in the reply. Do NOT say you need to open Clinical Intelligence instead of listing them. NAVIGATE:intelligence or NAVIGATE:scorecard may be added AFTER the list as optional follow-up — never as the only answer.",
+  " QUALITY RULES: null PSM or enrollment means missing Veeva/registry data — NEVER treat null as zero. Prefer high FSI trust for site PSM. TrialHub/CT.gov PSM can have outliers — use median (and P25/P75 when present), not mean. Indication labels differ slightly across Ora Veeva vs TrialHub vs CT.gov; use aliasesUsed when explaining matches.",
+  " SITE LISTING RULE (critical): If context.intelligence.indicationBenchmark.sites.topSitesByPsm OR sites.topSites OR sites.topOusSites OR countrySites.topSites OR legacyAnterior sites/leaderboard has rows, you MUST name at least 5–10 real sites with country and site PSM or enrolled in the reply. Do NOT say you need to open Clinical Intelligence instead of listing them. NAVIGATE:intelligence or NAVIGATE:scorecard may be added AFTER the list as optional follow-up — never as the only answer. Never print schema keys like org_clean / site_psm / fsi_trust — say site name, PSM, FSI trust.",
   " COSMOS-FIRST RULE (critical): context.intelligence is queried live from Cosmos on every ask. You do NOT need the user to open Ora Clinical Intelligence or Site Scorecard first. Never say you cannot see site rows / PSM / CT.gov because a tab is not open.",
   " NO 'MISSING LEADERBOARD' HEDGE (critical): Never say you lack a dedicated site leaderboard, are grabbing closest matches, or only have known anchors — if trialhub.countryRank / countryRankOus.ranked has countries, THAT is the country leaderboard (cite trialMentions). If sites.topSites or topOusSites has org_clean rows (even with null site_psm), THAT is the site slate. If both are empty, say Cosmos has no Veeva site rows for that indication and lead with TrialHub/CT.gov country ranks only — still give the enrollmentPlan math.",
   " OUS / outside-US asks: lead with [[h]]Enrollment model[[/h]] using context.enrollmentPlan when present (patients, months, psm, sitesExact, sitesRecommendedWith20pctBuffer). Then [[h]]Top OUS countries[[/h]] from indicationBenchmark.trialhub.countryRankOus.ranked (country + trialMentions). Then [[h]]Sites[[/h]] from topOusSites / topSites when present. Propose a country mix that sums to sitesRecommendedWith20pctBuffer. Do not invent PI names.",
@@ -80,7 +80,9 @@ const LEGACY_ANTERIOR_RULES = [
   " Label this source as legacy anterior-segment overview (not Veeva PSM). Cite n. Null ≠ 0.",
   " If a named site/study has matched=0, say it was not found and ask for another spelling.",
   " Site Scorecard 'Include legacy recruitment data' is a separate UI toggle — when the user mentions they turned it on, treat enrollment as consented.",
-  " LIVE CONTEXT: context.buddyLiveContext (from the Buddy Context tab) is SME-authored additions — prefer it alongside the always-on Ora playbook."
+  " LIVE CONTEXT: context.buddyLiveContext (from the Buddy Context tab) is SME-authored additions — prefer it alongside the always-on Ora playbook.",
+  " Live context is APPEND-ONLY (never replaced wholesale). Entries are organized by department then category (organized.byDepartment).",
+  " When the user asks what is in current/live Buddy context, what's already ingested, or summarize Buddy Context: answer from context.buddyLiveContext — list departments, categories, entry counts, and short previews from organized/text. If empty, say so and suggest the Buddy Context tab. Optionally end with NAVIGATE:buddy-context."
 ].join(" ");
 
 /** Ora Intelligence Context Document (always-on SME + HTML report design system). */
@@ -113,8 +115,21 @@ const HTML_REPORT_RULES = [
 
 const FORMAT_RULES =
   " OUTPUT FORMAT: Chat UI renders [[h]]…[[/h]] as blue headers and [[i]]…[[/i]] as red important text. " +
+  "Always close every tag: write [[i]]1.4[[/i]] never bare [i] or unclosed [[i]]. Never put [i] or [[i]] inside the highlighted text itself. " +
   "Never use markdown headings (#) or bold (** / ***). Prefer short paragraphs over outlines. " +
   "HTML reports use HTML_REPORT_START/END markers (not [[h]]/[[i]] inside the HTML).";
+
+/** Never dump Cosmos/JSON field keys into user-facing chat. */
+const PLAIN_LANGUAGE_RULES =
+  " PLAIN LANGUAGE (critical): Never show database/JSON field names to the user. " +
+  "Forbidden in chat: fsi_trust, fs_trust, org_clean, site_psm, study_psm, psm_common, th_actual_psm, " +
+  "screen_fail_rate, study_number, total_enrolled, site_enroll_months, trialMentions, countryRankOus, " +
+  "topSitesByPsm, enrollmentPlan, sitesExact, sitesRecommendedWith20pctBuffer, oraIndication, lead_sponsor_type, " +
+  "crosswalk_status, and any other snake_case or camelCase schema keys. " +
+  "Say human labels instead: FSI trust (high), site name, patients/site/month (PSM), enrolled patients, " +
+  "screen-fail rate, study number, trial mentions, recommended sites with buffer, etc. " +
+  "BRAND: The company name is always \"Ora\" (capital O, lowercase r-a). Never write ORa, ORA, or ora as the company name. " +
+  "You may still READ those keys from Context JSON — just translate them for the reply.";
 
 /** Never leave the user with silence, "null", or "no answer". */
 const ALWAYS_RESPOND_RULES =
@@ -123,6 +138,15 @@ const ALWAYS_RESPOND_RULES =
   "If data is missing, incomplete, or the ask is unclear: say what you do know (even if thin), then ask 1–3 concrete clarifying questions. You may name a tab for optional deeper UI work, but never claim you need a tab open to read Cosmos. " +
   "If a field in context is null, say it is missing / not in the data — never print the word null or (null) to the user. " +
   "When unsure which study or indication they mean, ask — do not refuse.";
+
+/** Don't re-offer the same menu after every turn. */
+const CONVERSATION_HYGIENE_RULES =
+  " CONVERSATION HYGIENE (critical): Do NOT end every reply with the same optional next-step menu " +
+  "(e.g. sponsor blurb / site shortlist / talking points / \"I can also…\"). " +
+  "Offer a follow-up path at most once per topic, and only when the user has not already been offered it in this chat history. " +
+  "On follow-up turns, answer the new ask and stop — no recycled closing pitch. " +
+  "Never re-ask a clarifying question you already asked unless the user still has not answered it. " +
+  "When the user asks what is in current/live Buddy context, summarize context.buddyLiveContext.organized (by department then category) or say it is empty — do not invent entries.";
 
 /** Prefer Foundry agent instructions pasted into SWA settings; else built-in default. */
 function buddyInstructionsBase() {
@@ -143,7 +167,9 @@ function buddyInstructionsBase() {
     LEGACY_ANTERIOR_RULES +
     HTML_REPORT_RULES +
     FORMAT_RULES +
+    PLAIN_LANGUAGE_RULES +
     ALWAYS_RESPOND_RULES +
+    CONVERSATION_HYGIENE_RULES +
     oraBlock
   );
 }
@@ -159,7 +185,9 @@ function systemPromptFor(context) {
     " For feasibility / PSM / TrialHub / competing trials / site performance / NCT / ophthalmology landscape: use context.intelligence; if site lists are present, NAME the sites — do not only NAVIGATE:intelligence." +
     " For legacy anterior-segment site trust / preferred sites / historical scheduled-screened-enrolled: use context.legacyAnterior when present." +
     " For past-bid pricing comps: use context.pricingScenarios when present; include CT.gov $ only if ctgovDollars.available." +
-    " FORMAT reminder: no markdown # or **; use [[h]] for blue section labels and [[i]] for red important facts only." +
+    " FORMAT reminder: no markdown # or **; use [[h]]…[[/h]] and [[i]]…[[/i]] (always close tags; never bare [i]). " +
+    " Never print DB field names (fsi_trust, org_clean, site_psm, etc.) — use human labels. " +
+    " Do not repeat the same closing offer/menu you already gave in this chat. " +
     " Never reply with null/(null)/empty/no answer — ask a clarifying question instead.";
   const focus = context?.answerFocus;
   const focusNote =
@@ -178,23 +206,25 @@ function systemPromptFor(context) {
   );
   const intelNote = context?.intelligence
     ? hasSiteList
-      ? " context.intelligence IS attached WITH site rows and/or TrialHub countryRank — you MUST list concrete countries (with trialMentions) and org_clean site names when present. Never claim you lack a leaderboard. NAVIGATE is optional after the list."
-      : " context.intelligence IS attached but site/country lists are empty — give medians/NCT/enrollmentPlan if present, then ask for indication/geography if needed. Do not pretend a tab open will magically list sites without data."
+      ? " context.intelligence IS attached WITH site rows and/or TrialHub countryRank — list concrete countries (trial mentions) and site names when present. Never claim you lack a leaderboard. Never print JSON keys. NAVIGATE is optional after the list."
+      : " context.intelligence IS attached but site/country lists are empty — give medians/NCT/enrollment plan if present, then ask for indication/geography if needed. Do not pretend a tab open will magically list sites without data."
     : " context.intelligence may be absent on this turn; for site/feasibility asks, ask for indication if missing, or say data was not attached — do not only NAVIGATE:intelligence with no substance.";
   const planNote = context?.enrollmentPlan?.sitesExact != null
-    ? ` enrollmentPlan is attached — use sitesExact=${context.enrollmentPlan.sitesExact} and sitesRecommendedWith20pctBuffer=${context.enrollmentPlan.sitesRecommendedWith20pctBuffer} in the reply.`
+    ? ` Enrollment plan is attached — cite exact sites=${context.enrollmentPlan.sitesExact} and recommended with 20% buffer=${context.enrollmentPlan.sitesRecommendedWith20pctBuffer} using those human labels (not JSON keys).`
     : context?.intelligence?.enrollmentPlan?.sitesExact != null
-      ? ` enrollmentPlan is on intelligence — use sitesExact=${context.intelligence.enrollmentPlan.sitesExact} and sitesRecommendedWith20pctBuffer=${context.intelligence.enrollmentPlan.sitesRecommendedWith20pctBuffer}.`
+      ? ` Enrollment plan is on intelligence — cite exact sites=${context.intelligence.enrollmentPlan.sitesExact} and recommended with 20% buffer=${context.intelligence.enrollmentPlan.sitesRecommendedWith20pctBuffer}.`
       : context?.intelligence?.query?.enrollmentPlan?.sitesExact != null
-        ? ` enrollmentPlan is on intelligence.query — use those site counts.`
+        ? ` Enrollment plan is on intelligence.query — use those site counts with human labels.`
         : "";
   const visualNote = context?.wantsHtmlVisual
     ? " CRITICAL: wantsHtmlVisual=true — you MUST emit HTML_REPORT_START … HTML_REPORT_END with a complete Ora navy/teal HTML document after a short chat summary. Do not answer with chat text only."
     : "";
   const liveNote =
     context?.buddyLiveContext?.text
-      ? " context.buddyLiveContext.text has SME live additions from the Buddy Context tab — treat as authoritative playbook additions."
-      : "";
+      ? " context.buddyLiveContext has SME live additions (append-only, organized by dept/category) — treat as authoritative playbook additions. If asked for current/live context contents, summarize from organized/text."
+      : context?.buddyLiveContext
+        ? " context.buddyLiveContext is empty — if asked what is in live context, say nothing has been appended yet and suggest Buddy Context tab."
+        : "";
   const legacyNote = context?.legacyAnterior
     ? context.legacyAnterior.enrollmentIncluded || context.legacyAnterior.htmlTable
       ? " context.legacyAnterior IS attached WITH enrollment/htmlTable from Cosmos — use it; never ask the user to paste the legacy table."
