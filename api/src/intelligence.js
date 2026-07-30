@@ -25,8 +25,24 @@ const INDICATION_GROUPS = [
   ["Thyroid Eye Disease", "TED", "Graves Orbitopathy", "Graves' Ophthalmopathy"],
   ["Myopia", "Pathologic Myopia", "Myopic CNV"],
   ["Blepharitis", "Demodex Blepharitis"],
-  ["Neuroprotection", "Optic Nerve Neuroprotection", "Retinal Neuroprotection"],
-  ["Optic Neuropathy", "Optic Neuritis", "NAION", "LHON", "Leber Hereditary Optic Neuropathy"],
+  [
+    "Neuroprotection",
+    "Optic Nerve Neuroprotection",
+    "Retinal Neuroprotection",
+    "Glaucoma Neuroprotection",
+    "Neuroprotective"
+  ],
+  [
+    "Optic Neuropathy",
+    "Optic Neuritis",
+    "NAION",
+    "LHON",
+    "Leber Hereditary Optic Neuropathy",
+    "Optic neuropathies POAG and NAION",
+    "Optic neuropathies",
+    "New: Leber Hereditary Optic Disease",
+    "New: Optic Neuromyelitis Spectrum Disease"
+  ],
   ["Uveitis", "Anterior Uveitis", "Intermediate Uveitis", "Posterior Uveitis", "Panuveitis"],
   ["Keratoconus"],
   ["Retinal Vein Occlusion", "RVO", "CRVO", "BRVO", "Central Retinal Vein Occlusion", "Branch Retinal Vein Occlusion"],
@@ -354,16 +370,77 @@ function extractCountryFromQuestion(question) {
   return null;
 }
 
+function preferredIndicationLabel(matchedAlias) {
+  const n = normText(matchedAlias);
+  for (const group of INDICATION_GROUPS) {
+    if (group.some((g) => normText(g) === n)) return group[0];
+  }
+  return matchedAlias;
+}
+
+function compactNorm(s) {
+  return normText(s).replace(/\s+/g, "");
+}
+
 function extractIndicationFromQuestion(question) {
   const q = String(question || "");
-  // Prefer known labels (longest first)
-  const labels = INDICATION_GROUPS.flat().sort((a, b) => b.length - a.length);
-  const lower = q.toLowerCase();
-  for (const label of labels) {
-    if (lower.includes(label.toLowerCase())) return label;
+  const qNorm = normText(q);
+  const qCompact = compactNorm(q);
+  // Prefer known labels (longest first); compactNorm so "neuro protection" ≈ Neuroprotection
+  const labeled = INDICATION_GROUPS.flatMap((group) =>
+    group.map((label) => ({ label, preferred: group[0], len: compactNorm(label).length }))
+  ).sort((a, b) => b.len - a.len);
+  for (const { label, preferred } of labeled) {
+    const ln = normText(label);
+    const lc = compactNorm(label);
+    if (!lc || lc.length < 3) continue;
+    if (
+      qCompact.includes(lc) ||
+      qNorm.includes(ln) ||
+      q.toLowerCase().includes(label.toLowerCase())
+    ) {
+      return preferred;
+    }
   }
   const m = q.match(/\b(?:indication|in)\s+([A-Za-z][A-Za-z0-9 /()-]{2,60})/i);
-  return m ? m[1].trim().replace(/[?.!,;]+$/, "") : null;
+  if (!m) return null;
+  const raw = m[1].trim().replace(/[?.!,;]+$/, "");
+  return preferredIndicationLabel(raw) || raw;
+}
+
+/** Substring needles for fuzzy Cosmos matches when exact indication equality is empty. */
+function indicationContainsNeedles(indication) {
+  const preferred = preferredIndicationLabel(indication) || String(indication || "").trim();
+  const n = normText(preferred);
+  const needles = new Set();
+  if (n.includes("neuroprotect")) {
+    needles.add("neuroprotect");
+    needles.add("neuro protection");
+    // Veeva often files neuroprotection under optic neuropathy / glaucoma labels
+    needles.add("optic neuropath");
+    needles.add("naion");
+  }
+  if (n.includes("optic neuropath") || n === "optic neuropathy") {
+    needles.add("optic neuropath");
+    needles.add("naion");
+    needles.add("lhon");
+  }
+  if (n.includes("uveitis")) needles.add("uveitis");
+  if (n.includes("retinal vein") || n === "rvo") {
+    needles.add("retinal vein");
+    needles.add("crvo");
+    needles.add("brvo");
+  }
+  if (n.includes("meibomian") || n === "mgd") needles.add("meibomian");
+  if (n.includes("inherited retinal") || n === "ird") {
+    needles.add("stargardt");
+    needles.add("inherited retinal");
+  }
+  // Always include a compact form of the preferred label (min length 5)
+  if (preferred.replace(/[^a-zA-Z0-9]/g, "").length >= 5) {
+    needles.add(preferred.slice(0, 40));
+  }
+  return [...needles];
 }
 
 function countriesMatch(rawCountries, countryNorm) {
@@ -551,10 +628,17 @@ async function benchmarkIndication(database, indication, country = null) {
   const aliases = indicationAliases(indication);
   if (!aliases.length) return null;
   const countries = parseCountryFilter(country);
+  const preferred = preferredIndicationLabel(indication) || indication;
 
   const studyContainer = database.container("ora_fact_study");
   const siteContainer = database.container("ora_fact_site");
   const thContainer = database.container("ora_trialhub_trials");
+
+  const mergeRow = (list, row, keyFn) => {
+    const k = keyFn(row);
+    if (!k) return;
+    if (!list.some((x) => keyFn(x) === k)) list.push(row);
+  };
 
   // Pull studies for any alias (cross-partition)
   const oraStudies = [];
@@ -572,7 +656,7 @@ async function benchmarkIndication(database, indication, country = null) {
     );
     for (const r of rows) {
       if (countries && !countriesMatch(r.countries, countries)) continue;
-      if (!oraStudies.some((x) => x.study_number === r.study_number)) oraStudies.push(r);
+      mergeRow(oraStudies, r, (x) => x.study_number);
     }
   }
 
@@ -591,13 +675,33 @@ async function benchmarkIndication(database, indication, country = null) {
     );
     for (const r of rows) {
       if (countries && !countriesMatch(r.countries, countries)) continue;
-      if (!thTrials.some((x) => x.nct === r.nct)) thTrials.push(r);
+      mergeRow(thTrials, r, (x) => x.nct);
     }
   }
 
   // Site PSM for aliases (cap scan — prefer high trust); optional country partition(s)
   const sitePsms = [];
   const topSites = [];
+  const pushSites = (rows) => {
+    const sorted = [...rows].sort((a, b) => (b.site_psm || 0) - (a.site_psm || 0));
+    for (const r of sorted) {
+      if (typeof r.site_psm === "number") sitePsms.push(r.site_psm);
+      if (topSites.length < 20 && r.org_clean) {
+        if (!topSites.some((x) => x.org_clean === r.org_clean && x.country === r.country)) {
+          topSites.push({
+            org_clean: r.org_clean,
+            country: r.country,
+            indication: r.indication || null,
+            site_psm: round(r.site_psm),
+            total_enrolled: r.total_enrolled,
+            fsi_trust: r.fsi_trust,
+            study_name: r.study_name
+          });
+        }
+      }
+    }
+  };
+
   for (const alias of aliases.slice(0, 4)) {
     const params = [
       { name: "@t", value: "ora_fact_site" },
@@ -609,21 +713,64 @@ async function benchmarkIndication(database, indication, country = null) {
     const geo = countrySqlClause("c.country", countries, "geo");
     q += geo.sql;
     params.push(...geo.params);
-    const rows = await queryAll(siteContainer, q, params);
-    const sorted = [...rows].sort((a, b) => (b.site_psm || 0) - (a.site_psm || 0));
-    for (const r of sorted) {
-      if (typeof r.site_psm === "number") sitePsms.push(r.site_psm);
-      if (topSites.length < 20 && r.org_clean) {
-        if (!topSites.some((x) => x.org_clean === r.org_clean && x.country === r.country)) {
-          topSites.push({
-            org_clean: r.org_clean,
-            country: r.country,
-            site_psm: round(r.site_psm),
-            total_enrolled: r.total_enrolled,
-            fsi_trust: r.fsi_trust,
-            study_name: r.study_name
-          });
+    pushSites(await queryAll(siteContainer, q, params));
+  }
+
+  // Fuzzy CONTAINS fallback when Veeva labels don't match INDICATION_GROUPS exactly
+  // (e.g. Neuroprotection → no exact site rows; Optic neuropathies POAG and NAION does)
+  let fuzzyUsed = [];
+  if (!topSites.length || !oraStudies.length || !thTrials.length) {
+    const needles = indicationContainsNeedles(preferred);
+    for (const needle of needles.slice(0, 4)) {
+      if (!needle || needle.length < 4) continue;
+      fuzzyUsed.push(needle);
+      if (!oraStudies.length) {
+        const rows = await queryAll(
+          studyContainer,
+          `SELECT TOP 80 c.study_number, c.sponsor, c.indication, c.phase, c.psm, c.study_rate_pt_mo,
+                  c.total_enrolled, c.enroll_months, c.n_contributing_sites, c.screen_fail_rate_recomputed,
+                  c.lifecycle_state, c.countries
+           FROM c WHERE c.docType = @t AND CONTAINS(LOWER(c.indication), @n)`,
+          [
+            { name: "@t", value: "ora_fact_study" },
+            { name: "@n", value: needle.toLowerCase() }
+          ]
+        );
+        for (const r of rows) {
+          if (countries && !countriesMatch(r.countries, countries)) continue;
+          mergeRow(oraStudies, r, (x) => x.study_number);
         }
+      }
+      if (!thTrials.length) {
+        const rows = await queryAll(
+          thContainer,
+          `SELECT TOP 80 c.nct, c.title, c.sponsor, c.indication, c.phase, c.status, c.patients,
+                  c.planned_sites, c.actual_sites, c.psm_common, c.th_actual_psm, c.recruit_days,
+                  c.n_countries, c.in_ora_indication, c.lead_sponsor_type, c.countries
+           FROM c WHERE c.docType = @t AND CONTAINS(LOWER(c.indication), @n)`,
+          [
+            { name: "@t", value: "ora_trialhub_trials" },
+            { name: "@n", value: needle.toLowerCase() }
+          ]
+        );
+        for (const r of rows) {
+          if (countries && !countriesMatch(r.countries, countries)) continue;
+          mergeRow(thTrials, r, (x) => x.nct);
+        }
+      }
+      if (!topSites.length) {
+        const params = [
+          { name: "@t", value: "ora_fact_site" },
+          { name: "@n", value: needle.toLowerCase() }
+        ];
+        let q = `SELECT TOP 200 c.org_clean, c.organization, c.country, c.indication, c.phase,
+                  c.site_psm, c.total_enrolled, c.site_enroll_months, c.fsi_trust, c.study_name
+           FROM c WHERE c.docType = @t AND CONTAINS(LOWER(c.indication), @n)
+             AND IS_DEFINED(c.site_psm) AND c.site_psm > 0`;
+        const geo = countrySqlClause("c.country", countries, "geo");
+        q += geo.sql;
+        params.push(...geo.params);
+        pushSites(await queryAll(siteContainer, q, params));
       }
     }
   }
@@ -637,10 +784,11 @@ async function benchmarkIndication(database, indication, country = null) {
   const completed = thTrials.filter((t) => /completed/i.test(String(t.status || "")));
 
   return {
-    indicationRequested: indication,
+    indicationRequested: preferred,
     countryFilter: countries,
     countryFilterLabel: countries ? countries.join(", ") : "Global",
     aliasesUsed: aliases,
+    fuzzyContainsUsed: fuzzyUsed.length ? fuzzyUsed : undefined,
     ora: {
       studyCount: oraStudies.length,
       studiesWithPsm: oraPsm.length,
@@ -655,6 +803,7 @@ async function benchmarkIndication(database, indication, country = null) {
           study_number: s.study_number,
           sponsor: s.sponsor,
           phase: s.phase,
+          indication: s.indication,
           psm: round(s.psm),
           total_enrolled: s.total_enrolled,
           n_contributing_sites: s.n_contributing_sites,
@@ -682,6 +831,7 @@ async function benchmarkIndication(database, indication, country = null) {
           sponsor: t.sponsor,
           phase: t.phase,
           status: t.status,
+          indication: t.indication,
           patients: t.patients,
           sites: t.actual_sites ?? t.planned_sites,
           psm_common: round(t.psm_common),
@@ -705,7 +855,10 @@ async function benchmarkIndication(database, indication, country = null) {
       topSitesByPsm: topSites.slice(0, 15),
       countryFilter: countries,
       countryFilterLabel: countries ? countries.join(", ") : "Global",
-      note: "High null rates on site_psm are expected Veeva gaps — null ≠ 0."
+      note:
+        fuzzyUsed.length && topSites.length
+          ? `Exact Veeva indication label may differ — matched via CONTAINS (${fuzzyUsed.join(", ")}). High null rates on site_psm are expected — null ≠ 0.`
+          : "High null rates on site_psm are expected Veeva gaps — null ≠ 0."
     }
   };
 }
@@ -749,9 +902,13 @@ async function lookupCtgovNct(database, nct) {
 async function ctgovByIndication(database, indication, country = null) {
   const aliases = indicationAliases(indication);
   if (!aliases.length) return null;
+  const preferred = preferredIndicationLabel(indication) || indication;
   const countries = parseCountryFilter(country);
   try {
     const trials = [];
+    const merge = (r) => {
+      if (!trials.some((x) => x.nct === r.nct)) trials.push(r);
+    };
     for (const alias of aliases.slice(0, 6)) {
       const params = [
         { name: "@t", value: "ora_ctgov_trials" },
@@ -759,14 +916,35 @@ async function ctgovByIndication(database, indication, country = null) {
       ];
       let q = `SELECT TOP 40 c.nct, c.title, c.oraIndication, c.status, c.phase, c.sponsor, c.sponsorClass,
                 c.enrollment, c.countries, c.startDate, c.lastUpdatePostDate, c.hasResults,
-                c.hasMentionedDollars, c.mentionedDollars, c.briefSummary
+                c.hasMentionedDollars, c.mentionedDollars, c.briefSummary, c.conditions
          FROM c WHERE c.docType = @t AND c.oraIndication = @ind`;
       const geo = ctgovCountrySqlClause(countries, "cg");
       q += geo.sql;
       params.push(...geo.params);
       const rows = await queryAll(database.container("ora_ctgov_trials"), q, params);
-      for (const r of rows) {
-        if (!trials.some((x) => x.nct === r.nct)) trials.push(r);
+      for (const r of rows) merge(r);
+    }
+    // Also match condition text (legacy rows may still have oraIndication=Glaucoma for Neuroprotection)
+    if (trials.length < 8) {
+      const needles = indicationContainsNeedles(preferred);
+      for (const needle of needles.slice(0, 3)) {
+        if (!needle || needle.length < 4) continue;
+        const params = [
+          { name: "@t", value: "ora_ctgov_trials" },
+          { name: "@n", value: needle.toLowerCase() }
+        ];
+        let q = `SELECT TOP 40 c.nct, c.title, c.oraIndication, c.status, c.phase, c.sponsor, c.sponsorClass,
+                  c.enrollment, c.countries, c.startDate, c.lastUpdatePostDate, c.hasResults,
+                  c.hasMentionedDollars, c.mentionedDollars, c.briefSummary, c.conditions
+           FROM c WHERE c.docType = @t AND (
+             CONTAINS(LOWER(c.oraIndication), @n) OR
+             EXISTS (SELECT VALUE x FROM x IN c.conditions WHERE CONTAINS(LOWER(x), @n))
+           )`;
+        const geo = ctgovCountrySqlClause(countries, "cgf");
+        q += geo.sql;
+        params.push(...geo.params);
+        const rows = await queryAll(database.container("ora_ctgov_trials"), q, params);
+        for (const r of rows) merge(r);
       }
     }
     const recruiting = trials.filter((t) => /recruit/i.test(String(t.status || "")));
@@ -793,7 +971,7 @@ async function ctgovByIndication(database, indication, country = null) {
             ? "CT.gov has no structured bid/cost fields. These are rare free-text dollar mentions only — cite NCT and say they are not Ora bid comps."
             : "CT.gov usually has no dollar amounts. Do not invent costs from CT.gov; use past Ora bids for pricing tiers."
       },
-      note: "From ClinicalTrials.gov daily ophthalmology feed (ora_ctgov_trials)."
+      note: "From ClinicalTrials.gov daily ophthalmology feed (ora_ctgov_trials). Matches oraIndication aliases and condition text."
     };
   } catch (err) {
     return { error: String(err.message || err), note: "CT.gov container may be empty until first pull." };
@@ -1230,5 +1408,7 @@ module.exports = {
   buildSiteScorecard,
   buildLegacyRecruitmentBoard,
   benchmarkIndication,
-  lookupSponsorCrosswalk
+  lookupSponsorCrosswalk,
+  preferredIndicationLabel,
+  indicationContainsNeedles
 };

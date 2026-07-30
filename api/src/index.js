@@ -13,7 +13,7 @@ const {
   extractCountryFromQuestion
 } = require("./intelligence");
 const { isLegacyAnteriorQuestion, buildLegacyAnteriorContext, userConsentedLegacyEnrollment } = require("./legacyAnterior");
-const { runCtgovSync, getCtgovSyncStatus } = require("./ctgovSync");
+const { runCtgovSync, getCtgovSyncStatus, remapCtgovIndications } = require("./ctgovSync");
 const {
   isPricingQuestion,
   extractRfpScenarioFromQuestion,
@@ -923,6 +923,14 @@ app.http("ctgovSync", {
         body = {};
       }
       const full = body.full === true || request.query.get("full") === "true";
+      const remapOnly =
+        body.remap === true ||
+        body.remapIndications === true ||
+        request.query.get("remap") === "true";
+      if (remapOnly && !full) {
+        const remap = await remapCtgovIndications(getDb, { max: Number(body.max) || 5000 });
+        return json(remap.ok ? 200 : 500, { ok: remap.ok, mode: "remap_indications", ...remap });
+      }
       const result = await runCtgovSync(getDb, {
         full,
         triggeredBy: auth.via === "copilot_key" ? "scheduler_or_key" : `ui:${auth.user?.email || auth.user?.userId || "user"}`
@@ -1120,60 +1128,25 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         null;
       const qIndication = extractIndicationFromQuestion(question);
       const qCountry = extractCountryFromQuestion(question);
-      const indication = hintIndication || qIndication || snapIndication || null;
-      const country = hintCountry || qCountry || null;
-
-      // Reuse the pack already shown on the Intelligence tab when it matches the hint
-      const clientPack =
-        body.intelligencePack &&
-        typeof body.intelligencePack === "object" &&
-        body.intelligencePack.source === "ora_clinical_intelligence" &&
-        !body.intelligencePack.error
-          ? body.intelligencePack
-          : null;
-      const packMatchesHint = (() => {
-        if (!clientPack) return false;
-        const pq = clientPack.query || {};
-        const packInd = String(pq.indication || clientPack.indicationBenchmark?.indicationRequested || "")
-          .trim()
-          .toLowerCase();
-        const packCtry = String(pq.country || clientPack.countryFilter || clientPack.countrySites?.country || "")
-          .trim()
-          .toLowerCase();
-        const wantInd = String(indication || "").trim().toLowerCase();
-        const wantCtry = String(country || "").trim().toLowerCase();
-        if (wantInd && packInd && packInd !== wantInd && !packInd.includes(wantInd) && !wantInd.includes(packInd)) {
-          return false;
-        }
-        if (wantCtry && packCtry && packCtry !== wantCtry) return false;
-        // Prefer pack when user is on Intelligence tab or has an on-screen pack
-        return Boolean(
-          activeTab === "intelligence" ||
-            hintIndication ||
-            hintCountry ||
-            clientPack.indicationBenchmark ||
-            clientPack.countrySites ||
-            clientPack.ctgov
-        );
-      })();
+      // Cosmos-first: question text wins over whatever tab/hint is open in the browser
+      const indication = qIndication || hintIndication || snapIndication || null;
+      const country = qCountry || hintCountry || null;
 
       const forceIntel =
         isIntelligenceQuestion(question) ||
         isPricingQuestion(question) ||
         Boolean(nctFromQuestion(question)) ||
         Boolean(country) ||
+        Boolean(indication) ||
+        Boolean(qIndication) ||
         Boolean(hintIndication) ||
         Boolean(hintCountry) ||
-        activeTab === "intelligence";
+        activeTab === "intelligence" ||
+        activeTab === "scorecard";
 
-      if (packMatchesHint) {
-        intelligence = {
-          ...clientPack,
-          attachedFrom: "ui_intelligence_pack",
-          note: "Same Cosmos pack as Ora Clinical Intelligence tab (not re-queried)."
-        };
-      } else if (forceIntel || indication || hints.clientName || snapIndication || country) {
-        // Prefer RFP scenario indication when pricing ask names one
+      // Always re-query Cosmos for intelligence — never reuse the browser's open-tab pack.
+      // UI hints only supply default indication/country when the question does not name one.
+      if (forceIntel || indication || hints.clientName || snapIndication || country) {
         const rfpHint = extractRfpScenarioFromQuestion(question, body);
         intelligence = await buildIntelligenceContext(getDb, {
           question,
@@ -1183,6 +1156,11 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
           sponsor: hints.clientName || snapClient || null,
           force: forceIntel || Boolean(indication) || Boolean(country) || Boolean(rfpHint.indication)
         });
+        if (intelligence && !intelligence.error) {
+          intelligence.attachedFrom = "cosmos_query";
+          intelligence.note =
+            "Queried live from Cosmos (ora_fact_* / TrialHub / CT.gov). Not dependent on which Workbench tab is open.";
+        }
       }
     } catch (err) {
       intelligence = { source: "ora_clinical_intelligence_error", error: String(err.message || err) };
@@ -1221,12 +1199,12 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       ) {
         const snap = body.studySnapshot || clientStudy || null;
         const legacyIndication =
+          extractIndicationFromQuestion(question) ||
           legacyHint.indication ||
           (body.intelligenceHint && body.intelligenceHint.indication) ||
           body.indication ||
           (snap && snap.indication) ||
           (cosmosContext && cosmosContext.study && cosmosContext.study.indication) ||
-          extractIndicationFromQuestion(question) ||
           null;
         legacyAnterior = await buildLegacyAnteriorContext(getDb, {
           question,

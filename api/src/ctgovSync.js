@@ -345,6 +345,139 @@ async function readExistingTrial(container, nct) {
 }
 
 /**
+ * Upsert with partition-key migration when oraIndication changes.
+ * Cosmos id is unique per partition — changing PK requires delete+create.
+ */
+async function upsertTrial(container, doc) {
+  const prev = await readExistingTrial(container, doc.id);
+  if (prev && prev.oraIndication && prev.oraIndication !== doc.oraIndication) {
+    try {
+      await container.item(prev.id, prev.oraIndication).delete();
+    } catch (_) {}
+  }
+  await container.items.upsert(doc);
+  return prev;
+}
+
+/**
+ * Re-apply INDICATION_RULES to CT.gov docs that look mislabeled
+ * (condition needles or legacy short labels like "Glaucoma").
+ */
+async function remapCtgovIndications(getDb, opts = {}) {
+  const database = getDb();
+  await ensureContainers(database);
+  const container = database.container("ora_ctgov_trials");
+  const needles = Array.isArray(opts.needles) && opts.needles.length
+    ? opts.needles
+    : [
+        "neuroprotect",
+        "uveitis",
+        "meibomian",
+        "stargardt",
+        "optic neuropath",
+        "naion",
+        "lhon",
+        "neurotrophic",
+        "keratoconus",
+        "amblyopia",
+        "strabismus",
+        "uveal melanoma"
+      ];
+
+  const seen = new Set();
+  const candidates = [];
+  for (const needle of needles) {
+    const { resources } = await container.items
+      .query(
+        {
+          query: `SELECT c.id, c.nct, c.oraIndication, c.conditions FROM c WHERE c.docType = @t
+            AND EXISTS (SELECT VALUE x FROM x IN c.conditions WHERE CONTAINS(LOWER(x), @n))`,
+          parameters: [
+            { name: "@t", value: DOC_TYPE },
+            { name: "@n", value: needle }
+          ]
+        },
+        { enableCrossPartitionQuery: true }
+      )
+      .fetchAll();
+    for (const r of resources || []) {
+      if (seen.has(r.id)) continue;
+      seen.add(r.id);
+      candidates.push(r);
+    }
+  }
+
+  // Legacy short Glaucoma label → preferred "Glaucoma / Ocular Hypertension" (or Neuroprotection)
+  const { resources: glaucomaOld } = await container.items
+    .query(
+      {
+        query:
+          "SELECT c.id, c.nct, c.oraIndication, c.conditions FROM c WHERE c.docType = @t AND c.oraIndication = @ind",
+        parameters: [
+          { name: "@t", value: DOC_TYPE },
+          { name: "@ind", value: "Glaucoma" }
+        ]
+      },
+      { enableCrossPartitionQuery: true }
+    )
+    .fetchAll();
+  for (const r of glaucomaOld || []) {
+    if (seen.has(r.id)) continue;
+    seen.add(r.id);
+    candidates.push(r);
+  }
+
+  let remapped = 0;
+  const samples = [];
+  const errors = [];
+
+  for (const row of candidates) {
+    const nextInd = mapOraIndication(row.conditions || []);
+    if (!nextInd || nextInd === row.oraIndication) continue;
+    try {
+      const { resources: full } = await container.items
+        .query({
+          query: "SELECT * FROM c WHERE c.id = @id AND c.docType = @t",
+          parameters: [
+            { name: "@id", value: row.id },
+            { name: "@t", value: DOC_TYPE }
+          ]
+        })
+        .fetchAll();
+      const doc = full[0];
+      if (!doc) continue;
+      const fromInd = doc.oraIndication;
+      doc.oraIndication = nextInd;
+      doc.indicationRemappedAt = new Date().toISOString();
+      doc.indicationRemappedFrom = fromInd;
+      if (fromInd && fromInd !== nextInd) {
+        try {
+          await container.item(doc.id, fromInd).delete();
+        } catch (_) {}
+      }
+      await container.items.upsert(doc);
+      remapped += 1;
+      if (samples.length < 25) {
+        samples.push({ nct: doc.nct || doc.id, from: fromInd, to: nextInd });
+      }
+    } catch (err) {
+      errors.push(`${row.id}: ${err.message || err}`);
+      if (errors.length >= 20) break;
+    }
+  }
+
+  return {
+    ok: errors.length === 0,
+    scanned: candidates.length,
+    remapped,
+    samples,
+    errorCount: errors.length,
+    errors: errors.slice(0, 10),
+    note: "Reclassified oraIndication from conditions using current INDICATION_RULES (partition-key safe)."
+  };
+}
+
+/**
  * @param {Function} getDb
  * @param {{ full?: boolean, maxPages?: number, triggeredBy?: string }} opts
  */
@@ -438,12 +571,20 @@ async function runCtgovSync(getDb, opts = {}) {
           unchanged += 1;
         }
       }
-      await container.items.upsert(doc);
+      await upsertTrial(container, doc);
       upserted += 1;
     } catch (err) {
       errors.push(`${doc.id}: ${err.message || err}`);
       if (errors.length >= 20) break;
     }
+  }
+
+  // After delta, reclassify any remaining mislabeled indications (e.g. Neuroprotection still under Glaucoma)
+  let remap = null;
+  try {
+    remap = await remapCtgovIndications(() => database, { max: 5000 });
+  } catch (err) {
+    remap = { ok: false, error: String(err.message || err) };
   }
 
   const deltas = {
@@ -511,7 +652,8 @@ async function runCtgovSync(getDb, opts = {}) {
     elapsedMs: Date.now() - t0,
     watermarkAdvanced: !errors.length && !incomplete,
     triggeredBy: opts.triggeredBy || "api",
-    deltas
+    deltas,
+    remap
   };
 }
 
@@ -548,6 +690,7 @@ async function getCtgovSyncStatus(getDb) {
 module.exports = {
   runCtgovSync,
   getCtgovSyncStatus,
+  remapCtgovIndications,
   SYNC_ID,
   COND_QUERY
 };

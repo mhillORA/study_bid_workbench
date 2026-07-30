@@ -2,6 +2,9 @@
  * Ask Buddy — study context + LLM (Azure OpenAI preferred; Claude optional fallback).
  */
 
+const fs = require("fs");
+const path = require("path");
+
 const SYSTEM_PROMPT_DEFAULT = [
   "You are Ask Buddy for Ora Clinical's Study Bid Workbench — used by BD analysts, salespeople who sell Ora's ophthalmology CRO services, leadership who need fast executive answers, and ops who track bid workflow / data health.",
   "Primary jobs: (1) help sell Ora with credible feasibility and competitive context, (2) draft bid/study drivers from portfolio history, (3) answer leadership rollups across uploaded budgets, (4) High Level Ballpark (HLBP) forms — open/guide/autofill identity, enrollment drivers, and site country mix, (5) Ora Clinical Intelligence — Ora/Veeva, TrialHub, Salesforce crosswalk, CT.gov, Site Scorecard, (6) legacy anterior-segment site trust / historical enrollment, (7) ops briefing on open-study sectionStatus / fill requests when present.",
@@ -58,6 +61,7 @@ const INTELLIGENCE_RULES = [
   "• Open bid drivers / fields → workingStudy / cosmos study.",
   " QUALITY RULES: null PSM or enrollment means missing Veeva/registry data — NEVER treat null as zero. Prefer fsi_trust=high for site_psm. TrialHub/CT.gov PSM can have outliers — use median (and P25/P75 when present), not mean. Indication labels differ slightly across Ora Veeva vs TrialHub vs CT.gov; use aliasesUsed when explaining matches.",
   " SITE LISTING RULE (critical): If context.intelligence.indicationBenchmark.sites.topSitesByPsm OR countrySites.topSites OR legacyAnterior sites/leaderboard has rows, you MUST name at least 5–10 real sites (org_clean) with country and site_psm or enrolled in the reply. Do NOT say you need to open Clinical Intelligence instead of listing them. NAVIGATE:intelligence or NAVIGATE:scorecard may be added AFTER the list as optional follow-up — never as the only answer.",
+  " COSMOS-FIRST RULE (critical): context.intelligence is queried live from Cosmos on every ask. You do NOT need the user to open Ora Clinical Intelligence or Site Scorecard first. Never say you cannot see site rows / PSM / CT.gov because a tab is not open. If arrays are empty, say Cosmos returned no matching rows for that indication (cite aliasesUsed / fuzzyContainsUsed), then ask for a different indication or geography — do not blame the UI.",
   " If the user asks about sites/feasibility/PSM and those site arrays are empty/missing: (1) if indication is unknown, ask for indication (e.g. Dry Eye) in the reply; (2) only then suggest opening Intelligence/Scorecard. Do not NAVIGATE alone with no site names and no clarifying question.",
   " When answering intelligence or sales questions: short executive tone — one [[h]]Summary[[/h]], then 3–6 plain lines, highlight key medians/n with [[i]]…[[/i]]. For site asks add [[h]]Sites[[/h]] then a short list. For BD, add a final [[h]]Talking points[[/h]] with 3 bullets. No ###, no **, no long section lists."
 ].join(" ");
@@ -75,15 +79,43 @@ const LEGACY_ANTERIOR_RULES = [
   " Site Scorecard 'Include legacy recruitment data' is a separate UI toggle — when the user mentions they turned it on, treat enrollment as consented."
 ].join(" ");
 
+/** Ora Intelligence Context Document (always-on SME + HTML report design system). */
+let _oraContextCache = null;
+function loadOraIntelligenceContext() {
+  if (_oraContextCache != null) return _oraContextCache;
+  try {
+    const p = path.join(__dirname, "oraIntelligenceContext.txt");
+    const raw = fs.readFileSync(p, "utf8");
+    const max = Number(process.env.ORA_CONTEXT_MAX_CHARS || 60000);
+    _oraContextCache = String(raw || "").slice(0, max);
+  } catch (_) {
+    _oraContextCache = "";
+  }
+  return _oraContextCache;
+}
+
+const HTML_REPORT_RULES = [
+  " HTML REPORT PROTOCOL: When the user asks for a feasibility report, site recommendation report, BD prep memo, competitive landscape, ELT / executive deck, sponsor-facing HTML, or any downloadable / printable report:",
+  "(1) Give a short chat summary first using [[h]] / [[i]] (2–6 lines).",
+  "(2) Then emit a full single-file HTML document between exactly these markers:",
+  "HTML_REPORT_START",
+  "<!DOCTYPE html>…complete document…",
+  "HTML_REPORT_END",
+  "Use the Ora navy/teal design system from the always-on Ora Intelligence Context (Section 9): page bg #F0F4F8, navy #1B2A4A, teal #1A7F8E, inline <style>, .header / .card / .card-hdr / .kpi / tables / alerts. Chrome print-to-PDF ready. No external CSS/JS.",
+  "Apply sponsor-facing vs internal rules from that context (Section 10). Populate numbers only from Context JSON — never invent PSM, enrollment, or NCT rows.",
+  "Chat-only asks do not need HTML_REPORT blocks."
+].join(" ");
+
 const FORMAT_RULES =
   " OUTPUT FORMAT: Chat UI renders [[h]]…[[/h]] as blue headers and [[i]]…[[/i]] as red important text. " +
-  "Never use markdown headings (#) or bold (** / ***). Prefer short paragraphs over outlines.";
+  "Never use markdown headings (#) or bold (** / ***). Prefer short paragraphs over outlines. " +
+  "HTML reports use HTML_REPORT_START/END markers (not [[h]]/[[i]] inside the HTML).";
 
 /** Never leave the user with silence, "null", or "no answer". */
 const ALWAYS_RESPOND_RULES =
   " ALWAYS RESPOND: Every user message MUST get a real reply in plain sentences. " +
   "Never answer with only null, (null), undefined, N/A, empty string, silence, or phrases like \"I have no answer\", \"no answer to that\", \"I cannot answer\", or \"nothing to say\". " +
-  "If data is missing, incomplete, or the ask is unclear: say what you do know (even if thin), then ask 1–3 concrete clarifying questions, and name the tab to open (Intelligence, Site Scorecard, Ops Dashboard, Studies, Reviews). " +
+  "If data is missing, incomplete, or the ask is unclear: say what you do know (even if thin), then ask 1–3 concrete clarifying questions. You may name a tab for optional deeper UI work, but never claim you need a tab open to read Cosmos. " +
   "If a field in context is null, say it is missing / not in the data — never print the word null or (null) to the user. " +
   "When unsure which study or indication they mean, ask — do not refuse.";
 
@@ -94,14 +126,20 @@ function buddyInstructionsBase() {
     envSet("FOUNDRY_AGENT_INSTRUCTIONS") ||
     envSet("AGENT_INSTRUCTIONS") ||
     envSet("SYSTEM_PROMPT");
+  const oraCtx = loadOraIntelligenceContext();
+  const oraBlock = oraCtx
+    ? ` ORA INTELLIGENCE CONTEXT (always-on; internal SME playbook + HTML design system):\n${oraCtx}\n`
+    : "";
   // Always append portfolio + intelligence + format + always-respond — SWA custom prompts often omit them
   return (
     (custom || SYSTEM_PROMPT_DEFAULT) +
     PORTFOLIO_RULES +
     INTELLIGENCE_RULES +
     LEGACY_ANTERIOR_RULES +
+    HTML_REPORT_RULES +
     FORMAT_RULES +
-    ALWAYS_RESPOND_RULES
+    ALWAYS_RESPOND_RULES +
+    oraBlock
   );
 }
 
@@ -408,7 +446,7 @@ function buildAzureChatAttempts(endpoint, deployment, apiVersion) {
       body: {
         model: deployment,
         messages: null, // filled later
-        max_completion_tokens: 2048,
+        max_completion_tokens: 8192,
         // GPT-5 only allows default temperature=1; Foundry may inject 0.2 otherwise
         temperature: 1
       }
@@ -422,7 +460,7 @@ function buildAzureChatAttempts(endpoint, deployment, apiVersion) {
       url: `${root}/openai/deployments/${encodeURIComponent(deployment)}/chat/completions?api-version=${encodeURIComponent(apiVersion)}`,
       body: {
         messages: null,
-        max_completion_tokens: 2048,
+        max_completion_tokens: 8192,
         temperature: 1
       }
     });
@@ -458,7 +496,7 @@ function buildAzureChatAttempts(endpoint, deployment, apiVersion) {
       body: {
         model: deployment,
         messages: null,
-        max_completion_tokens: 2048,
+        max_completion_tokens: 8192,
         temperature: 1
       }
     });

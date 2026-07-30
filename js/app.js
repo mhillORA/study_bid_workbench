@@ -1438,10 +1438,22 @@
             </div>`;
           }
         }
+        let reportHtml = "";
+        if (t.htmlReport && t.htmlReport.html) {
+          reportHtml = `<div class="buddy-report">
+            <div class="chat-who">Ora HTML report</div>
+            <p class="muted">Single-file navy/teal report — open in a new tab or download for Chrome print-to-PDF.</p>
+            <div class="buddy-proposal-actions">
+              <button type="button" class="btn btn-primary" data-buddy-report-open="${escapeAttr(t.htmlReport.id)}">Open report</button>
+              <button type="button" class="btn btn-ghost" data-buddy-report-dl="${escapeAttr(t.htmlReport.id)}">Download HTML</button>
+            </div>
+          </div>`;
+        }
         return `<div class="chat-turn ${t.role}" data-ask-idx="${idx}">
           <div class="chat-who">${who}</div>
           <div class="chat-body">${formatBuddyHtml(t.content)}</div>
           ${proposalHtml}
+          ${reportHtml}
         </div>`;
       })
       .join("");
@@ -1876,13 +1888,30 @@
     state.askHistory.push(turn);
   }
 
-  function pushAssistant(content, patches) {
+  function extractHtmlReport(text) {
+    const src = String(text || "");
+    const re = /HTML_REPORT_START\s*([\s\S]*?)\s*HTML_REPORT_END/i;
+    const m = src.match(re);
+    if (!m) return { text: src.trim(), html: null };
+    const html = String(m[1] || "").trim();
+    const cleaned = src.replace(re, "\n").trim();
+    return { text: cleaned, html: html || null };
+  }
+
+  function pushAssistant(content, patches, htmlReport) {
     const turn = { role: "assistant", content };
     if (patches && patches.length) {
       turn.proposal = {
         id: `p-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
         status: "pending",
         patches
+      };
+    }
+    if (htmlReport) {
+      turn.htmlReport = {
+        id: `h-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        html: htmlReport,
+        filename: `ora-report-${new Date().toISOString().slice(0, 10)}.html`
       };
     }
     state.askHistory.push(turn);
@@ -1896,12 +1925,15 @@
       sectionId = resolveSectionId(navMatch[1]);
       text = text.replace(/\s*NAVIGATE:[a-z0-9_-]+\s*/gi, "\n").trim();
     }
+    const report = extractHtmlReport(text);
+    text = report.text;
     const created = extractCreateStudy(text);
     text = created.text;
     const extracted = extractApplyPatches(text);
     text = extracted.text;
     if (!text) {
-      if (created.create) text = "Proposed a new study — click Create study to open it.";
+      if (report.html) text = "HTML report ready — Open or Download below.";
+      else if (created.create) text = "Proposed a new study — click Create study to open it.";
       else if (extracted.patches.length) {
         text = "Proposed field updates — Apply to write them into the open study.";
       } else if (sectionId === "__buddy__") {
@@ -1926,7 +1958,7 @@
     if (created.create) {
       pushCreateProposal(text, created.create);
     } else {
-      pushAssistant(text, extracted.patches);
+      pushAssistant(text, extracted.patches, report.html);
     }
     if (sectionId === "__buddy__") openBuddy();
     else if (sectionId) {
@@ -6455,6 +6487,35 @@
         const rejectBtn = e.target.closest("[data-buddy-reject]");
         if (rejectBtn) {
           rejectProposal(rejectBtn.getAttribute("data-buddy-reject"));
+          return;
+        }
+        const openReport = e.target.closest("[data-buddy-report-open]");
+        if (openReport) {
+          const id = openReport.getAttribute("data-buddy-report-open");
+          const turn = state.askHistory.find((t) => t.htmlReport && t.htmlReport.id === id);
+          if (turn?.htmlReport?.html) {
+            const blob = new Blob([turn.htmlReport.html], { type: "text/html;charset=utf-8" });
+            const url = URL.createObjectURL(blob);
+            window.open(url, "_blank", "noopener");
+            setTimeout(() => URL.revokeObjectURL(url), 60_000);
+          }
+          return;
+        }
+        const dlReport = e.target.closest("[data-buddy-report-dl]");
+        if (dlReport) {
+          const id = dlReport.getAttribute("data-buddy-report-dl");
+          const turn = state.askHistory.find((t) => t.htmlReport && t.htmlReport.id === id);
+          if (turn?.htmlReport?.html) {
+            const blob = new Blob([turn.htmlReport.html], { type: "text/html;charset=utf-8" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = turn.htmlReport.filename || "ora-report.html";
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 60_000);
+          }
         }
       });
     }

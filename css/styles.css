@@ -901,6 +901,18 @@ h1 {
   opacity: 0.55;
 }
 
+.buddy-report {
+  margin-top: 0.65rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: rgba(26, 127, 142, 0.08);
+}
+
+.buddy-report .muted {
+  margin: 0.25rem 0 0.65rem;
+}
+
 .diff-old {
   color: var(--danger);
   text-decoration: line-through;
