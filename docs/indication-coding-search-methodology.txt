@@ -1,0 +1,54 @@
+Indication Coding in Veeva — Known Inconsistencies & Search Rules
+
+The indication field in fact_site and fact_study is a free-text field entered by Ora study teams at the time of study setup. There is no enforced controlled vocabulary. As a result, the same clinical indication can appear under multiple label variants across studies. Any indication query that searches on a single exact term will silently miss records coded under alternative labels.
+
+Rule: Always search using a multi-term pattern covering all known label variants, never a single exact string alone.
+
+Known indication label variants (search all of these together):
+
+nAMD / Wet AMD:
+Wet AMD · Dry AMD · Neovascular (Wet) Age-Related Macular Degeneration · Age-Related Macular Degeneration with Geographic Atrophy · Dry AMD
+
+Geographic Atrophy:
+Geographic Atrophy · Age-Related Macular Degeneration with Geographic Atrophy
+
+Glaucoma:
+Glaucoma · Primary Open-Angle Glaucoma or Ocular Hypertension · Devices - Glaucoma · Optic neuropathies POAG and NAION
+
+Diabetic Retinopathy:
+Diabetic Retinopathy · Proliferative Diabetic Retinopathy
+
+DME:
+Diabetic Macular Edema (DME)
+
+Dry Eye:
+Dry Eye · Devices-Dry Eye · Meibomian Gland Dysfunction
+
+Stargardt's:
+Stargardt's Disease — consistent single label (safe to search alone; still include Stargardt / Stargardt Disease aliases)
+
+LCA:
+Leber congenital amaurosis — consistent
+
+RP:
+Retinitis Pigmentosa — consistent
+
+RVO:
+Macular Edema due to Retinal Vein Occlusion (RVO) · Retinal Vascular Diseases
+
+Devices:
+Devices-Diagnostic · Devices - Other · Devices - Glaucoma · Devices-Dry Eye
+
+Standard search pattern (conceptually):
+AMD = Wet AMD | Dry AMD | Neovascular.*Macular | Geographic Atrophy | Age-Related Macular
+GLAUC = Glaucoma | POAG | Ocular Hypertension | OHT | Optic Neuropath
+DE = Dry Eye | Meibomian | Devices-Dry Eye
+RETINA = nAMD | AMD | Macular | Retina | Diabetic | DME | Stargardt | IRD | Retinitis | Choroid | RVO | Vein Occlusion | Geographic Atrophy | Inherited
+
+INCORRECT: filtering sites where indication == 'Wet AMD' alone — misses other AMD labels.
+
+When a new indication is queried for the first time: (1) inspect distinct indication values in Veeva, (2) identify all relevant label variants, (3) build a multi-term pattern covering all variants, (4) proceed with the filtered query.
+
+Null PSM does not mean no Veeva data — studies/sites may still exist with study_number, sponsor, enrolled, and org_clean. Always list them.
+
+Data quality recommendation: Veeva data hygiene should standardise indication coding to a controlled vocabulary. Priority: AMD variants, glaucoma variants, and device study labelling. Stargardt's, LCA, and RP are already consistent.

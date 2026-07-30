@@ -2886,12 +2886,20 @@
         <p class="muted">P75: ${intelStatNum(sites.sitePsmP75)}</p>
       </div>`;
 
-    const topSites = (sites.topSitesByPsm || []).length
+    const topSitesList = (sites.topSitesByPsm || []).length
+      ? sites.topSitesByPsm
+      : sites.topSites || [];
+    const topSites = topSitesList.length
       ? `<div class="card wide">
-          <h3>Top Ora sites by PSM</h3>
+          <h3>${(sites.topSitesByPsm || []).length ? "Top Ora sites by PSM" : "Ora sites (Veeva)"}</h3>
+          ${
+            !(sites.topSitesByPsm || []).length
+              ? `<p class="muted">No site PSM in Veeva for this indication — showing real site rows by enrolled / presence.</p>`
+              : ""
+          }
           <table class="table">
             <thead><tr><th>Site</th><th>Country</th><th>Site PSM</th><th>Enrolled</th><th>Trust</th></tr></thead>
-            <tbody>${sites.topSitesByPsm
+            <tbody>${topSitesList
               .map(
                 (s) =>
                   `<tr><td>${escapeHtml(s.org_clean || "—")}</td><td>${escapeHtml(
@@ -2899,6 +2907,30 @@
                   )}</td><td>${intelStatNum(s.site_psm)}</td><td>${intelStatNum(
                     s.total_enrolled
                   )}</td><td>${escapeHtml(s.fsi_trust || "—")}</td></tr>`
+              )
+              .join("")}</tbody>
+          </table>
+        </div>`
+      : "";
+
+    const oraStudiesTable = (ora.sampleStudies || []).length
+      ? `<div class="card wide">
+          <h3>Ora studies (Veeva)</h3>
+          <p class="muted">${intelStatNum(ora.studyCount)} studies · ${intelStatNum(
+            ora.studiesWithPsm
+          )} with PSM${ora.note ? ` — ${escapeHtml(ora.note)}` : ""}</p>
+          <table class="table">
+            <thead><tr><th>Study</th><th>Sponsor</th><th>Indication</th><th>PSM</th><th>Enrolled</th><th>Sites</th></tr></thead>
+            <tbody>${ora.sampleStudies
+              .map(
+                (s) =>
+                  `<tr><td>${escapeHtml(s.study_number || "—")}</td><td>${escapeHtml(
+                    s.sponsor || "—"
+                  )}</td><td>${escapeHtml(s.indication || "—")}</td><td>${intelStatNum(
+                    s.psm
+                  )}</td><td>${intelStatNum(s.total_enrolled)}</td><td>${intelStatNum(
+                    s.n_contributing_sites
+                  )}</td></tr>`
               )
               .join("")}</tbody>
           </table>
@@ -2959,6 +2991,7 @@
       ${oraCard}
       ${thCard}
       ${siteCard}
+      ${oraStudiesTable}
       ${topSites}
       ${thTrials}
       ${crosswalk}`;

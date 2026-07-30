@@ -11,17 +11,44 @@ const DATASET = "ora_clinical_intelligence";
 
 /** Synonym groups — first entry is preferred display label when matched. */
 const INDICATION_GROUPS = [
-  ["Dry Eye", "Dry Eye Disease", "DED", "Keratoconjunctivitis Sicca"],
+  [
+    "Dry Eye",
+    "Dry Eye Disease",
+    "DED",
+    "Keratoconjunctivitis Sicca",
+    "Devices-Dry Eye",
+    "Devices - Dry Eye"
+  ],
   ["Cataract", "Cataracts"],
   ["Diabetic Macular Edema (DME)", "DME", "Diabetic Macular Edema"],
-  ["Wet AMD", "Neovascular (Wet) Age-Related Macular Degeneration", "nAMD", "Wet Age-Related Macular Degeneration"],
-  ["Geographic Atrophy / Dry AMD", "Geographic Atrophy", "Dry AMD", "GA"],
-  ["Glaucoma / Ocular Hypertension", "Glaucoma", "Primary Open-Angle Glaucoma or Ocular Hypertension", "Ocular Hypertension", "POAG"],
+  [
+    "Wet AMD",
+    "Neovascular (Wet) Age-Related Macular Degeneration",
+    "nAMD",
+    "Wet Age-Related Macular Degeneration"
+  ],
+  [
+    "Geographic Atrophy / Dry AMD",
+    "Geographic Atrophy",
+    "Dry AMD",
+    "GA",
+    "Age-Related Macular Degeneration with Geographic Atrophy"
+  ],
+  [
+    "Glaucoma / Ocular Hypertension",
+    "Glaucoma",
+    "Primary Open-Angle Glaucoma or Ocular Hypertension",
+    "Ocular Hypertension",
+    "POAG",
+    "OHT",
+    "Devices - Glaucoma",
+    "Devices-Glaucoma"
+  ],
   ["Retinitis Pigmentosa", "RP"],
   ["Presbyopia"],
   ["Allergic Conjunctivitis", "Allergy", "Allergic Conjunctivitis (CAC)", "CAC"],
   ["Eye Redness", "Ocular Redness", "Redness"],
-  ["Diabetic Retinopathy", "DR"],
+  ["Diabetic Retinopathy", "DR", "Proliferative Diabetic Retinopathy"],
   ["Thyroid Eye Disease", "TED", "Graves Orbitopathy", "Graves' Ophthalmopathy"],
   ["Myopia", "Pathologic Myopia", "Myopic CNV"],
   ["Blepharitis", "Demodex Blepharitis"],
@@ -45,7 +72,17 @@ const INDICATION_GROUPS = [
   ],
   ["Uveitis", "Anterior Uveitis", "Intermediate Uveitis", "Posterior Uveitis", "Panuveitis"],
   ["Keratoconus"],
-  ["Retinal Vein Occlusion", "RVO", "CRVO", "BRVO", "Central Retinal Vein Occlusion", "Branch Retinal Vein Occlusion"],
+  [
+    "Retinal Vein Occlusion",
+    "RVO",
+    "CRVO",
+    "BRVO",
+    "Central Retinal Vein Occlusion",
+    "Branch Retinal Vein Occlusion",
+    "Macular Edema due to Retinal Vein Occlusion (RVO)",
+    "Macular Edema due to Retinal Vein Occlusion",
+    "Retinal Vascular Diseases"
+  ],
   ["Neurotrophic Keratitis", "Neurotrophic Keratopathy"],
   ["Meibomian Gland Dysfunction", "MGD"],
   [
@@ -60,10 +97,21 @@ const INDICATION_GROUPS = [
     "STGD1",
     "Stargardt Disease Type 1",
     "Leber Congenital Amaurosis",
+    "Leber congenital amaurosis",
+    "LCA",
     "Choroideremia",
     "Achromatopsia",
     "Best Disease",
     "X-linked Retinoschisis"
+  ],
+  [
+    "Devices",
+    "Devices-Diagnostic",
+    "Devices - Other",
+    "Devices - Glaucoma",
+    "Devices-Glaucoma",
+    "Devices-Dry Eye",
+    "Devices - Dry Eye"
   ],
   ["Ocular Surface / Cornea", "Corneal Dystrophy", "Fuchs Endothelial Dystrophy", "Fuchs Dystrophy", "Infectious Keratitis"],
   ["Macular Hole / ERM", "Macular Hole", "Epiretinal Membrane", "ERM"],
@@ -440,6 +488,21 @@ function relatedIndicationLabels(indication) {
   if (n.includes("optic neuropath")) {
     return ["Glaucoma / Ocular Hypertension", "Neuroprotection"];
   }
+  if (n.includes("dry eye")) {
+    return ["Meibomian Gland Dysfunction", "Devices-Dry Eye"];
+  }
+  if (n.includes("meibomian")) {
+    return ["Dry Eye", "Devices-Dry Eye"];
+  }
+  if (n.includes("wet amd") || n === "namd") {
+    return ["Geographic Atrophy / Dry AMD"];
+  }
+  if (n.includes("geographic atrophy") || n.includes("dry amd")) {
+    return ["Wet AMD"];
+  }
+  if (n.includes("glaucoma") || n.includes("ocular hypertension")) {
+    return ["Optic Neuropathy", "Optic neuropathies POAG and NAION", "Devices - Glaucoma"];
+  }
   return [];
 }
 
@@ -561,6 +624,31 @@ function indicationContainsNeedles(indication) {
     needles.add("inherited retinal");
     needles.add("choroideremia");
     needles.add("achromatopsia");
+  }
+  if (n.includes("wet amd") || n === "namd" || n.includes("geographic atrophy") || n.includes("dry amd")) {
+    needles.add("macular degeneration");
+    needles.add("geographic atrophy");
+    needles.add("neovascular");
+    needles.add("wet amd");
+    needles.add("dry amd");
+  }
+  if (n.includes("glaucoma") || n.includes("ocular hypertension")) {
+    needles.add("glaucoma");
+    needles.add("ocular hypertension");
+    needles.add("poag");
+  }
+  if (n.includes("dry eye") || n.includes("meibomian")) {
+    needles.add("dry eye");
+    needles.add("meibomian");
+  }
+  if (n.includes("retinal vein") || n === "rvo") {
+    needles.add("retinal vein");
+    needles.add("vein occlusion");
+    needles.add("retinal vascular");
+  }
+  if (n.includes("diabetic retinopathy")) {
+    needles.add("diabetic retinopathy");
+    needles.add("proliferative diabetic");
   }
   // Always include a compact form of the preferred label (min length 5)
   if (preferred.replace(/[^a-zA-Z0-9]/g, "").length >= 5) {
@@ -866,14 +954,14 @@ async function benchmarkIndication(database, indication, country = null, opts = 
     pushSites(await queryAll(siteContainer, q, params), { requirePsm: true });
   }
 
-  // Fuzzy CONTAINS fallback when Veeva labels don't match INDICATION_GROUPS exactly
+  // Fuzzy CONTAINS — always run for known needles (Veeva indication is free-text; exact-only misses variants)
   let fuzzyUsed = [];
-  if (!topSites.length || !oraStudies.length || thTrials.length < 5) {
+  {
     const needles = indicationContainsNeedles(preferred);
-    for (const needle of needles.slice(0, 5)) {
+    for (const needle of needles.slice(0, 6)) {
       if (!needle || needle.length < 4) continue;
       fuzzyUsed.push(needle);
-      if (!oraStudies.length) {
+      {
         const rows = await queryAll(
           studyContainer,
           `SELECT TOP 80 c.study_number, c.sponsor, c.indication, c.phase, c.psm, c.study_rate_pt_mo,
@@ -890,7 +978,7 @@ async function benchmarkIndication(database, indication, country = null, opts = 
           mergeRow(oraStudies, r, (x) => x.study_number);
         }
       }
-      if (thTrials.length < 5) {
+      {
         const rows = await queryAll(
           thContainer,
           `SELECT TOP 120 c.nct, c.title, c.sponsor, c.indication, c.phase, c.status, c.patients,
@@ -907,12 +995,12 @@ async function benchmarkIndication(database, indication, country = null, opts = 
           mergeRow(thTrials, r, (x) => x.nct);
         }
       }
-      if (!topSites.length) {
+      {
         const params = [
           { name: "@t", value: "ora_fact_site" },
           { name: "@n", value: needle.toLowerCase() }
         ];
-        // Include null-PSM rows — Neuroprotection/optic neuropathy often lack site_psm
+        // Include null-PSM rows — Stargardt / IRD / neuroprotection often lack site_psm
         let q = `SELECT TOP 200 c.org_clean, c.organization, c.country, c.indication, c.phase,
                   c.site_psm, c.total_enrolled, c.site_enroll_months, c.fsi_trust, c.study_name
            FROM c WHERE c.docType = @t AND CONTAINS(LOWER(c.indication), @n)`;
@@ -968,16 +1056,26 @@ async function benchmarkIndication(database, indication, country = null, opts = 
       psmMedian: round(median(oraPsm)),
       psmP25: round(percentile(oraPsm, 25)),
       psmP75: round(percentile(oraPsm, 75)),
-      sampleStudies: oraStudies
-        .filter((s) => typeof s.psm === "number" && s.psm > 0)
-        .sort((a, b) => b.psm - a.psm)
-        .slice(0, 8)
+      note:
+        oraStudies.length && !oraPsm.length
+          ? "Veeva has studies for this indication but site/study PSM is missing (null ≠ 0). List study_number, sponsor, enrolled — do NOT say there is no Veeva data."
+          : oraStudies.length
+            ? "From ora_fact_study (Veeva). Prefer median PSM when studiesWithPsm > 0."
+            : "No ora_fact_study rows matched aliases / CONTAINS needles.",
+      sampleStudies: [...oraStudies]
+        .sort((a, b) => {
+          const pa = typeof a.psm === "number" ? a.psm : -1;
+          const pb = typeof b.psm === "number" ? b.psm : -1;
+          if (pb !== pa) return pb - pa;
+          return (Number(b.total_enrolled) || 0) - (Number(a.total_enrolled) || 0);
+        })
+        .slice(0, 12)
         .map((s) => ({
           study_number: s.study_number,
           sponsor: s.sponsor,
           phase: s.phase,
           indication: s.indication,
-          psm: round(s.psm),
+          psm: typeof s.psm === "number" ? round(s.psm) : null,
           total_enrolled: s.total_enrolled,
           n_contributing_sites: s.n_contributing_sites,
           lifecycle_state: s.lifecycle_state,
