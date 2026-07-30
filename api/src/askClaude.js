@@ -60,10 +60,13 @@ const INTELLIGENCE_RULES = [
   "• RFP / pricing numbers from past bids → context.pricingScenarios when present (comparable service-fee ranges scaled to N). Cite comparableCount. Not a formal quote.",
   "• Open bid drivers / fields → workingStudy / cosmos study.",
   " QUALITY RULES: null PSM or enrollment means missing Veeva/registry data — NEVER treat null as zero. Prefer fsi_trust=high for site_psm. TrialHub/CT.gov PSM can have outliers — use median (and P25/P75 when present), not mean. Indication labels differ slightly across Ora Veeva vs TrialHub vs CT.gov; use aliasesUsed when explaining matches.",
-  " SITE LISTING RULE (critical): If context.intelligence.indicationBenchmark.sites.topSitesByPsm OR countrySites.topSites OR legacyAnterior sites/leaderboard has rows, you MUST name at least 5–10 real sites (org_clean) with country and site_psm or enrolled in the reply. Do NOT say you need to open Clinical Intelligence instead of listing them. NAVIGATE:intelligence or NAVIGATE:scorecard may be added AFTER the list as optional follow-up — never as the only answer.",
-  " COSMOS-FIRST RULE (critical): context.intelligence is queried live from Cosmos on every ask. You do NOT need the user to open Ora Clinical Intelligence or Site Scorecard first. Never say you cannot see site rows / PSM / CT.gov because a tab is not open. If arrays are empty, say Cosmos returned no matching rows for that indication (cite aliasesUsed / fuzzyContainsUsed), then ask for a different indication or geography — do not blame the UI.",
-  " If the user asks about sites/feasibility/PSM and those site arrays are empty/missing: (1) if indication is unknown, ask for indication (e.g. Dry Eye) in the reply; (2) only then suggest opening Intelligence/Scorecard. Do not NAVIGATE alone with no site names and no clarifying question.",
-  " When answering intelligence or sales questions: short executive tone — one [[h]]Summary[[/h]], then 3–6 plain lines, highlight key medians/n with [[i]]…[[/i]]. For site asks add [[h]]Sites[[/h]] then a short list. For BD, add a final [[h]]Talking points[[/h]] with 3 bullets. No ###, no **, no long section lists."
+  " SITE LISTING RULE (critical): If context.intelligence.indicationBenchmark.sites.topSitesByPsm OR sites.topSites OR sites.topOusSites OR countrySites.topSites OR legacyAnterior sites/leaderboard has rows, you MUST name at least 5–10 real sites (org_clean) with country and site_psm or enrolled in the reply. Do NOT say you need to open Clinical Intelligence instead of listing them. NAVIGATE:intelligence or NAVIGATE:scorecard may be added AFTER the list as optional follow-up — never as the only answer.",
+  " COSMOS-FIRST RULE (critical): context.intelligence is queried live from Cosmos on every ask. You do NOT need the user to open Ora Clinical Intelligence or Site Scorecard first. Never say you cannot see site rows / PSM / CT.gov because a tab is not open.",
+  " NO 'MISSING LEADERBOARD' HEDGE (critical): Never say you lack a dedicated site leaderboard, are grabbing closest matches, or only have known anchors — if trialhub.countryRank / countryRankOus.ranked has countries, THAT is the country leaderboard (cite trialMentions). If sites.topSites or topOusSites has org_clean rows (even with null site_psm), THAT is the site slate. If both are empty, say Cosmos has no Veeva site rows for that indication and lead with TrialHub/CT.gov country ranks only — still give the enrollmentPlan math.",
+  " OUS / outside-US asks: lead with [[h]]Enrollment model[[/h]] using context.enrollmentPlan when present (patients, months, psm, sitesExact, sitesRecommendedWith20pctBuffer). Then [[h]]Top OUS countries[[/h]] from indicationBenchmark.trialhub.countryRankOus.ranked (country + trialMentions). Then [[h]]Sites[[/h]] from topOusSites / topSites when present. Propose a country mix that sums to sitesRecommendedWith20pctBuffer. Do not invent PI names.",
+  " Neuroprotection: Veeva often has null site_psm; related Glaucoma / Optic Neuropathy TrialHub country frequency is intentionally included — use it. Prefer PSM assumption the user gave over inventing one.",
+  " If the user asks about sites/feasibility/PSM and those site arrays are empty/missing: (1) if indication is unknown, ask for indication (e.g. Dry Eye) in the reply; (2) still answer with country ranks + enrollment math when available. Do not NAVIGATE alone with no substance.",
+  " When answering intelligence or sales questions: short executive tone — one [[h]]Summary[[/h]], then 3–6 plain lines, highlight key medians/n with [[i]]…[[/i]]. For site/country planning add [[h]]Enrollment model[[/h]], [[h]]Countries[[/h]], [[h]]Sites[[/h]]. For BD, add a final [[h]]Talking points[[/h]] with 3 bullets. No ###, no **, no long section lists."
 ].join(" ");
 
 const LEGACY_ANTERIOR_RULES = [
@@ -163,15 +166,26 @@ function systemPromptFor(context) {
       : " If the user asks about all studies or averages across studies, switch to context.portfolio even if a workingStudy is present.";
   const hasSiteList = Boolean(
     context?.intelligence?.indicationBenchmark?.sites?.topSitesByPsm?.length ||
+      context?.intelligence?.indicationBenchmark?.sites?.topSites?.length ||
+      context?.intelligence?.indicationBenchmark?.sites?.topOusSites?.length ||
+      context?.intelligence?.indicationBenchmark?.trialhub?.countryRankOus?.ranked?.length ||
+      context?.intelligence?.indicationBenchmark?.trialhub?.countryRank?.ranked?.length ||
       context?.intelligence?.countrySites?.topSites?.length ||
       context?.legacyAnterior?.indicationSites?.topByEnrolled?.length ||
       context?.legacyAnterior?.trust?.leaderboard?.length
   );
   const intelNote = context?.intelligence
     ? hasSiteList
-      ? " context.intelligence IS attached WITH site rows — you MUST list org_clean names from topSitesByPsm or countrySites.topSites in this reply. NAVIGATE is optional after the list."
-      : " context.intelligence IS attached but site lists are empty — give medians/NCT/crosswalk if present, then ask for indication/geography if needed. Do not pretend a tab open will magically list sites without data."
+      ? " context.intelligence IS attached WITH site rows and/or TrialHub countryRank — you MUST list concrete countries (with trialMentions) and org_clean site names when present. Never claim you lack a leaderboard. NAVIGATE is optional after the list."
+      : " context.intelligence IS attached but site/country lists are empty — give medians/NCT/enrollmentPlan if present, then ask for indication/geography if needed. Do not pretend a tab open will magically list sites without data."
     : " context.intelligence may be absent on this turn; for site/feasibility asks, ask for indication if missing, or say data was not attached — do not only NAVIGATE:intelligence with no substance.";
+  const planNote = context?.enrollmentPlan?.sitesExact != null
+    ? ` enrollmentPlan is attached — use sitesExact=${context.enrollmentPlan.sitesExact} and sitesRecommendedWith20pctBuffer=${context.enrollmentPlan.sitesRecommendedWith20pctBuffer} in the reply.`
+    : context?.intelligence?.enrollmentPlan?.sitesExact != null
+      ? ` enrollmentPlan is on intelligence — use sitesExact=${context.intelligence.enrollmentPlan.sitesExact} and sitesRecommendedWith20pctBuffer=${context.intelligence.enrollmentPlan.sitesRecommendedWith20pctBuffer}.`
+      : context?.intelligence?.query?.enrollmentPlan?.sitesExact != null
+        ? ` enrollmentPlan is on intelligence.query — use those site counts.`
+        : "";
   const legacyNote = context?.legacyAnterior
     ? context.legacyAnterior.enrollmentIncluded
       ? " context.legacyAnterior IS attached WITH enrollment — you may cite scheduled/screened/enrolled."
@@ -183,7 +197,7 @@ function systemPromptFor(context) {
     : "";
   const user = context?.user;
   if (!user?.firstName && !user?.displayName && !user?.email) {
-    return base + protocols + focusNote + intelNote + legacyNote + modelNote;
+    return base + protocols + focusNote + intelNote + planNote + legacyNote + modelNote;
   }
   const label = user.firstName
     ? `${user.firstName}${user.email ? ` (${user.email})` : ""}`
@@ -193,6 +207,7 @@ function systemPromptFor(context) {
     protocols +
     focusNote +
     intelNote +
+    planNote +
     legacyNote +
     modelNote +
     ` The signed-in user is ${label}. Prefer addressing them as ${user.firstName || "their first name"}.` +
