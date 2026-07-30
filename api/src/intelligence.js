@@ -993,7 +993,11 @@ async function benchmarkIndication(database, indication, country = null, opts = 
           `SELECT TOP 120 c.nct, c.title, c.sponsor, c.indication, c.phase, c.status, c.patients,
                   c.planned_sites, c.actual_sites, c.psm_common, c.th_actual_psm, c.recruit_days,
                   c.n_countries, c.in_ora_indication, c.lead_sponsor_type, c.countries
-           FROM c WHERE c.docType = @t AND CONTAINS(LOWER(c.indication), @n)`,
+           FROM c WHERE c.docType = @t AND (
+             CONTAINS(LOWER(c.indication), @n) OR
+             (IS_DEFINED(c.indications) AND CONTAINS(LOWER(c.indications), @n)) OR
+             (IS_DEFINED(c.primary_raw) AND CONTAINS(LOWER(c.primary_raw), @n))
+           )`,
           [
             { name: "@t", value: "ora_trialhub_trials" },
             { name: "@n", value: needle.toLowerCase() }

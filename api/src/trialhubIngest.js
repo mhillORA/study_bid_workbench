@@ -111,14 +111,23 @@ function cell(rowValues, headerMap, colName) {
   return rowValues[idx];
 }
 
+/** Cosmos PK max is 2048 bytes; keep indication PK short and stable. */
+const PK_MAX_CHARS = 180;
+
 function primaryIndication(raw) {
   const s = blankToNull(raw);
   if (!s) return PK_SENTINEL;
   const parts = s
-    .split(/[;|]/)
+    .split(/[,;|\n\r]+/)
     .map((p) => p.trim())
     .filter(Boolean);
-  return parts[0] || PK_SENTINEL;
+  let primary = parts[0] || PK_SENTINEL;
+  // Collapse whitespace so PK is compact / comparable
+  primary = primary.replace(/\s+/g, " ").trim();
+  if (primary.length > PK_MAX_CHARS) {
+    primary = primary.slice(0, PK_MAX_CHARS).trim();
+  }
+  return primary || PK_SENTINEL;
 }
 
 function inOraIndication(indicationsText) {
@@ -140,6 +149,11 @@ function rowToDoc(rowValues, headerMap, meta) {
   if (!nct) return null;
 
   const indicationsRaw = blankToNull(cell(rowValues, headerMap, COL.indications));
+  const indicationsNorm = indicationsRaw
+    ? String(indicationsRaw)
+        .replace(/\s+/g, " ")
+        .trim()
+    : null;
   const title =
     blankToNull(cell(rowValues, headerMap, COL.title)) ||
     blankToNull(cell(rowValues, headerMap, COL.officialTitle));
@@ -163,7 +177,7 @@ function rowToDoc(rowValues, headerMap, meta) {
           .filter(Boolean).length
       : null);
 
-  const indicationPk = primaryIndication(indicationsRaw);
+  const indicationPk = primaryIndication(indicationsNorm);
 
   return {
     id: nct,
@@ -173,10 +187,10 @@ function rowToDoc(rowValues, headerMap, meta) {
     status: blankToNull(cell(rowValues, headerMap, COL.status)),
     sponsor: blankToNull(cell(rowValues, headerMap, COL.sponsor)),
     lead_sponsor_type: blankToNull(cell(rowValues, headerMap, COL.leadSponsorType)),
-    primary_raw: indicationsRaw,
+    primary_raw: indicationsNorm,
     indication: indicationPk,
-    indications: indicationsRaw,
-    in_ora_indication: inOraIndication(indicationsRaw),
+    indications: indicationsNorm,
+    in_ora_indication: inOraIndication(indicationsNorm),
     study_type: blankToNull(cell(rowValues, headerMap, COL.studyType)),
     primary_purpose: blankToNull(cell(rowValues, headerMap, COL.primaryPurpose)),
     patients,
