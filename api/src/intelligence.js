@@ -86,16 +86,18 @@ const INDICATION_GROUPS = [
   ["Neurotrophic Keratitis", "Neurotrophic Keratopathy"],
   ["Meibomian Gland Dysfunction", "MGD"],
   [
-    "Inherited Retinal Disease",
-    "IRD",
+    "Stargardt's Disease",
     "Stargardt",
     "Stargardt Disease",
-    "Stargardt's Disease",
     "Stargardt's",
     "Stargardt's Macular Dystrophy",
     "Stargardt Macular Dystrophy",
     "STGD1",
-    "Stargardt Disease Type 1",
+    "Stargardt Disease Type 1"
+  ],
+  [
+    "Inherited Retinal Disease",
+    "IRD",
     "Leber Congenital Amaurosis",
     "Leber congenital amaurosis",
     "LCA",
@@ -503,6 +505,12 @@ function relatedIndicationLabels(indication) {
   if (n.includes("glaucoma") || n.includes("ocular hypertension")) {
     return ["Optic Neuropathy", "Optic neuropathies POAG and NAION", "Devices - Glaucoma"];
   }
+  if (n.includes("stargardt")) {
+    return ["Inherited Retinal Disease", "Retinitis Pigmentosa"];
+  }
+  if (n.includes("inherited retinal") || n === "ird") {
+    return ["Stargardt's Disease", "Retinitis Pigmentosa", "Leber Congenital Amaurosis"];
+  }
   return [];
 }
 
@@ -619,11 +627,16 @@ function indicationContainsNeedles(indication) {
     needles.add("brvo");
   }
   if (n.includes("meibomian") || n === "mgd") needles.add("meibomian");
-  if (n.includes("inherited retinal") || n === "ird" || n.includes("stargardt")) {
+  if (n.includes("stargardt")) {
     needles.add("stargardt");
+    needles.add("stgd");
+  }
+  if (n.includes("inherited retinal") || n === "ird") {
     needles.add("inherited retinal");
     needles.add("choroideremia");
     needles.add("achromatopsia");
+    needles.add("leber congenital");
+    needles.add("retinoschisis");
   }
   if (n.includes("wet amd") || n === "namd" || n.includes("geographic atrophy") || n.includes("dry amd")) {
     needles.add("macular degeneration");

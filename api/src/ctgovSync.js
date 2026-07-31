@@ -61,7 +61,7 @@ const INDICATION_RULES = [
   [/epiretinal membrane/i, "Macular Hole / ERM"],
   [/macular hole/i, "Macular Hole / ERM"],
   [/\berm\b/i, "Macular Hole / ERM"],
-  [/stargardt/i, "Inherited Retinal Disease"],
+  [/stargardt/i, "Stargardt's Disease"],
   [/choroideremia/i, "Inherited Retinal Disease"],
   [/achromatopsia/i, "Inherited Retinal Disease"],
   [/best disease|vitelliform/i, "Inherited Retinal Disease"],
