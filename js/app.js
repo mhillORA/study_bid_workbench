@@ -2424,7 +2424,7 @@
   }
 
   // ---- Ora Clinical Intelligence tab -------------------------------------
-  // Keep in sync with api/src/intelligence.js INDICATION_GROUPS preferred labels
+  // Keep in sync with api/src/intelligence.js INDICATION_UI_LABELS
   const INTEL_COMMON_INDICATIONS = [
     "Dry Eye",
     "Glaucoma / Ocular Hypertension",
@@ -2434,11 +2434,18 @@
     "Geographic Atrophy / Dry AMD",
     "Neuroprotection",
     "Optic Neuropathy",
+    "NAION",
+    "LHON",
     "Diabetic Retinopathy",
     "Retinal Vein Occlusion",
+    "Central Retinal Vein Occlusion",
+    "Branch Retinal Vein Occlusion",
     "Retinitis Pigmentosa",
     "Inherited Retinal Disease",
     "Stargardt's Disease",
+    "Leber Congenital Amaurosis",
+    "Choroideremia",
+    "Achromatopsia",
     "Uveitis",
     "Presbyopia",
     "Allergic Conjunctivitis",

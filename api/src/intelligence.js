@@ -9,16 +9,15 @@
 
 const DATASET = "ora_clinical_intelligence";
 
-/** Synonym groups — first entry is preferred display label when matched. */
+/** Synonym groups — used to expand search aliases. Matched label is kept as-is (not remapped to group[0]). */
 const INDICATION_GROUPS = [
   [
     "Dry Eye",
     "Dry Eye Disease",
     "DED",
-    "Keratoconjunctivitis Sicca",
-    "Devices-Dry Eye",
-    "Devices - Dry Eye"
+    "Keratoconjunctivitis Sicca"
   ],
+  ["Devices-Dry Eye", "Devices - Dry Eye"],
   ["Cataract", "Cataracts"],
   ["Diabetic Macular Edema (DME)", "DME", "Diabetic Macular Edema"],
   [
@@ -40,10 +39,9 @@ const INDICATION_GROUPS = [
     "Primary Open-Angle Glaucoma or Ocular Hypertension",
     "Ocular Hypertension",
     "POAG",
-    "OHT",
-    "Devices - Glaucoma",
-    "Devices-Glaucoma"
+    "OHT"
   ],
+  ["Devices - Glaucoma", "Devices-Glaucoma"],
   ["Retinitis Pigmentosa", "RP"],
   ["Presbyopia"],
   ["Allergic Conjunctivitis", "Allergy", "Allergic Conjunctivitis (CAC)", "CAC"],
@@ -61,28 +59,28 @@ const INDICATION_GROUPS = [
   ],
   [
     "Optic Neuropathy",
-    "Optic Neuritis",
-    "NAION",
+    "Optic neuropathies",
+    "Optic neuropathies POAG and NAION"
+  ],
+  ["Optic Neuritis"],
+  ["NAION"],
+  [
     "LHON",
     "Leber Hereditary Optic Neuropathy",
-    "Optic neuropathies POAG and NAION",
-    "Optic neuropathies",
-    "New: Leber Hereditary Optic Disease",
-    "New: Optic Neuromyelitis Spectrum Disease"
+    "New: Leber Hereditary Optic Disease"
   ],
+  ["New: Optic Neuromyelitis Spectrum Disease"],
   ["Uveitis", "Anterior Uveitis", "Intermediate Uveitis", "Posterior Uveitis", "Panuveitis"],
   ["Keratoconus"],
   [
     "Retinal Vein Occlusion",
     "RVO",
-    "CRVO",
-    "BRVO",
-    "Central Retinal Vein Occlusion",
-    "Branch Retinal Vein Occlusion",
     "Macular Edema due to Retinal Vein Occlusion (RVO)",
     "Macular Edema due to Retinal Vein Occlusion",
     "Retinal Vascular Diseases"
   ],
+  ["Central Retinal Vein Occlusion", "CRVO"],
+  ["Branch Retinal Vein Occlusion", "BRVO"],
   ["Neurotrophic Keratitis", "Neurotrophic Keratopathy"],
   ["Meibomian Gland Dysfunction", "MGD"],
   [
@@ -95,27 +93,20 @@ const INDICATION_GROUPS = [
     "STGD1",
     "Stargardt Disease Type 1"
   ],
+  ["Inherited Retinal Disease", "IRD"],
   [
-    "Inherited Retinal Disease",
-    "IRD",
     "Leber Congenital Amaurosis",
     "Leber congenital amaurosis",
-    "LCA",
-    "Choroideremia",
-    "Achromatopsia",
-    "Best Disease",
-    "X-linked Retinoschisis"
+    "LCA"
   ],
-  [
-    "Devices",
-    "Devices-Diagnostic",
-    "Devices - Other",
-    "Devices - Glaucoma",
-    "Devices-Glaucoma",
-    "Devices-Dry Eye",
-    "Devices - Dry Eye"
-  ],
-  ["Ocular Surface / Cornea", "Corneal Dystrophy", "Fuchs Endothelial Dystrophy", "Fuchs Dystrophy", "Infectious Keratitis"],
+  ["Choroideremia"],
+  ["Achromatopsia"],
+  ["Best Disease", "Vitelliform", "Best Vitelliform Macular Dystrophy"],
+  ["X-linked Retinoschisis", "Retinoschisis"],
+  ["Devices", "Devices-Diagnostic", "Devices - Other"],
+  ["Ocular Surface / Cornea", "Corneal Dystrophy"],
+  ["Fuchs Endothelial Dystrophy", "Fuchs Dystrophy"],
+  ["Infectious Keratitis"],
   ["Macular Hole / ERM", "Macular Hole", "Epiretinal Membrane", "ERM"],
   ["Central Serous Chorioretinopathy", "CSCR", "CSC"],
   ["Amblyopia"],
@@ -125,7 +116,44 @@ const INDICATION_GROUPS = [
 ];
 
 /** Preferred labels for UI pills (Intelligence + Scorecard). */
-const INDICATION_UI_LABELS = INDICATION_GROUPS.map((g) => g[0]).filter((l) => l !== "Safety");
+const INDICATION_UI_LABELS = [
+  "Dry Eye",
+  "Glaucoma / Ocular Hypertension",
+  "Cataract",
+  "Diabetic Macular Edema (DME)",
+  "Wet AMD",
+  "Geographic Atrophy / Dry AMD",
+  "Neuroprotection",
+  "Optic Neuropathy",
+  "NAION",
+  "LHON",
+  "Diabetic Retinopathy",
+  "Retinal Vein Occlusion",
+  "Central Retinal Vein Occlusion",
+  "Branch Retinal Vein Occlusion",
+  "Retinitis Pigmentosa",
+  "Inherited Retinal Disease",
+  "Stargardt's Disease",
+  "Leber Congenital Amaurosis",
+  "Choroideremia",
+  "Achromatopsia",
+  "Uveitis",
+  "Presbyopia",
+  "Allergic Conjunctivitis",
+  "Myopia",
+  "Thyroid Eye Disease",
+  "Blepharitis",
+  "Meibomian Gland Dysfunction",
+  "Neurotrophic Keratitis",
+  "Keratoconus",
+  "Ocular Surface / Cornea",
+  "Macular Hole / ERM",
+  "Central Serous Chorioretinopathy",
+  "Amblyopia",
+  "Strabismus",
+  "Uveal Melanoma",
+  "Eye Redness"
+];
 
 function normText(s) {
   return String(s || "")
@@ -443,11 +471,15 @@ function extractCountryFromQuestion(question) {
 }
 
 function preferredIndicationLabel(matchedAlias) {
-  const n = normText(matchedAlias);
+  const raw = String(matchedAlias || "").trim();
+  if (!raw) return raw;
+  const n = normText(raw);
   for (const group of INDICATION_GROUPS) {
-    if (group.some((g) => normText(g) === n)) return group[0];
+    const hit = group.find((g) => normText(g) === n);
+    // Keep the specific matched label (canonical casing) — do NOT remap to group[0]
+    if (hit) return hit;
   }
-  return matchedAlias;
+  return raw;
 }
 
 function compactNorm(s) {
@@ -460,9 +492,9 @@ function extractIndicationFromQuestion(question) {
   const qCompact = compactNorm(q);
   // Prefer known labels (longest first); compactNorm so "neuro protection" ≈ Neuroprotection
   const labeled = INDICATION_GROUPS.flatMap((group) =>
-    group.map((label) => ({ label, preferred: group[0], len: compactNorm(label).length }))
+    group.map((label) => ({ label, len: compactNorm(label).length }))
   ).sort((a, b) => b.len - a.len);
-  for (const { label, preferred } of labeled) {
+  for (const { label } of labeled) {
     const ln = normText(label);
     const lc = compactNorm(label);
     if (!lc || lc.length < 3) continue;
@@ -471,7 +503,8 @@ function extractIndicationFromQuestion(question) {
       qNorm.includes(ln) ||
       q.toLowerCase().includes(label.toLowerCase())
     ) {
-      return preferred;
+      // Keep the matched indication — do not collapse to an umbrella group label
+      return label;
     }
   }
   const m = q.match(/\b(?:indication|in)\s+([A-Za-z][A-Za-z0-9 /()-]{2,60})/i);
@@ -506,10 +539,31 @@ function relatedIndicationLabels(indication) {
     return ["Optic Neuropathy", "Optic neuropathies POAG and NAION", "Devices - Glaucoma"];
   }
   if (n.includes("stargardt")) {
-    return ["Inherited Retinal Disease", "Retinitis Pigmentosa"];
+    return ["Inherited Retinal Disease", "Retinitis Pigmentosa", "Leber Congenital Amaurosis"];
   }
   if (n.includes("inherited retinal") || n === "ird") {
-    return ["Stargardt's Disease", "Retinitis Pigmentosa", "Leber Congenital Amaurosis"];
+    return [
+      "Stargardt's Disease",
+      "Retinitis Pigmentosa",
+      "Leber Congenital Amaurosis",
+      "Choroideremia",
+      "Achromatopsia"
+    ];
+  }
+  if (n.includes("leber congenital") || n === "lca") {
+    return ["Inherited Retinal Disease", "Stargardt's Disease", "Retinitis Pigmentosa"];
+  }
+  if (n.includes("choroideremia") || n.includes("achromatopsia") || n.includes("retinoschisis") || n.includes("best disease")) {
+    return ["Inherited Retinal Disease", "Retinitis Pigmentosa", "Stargardt's Disease"];
+  }
+  if (n === "naion" || n === "lhon" || n.includes("optic neuritis")) {
+    return ["Optic Neuropathy", "Neuroprotection"];
+  }
+  if (n.includes("crvo") || n.includes("central retinal vein")) {
+    return ["Retinal Vein Occlusion", "Branch Retinal Vein Occlusion"];
+  }
+  if (n.includes("brvo") || n.includes("branch retinal vein")) {
+    return ["Retinal Vein Occlusion", "Central Retinal Vein Occlusion"];
   }
   return [];
 }
@@ -633,10 +687,27 @@ function indicationContainsNeedles(indication) {
   }
   if (n.includes("inherited retinal") || n === "ird") {
     needles.add("inherited retinal");
-    needles.add("choroideremia");
-    needles.add("achromatopsia");
+  }
+  if (n.includes("leber congenital") || n === "lca") {
     needles.add("leber congenital");
-    needles.add("retinoschisis");
+    needles.add("lca");
+  }
+  if (n.includes("choroideremia")) needles.add("choroideremia");
+  if (n.includes("achromatopsia")) needles.add("achromatopsia");
+  if (n.includes("retinoschisis")) needles.add("retinoschisis");
+  if (n.includes("naion")) needles.add("naion");
+  if (n === "lhon" || n.includes("leber hereditary optic")) {
+    needles.add("lhon");
+    needles.add("leber hereditary");
+  }
+  if (n.includes("optic neuritis")) needles.add("optic neuritis");
+  if (n.includes("crvo") || n.includes("central retinal vein")) {
+    needles.add("central retinal vein");
+    needles.add("crvo");
+  }
+  if (n.includes("brvo") || n.includes("branch retinal vein")) {
+    needles.add("branch retinal vein");
+    needles.add("brvo");
   }
   if (n.includes("wet amd") || n === "namd" || n.includes("geographic atrophy") || n.includes("dry amd")) {
     needles.add("macular degeneration");
