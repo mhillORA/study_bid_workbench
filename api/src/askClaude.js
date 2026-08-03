@@ -809,24 +809,27 @@ async function askFoundryAgent({ question, context, history }) {
     );
   }
 
-  const cfg = azureConfig();
+  // Dedicated agent URL already binds model + tools. Do NOT send model / agent_reference /
+  // instructions — Foundry returns 400 "Not allowed when agent is specified".
+  // Pack Buddy system + Cosmos context into the user turn instead.
+  const system = systemPromptFor(context);
   const input = [
     ...buildHistoryMessages(history).map((m) => ({
       role: m.role,
       content: m.content
     })),
-    { role: "user", content: userBlock(question, context) }
+    {
+      role: "user",
+      content:
+        `${system}\n\n---\nWork from the Context JSON below for Ora data. Use web search for public/external facts when needed.\n---\n\n` +
+        userBlock(question, context)
+    }
   ];
 
-  // Dedicated agent endpoint already selects BudgetBuddy2 — do not require agent_reference.
   const payload = {
-    instructions: systemPromptFor(context),
     input,
-    stream: false,
-    store: false
+    stream: false
   };
-  // Some agent builds still want a model; use deployment if set (e.g. gpt-5.4)
-  if (cfg.deployment) payload.model = cfg.deployment;
 
   const preferred = envSet("FOUNDRY_AGENT_API_VERSION") || envSet("AZURE_OPENAI_API_VERSION");
   const versions = [
@@ -854,7 +857,7 @@ async function askFoundryAgent({ question, context, history }) {
       const text = extractFoundryResponseText(respBody);
       return {
         answer: ensureBuddyAnswer(text),
-        model: respBody?.model || cfg.deployment || agent.name,
+        model: respBody?.model || agent.name,
         provider: "foundry_agent",
         agent: agent.name,
         via: `agent_responses:${apiVersion}`,
@@ -871,15 +874,10 @@ async function askFoundryAgent({ question, context, history }) {
       (Object.keys(respBody || {}).length ? JSON.stringify(respBody).slice(0, 240) : res.statusText);
     failures.push(`${apiVersion} → ${res.status} ${msg}`);
 
-    // Only keep trying alternate api-versions when the complaint is about version/route
     const retryable =
       res.status === 404 ||
       /api-version|not supported|unsupported|not found/i.test(String(msg));
-    if (!retryable && res.status !== 400) break;
-    if (res.status === 400 && !/api-version/i.test(String(msg)) && failures.length >= 1) {
-      // Real payload error — don't spin versions forever
-      break;
-    }
+    if (!retryable) break;
   }
 
   throw new Error(
