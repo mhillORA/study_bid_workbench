@@ -82,23 +82,56 @@ const LEGACY_ANTERIOR_RULES = [
   " Label this source as legacy anterior-segment overview (not Veeva PSM). Cite n. Null ≠ 0.",
   " If a named site/study has matched=0, say it was not found and ask for another spelling.",
   " Site Scorecard 'Include legacy recruitment data' is a separate UI toggle — when the user mentions they turned it on, treat enrollment as consented.",
-  " LIVE CONTEXT: context.buddyLiveContext (from the Buddy Context tab) is SME-authored additions — prefer it alongside the always-on Ora playbook.",
+  " LIVE CONTEXT: context.buddyLiveContext (from the Buddy Context tab) is SME-authored additions — use with the Master Context; on conflict prefer Master for rules, live context for newest SME notes.",
   " Live context is APPEND-ONLY (never replaced wholesale). Entries are organized by department then category (organized.byDepartment).",
   " When the user asks what is in current/live Buddy context, what's already ingested, or summarize Buddy Context: answer from context.buddyLiveContext — list departments, categories, entry counts, and short previews from organized/text. If empty, say so and suggest the Buddy Context tab. Optionally end with NAVIGATE:buddy-context."
 ].join(" ");
 
-/** Ora Intelligence Context Document (always-on SME + HTML report design system). */
+/** Ora Master Context (priority) + prior playbook (retained, lower priority). */
 let _oraContextCache = null;
+function readContextFile(name) {
+  try {
+    return String(fs.readFileSync(path.join(__dirname, name), "utf8") || "");
+  } catch (_) {
+    return "";
+  }
+}
+
 function loadOraIntelligenceContext() {
   if (_oraContextCache != null) return _oraContextCache;
-  try {
-    const p = path.join(__dirname, "oraIntelligenceContext.txt");
-    const raw = fs.readFileSync(p, "utf8");
-    const max = Number(process.env.ORA_CONTEXT_MAX_CHARS || 60000);
-    _oraContextCache = String(raw || "").slice(0, max);
-  } catch (_) {
-    _oraContextCache = "";
-  }
+  const max = Number(process.env.ORA_CONTEXT_MAX_CHARS || 120000);
+  const masterBudget = Number(process.env.ORA_MASTER_CONTEXT_MAX_CHARS || 70000);
+  const priorBudget = Number(process.env.ORA_PRIOR_CONTEXT_MAX_CHARS || 45000);
+
+  const masterRaw = readContextFile("oraMasterContext.txt");
+  const priorRaw = readContextFile("oraIntelligenceContext.txt");
+
+  const liveBridge = [
+    "PLATFORM LIVE STATE (highest priority — overrides outdated architecture notes below):",
+    "- Azure Cosmos DB (bd-budgets) IS LIVE for Buddy: ora_fact_site, ora_fact_study, ora_trialhub_trials,",
+    "  ora_sponsor_crosswalk, ora_site_alias_table, ora_ctgov_trials, buddy_live_context.",
+    "- Prefer Context JSON from this ask (portfolio / intelligence / buddyLiveContext) over stale",
+    "  \"Cosmos pilot not yet live\" wording in older playbook text.",
+    "- TrialHub grows via app upload (Intelligence → Upload TrialHub export); upsert by NCT, no duplicates.",
+    "- CT.gov ophthalmology feed syncs via /api/ctgov/sync.",
+    "- Buddy Context tab appends SME notes live without redeploy."
+  ].join("\n");
+
+  const master = masterRaw
+    ? `=== ORA MASTER CONTEXT (PRIORITY — Claude master rules; prefer over prior playbook on conflict) ===\n${masterRaw.slice(
+        0,
+        masterBudget
+      )}`
+    : "";
+  const prior = priorRaw
+    ? `=== PRIOR ORA PLAYBOOK (retained; use when Master is silent; Master wins on conflict) ===\n${priorRaw.slice(
+        0,
+        priorBudget
+      )}`
+    : "";
+
+  const parts = [liveBridge, master, prior].filter(Boolean);
+  _oraContextCache = parts.join("\n\n").slice(0, max);
   return _oraContextCache;
 }
 
@@ -109,8 +142,8 @@ const HTML_REPORT_RULES = [
   "HTML_REPORT_START",
   "<!DOCTYPE html>…complete document…",
   "HTML_REPORT_END",
-  "Use the Ora navy/teal design system from the always-on Ora Intelligence Context (Section 9): page bg #F0F4F8, navy #1B2A4A, teal #1A7F8E, inline <style>, .header / .card / .card-hdr / .kpi / tables / alerts. Chrome print-to-PDF ready. No external CSS/JS.",
-  "Apply sponsor-facing vs internal rules from that context (Section 10). Populate numbers only from Context JSON — never invent PSM, enrollment, or NCT rows.",
+  "Use the Ora navy/teal design system from the always-on Ora Master Context (Section 18): page bg #F0F4F8, navy #1B2A4A, teal #1A7F8E, inline <style>, .header / .card / .card-hdr / .kpi / tables / alerts. Chrome print-to-PDF ready. No external CSS/JS.",
+  "Apply sponsor-facing vs internal rules from that Master Context (Section 10). Populate numbers only from Context JSON — never invent PSM, enrollment, or NCT rows.",
   " LEGACY TABLE: context.legacyAnterior.htmlTable / indicationSites.topByEnrolled / trust.topSitesByEnrolled is queried from Cosmos (legacy_sites). Never ask the user to paste the legacy table. If those arrays are present, render them in the HTML_REPORT. If empty, say Cosmos returned no legacy rows — still emit an HTML shell with that message.",
   "Chat-only asks (no visual/table/report wording) do not need HTML_REPORT blocks."
 ].join(" ");
@@ -159,7 +192,9 @@ function buddyInstructionsBase() {
     envSet("SYSTEM_PROMPT");
   const oraCtx = loadOraIntelligenceContext();
   const oraBlock = oraCtx
-    ? ` ORA INTELLIGENCE CONTEXT (always-on; internal SME playbook + HTML design system):\n${oraCtx}\n`
+    ? ` ORA RULES CONTEXT (always-on):\n` +
+      `Priority order on conflict: (1) PLATFORM LIVE STATE, (2) ORA MASTER CONTEXT, (3) PRIOR ORA PLAYBOOK, (4) Buddy live context additions in Context JSON.\n` +
+      `${oraCtx}\n`
     : "";
   // Always append portfolio + intelligence + format + always-respond — SWA custom prompts often omit them
   return (
@@ -232,9 +267,12 @@ function systemPromptFor(context) {
       ? " context.legacyAnterior IS attached WITH enrollment/htmlTable from Cosmos — use it; never ask the user to paste the legacy table."
       : " context.legacyAnterior IS attached for trust notes only — ASK before citing legacy enrollment numbers (enrollmentIncluded=false)."
     : "";
-  const dep = azureConfig().deployment;
+  const agent = foundryAgentConfig();
+  const dep = agent.enabled ? agent.name : azureConfig().deployment;
   const modelNote = dep
-    ? ` You are served via Azure deployment "${dep}". If asked which model you are, say that deployment name — do not claim GPT-4 or another model unless that is the deployment name.`
+    ? agent.enabled
+      ? ` You are the Foundry agent "${dep}" (with web search when needed). If asked which model/agent you are, say ${dep}. For public web facts (company revenue, news, weather), use your web tools — do not invent numbers.`
+      : ` You are served via Azure deployment "${dep}". If asked which model you are, say that deployment name — do not claim GPT-4 or another model unless that is the deployment name.`
     : "";
   const user = context?.user;
   if (!user?.firstName && !user?.displayName && !user?.email) {
@@ -298,6 +336,16 @@ const AZURE_DEPLOYMENT_ALIASES = [
   "OPENAI_DEPLOYMENT"
 ];
 
+const FOUNDRY_AGENT_NAME_ALIASES = ["FOUNDRY_AGENT_NAME", "AZURE_AI_AGENT_NAME", "BUDDY_AGENT_NAME"];
+const FOUNDRY_AGENT_ENDPOINT_ALIASES = [
+  "FOUNDRY_AGENT_ENDPOINT",
+  "AZURE_AI_AGENT_ENDPOINT",
+  "BUDDY_AGENT_ENDPOINT"
+];
+
+/** Default agent when project endpoint is present (user's BudgetBuddy2 + web search). */
+const DEFAULT_FOUNDRY_AGENT_NAME = "BudgetBuddy2";
+
 function azureConfig() {
   const endpoint = envSetAny(AZURE_ENDPOINT_ALIASES);
   const apiKey = envSetAny(AZURE_KEY_ALIASES);
@@ -314,10 +362,69 @@ function azureConfig() {
   };
 }
 
+/**
+ * Resolve Foundry Agent Responses URL.
+ * Prefers FOUNDRY_AGENT_ENDPOINT; else builds from project endpoint + agent name.
+ */
+function foundryAgentConfig() {
+  const cfg = azureConfig();
+  const explicit = envSetAny(FOUNDRY_AGENT_ENDPOINT_ALIASES);
+  const named = envSetAny(FOUNDRY_AGENT_NAME_ALIASES);
+  const disabled = String(process.env.FOUNDRY_AGENT_ENABLED || "")
+    .trim()
+    .toLowerCase();
+  if (disabled === "0" || disabled === "false" || disabled === "off") {
+    return { enabled: false, url: null, name: null, apiKey: cfg.apiKey, reason: "disabled" };
+  }
+
+  let name = named.value || "";
+  let url = (explicit.value || "").replace(/\/$/, "");
+
+  if (url && /\/agents\/([^/]+)\//i.test(url) && !name) {
+    name = url.match(/\/agents\/([^/]+)\//i)[1];
+  }
+  if (!name) name = DEFAULT_FOUNDRY_AGENT_NAME;
+
+  if (!url && cfg.endpoint) {
+    const base = String(cfg.endpoint).replace(/\/$/, "");
+    // Already the agent responses URL
+    if (/\/agents\/[^/]+\/endpoint\/protocols\/openai\/responses/i.test(base)) {
+      url = base;
+    } else {
+      const m = base.match(/^(https:\/\/[^/]+\.services\.ai\.azure\.com\/api\/projects\/[^/]+)/i);
+      if (m) {
+        url = `${m[1]}/agents/${encodeURIComponent(name)}/endpoint/protocols/openai/responses`;
+      }
+    }
+  }
+
+  const enabled = Boolean(url && cfg.apiKey);
+  return {
+    enabled,
+    url,
+    name,
+    apiKey: cfg.apiKey,
+    sources: {
+      endpoint: explicit.from || cfg.sources.endpoint,
+      name: named.from || (named.value ? null : "default"),
+      apiKey: cfg.sources.apiKey
+    },
+    reason: enabled ? "ok" : !cfg.apiKey ? "missing_api_key" : !url ? "missing_agent_url" : "unknown"
+  };
+}
+
 function providerStatus() {
   const cfg = azureConfig();
+  const agent = foundryAgentConfig();
   const azure = Boolean(cfg.endpoint) && Boolean(cfg.apiKey) && Boolean(cfg.deployment);
   const claude = Boolean(envSet("ANTHROPIC_API_KEY"));
+  const active = agent.enabled
+    ? "foundry_agent"
+    : azure
+      ? "azure_openai"
+      : claude
+        ? "claude"
+        : null;
 
   // Presence only — never return secret values
   const raw = (name) => {
@@ -329,36 +436,48 @@ function providerStatus() {
   };
 
   const aliasScan = {};
-  for (const name of [...AZURE_KEY_ALIASES, ...AZURE_ENDPOINT_ALIASES, ...AZURE_DEPLOYMENT_ALIASES]) {
+  for (const name of [
+    ...AZURE_KEY_ALIASES,
+    ...AZURE_ENDPOINT_ALIASES,
+    ...AZURE_DEPLOYMENT_ALIASES,
+    ...FOUNDRY_AGENT_NAME_ALIASES,
+    ...FOUNDRY_AGENT_ENDPOINT_ALIASES
+  ]) {
     const status = raw(name);
     if (status !== "missing") aliasScan[name] = status;
   }
 
   return {
     azureOpenAI: azure,
+    foundryAgent: agent.enabled,
+    foundryAgentName: agent.name || null,
     claude,
-    active: azure ? "azure_openai" : claude ? "claude" : null,
-    // Deployment name only (not a secret) — so you can verify SWA matches Foundry
-    deployment: cfg.deployment || null,
+    active,
+    // Deployment / agent name only (not a secret)
+    deployment: agent.enabled ? agent.name || cfg.deployment || null : cfg.deployment || null,
     effort: envSet("ANTHROPIC_EFFORT") || "low",
-    buildId: "2026-07-26T26-hlbp-form",
-    endpointKind: !cfg.endpoint
-      ? null
-      : isFoundryProjectEndpoint(cfg.endpoint)
-        ? "foundry_project"
-        : isOpenAiV1Endpoint(cfg.endpoint)
-          ? "openai_v1"
-          : "classic_azure_openai",
+    buildId: "2026-08-03-foundry-agent",
+    endpointKind: agent.enabled
+      ? "foundry_agent_responses"
+      : !cfg.endpoint
+        ? null
+        : isFoundryProjectEndpoint(cfg.endpoint)
+          ? "foundry_project"
+          : isOpenAiV1Endpoint(cfg.endpoint)
+            ? "openai_v1"
+            : "classic_azure_openai",
     envCheck: {
       AZURE_OPENAI_ENDPOINT: raw("AZURE_OPENAI_ENDPOINT"),
       AZURE_OPENAI_API_KEY: raw("AZURE_OPENAI_API_KEY"),
       AZURE_OPENAI_DEPLOYMENT: raw("AZURE_OPENAI_DEPLOYMENT"),
+      FOUNDRY_AGENT_NAME: raw("FOUNDRY_AGENT_NAME"),
+      FOUNDRY_AGENT_ENDPOINT: raw("FOUNDRY_AGENT_ENDPOINT"),
       BUDDY_SYSTEM_PROMPT: raw("BUDDY_SYSTEM_PROMPT"),
       FOUNDRY_AGENT_INSTRUCTIONS: raw("FOUNDRY_AGENT_INSTRUCTIONS"),
       COSMOS_ENDPOINT: raw("COSMOS_ENDPOINT"),
       COSMOS_KEY: raw("COSMOS_KEY")
     },
-    resolvedFrom: cfg.sources,
+    resolvedFrom: { ...cfg.sources, agent: agent.sources },
     otherAiSettingsFound: aliasScan
   };
 }
@@ -643,6 +762,99 @@ async function askAzureOpenAI({ question, context, history }) {
   );
 }
 
+/** Pull assistant text from Foundry / OpenAI Responses API payload. */
+function extractFoundryResponseText(respBody) {
+  if (!respBody) return "";
+  if (typeof respBody.output_text === "string" && respBody.output_text.trim()) {
+    return respBody.output_text.trim();
+  }
+  const parts = [];
+  const output = Array.isArray(respBody.output) ? respBody.output : [];
+  for (const item of output) {
+    if (!item) continue;
+    if (item.type === "message" && Array.isArray(item.content)) {
+      for (const c of item.content) {
+        if (!c) continue;
+        if (c.type === "output_text" && c.text) parts.push(c.text);
+        else if (c.type === "text" && c.text) parts.push(c.text);
+        else if (typeof c === "string") parts.push(c);
+      }
+    } else if (item.type === "output_text" && item.text) {
+      parts.push(item.text);
+    }
+  }
+  if (parts.length) return parts.join("\n").trim();
+  // Fallback: some payloads nest choices like chat completions
+  return extractAzureMessageText(respBody);
+}
+
+/**
+ * Foundry Agent (e.g. BudgetBuddy2) via Responses protocol — includes web search tools.
+ * URL shape:
+ *   {project}/agents/{name}/endpoint/protocols/openai/responses
+ */
+async function askFoundryAgent({ question, context, history }) {
+  const agent = foundryAgentConfig();
+  if (!agent.enabled) {
+    throw new Error(
+      `Foundry agent not configured (${agent.reason}). Set AZURE_OPENAI_ENDPOINT to the project URL, AZURE_OPENAI_API_KEY, and FOUNDRY_AGENT_NAME=BudgetBuddy2 (or FOUNDRY_AGENT_ENDPOINT to the full responses URL).`
+    );
+  }
+
+  const input = [
+    ...buildHistoryMessages(history).map((m) => ({
+      role: m.role,
+      content: m.content
+    })),
+    { role: "user", content: userBlock(question, context) }
+  ];
+
+  const payload = {
+    // Agent endpoint already selects BudgetBuddy2; reference keeps project /openai/v1/responses compatible
+    agent_reference: {
+      name: agent.name,
+      type: "agent_reference"
+    },
+    instructions: systemPromptFor(context),
+    input,
+    store: false
+  };
+
+  const res = await fetch(agent.url, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "api-key": agent.apiKey
+    },
+    body: JSON.stringify(payload)
+  });
+
+  const respBody = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    const msg =
+      respBody?.error?.message ||
+      respBody?.error?.code ||
+      (Object.keys(respBody || {}).length ? JSON.stringify(respBody).slice(0, 400) : res.statusText);
+    throw new Error(
+      `Foundry agent "${agent.name}" failed (${res.status}): ${msg}. URL: ${agent.url}`
+    );
+  }
+
+  const text = extractFoundryResponseText(respBody);
+  return {
+    answer: ensureBuddyAnswer(text),
+    model: respBody?.model || agent.name,
+    provider: "foundry_agent",
+    agent: agent.name,
+    via: "agent_responses",
+    usage: respBody?.usage || null,
+    // Helpful when debugging web-search tool calls
+    outputTypes: Array.isArray(respBody?.output)
+      ? [...new Set(respBody.output.map((o) => o?.type).filter(Boolean))]
+      : undefined
+  };
+}
+
 async function askClaude({ question, context, history }) {
   const apiKey = envSet("ANTHROPIC_API_KEY");
   if (!apiKey) {
@@ -751,15 +963,16 @@ function extractAzureMessageText(respBody) {
   return String(msg.refusal || "").trim();
 }
 
-/** Prefer Azure OpenAI (Ask Buddy); fall back to Claude only if Azure is unset. */
+/** Prefer Foundry Agent (web search); else Azure chat completions; else Claude. */
 async function askAi(opts) {
   const status = providerStatus();
   let result;
-  if (status.active === "azure_openai") result = await askAzureOpenAI(opts);
+  if (status.active === "foundry_agent") result = await askFoundryAgent(opts);
+  else if (status.active === "azure_openai") result = await askAzureOpenAI(opts);
   else if (status.active === "claude") result = await askClaude(opts);
   else {
     throw new Error(
-      "Ask Buddy is not configured. Set Azure OpenAI (AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, AZURE_OPENAI_DEPLOYMENT) in SWA Application settings."
+      "Ask Buddy is not configured. Set AZURE_OPENAI_ENDPOINT (Foundry project), AZURE_OPENAI_API_KEY, and FOUNDRY_AGENT_NAME=BudgetBuddy2 — or classic AZURE_OPENAI_DEPLOYMENT for chat completions."
     );
   }
   return { ...result, answer: ensureBuddyAnswer(result.answer) };
@@ -769,7 +982,9 @@ module.exports = {
   askAi,
   askClaude,
   askAzureOpenAI,
+  askFoundryAgent,
   getStudyContext,
   providerStatus,
-  ensureBuddyAnswer
+  ensureBuddyAnswer,
+  foundryAgentConfig
 };
