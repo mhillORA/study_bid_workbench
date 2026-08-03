@@ -6047,44 +6047,38 @@
       .replaceAll(">", "&gt;");
   }
 
-  /** Strip every i-highlight variant (model mangles these into visible [/i]] garbage). */
-  function stripBuddyITags(raw) {
-    return String(raw == null ? "" : raw)
-      .replace(/\[{1,3}\s*\/?\s*i\s*\]{1,3}/gi, "")
-      .replace(/\({2}\s*\/?\s*i\s*\){2}/gi, "")
-      .replace(/<\/?i>/gi, "");
-  }
-
-  /** Normalize [[h]] variants only. */
+  /** Normalize every [[h]]/[[i]] bracket variant; keep inner text. */
   function normalizeBuddyTags(raw) {
-    let s = stripBuddyITags(raw);
+    let s = String(raw == null ? "" : raw);
     s = s.replace(/\r\n/g, "\n");
-    s = s.replace(/\[{1,3}\s*\/\s*h\s*\]{1,3}/gi, "[[/h]]");
-    s = s.replace(/\[{1,3}\s*h\s*\]{1,3}/gi, "[[h]]");
-    s = s.replace(/\({2}\s*\/\s*h\s*\){2}/gi, "[[/h]]");
-    s = s.replace(/\({2}\s*h\s*\){2}/gi, "[[h]]");
+    // Drop empty highlight shells ([[i]][[/i]]) — those become ", ," in lists
+    s = s.replace(/\[{1,3}\s*([hi])\s*\]{1,3}\s*\[{1,3}\s*\/\s*\1\s*\]{1,3}/gi, "");
+    // Closers first: [/i]] [[/i] [/i] → [[/i]]
+    s = s.replace(/\[{1,3}\s*\/\s*([hi])\s*\]{1,3}/gi, (_, t) => `[[/${t.toLowerCase()}]]`);
+    // Openers: [i]] [[i] [i] → [[i]]
+    s = s.replace(/\[{1,3}\s*([hi])\s*\]{1,3}/gi, (_, t) => `[[${t.toLowerCase()}]]`);
+    s = s.replace(/\({2}\s*\/\s*([hi])\s*\){2}/gi, (_, t) => `[[/${t.toLowerCase()}]]`);
+    s = s.replace(/\({2}\s*([hi])\s*\){2}/gi, (_, t) => `[[${t.toLowerCase()}]]`);
     return s;
   }
 
-  /** Strip leftover header-tag debris inside chunk bodies. */
+  /** Strip leftover tag debris inside a chunk (never used on whole answers before pairing). */
   function stripBuddyTagDebris(raw) {
-    return stripBuddyITags(raw)
-      .replace(/\[{1,3}\s*\/?\s*h\s*\]{1,3}/gi, "")
-      .replace(/\({2}\s*\/?\s*h\s*\){2}/gi, "");
+    return String(raw == null ? "" : raw)
+      .replace(/\[{1,3}\s*\/?\s*[hi]\s*\]{1,3}/gi, "")
+      .replace(/\({2}\s*\/?\s*[hi]\s*\){2}/gi, "");
   }
 
-  /** Buddy chat: [[h]] blue headers only — never render [[i]] (model breaks them). */
+  /** Buddy chat: [[h]] blue headers, [[i]] red important — repair mangled tags, keep text. */
   function formatBuddyHtml(raw) {
     let s = normalizeBuddyTags(raw);
-    // Soften leftover markdown / HTML the model still emits (plain text, no i-tags)
     s = s.replace(/^#{1,6}\s+/gm, "");
-    s = s.replace(/\*\*\*([^*\n]+)\*\*\*/g, "$1");
-    s = s.replace(/\*\*([^*\n]+)\*\*/g, "$1");
-    s = s.replace(/__([^_\n]+)__/g, "$1");
-    s = s.replace(/<\/?(?:strong|b)>/gi, "");
+    s = s.replace(/\*\*\*([^*\n]+)\*\*\*/g, "[[i]]$1[[/i]]");
+    s = s.replace(/\*\*([^*\n]+)\*\*/g, "[[i]]$1[[/i]]");
+    s = s.replace(/__([^_\n]+)__/g, "[[i]]$1[[/i]]");
+    s = s.replace(/<\/?(?:strong|b)>/gi, (m) => (/^<\//.test(m) ? "[[/i]]" : "[[i]]"));
     s = normalizeBuddyTags(s);
 
-    // Humanize DB/JSON field keys that leak into chat
     const fieldLabels = [
       [/fsi_trust/gi, "FSI trust"],
       [/fs_trust/gi, "FSI trust"],
@@ -6113,39 +6107,43 @@
     s = s.replace(/\bORa\b/g, "Ora");
     s = s.replace(/\bORA\b(?=\s+(?:Clinical|Veeva|sites?|median|PSM|history|score|vs)\b)/g, "Ora");
 
-    // Pair [[h]] open→close only
+    // Pair open→close; orphan closes drop (keep text); unclosed opens auto-close at end
     const chunks = [];
-    const tokenRe = /\[\[(\/?)h\]\]/gi;
+    const tokenRe = /\[\[(\/?)(h|i)\]\]/gi;
     let last = 0;
     let open = null;
     let m;
     while ((m = tokenRe.exec(s))) {
       const isClose = Boolean(m[1]);
+      const tag = m[2].toLowerCase();
       const before = s.slice(last, m.index);
       if (open) {
-        if (isClose) {
-          chunks.push({ type: "h", value: open.buf + before });
+        if (isClose && tag === open.type) {
+          chunks.push({ type: open.type, value: open.buf + before });
           open = null;
+        } else if (!isClose) {
+          chunks.push({ type: open.type, value: open.buf + before });
+          open = { type: tag, buf: "" };
         } else {
-          chunks.push({ type: "h", value: open.buf + before });
-          open = { buf: "" };
+          open.buf += before;
         }
       } else if (!isClose) {
         if (before) chunks.push({ type: "text", value: before });
-        open = { buf: "" };
+        open = { type: tag, buf: "" };
       } else if (before) {
         chunks.push({ type: "text", value: before });
       }
       last = m.index + m[0].length;
     }
     const tail = s.slice(last);
-    if (open) chunks.push({ type: "h", value: open.buf + tail });
+    if (open) chunks.push({ type: open.type, value: open.buf + tail });
     else if (tail) chunks.push({ type: "text", value: tail });
 
     return chunks
       .map((c) => {
         const body = escapeHtml(stripBuddyTagDebris(c.value)).replaceAll("\n", "<br>");
         if (c.type === "h") return `<div class="buddy-h">${body}</div>`;
+        if (c.type === "i") return `<span class="buddy-i">${body}</span>`;
         return body;
       })
       .join("");
