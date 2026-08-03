@@ -788,10 +788,18 @@ function extractFoundryResponseText(respBody) {
   return extractAzureMessageText(respBody);
 }
 
+function withApiVersion(url, apiVersion) {
+  const u = String(url || "").replace(/\/$/, "");
+  const sep = u.includes("?") ? "&" : "?";
+  // Drop any existing api-version then set ours
+  const cleaned = u.replace(/([?&])api-version=[^&]*/gi, "$1").replace(/[?&]$/, "").replace(/\?&/, "?");
+  return `${cleaned}${cleaned.includes("?") ? "&" : "?"}api-version=${encodeURIComponent(apiVersion)}`;
+}
+
 /**
  * Foundry Agent (e.g. BudgetBuddy2) via Responses protocol — includes web search tools.
  * URL shape:
- *   {project}/agents/{name}/endpoint/protocols/openai/responses
+ *   {project}/agents/{name}/endpoint/protocols/openai/responses?api-version=...
  */
 async function askFoundryAgent({ question, context, history }) {
   const agent = foundryAgentConfig();
@@ -801,6 +809,7 @@ async function askFoundryAgent({ question, context, history }) {
     );
   }
 
+  const cfg = azureConfig();
   const input = [
     ...buildHistoryMessages(history).map((m) => ({
       role: m.role,
@@ -809,50 +818,73 @@ async function askFoundryAgent({ question, context, history }) {
     { role: "user", content: userBlock(question, context) }
   ];
 
+  // Dedicated agent endpoint already selects BudgetBuddy2 — do not require agent_reference.
   const payload = {
-    // Agent endpoint already selects BudgetBuddy2; reference keeps project /openai/v1/responses compatible
-    agent_reference: {
-      name: agent.name,
-      type: "agent_reference"
-    },
     instructions: systemPromptFor(context),
     input,
+    stream: false,
     store: false
   };
+  // Some agent builds still want a model; use deployment if set (e.g. gpt-5.4)
+  if (cfg.deployment) payload.model = cfg.deployment;
 
-  const res = await fetch(agent.url, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "api-key": agent.apiKey
-    },
-    body: JSON.stringify(payload)
-  });
+  const preferred = envSet("FOUNDRY_AGENT_API_VERSION") || envSet("AZURE_OPENAI_API_VERSION");
+  const versions = [
+    preferred,
+    "2025-11-15-preview",
+    "2025-05-01-preview",
+    "v1",
+    "2024-12-01-preview"
+  ].filter((v, i, arr) => v && arr.indexOf(v) === i);
 
-  const respBody = await res.json().catch(() => ({}));
-  if (!res.ok) {
+  const failures = [];
+  for (const apiVersion of versions) {
+    const url = withApiVersion(agent.url, apiVersion);
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "api-key": agent.apiKey
+      },
+      body: JSON.stringify(payload)
+    });
+
+    const respBody = await res.json().catch(() => ({}));
+    if (res.ok) {
+      const text = extractFoundryResponseText(respBody);
+      return {
+        answer: ensureBuddyAnswer(text),
+        model: respBody?.model || cfg.deployment || agent.name,
+        provider: "foundry_agent",
+        agent: agent.name,
+        via: `agent_responses:${apiVersion}`,
+        usage: respBody?.usage || null,
+        outputTypes: Array.isArray(respBody?.output)
+          ? [...new Set(respBody.output.map((o) => o?.type).filter(Boolean))]
+          : undefined
+      };
+    }
+
     const msg =
       respBody?.error?.message ||
       respBody?.error?.code ||
-      (Object.keys(respBody || {}).length ? JSON.stringify(respBody).slice(0, 400) : res.statusText);
-    throw new Error(
-      `Foundry agent "${agent.name}" failed (${res.status}): ${msg}. URL: ${agent.url}`
-    );
+      (Object.keys(respBody || {}).length ? JSON.stringify(respBody).slice(0, 240) : res.statusText);
+    failures.push(`${apiVersion} → ${res.status} ${msg}`);
+
+    // Only keep trying alternate api-versions when the complaint is about version/route
+    const retryable =
+      res.status === 404 ||
+      /api-version|not supported|unsupported|not found/i.test(String(msg));
+    if (!retryable && res.status !== 400) break;
+    if (res.status === 400 && !/api-version/i.test(String(msg)) && failures.length >= 1) {
+      // Real payload error — don't spin versions forever
+      break;
+    }
   }
 
-  const text = extractFoundryResponseText(respBody);
-  return {
-    answer: ensureBuddyAnswer(text),
-    model: respBody?.model || agent.name,
-    provider: "foundry_agent",
-    agent: agent.name,
-    via: "agent_responses",
-    usage: respBody?.usage || null,
-    // Helpful when debugging web-search tool calls
-    outputTypes: Array.isArray(respBody?.output)
-      ? [...new Set(respBody.output.map((o) => o?.type).filter(Boolean))]
-      : undefined
-  };
+  throw new Error(
+    `Foundry agent "${agent.name}" failed. Tried api-versions: ${failures.join(" | ")}. URL: ${agent.url}`
+  );
 }
 
 async function askClaude({ question, context, history }) {
