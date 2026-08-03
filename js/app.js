@@ -6089,21 +6089,24 @@
     s = s.replace(/\bORa\b/g, "Ora");
     s = s.replace(/\bORA\b(?=\s+(?:Clinical|Veeva|sites?|median|PSM|history|score|vs)\b)/g, "Ora");
 
-    // Normalize open/close markers to [[h]] / [[i]] (double, single, spaced, (( )))
-    const toOpen = (t) => `[[${String(t).toLowerCase()}]]`;
-    const toClose = (t) => `[[/${String(t).toLowerCase()}]]`;
-    s = s.replace(/\[\[\s*\/\s*(h|i)\s*\]\]/gi, (_, t) => toClose(t));
-    s = s.replace(/\[\[\s*(h|i)\s*\]\]/gi, (_, t) => toOpen(t));
-    s = s.replace(/\(\(\s*\/\s*(h|i)\s*\)\)/gi, (_, t) => toClose(t));
-    s = s.replace(/\(\(\s*(h|i)\s*\)\)/gi, (_, t) => toOpen(t));
-    s = s.replace(/(?<!\[)\[\s*\/\s*(h|i)\s*\](?!\])/gi, (_, t) => toClose(t));
-    s = s.replace(/(?<!\[)\[\s*(h|i)\s*\](?!\])/gi, (_, t) => toOpen(t));
+    // Repair mangled markers GPT often emits: Abbott[/i]]  [[i]text[/i]]  [i]]…
+    s = s.replace(/\[\/([hi])\]\]/gi, "[[/$1]]"); // [/i]] → [[/i]]
+    s = s.replace(/\[\[\/([hi])\](?!\])/gi, "[[/$1]]"); // [[/i] → [[/i]]
+    s = s.replace(/(?<!\[)\[\/([hi])\](?!\])/gi, "[[/$1]]"); // [/i] → [[/i]]
+    s = s.replace(/(?<!\[)\[([hi])\]\]/gi, "[[$1]]"); // [i]] → [[i]]
+    s = s.replace(/\[\[([hi])\](?![\]])/gi, "[[$1]]"); // [[i] → [[i]]
+    s = s.replace(/\[\[\s*\/\s*(h|i)\s*\]\]/gi, (_, t) => `[[/${t.toLowerCase()}]]`);
+    s = s.replace(/\[\[\s*(h|i)\s*\]\]/gi, (_, t) => `[[${t.toLowerCase()}]]`);
+    s = s.replace(/\(\(\s*\/\s*(h|i)\s*\)\)/gi, (_, t) => `[[/${t.toLowerCase()}]]`);
+    s = s.replace(/\(\(\s*(h|i)\s*\)\)/gi, (_, t) => `[[${t.toLowerCase()}]]`);
+    s = s.replace(/(?<!\[)\[\s*\/\s*(h|i)\s*\](?!\])/gi, (_, t) => `[[/${t.toLowerCase()}]]`);
+    s = s.replace(/(?<!\[)\[\s*(h|i)\s*\](?!\])/gi, (_, t) => `[[${t.toLowerCase()}]]`);
 
     // Pair open→close; auto-close unclosed tags at next opposite tag or end
     const chunks = [];
     const tokenRe = /\[\[(\/?)(h|i)\]\]/gi;
     let last = 0;
-    let open = null; // { type, startContent }
+    let open = null; // { type, buf }
     let m;
     while ((m = tokenRe.exec(s))) {
       const isClose = Boolean(m[1]);
@@ -6118,14 +6121,14 @@
           chunks.push({ type: open.type, value: open.buf + before });
           open = { type: tag, buf: "" };
         } else {
-          // Mismatched close — treat as text
-          open.buf += before + m[0];
+          // Mismatched close — keep text, drop bad tag
+          open.buf += before;
         }
       } else if (!isClose) {
         if (before) chunks.push({ type: "text", value: before });
         open = { type: tag, buf: "" };
       } else {
-        // Orphan close — drop the tag, keep text
+        // Orphan close (e.g. Abbott[[/i]] with no open) — drop tag, keep text
         if (before) chunks.push({ type: "text", value: before });
       }
       last = m.index + m[0].length;
@@ -6136,8 +6139,8 @@
 
     const stripTagNoise = (v) =>
       String(v || "")
-        .replace(/\[\[\s*\/?\s*[hi]\s*\]\]/gi, "")
-        .replace(/(?<!\[)\[\s*\/?\s*[hi]\s*\](?!\])/gi, "")
+        .replace(/\[\[\s*\/?\s*[hi]\s*\]\]?/gi, "")
+        .replace(/\[\/?[hi]\]\]?/gi, "")
         .replace(/\(\(\s*\/?\s*[hi]\s*\)\)/gi, "");
 
     return chunks

@@ -1,0 +1,965 @@
+================================================================
+ORA CLINICAL INTELLIGENCE PLATFORM — MASTER CONTEXT DOCUMENT
+Plain-text version for AI system ingestion
+Generated: July 2026
+================================================================
+
+EXTRACTION PROMPT (use this to re-generate this document from a Claude instance with session history):
+"You have been working with me on the Ora Clinical intelligence platform across multiple sessions. I need you to produce a comprehensive plain-text context dump covering EVERYTHING you know about how Ora works, how to analyze the data, all the rules, all the known data quality issues, all the indication coding variants, all the PSM benchmarks, all the known sites and PIs, all the HTML conventions, all the BD copy rules, all the sponsor-facing restrictions, all the OUS country logic, all the crosswalk and alias logic, all the indication-specific intelligence, all the search patterns, and all session-level intelligence including specific studies, sites, investigators, and findings. Do not summarize — include every rule, every known value, every pattern, every caveat. Output as plain text, no HTML, no headers with formatting, just comprehensive structured text I can paste into another AI system. Include a section for everything we have discussed even if it seems minor."
+
+================================================================
+SECTION 1 — ORA CLINICAL COMPANY CONTEXT
+================================================================
+
+Ora Clinical is a Contract Research Organization (CRO) specializing exclusively in ophthalmology.
+40+ years of history. 250+ studies managed. 1,900+ sites globally. 30+ indications. 15+ countries.
+Full-service: trial design, site management, monitoring, data management, recruitment, regulatory, biostatistics.
+
+KEY PERSONNEL:
+- Mike Watson — Vice President, Therapeutic Development (BD). Previously VP of OraNet. Primary user of AI platform.
+- Trevor Leahy — BD Representative. Consumes BD call prep sheets, completion target reports, sponsor intelligence.
+- Internal Data Engineer — Loading Veeva data into Azure Cosmos DB (pilot in progress).
+- ELT / Executive Leadership — Audience for 2-slide KPI decks.
+
+OraNet = Ora's proprietary site network database. Harmonized into Veeva CTM.
+
+================================================================
+SECTION 2 — DATA ARCHITECTURE
+================================================================
+
+PRIMARY FILES:
+- harmonized_clinical_data.xlsx → sheet: fact_site (3,613 records)
+- harmonized_clinical_data.xlsx → sheet: fact_study (249 records)
+- Eye_Diseases_-_Trials_Search_Data_-_June_18__2026.xlsx → sheet: Trials (Detailed) [TrialHub, 1,682 records]
+- Sponsor_Crosswalk_MASTER.xlsx (4 sheets, 642 sponsors)
+- crosswalk_master.csv (backing CSV for crosswalk)
+- Site_Alias_Table.xlsx (48 aliases)
+- sf_db_full.json (1,910 active Salesforce accounts — authoritative SF reference)
+- Mike_Watson_Claude_Report__Site_Level__10Jul2026.xlsx (raw Veeva milestone data)
+
+FACT_SITE KEY FIELDS:
+Organization, Principal Investigator, Location City, country, indication, Study Name,
+total_enrolled, total_screened, site_psm, screen_fail_rate, activation_date,
+first_patient_date, last_patient_date, site_enroll_months, phase
+
+FACT_STUDY KEY FIELDS:
+Study Number, Study Name, sponsor, indication, phase, n_sites, n_enrolled,
+study_psm, start_date, primary_completion_date
+
+TRIALHUB KEY FIELDS:
+Trial Id (link), Sponsor, Lead Sponsor Type, Indications, Status, Phase, Countries,
+Patients, Planned Number Of Sites, Treatment Duration (months), Actual LPI Date, Drop Rate
+
+SALESFORCE: Connected via MCP (Salesforce Prod connector). Key objects: Account, Opportunity, Task.
+Use soqlQuery, find, getRelatedRecords, createSobjectRecord, updateSobjectRecord.
+
+COSMOS DB: Azure Cosmos DB pilot in progress. Data engineer loading 5 collection exports.
+Not yet live. When live, Claude interfaces via natural language chat queries.
+
+TRIALHUB SCOPE NOTE: TrialHub is scoped to Ora's active US-anchored indications.
+German dry eye device trials NOT in TrialHub. EU-only device programmes underrepresented.
+CT.gov is primary source for OUS device trial site intelligence.
+
+================================================================
+SECTION 3 — INDICATION CODING — CRITICAL RULES
+================================================================
+
+The 'indication' field is FREE TEXT entered by study teams. No controlled vocabulary.
+Same indication can appear under multiple label variants. NEVER search on a single exact string.
+ALWAYS use multi-term regex patterns.
+
+DIAGNOSTIC STEP — always run first when querying a new indication:
+  print(sites['indication'].value_counts().to_string())
+  # Review all variants before building search regex
+
+KNOWN LABEL VARIANTS BY INDICATION:
+
+nAMD / Wet AMD: 'Wet AMD' | 'Dry AMD' | 'Neovascular (Wet) Age-Related Macular Degeneration' | 'Age-Related Macular Degeneration with Geographic Atrophy'
+  → USE: 'Wet AMD|Dry AMD|Neovascular.*Macular|Geographic Atrophy|Age-Related Macular'
+
+Geographic Atrophy: 'Geographic Atrophy' | 'Age-Related Macular Degeneration with Geographic Atrophy'
+  → USE: 'Geographic Atrophy|Age-Related Macular'
+
+Glaucoma: 'Glaucoma' | 'Primary Open-Angle Glaucoma or Ocular Hypertension' | 'Devices - Glaucoma' | 'Optic neuropathies POAG and NAION'
+  → USE: 'Glaucoma|POAG|Ocular Hypertension|OHT|Optic Neuropath'
+
+Diabetic Retinopathy: 'Diabetic Retinopathy' | 'Proliferative Diabetic Retinopathy'
+  → USE: 'Diabetic Retinopathy|Proliferative Diabetic'
+
+Dry Eye: 'Dry Eye' | 'Devices-Dry Eye' | 'Meibomian Gland Dysfunction'
+  → USE: 'Dry Eye|Meibomian|Devices-Dry Eye'
+
+RVO: 'Macular Edema due to Retinal Vein Occlusion (RVO)' | 'Retinal Vascular Diseases'
+  → USE: 'RVO|Retinal Vein Occlusion|Retinal Vascular'
+
+Devices: 'Devices-Diagnostic' | 'Devices - Other' | 'Devices - Glaucoma' | 'Devices-Dry Eye'
+  → USE: 'Devices'
+
+CONSISTENT — SAFE TO SEARCH ALONE (single label, no variants):
+- Stargardt's Disease → exact: 'Stargardt'
+- Leber congenital amaurosis → exact: 'Leber|LCA'
+- Retinitis Pigmentosa → exact: 'Retinitis Pigmentosa'
+- Diabetic Macular Edema (DME) → exact: 'DME|Diabetic Macular Edema'
+- TED Thyroid Eye Disease → exact: 'TED|Thyroid Eye'
+- Pediatric Myopia → exact: 'Myopia'
+- Uveitis → exact: 'Uveitis'
+
+RETINA COMPOSITE SEARCH PATTERN:
+RETINA = 'nAMD|AMD|Macular|Retina|Diabetic|DME|Stargardt|IRD|Retinitis|Choroid|RVO|Vein Occlusion|Geographic Atrophy|Inherited'
+
+DATA QUALITY RECOMMENDATION: Standardise indication coding to controlled vocabulary.
+Priority: AMD variants, glaucoma variants, device labelling.
+Stargardt, LCA, RP, DME, TED already consistent — no remediation needed.
+
+================================================================
+SECTION 4 — PSM (PATIENT SITE MONTH) METHODOLOGY
+================================================================
+
+DEFINITION: PSM = enrolled patients / (n_sites × enrollment_months)
+Fundamental unit of enrollment productivity. Normalizes across studies.
+
+STUDY-LEVEL PSM: total_enrolled / (n_active_sites × enrollment_duration_months)
+Use ACTUAL enrollment duration (FPFV to LPLV), not planned window.
+
+SITE-LEVEL PSM: site_enrolled / site_enroll_months
+site_enroll_months = months between site's first and last patient enrolled.
+Sites with 0 enrolled → PSM = 0, NOT null. Zero is meaningful (activated, didn't enroll).
+
+~80% NULL PSM RATE — STRUCTURAL FACT:
+Approximately 80% of site records have null PSM. This is structural — Veeva only stores
+site-level enrollment counts when captured. Null ≠ zero enrollment.
+NEVER interpret null PSM as zero performance.
+Always report n (sites with non-null PSM) when presenting benchmarks.
+Distinguish null (unknown) from zero (enrolled nothing) explicitly.
+
+BLOCK ENROLLMENT EXCLUSION:
+Exclude block enrollment studies from startup speed calculations.
+Sponsor pre-selects patients before site activation — timing not independently measurable.
+Flag: studies where SIV→FSI = 0 days. Confirm with clinical ops when uncertain.
+
+SITES NEEDED FORMULA:
+sites_needed = target_enrolled / (planning_PSM × enrollment_months)
+buffer = sites_needed × 1.20  [20% standard buffer]
+Example: 80 pts / (0.5 PSM × 12 months) = 13.3 → recommend 16 with buffer
+
+PSM BENCHMARKS BY INDICATION:
+
+nAMD:
+  Historical Ora Veeva median: 0.065 (DO NOT use for planning)
+  Planning PSM: 0.35 (current industry standard)
+  Historical is wrong because it reflects era when anti-VEGF was novel
+  ALWAYS use 0.35 for planning. Flag the discrepancy to sponsor.
+
+Dry Eye (general): 0.8–1.5 US / 0.4–0.8 EU
+Dry Eye (Sjögren's specific): 0.3–0.5 EU
+
+Glaucoma: 0.557 US median / 0.286 EU median / Spain 0.143
+  Planning: 0.5 US / 0.3 EU / 0.25 neuroprotection subtype
+
+Stargardt's: 0.12–0.16
+  Screen fail rates: 76–80% (ABCA4 genotype confirmation barrier)
+  32 competing industry trials globally — same patients cycle through multiple studies
+
+Diabetic Retinopathy (DME): 0.130 US / 0.087 EU
+Early-stage DR with ERG criterion: 0.05–0.10 (novel population, very low)
+
+Retinitis Pigmentosa: 0.1–0.2 US / 0.05–0.15 EU
+  Planning: 0.12. Varies by gene target.
+
+PCED: 0.15–0.25
+TED: 0.30–0.50 US / 0.20–0.40 EU
+Neuroprotection (glaucoma): 0.25–0.40 US / 0.15–0.30 EU
+
+SCREEN FAIL DEFAULTS:
+Dry Eye general: 25–35%
+Dry Eye Sjögren's: 40–50%
+nAMD: 30–40%
+Glaucoma: 30–35%
+Early DR ERG: 40–55%
+IRD gene therapy: 50–70%
+TED (active, CAS≥4): 35–45%
+PCED: 30–40%
+EU adjustment: +5–10% vs US
+
+DROPOUT DEFAULTS:
+3–6 month studies: 8–12%
+12-month studies: 10–15%
+18–24 month studies: 15–20%
+
+================================================================
+SECTION 5 — BENCHMARK & COMPARATOR SELECTION RULES
+================================================================
+
+PRIORITY HIERARCHY (most preferred first):
+1. Ora Veeva — same indication, same geography, same phase
+2. Ora Veeva — same indication, different geography OR adjacent indication
+3. TrialHub industry benchmarks — same phase, similar geography
+4. CT.gov site-level data
+5. Literature/assumption — flag clearly, last resort only
+
+VETTING RULES:
+- Screen fail rate only valid if between 5–80%. Outside = data entry error.
+- Exclude studies with <3 enrolled from PSM benchmarks.
+- nAMD: never use 0.065 historical without flagging discrepancy.
+- Small n (<5 PSM observations): widen to adjacent indications, note limitation.
+
+================================================================
+SECTION 6 — VEEVA QUERY SAFETY RULES
+================================================================
+
+MANDATORY RULE 1: Always filter org name + state + city.
+Never aggregate using org name alone. Partial name search without geo filter = contamination.
+
+MANDATORY RULE 2: Print distinct orgs before aggregating.
+Code pattern:
+  sites_found = df[df['Organization'].str.contains('term', case=False, na=False)]
+  print(sites_found[['Organization','Location City','country']].drop_duplicates().to_string())
+  # Review before proceeding
+
+MANDATORY RULE 3: Multi-location orgs — treat each city as separate site.
+
+MANDATORY RULE 4: Validate returned records match intention before analysis.
+
+MILESTONE DATA RULES:
+- Use 2023+ data only (older records have high error rates)
+- Exclude outliers >730 days in any milestone gap (data entry error)
+- Use median not mean (robust to outliers)
+- Jan 1900 dates = null placeholder — exclude from all analysis
+- Aug 2205 = typo for 2025 — exclude, flag for correction
+- Piedmont Eye Center: use Paauw data only, exclude Javey for AesculaTech analysis
+
+MILESTONE COLUMNS:
+Selected→Contract, Contract→IRB, IRB→SIV, SIV→FSI, Contract→SIV, Contract→FSI
+Color coding: ≤30 days = green, 31–90 days = amber, >90 days = red
+
+================================================================
+SECTION 7 — KNOWN DATA QUALITY ISSUES & CORRECTIONS
+================================================================
+
+1. VIRGINIA EYE CONSULTANTS ≠ VIRGINIA EYE INSTITUTE
+   - Virginia Eye Consultants: Norfolk/Virginia Beach VA. 0 patients enrolled across ALL 6 Ora studies.
+   - Virginia Eye Institute: Richmond VA. Different institution, different city, different PIs.
+   - Previously conflated. Virginia Eye Consultants zero enrollment was obscured by this error.
+   - Fix: always filter by city when querying Virginia eye sites.
+
+2. PRIMARY EYE CARE ASSOCIATES (NC) ≠ EYE CARE ASSOCIATES OF NEVADA
+   - Eye Care Associates of Nevada: Las Vegas NV, PI: Steven Leibowitz MD
+   - Primary Eye Care Associates: North Carolina
+   - False match from partial string search without state filter
+   - Eye Care Associates of Nevada is an explicit canonical entry in the alias table
+
+3. UC CAMPUS FALSE MATCHES
+   - UCSD (San Diego) ≠ UC Irvine ≠ UC Davis ≠ UC Berkeley
+   - Always include city filter for any UC campus query
+
+4. ProQR → SEPUL REBRAND
+   - ProQR Therapeutics rebranded to Sepul
+   - In Veeva: "ProQR LCA" = sepofarsen/QR-110 for LCA10 (CEP290 mutation)
+   - Coded as "Leber congenital amaurosis" — NOT Usher syndrome
+   - ProQR had TWO programmes: QR-110/sepofarsen (LCA10) and QR-421a/ultevursen (USH2A)
+   - Only LCA10 programme is in Ora Veeva. USH2A programme not in Veeva.
+   - PIs on ProQR LCA study: Bart Leroy (Belgium), Stephen Russell (US), Samuel Jacobson (US)
+
+5. VITA EYE CLINIC / CORE INC
+   - Vita Eye Clinic is canonical alias for CORE Inc
+   - PI: Patrick Vollmer, OD. Location: Shelby, NC
+   - Do not report as two separate entities
+
+6. PI CREDENTIAL CORRECTIONS:
+   - Nancy Cline = MD (not OD). AesculaTech study, Houston area.
+   - Eugene McLaurin = MD, FACS (not OD). Total Eye Care, Memphis TN.
+
+7. DATE PLACEHOLDERS:
+   - January 1900 = null. Treat all dates before 2000 as null.
+   - August 2205 = typo for 2025. Exclude and flag.
+
+8. VANCE THOMPSON VISION CAVEAT:
+   - VTV milestone data in Ora Veeva comes from cataract/refractive studies only
+   - No confirmed dry eye study history in Veeva
+   - Do not assert DE study history without confirming it exists
+   - Do not use multi-location language unless confirmed
+
+9. SIMON TAYLOR / ROYAL SURREY (UK):
+   - Appears under two org names: "Royal Surrey County Hospital" and "Royal Surrey NHS Foundation Trust"
+   - Same site, NHS reorganization. 2 enrolled under County Hospital name, 0 under Foundation Trust.
+   - Recommend deduplication in Veeva.
+
+10. PAULO EDUARDO STANGA / THE RETINA CLINIC LONDON:
+    - Activated in 5 Ora studies (DME, Dry AMD, Stargardt's, Other Retina) with 0 enrolled in all.
+    - Consistent underperformance pattern — requires site performance review before future selection.
+
+11. ROBERT MACLAREN / OXFORD EYE HOSPITAL:
+    - 0 enrolled in RN03-CP-0001 RP study. Global IRD KOL (Nightstar Therapeutics founder, now Biogen).
+    - Zero enrollment likely reflects patient eligibility barriers in that specific study, not site capability.
+    - Investigate before excluding from IRD study recommendations.
+
+12. UNIVERSITÄTSKLINIKUM REGENSBURG (GERMANY):
+    - Appeared as false match in UK query due to country coding error in Veeva.
+    - Recommend correcting country code.
+
+13. VEEVA ORG VS SITE DISTINCTION:
+    - Veeva stores Organization and Site as separate levels
+    - One org can have multiple site locations
+    - Never aggregate across all locations without intent
+    - Each city = separate site for analysis
+
+14. 4D MOLECULAR THERAPEUTICS:
+    - NOT a current Ora client despite appearing in some datasets
+    - Do not classify as "Has Wins" or "Confirmed Ora Client" in BD reports
+
+================================================================
+SECTION 8 — SPONSOR CROSSWALK LOGIC
+================================================================
+
+FILE: Sponsor_Crosswalk_MASTER.xlsx
+Sheet 1: 286 new matches (current cycle)
+Sheet 2: 137 previously confirmed matches
+Sheet 3: 13 SF-inactive accounts
+Sheet 4: 206 no SF match found
+
+AUTHORITATIVE SF LIST: sf_db_full.json — 1,910 active accounts
+
+MATCH HIERARCHY (preferred order):
+1. Exact name match
+2. Normalized name (strip: Inc., LLC, GmbH, Ltd., Therapeutics, Biosciences, Pharmaceuticals)
+3. Known alias / rebrand (e.g., ProQR → Sepul, VYNE Therapeutics → Yarrow Bioscience)
+4. Parent company match (e.g., Dr. Gerhard Mann GmbH → Bausch + Lomb)
+5. No match → Sheet 4, flag for BD team
+
+KNOWN EXAMPLE:
+Instituto Grifols S.A. → Grifols (SF ID: 001RQ00000O3DasYAF, Tier 2, Owner: Norberto Diaz)
+
+KNOWN SF ACCOUNTS:
+- Inflammasome Therapeutics Inc (SF ID: 0018a00002ILmnDAAT, Owner: Mike Watson, Type: Business Development)
+- Yarrow Bioscience (NASDAQ: YARW, formerly VYNE Therapeutics — merger closed July 28, 2026)
+
+================================================================
+SECTION 9 — SITE ALIAS TABLE
+================================================================
+
+FILE: Site_Alias_Table.xlsx (48 entries)
+Columns: alias_name, canonical_name, pi_name, city, state, notes
+
+KEY CANONICAL ALIASES:
+- Vita Eye Clinic → CORE Inc. | PI: Patrick Vollmer OD | Shelby NC
+- Eye Care Associates of Nevada → Eye Care Associates of Nevada | PI: Steven Leibowitz MD | Las Vegas NV
+  [Explicit canonical entry — must NOT match to Primary Eye Care Associates NC]
+
+When site name in TrialHub/CT.gov doesn't match Veeva, check alias table first.
+
+================================================================
+SECTION 10 — SPONSOR-FACING RULES (NON-NEGOTIABLE)
+================================================================
+
+1. NO data source citations. Never mention CT.gov, TrialHub, Veeva, UCSD, FWA in sponsor documents.
+2. NO 100% screen-to-enroll language. Always present with screen fail assumptions.
+3. NO study names. Use "a recent Ora Phase IIa study" not "LASN01-CL-2201".
+4. NO multi-location language unless independently verified.
+5. NO unverified PI credentials. Omit credential rather than guess.
+6. Forward-looking: use "Potential Phase X" not "Phase X needed".
+7. Recently completed: use "Sponsor may have data and may be planning next study now."
+   Never say "Sponsor needs a Phase X" or "Sponsor is planning a Phase X."
+
+INTERNAL DOCUMENTS (BD targets, site performance, ELT decks) are exempt from rules 1–5.
+May cite data sources. May use internal terminology.
+
+================================================================
+SECTION 11 — BD COPY CONVENTIONS
+================================================================
+
+CLIENT GROUP SEGMENTATION:
+- SF — Has Wins: In Salesforce + confirmed Ora win. Highest BD priority.
+- SF — Prospect: In Salesforce, no confirmed wins. Active BD target.
+- Not in SF: Not in Salesforce. Check crosswalk first, then prospect.
+
+BD CALL PREP SHEET STRUCTURE (in order):
+1. Time-sensitive news banner (merger, trial milestone, FDA news — always check web on day of prep)
+2. Company snapshot (ticker, HQ, funding, lead asset, mechanism)
+3. Pipeline / programme timeline
+4. Ora's relevant experience (studies, sites, enrolled, countries — framed as hook)
+5. Competitive landscape
+6. Key questions for the call
+7. Ora talking points
+
+================================================================
+SECTION 12 — OUS COUNTRY FRAMEWORK
+================================================================
+
+COUNTRY PRIORITY:
+UK: MHRA, 2–3 months. Strong network (nAMD, TED, glaucoma, PCED). Moorfields anchor.
+Germany: EU-CTR + BfArM, 3–5 months. University hospital depth. Kahaly for TED.
+Spain: EU-CTR + AEMPS, 3–5 months. Fast enrollment. Garrido for TED, Simó for early DR.
+France: EU-CTR + ANSM, 4–5 months. Quinze-Vingts, Rouland for glaucoma.
+Italy: EU-CTR + AIFA, 4–6 months. Bandello (Milan), Midena (Padova), Simonelli (Naples IRD).
+Australia: CTN 28-day notification — FASTEST OUS. CERA Melbourne. Always include when speed is priority.
+Canada: Health Canada, 3–4 months. Trope (Toronto), Chauhan (Dalhousie) for glaucoma.
+Israel: MOH, 3 months. Hadassah Jerusalem. Fast IRB, sophisticated population, good for rare disease.
+Brazil: ANVISA, 6–12 months NCE / 3–6 months device. Large population but slow. Only for large Phase 3.
+China: NMPA, 6–18 months. Beijing Tongren for IRD. Local partner programmes only.
+
+OUS SITE COUNT: Target 2–4 sites per priority country.
+Never recommend 1 site only unless strategic reason (regulatory overhead not justified).
+Australia exception: even 1–2 sites add speed value.
+
+"INITIATED BY" = regulatory submission / study activation, NOT FPFV.
+FPFV happens 3–6 months after initiation. Always clarify which date sponsor means.
+
+UK NHS vs NON-NHS:
+NHS sites: longer contracting (trust-level R&D approval + standard IRB). Broader patient access via GP referrals.
+Private sites: faster contracting, narrower patient pool. The Retina Clinic London (Stanga) = private.
+Academic sites (not NHS trust): Vision Sciences Aston, Cardiff University, Univ of Southampton.
+
+================================================================
+SECTION 13 — INDICATION-SPECIFIC INTELLIGENCE
+================================================================
+
+--- UVEITIS ---
+CRITICAL: NEVER report uveitis PSM without specifying anatomic subtype.
+Anterior uveitis (iritis, iridocyclitis, JIA-associated, HLA-B27): most common, easy to enroll. Anterior segment sites.
+Intermediate uveitis (pars planitis): less common. Vitreous involvement confirmation needed.
+Posterior uveitis (choroiditis, chorioretinitis): rare, severe. Specialized uveitis centres only.
+Panuveitis: rarest. Very few national sites can run these studies.
+NIU = Non-infectious uveitis — broad catch-all. ALWAYS confirm subtype before benchmarking.
+NEVER use anterior uveitis trials as benchmarks for posterior/panuveitis studies.
+
+--- nAMD ---
+Planning PSM = 0.35. Historical Ora PSM = 0.065 (DO NOT USE FOR PLANNING).
+Historical reflects era when anti-VEGF was novel. Current industry PSM = 0.3–0.5.
+Always explain discrepancy to sponsor.
+
+--- STARGARDT'S DISEASE ---
+32 competing industry trials globally (as of mid-2026). Same patients cycle through multiple studies.
+PSM: 0.12–0.16. Screen fail: 76–80%. ABCA4 biallelic genotype confirmation required.
+OUS screen fail even higher than US.
+Key sites: Bascom Palmer (Byron Lam), Johns Hopkins (Mandeep Singh), Mass Eye and Ear (Rachel Huckfeldt),
+Moorfields UK (Michel Michaelides), CERA Australia.
+Ora Stargardt studies: 4 total (AAV039-101/AAVantgarde, ACDN-01-001+000/Ascidian, INS1203-101/Insmed)
+Top enrollers: Lesley Everett (OHSU) 2, Robert Sisk (Cincinnati) 2, Karl Csaky (Retina Foundation SW) 2.
+
+--- TED (THYROID EYE DISEASE) ---
+Ora ran LASN01-CL-2201 (Lassen Therapeutics Phase IIa): 46 sites, US/UK/Spain/Germany, 41 enrolled.
+REQUIRES oculoplastics/orbital specialists — NOT general ophthalmology.
+REQUIRES endocrinology referral relationships for Graves' patient pipeline.
+Assessments: CAS scoring, Hertel exophthalmometry (proptosis), diplopia, VFQ-25.
+Key US enrollers: Oester (Wilmington Eye, 9 enrolled — top US), Leibowitz (Las Vegas, 8 enrolled).
+Key OUS: Garrido (Seville, 5 enrolled — top OUS), Bermúdez (Córdoba 3), Kahaly (Mainz — leading European TED/Graves' researcher), Malik (Moorfields).
+Other US PIs: Kossler (Stanford — TED KOL), Liu (Shiley/UCSD), Wester (Bascom Palmer), Schiffman (Neuro-Eye Houston), Yen (Baylor), Zhang (UW), Dairi (Duke).
+UK TED PIs: Malik (Moorfields), Lee (Imperial), Meredith (Newcastle), Chang (Leeds), Cauchi (Glasgow), McCormick (Liverpool).
+Germany TED PIs: Kahaly (Mainz), Eckstein (Essen), Oeverhaus (Essen), Falkenau (Münster), Gosheva (Tübingen).
+
+Yarrow Bioscience (NASDAQ: YARW, formerly VYNE Therapeutics, merger closed July 28 2026):
+Lead asset YB-101 = anti-TSHR mAb, first-in-class. Mechanism: blocks TSHR directly (root cause of GD+TED).
+GD Phase 2a/2b: first patient dosed July 28 2026.
+TED US Phase 1b/2b: TBD, informed by GenSci China Phase 1 data.
+Competitive: Tepezza (teprotumumab, Amgen/Horizon, approved 2020, anti-IGF-1R, ~$700K/course),
+Batoclimab (Immunovant, anti-FcRn, Phase 3), Rozanolixizumab (UCB, anti-FcRn, Phase 2/3).
+
+--- PCED (PERSISTENT CORNEAL EPITHELIAL DEFECT) ---
+Primary endpoint = COMPLETE corneal epithelial closure (fluorescein staining = 0mm²).
+"Improvement" or "reduction" language NOT acceptable. Regulators require complete closure.
+Sites need: anterior segment surgeons with PCED experience + high-resolution anterior segment OCT.
+Rare condition. PSM: 0.15–0.25.
+
+--- EARLY-STAGE DIABETIC RETINOPATHY (ERG-DEFINED NEURODYSFUNCTION) ---
+Novel criterion: RETeval portable ERG required to confirm retinal neurodysfunction before enrollment.
+Most retina centres don't routinely perform ERG screening — sites need this capability or training.
+ETDRS ≤47 = mild/no clinical retinopathy — patients look normal on fundus exam.
+Primary care/endocrinology referral pipeline as important as ophthalmology site database.
+PSM: 0.05–0.10. Much lower than standard DME.
+Historical comparator: EUROCONDOR (NCT01726075, Rafael Simó/Cristina Hernández, Vall d'Hebron Barcelona).
+43 centres, Spain/Italy/Portugal/UK/Germany/Denmark, 449 subjects, ~3 years.
+
+--- IRD / GENE THERAPY ---
+PSM heavily dependent on specific mutation. RPGR (X-linked RP) larger pool than CEP290 LCA10.
+Genotype confirmation by molecular testing required at all gene therapy sites.
+Sites with natural history registries = strongest candidates.
+ProQR (now Sepul): LCA10/sepofarsen in Veeva as "ProQR LCA" coded as LCA. NOT Usher.
+USH2A programme (ultevursen/QR-421a) NOT confirmed in Ora Veeva.
+
+BEIJING TONGREN EYE CENTER (Capital Medical University):
+Leading IRD site in Beijing. Director: Prof. Zi-Bing Jin (金子兵).
+Pronunciation: "Zuh-Bing Jeen". Address as "Professor Jin".
+Interventional PI: Wenbin Wei PhD (active PI on ZM-02 gene therapy trial).
+Ora experience at Beijing Tongren: 1 study (OcuMension OT-101, Pediatric Myopia, PI: Fengju Zhang, 17 enrolled).
+DIFFERENT department from IRD — Ora does not have an IRD relationship at Beijing Tongren.
+
+BEIJING TONGREN IRD INVESTIGATORS:
+- Prof. Zi-Bing Jin (Director, Key Lab)
+- Ke Xu (senior researcher, IRD genetics)
+- Yang Li (co-investigator, IRD genetics)
+- Xiao-Hui Zhang (co-investigator)
+- Yue Xie (co-investigator, RP variant profiling)
+- Ting Xiao (co-author, adRP cohort)
+- Wenbin Wei PhD (active interventional PI — ZM-02 gene therapy)
+- Laichun Lu PhD (co-PI ZM-02)
+- Shen Chang (operational contact: shenc_0526@163.com)
+- Wei Wenbin (contact: weiwenbintr@163.com)
+
+BEIJING TONGREN IRD STUDIES (CT.gov):
+1. NCT06292650 — ZM-02 gene therapy RP (Zhongmou Therapeutics, Recruiting, PI: Wenbin Wei, 12 pts, Feb 2024)
+2. NCT07417566 — DC6001 IRD (Heronova Pharmaceuticals, Recruiting, 76 pts, Jan 2026)
+3. NCT07586306 — VGR-R01 contralateral Bietti's (Shanghai Vitalgen BioPharma, Not yet recruiting, 15 pts, Jun 2026)
+4. NCT06196827 — LX101 gene therapy IRD (Innostellar Biotherapeutics, Active NR, 9 pts, Jul 2022)
+5. NCT03944239 — hESC RPE transplantation RP (Qi Zhou/CAS, Active NR, 25 pts, May 2021)
+6. NCT05957276 — Global IRD Patient Registry (Janssen, Active NR, 888 pts, Aug 2023) — STRATEGIC
+7. NCT05399069 — VGR-R01 Bietti's Crystalline Dystrophy (Beijing Tongren, Unknown, 3 pts, Sep 2022)
+8. NCT04722107 — rAAV2/8-hCYP4V2 Bietti's (Beijing Tongren, Unknown, 12 pts, Aug 2021)
+9. NCT03566147 — RPE transplantation RP/LCA (Eyecure Therapeutics, Unknown, 30 pts, Aug 2018)
+
+OTHER BEIJING IRD SITES:
+- Peking University Third Hospital — Prof. Zhizhong Ma (IRD genetics, Bietti's, RP cohorts)
+- Peking Union Medical College Hospital (PUMCH) — Ruifang Sui (prominent IRD clinician)
+
+--- GLAUCOMA NEUROPROTECTION ---
+PSM: 0.25–0.40 US / 0.15–0.30 EU.
+Endpoints: RNFL/GCL thinning on OCT, visual field progression, ERG, microperimetry, contrast sensitivity.
+Sites need longitudinal OCT records + established glaucoma patient population.
+Study duration typically 18–24 months total (8 months enrollment + 12 months follow-up).
+
+OUS NEUROPROTECTION NETWORK (80 patients, 12 months, 0.5 PSM → 16 sites):
+UK: Moorfields (Garway-Heath/Viswanathan), Birmingham (Denniston)
+Germany: Düsseldorf (Guthoff), Cologne (Dietlein), Tübingen (Bartz-Schmidt)
+Spain: ICO Barcelona (Bertoni/Tauste), Hospital La Princesa Madrid (García-Feijoo)
+Australia: CERA Melbourne (Keith Martin) ×2
+France: Quinze-Vingts Paris (Nordmann), CHU Bordeaux (Rouland)
+Canada: Toronto Western (Trope), Dalhousie Halifax (Chauhan)
+Israel: Hadassah Jerusalem (Alon Harris)
+
+--- USHER SYNDROME / USH2A ---
+No Usher-specific studies in Ora Veeva. No USH2A-coded study.
+10 RP studies (40 sites, 140 enrolled) may include USH2A patients under broad RP eligibility.
+RP PIs who see Usher patients: Pennesi (OHSU), Fahim (Kellogg), Huckfeldt (Mass Eye and Ear).
+Active industry USH2A trials: AAVantgarde Bio (CELESTA), Nacuity, Laboratoires Thea.
+9 total industry Usher trials in TrialHub.
+
+================================================================
+SECTION 14 — ORA STUDY REFERENCE LIST (KEY STUDIES)
+================================================================
+
+LASN01-CL-2201 — Lassen Therapeutics — TED — Phase IIa
+46 sites, US(19)/UK(16)/Spain(6)/Germany(5). 41 enrolled, 56 screened.
+
+SB-421a-006 (LUNA) — Spark Biosciences — RP — Phase 2/3
+Multiple sites US + UK. 31 sites (Ora network), 91 enrolled.
+
+SPIAM-301 — Dry AMD — UK primary study. 14 UK sites, 9 enrolled, 76% SF.
+
+OcuMension OT-101 — Pediatric Myopia — China + UK
+China: multiple sites including Beijing Tongren (Fengju Zhang, 17 enrolled)
+UK: 10 sites, 31 enrolled. Top: Sheffield Children's (Jessy Choi, 13), Aston/Vision Sciences (Nicola Logan, 9)
+
+AAV039-101 — AAVantgarde Bio — Stargardt's — Phase Ib
+17 sites: US(9), UK(4), Netherlands(1), Belgium(1), Italy(1), Norway(1). 5 enrolled, 76% SF.
+
+ACDN-01-001 — Ascidian Therapeutics — Stargardt's — Phase I
+16 US sites, 10 enrolled, 80% SF.
+
+BP41321 — Diabetic Retinopathy — UK(7), US. 10 enrolled UK.
+
+BL-CO04-ARTLCOMP-1401 — Bausch + Lomb / Dr. Gerhard Mann — Dry Eye — Germany
+Artelac Complete MDO vs VISMED MULTI. 120 subjects, 12 German sites.
+Primary endpoint: OSDI change from baseline at Day 90 (non-inferiority, margin 13.4 units).
+Current sites: Messmer(LMU Munich), Seitz(UKS Saarland), Böhringer(Freiburg), Deuter(Tübingen),
+Steindor(Düsseldorf), Lentzsch(Cologne), Auffarth(Heidelberg), Schmickler(Augen Zentrum Nordwest),
+Hampel(Leipzig—WITHDREW), Lanzl(Rund ums Auge), Jacobi(Augen & Haut Zentrum),
+Lorenz(Mainz), Sekundo(Marburg), Ntoukas(Charité—DECLINED), Menghesha(MVZ Augenblick Rheinland—qualifying).
+
+AESCULATECH STUDY — Site recommendation completed. Key findings:
+Virginia Eye Consultants: 0 enrolled across all 6 Ora studies.
+Piedmont Eye Center: fastest startup (Paauw — Contract→SIV 35d, SIV→FSI 11d).
+Total Eye Care (Evans): 12d SIV→FSI median — fastest first patient.
+Mass Eye and Ear: 151d Contract→IRB, 256d SIV→FSI — 16+ months contract to first patient.
+Baylor: 45d Contract→IRB, 93d SIV→FSI.
+
+================================================================
+SECTION 15 — GERMAN DE STUDY SITE INTELLIGENCE (B+L)
+================================================================
+
+TrialHub has NO German DE trials in scope. CT.gov is the ONLY source.
+RHEUMATOLOGY ≠ OPHTHALMOLOGY: Sjögren's systemic trials run in rheumatology depts.
+Rheumatology sites cannot run ophthalmology protocols (TFBUT, slit lamp, fluorescein, Schirmer).
+German ophthalmology depts include "Augenheilkunde" or "Augenklinik" in their name.
+
+B+L ADDITIONAL SITE RECOMMENDATIONS (confirmed ophthalmology):
+1. Universitätsmedizin Greifswald, Klinik und Poliklinik für Augenheilkunde
+   PI: Prof. Dr. med. Andreas Stahl | Northeastern Germany gap | DE study: NCT03821415 (Redwood Pharma)
+
+2. Universitätsklinikum Dresden Carl Gustav Carus, Augenklinik
+   PI: Univ.-Prof. Dr. med. Ramin Khoramnia (new director since Jan 2025)
+   Eastern Germany gap after Leipzig withdrew. Sjögren's studies: NCT04968912, NCT06741969.
+   APPROACH OPHTHALMOLOGY (Augenklinik) — NOT rheumatology, even though both in same hospital.
+
+3. TUM Klinikum Rechts der Isar, Klinik und Poliklinik für Augenheilkunde, Munich
+   PI: Univ.-Prof. Dr. Dr. med. Peter Charbel Issa (Director since Apr 2024)
+   Deputy: Univ.-Prof. Dr. med. Mathias Maier
+   Confirmed DE device study: NCT03821415. Second Munich site (separate from LMU).
+
+4. Universitätsklinikum Würzburg, Augenklinik und Poliklinik
+   PI: Prof. Dr. Jost Hillenkamp
+   Sjögren's studies: NCT06741969, multiple Novartis Sjögren's.
+   Also: APD-209 eye drops for epidermolysis bullosa (NCT01977443) — same patient population as B+L protocol.
+
+PIPELINE SITES IN DISCUSSION:
+- MVZ Augenblick Rheinland (Menghesha, Brühl): SQV done 13Jul2026, SIV target August — count as activated.
+- Augenklinik am Wittenbergplatz (Pahlitzsch, Berlin): CDA pending, B+L expressed interest.
+- Trocken Augen Praxis (Dr. Asadi): Berlin/Hamburg/Frankfurt network, not yet approached.
+- Sanoculus (Jerrentrup, Berlin): DECLINED.
+
+================================================================
+SECTION 16 — UK RETINA SITE NETWORK
+================================================================
+
+OVERALL UK (all indications, Veeva):
+13 studies, 58 organizations, 66 PIs, 71 enrolled, 165 screened, 26 cities.
+Median PSM: 0.130 (n=11 non-null).
+
+NOTE: Pediatric Myopia (OcuMension) carries 31/71 enrolled (44%). Without it:
+UK retina-only: 31 enrolled across 9 studies — thin track record.
+
+TOP UK ENROLLERS (all indications):
+Sheffield Children's Hospital (Jessy Choi) — 13 enrolled — NHS — Pediatric Myopia
+Vision Sciences Aston University (Nicola Logan) — 9 enrolled — Academic — Pediatric Myopia
+Moorfields Eye Hospital NHS (Mariya Moosajee) — 6 enrolled — NHS — RP
+Moorfields Eye Hospital (Annegret Dahlmann-Noor) — 4 enrolled — NHS — Pediatric Myopia
+Manchester Royal Eye Hospital (Leon Au) — 3 enrolled — NHS — Pediatric Myopia
+Royal Liverpool University Hospital (Ian Pearce) — 3 enrolled — NHS — DR/AMD
+University of Edinburgh/NHS Lothian (Roly Megaw) — 3 enrolled — NHS — RP
+South Tyneside & Sunderland NHS (Ajay Kotagiri) — 3 enrolled — NHS — Dry AMD
+Royal Victoria Hospital Belfast (Tunde Peto) — 3 enrolled — NHS — DR/AMD
+Central Middlesex Hospital London NW (Christiana Dinah) — 3 enrolled — NHS — DME/AMD
+Guy's & St Thomas' NHS (Chris Hammond) — 3 enrolled — NHS — Glaucoma
+Moorfields (Mohsan Malik) — 2 enrolled — NHS — TED
+Moorfields NHS (Michel Michaelides) — 2 enrolled — NHS — Stargardt's
+Oxford Eye Hospital (Jasmina Kapetanovic) — 2 enrolled — NHS — RP
+Imperial London (Vickie Lee) — 2 enrolled — NHS — TED
+Bristol Eye Hospital (Serena Salvatore) — 2 enrolled — NHS — Dry AMD
+Royal Surrey County Hospital (Simon Taylor) — 2 enrolled — NHS — DR
+
+UK NHS CLASSIFICATION:
+NHS: Moorfields, Manchester Royal Eye, Royal Liverpool, University of Edinburgh/NHS Lothian,
+South Tyneside & Sunderland NHS, Royal Victoria Belfast, Central Middlesex, Guy's & St Thomas',
+Oxford Eye Hospital, Imperial London, Bristol Eye Hospital, Royal Surrey, Sunderland Eye Infirmary,
+Hull University Teaching Hospitals, Newcastle upon Tyne NHS, King's College Hospital,
+Royal Surrey NHS Foundation Trust, Nottingham University Hospital, Sheffield Teaching Hospitals NHS,
+Saint James's University Hospital, Cambridge University Hospitals (CUH), Colchester Hospital,
+Salisbury NHS Foundation Trust, University Hospital Southampton NHS, York & Scarborough Teaching Hospitals,
+University Hospitals of Leicester, Sheffield Children's Hospital.
+PRIVATE: The Retina Clinic London (Paulo Eduardo Stanga) — 5 studies, 0 enrolled — FLAG.
+ACADEMIC: Vision Sciences/Aston University (Nicola Logan), Cardiff University (Marcela Votruba),
+University of Southampton (Andrew Lottery).
+
+================================================================
+SECTION 17 — CT.GOV SEARCH METHODOLOGY
+================================================================
+
+API BASE: https://clinicaltrials.gov/api/v2/studies
+
+KEY QUERY PATTERNS:
+# Search by facility + country
+params = {
+    'query.term': 'AREA[LocationFacility]"Tongren" AREA[LocationCountry]China',
+    'query.cond': 'retinitis pigmentosa',
+    'fields': 'NCTId,BriefTitle,LeadSponsorName,OverallStatus,Phase,StartDate,EnrollmentCount',
+    'pageSize': 25, 'format': 'json'
+}
+
+# Fetch single study with full PI details
+r = requests.get(f"{base}/{nct}", timeout=20)
+locs = r.json().get('protocolSection',{}).get('contactsLocationsModule',{}).get('locations',[])
+for loc in locs:
+    if loc.get('country') == 'Germany':
+        pi = next((c.get('name') for c in loc.get('contacts',[])
+                   if c.get('role') == 'PRINCIPAL_INVESTIGATOR'), '')
+
+ALWAYS include time.sleep(0.15) between calls to avoid rate limiting.
+Handle isinstance checks — location and contact records can return as str, not dict.
+
+TRIALHUB vs CT.GOV:
+Use TrialHub: industry trial frequency by country, enrollment benchmarks, competitive landscape.
+Use CT.gov: German dry eye device studies, EU-only device studies, OUS PI identification, IRD sites.
+TrialHub does NOT cover: German DE device trials, EU-only programmes.
+
+================================================================
+SECTION 18 — REPORT TYPES & FORMAT RULES
+================================================================
+
+ALL REPORTS: Single-file HTML, Ora navy/teal palette, Chrome print-to-PDF.
+Background: #F0F4F8. Navy: #1B2A4A. Teal: #1A7F8E.
+
+REPORT TYPES:
+1. Feasibility Report — PSM benchmarks, enrollment model, sensitivity table, OUS framework, risk flags.
+2. BD Completion Targets — Sponsors with completing studies, SF segmentation, recommended action.
+3. Site Recommendation Report — Scorecard (PSM, milestones, PI credentials), milestone table, caveats.
+4. Site Performance Report — PSM vs network median, milestone timelines, comparative ranking.
+5. Competitive Landscape — Active industry trials, sponsor map, Ora differentiation.
+6. BD Call Prep Sheet — Company snapshot, pipeline, Ora hook, questions, talking points.
+7. ELT/Executive Presentation — 2 slides, high-level KPIs, data banner, Chrome print-to-PDF.
+8. Milestone Timeline Analysis — Excel (3 tabs: detail, median summary, average summary).
+
+SENSITIVITY TABLE: Always include in feasibility reports.
+Rows = PSM scenarios (Low/Base/High). Columns = site count (Conservative/Planned/Aggressive).
+Color: ≤protocol window = green, ≤+20% = amber, >+20% = red.
+
+INPUT MODES:
+1. Chat spec: Extract params, apply defaults, state assumptions, max 1–2 targeted questions.
+2. RFP/Protocol file: Read full doc, extract all specs, list found + missing, proceed with defaults for gaps.
+NEVER ask for info already in uploaded file. NEVER refuse because a spec is missing.
+
+RFP EXTRACTION CHECKLIST:
+- Indication + subtype
+- Phase + study design
+- Sample size + randomization ratio
+- Enrollment window vs total study duration
+- Target geographies
+- Number of sites
+- Key eligibility criteria (novel/restrictive)
+- Primary endpoint
+- Special equipment/procedures
+- "Initiated by" date (regulatory start or FPFV?)
+- Screen fail + dropout assumptions
+
+================================================================
+SECTION 19 — SALESFORCE INTEGRATION
+================================================================
+
+CONNECTED VIA MCP (Salesforce Prod). Key tools: soqlQuery, find, createSobjectRecord.
+
+COMMON QUERIES:
+FIND {Sponsor Name} IN ALL FIELDS RETURNING Account(Id, Name, OwnerId, Owner.Name, Type)
+
+SELECT Id, Name, StageName, Amount, Indication__c, of_Sites__c, Subjects__c
+FROM Opportunity WHERE AccountId = '[id]' ORDER BY CloseDate DESC
+
+CREATE TASK:
+createSobjectRecord('Task', {
+  Subject: 'BD Follow-up: [Sponsor] — [Indication]',
+  ActivityDate: '[YYYY-MM-DD]',
+  OwnerId: '[rep_user_id]',
+  WhatId: '[account_id]',
+  Description: '[key points]',
+  Status: 'Not Started', Priority: 'High'
+})
+
+ACCOUNT NOT FOUND WORKFLOW:
+1. Exact name search
+2. Partial/normalized search (strip legal suffixes)
+3. Check sf_db_full.json
+4. Check crosswalk Sheet 4
+5. If still not found → confirm no SF account, recommend creating one.
+
+================================================================
+SECTION 20 — MISCELLANEOUS INTELLIGENCE & NOTES
+================================================================
+
+PRONUNCIATION GUIDE:
+- Zi-Bing Jin: "Zuh-Bing Jeen". Chinese naming: Jin = family name. Address as "Professor Jin".
+
+KNOWN REBRANDS:
+- ProQR Therapeutics → Sepul
+- VYNE Therapeutics → Yarrow Bioscience (merger closed July 28 2026)
+
+ORA PLATFORM KPI STATS (ELT presentations):
+40+ reports, 40+ SME hours saved, 30+ indications, 15+ countries.
+Data banner: 250+ studies, 1,900+ sites.
+
+PENDING WORKSTREAMS:
+- Claude-powered internal Q&A app for BD reps (priority after IT meeting)
+- BD Phase 3 Completion Targets report rebuild (using updated master crosswalk)
+- Cosmos DB pilot (data engineer loading — 5 collection exports prepared)
+- Veeva data hygiene mandate (Ops leadership — active)
+- New Claude Project setup using this context document
+- EMR vendor exploration (Amaros, Viking — under consideration)
+- Internal feasibility modeling tool (under consideration)
+
+================================================================
+END OF MASTER CONTEXT DOCUMENT
+================================================================
+
+================================================================
+SECTION 21 — CROSS-DATABASE CONCATENATION & JOIN LOGIC
+================================================================
+
+The five data collections do NOT share a common primary key. Linking them requires
+specific join strategies depending on the analysis. Below is every cross-database
+relationship and how to execute the joins correctly.
+
+--- COLLECTION RELATIONSHIPS ---
+
+fact_site ←→ fact_study:
+  Join key: Study Name (fact_site) = Study Number (fact_study)
+  Type: Many-to-one (many sites per study)
+  Use: Enrich site records with study-level metadata (sponsor, phase, study_psm)
+  Code:
+    merged = sites.merge(studies, left_on='Study Name', right_on='Study Number', how='left', suffixes=('_site','_study'))
+
+fact_site ←→ Milestone Data (raw Veeva):
+  Join key: Organization + Study Name
+  Type: Many-to-many (one org+study can have multiple milestone records: Selected, Contract, IRB, SIV, FSFV)
+  CRITICAL: Milestone data is in LONG format — each row is one milestone event, not one site.
+  Must pivot to wide format before joining back to fact_site.
+  Code:
+    raw = pd.read_excel('Mike_Watson_Claude_Report__Site_Level__10Jul2026.xlsx')
+    raw['milestone_clean'] = raw['Milestone'].str.extract(
+        r'^(Site Selected|Contract Executed|Contract / Budget|IRB/EC Approval|SIV|FSFV|First Subject In)',
+        expand=False
+    ).replace({'Contract / Budget':'Contract Executed','First Subject In':'FSFV'})
+    raw['date'] = pd.to_datetime(raw['Actual Start Date'].combine_first(raw['Actual Finish Date']), errors='coerce')
+    raw = raw[raw['date'].dt.year > 2000]  # Exclude Jan 1900 placeholders
+
+    # Pivot to wide: one row per org+study with milestone dates as columns
+    for (org, study), grp in raw.groupby(['Organization','Study Name']):
+        dates = {}
+        for ms in ['Site Selected','Contract Executed','IRB/EC Approval','SIV','FSFV']:
+            r = grp[grp['milestone_clean']==ms]['date'].dropna()
+            if len(r): dates[ms] = r.min()
+        # Calculate gaps
+        def gap(a, b):
+            if a in dates and b in dates:
+                g = (dates[b] - dates[a]).days
+                return g if g >= 0 else None
+            return None
+
+fact_site ←→ TrialHub:
+  NO DIRECT JOIN KEY. These are separate data universes.
+  TrialHub = industry-wide trial metadata. Veeva fact_site = Ora-specific site data.
+  Connection: Manual — use indication and country as filtering dimensions, not join keys.
+  Use TrialHub for: industry PSM benchmarks, competitor trial counts, country frequency analysis.
+  Use Veeva for: Ora-specific site performance, PI relationships, enrollment actuals.
+  When combining: present Ora data and TrialHub data side-by-side, never merge into one table.
+
+fact_site ←→ Sponsor Crosswalk:
+  Join key: sponsor (fact_study, via study join) → sponsor_name (crosswalk)
+  Type: Many-to-one via fact_study intermediary
+  Path: fact_site → fact_study (on Study Name) → crosswalk (on sponsor)
+  Code:
+    # Step 1: Get sponsor from fact_study
+    site_with_sponsor = sites.merge(studies[['Study Number','sponsor']],
+                                     left_on='Study Name', right_on='Study Number', how='left')
+    # Step 2: Match to crosswalk
+    crosswalk = pd.read_excel('Sponsor_Crosswalk_MASTER.xlsx', sheet_name=0)  # Sheet 1 = new matches
+    site_with_sf = site_with_sponsor.merge(crosswalk[['sponsor_name','sf_account_name','sf_account_id','sf_tier','sf_owner']],
+                                            left_on='sponsor', right_on='sponsor_name', how='left')
+
+TrialHub ←→ Sponsor Crosswalk:
+  Join key: Sponsor (TrialHub) → sponsor_name (crosswalk)
+  Type: Many-to-one
+  Use: Determine if a TrialHub sponsor is in Salesforce, who owns them, what tier.
+  Code:
+    trialhub = pd.read_excel('TrialHub.xlsx', sheet_name='Trials (Detailed)')
+    crosswalk = pd.read_csv('crosswalk_master.csv')
+    th_with_sf = trialhub.merge(crosswalk, left_on='Sponsor', right_on='sponsor_name', how='left')
+    # Sponsors with no match → crosswalk Sheet 4 candidates
+
+TrialHub ←→ Salesforce (live MCP):
+  NO STATIC JOIN. Use crosswalk to get sf_account_id, then query Salesforce MCP for live data.
+  Code:
+    # After crosswalk gives you sf_account_id:
+    # Use Salesforce MCP: soqlQuery or getRelatedRecords to pull Opportunity, Task, etc.
+
+fact_site ←→ Site Alias Table:
+  Join key: Organization (fact_site) → alias_name OR canonical_name (alias table)
+  Type: Lookup — check if a site name in fact_site has a known alias
+  Use: Before aggregating, check if two different Organization names are actually the same site.
+  Code:
+    aliases = pd.read_excel('Site_Alias_Table.xlsx')
+    # For each org in your query result, check:
+    match = aliases[aliases['alias_name'].str.contains(org_name, case=False, na=False)]
+    if len(match): canonical = match['canonical_name'].iloc[0]
+
+fact_site ←→ Salesforce (live MCP):
+  NO DIRECT JOIN. Veeva does not store SF account IDs.
+  Path: fact_site → fact_study (sponsor) → crosswalk (sf_account_id) → Salesforce MCP
+  Or: search Salesforce by organization name using FIND query.
+
+Milestone Data ←→ fact_site:
+  Join key: Organization + Study Name (both in milestone raw data and fact_site)
+  CAUTION: Organization names in milestone data may not exactly match fact_site names.
+  Always use str.contains() with case=False, never exact match.
+  Validate with distinct org print before joining.
+
+CT.gov ←→ fact_site:
+  NO DIRECT JOIN. CT.gov uses LocationFacility which is free text.
+  Connection: Manual string matching on facility name + city to Veeva Organization + Location City.
+  Always use alias table as secondary lookup.
+  Purpose: Identify sites in CT.gov that are NOT in Ora's Veeva network (new site candidates).
+
+--- HARMONIZATION ORDER OF OPERATIONS ---
+
+For a typical feasibility analysis, the data assembly order is:
+
+1. QUERY FACT_SITE — filter by indication (using multi-term regex) and geography
+2. JOIN FACT_STUDY — enrich with sponsor, phase, study-level PSM
+3. VALIDATE SITES — print distinct orgs + cities, check alias table, apply known corrections
+4. IF MILESTONE ANALYSIS NEEDED:
+   a. Load raw milestone file
+   b. Clean milestone labels (standardize Contract/Budget → Contract Executed, etc.)
+   c. Parse dates (use Actual Start, fall back to Actual Finish)
+   d. Filter to 2023+ activity
+   e. Pivot to wide format (one row per org+study)
+   f. Calculate gaps (Selected→Contract, Contract→IRB, IRB→SIV, SIV→FSI, Contract→FSI)
+   g. Exclude outliers >730 days
+   h. Compute medians per site (prefer median over mean for robustness)
+5. IF BD TARGETING NEEDED:
+   a. Match sponsors to crosswalk
+   b. Segment into SF—Has Wins / SF—Prospect / Not in SF
+   c. Query Salesforce MCP for account details on matched sponsors
+6. IF OUS SITE IDENTIFICATION NEEDED:
+   a. Query TrialHub for country frequency by indication
+   b. Query CT.gov API for site lists in target countries
+   c. Cross-reference CT.gov sites against Veeva fact_site to identify new/unknown sites
+   d. Check alias table for name mismatches
+   e. Web search for PI confirmation at new sites
+7. ASSEMBLE REPORT — combine Ora data (Veeva), industry benchmarks (TrialHub),
+   external site intelligence (CT.gov), and Salesforce relationship data into output.
+
+--- MILESTONE LABEL STANDARDIZATION ---
+
+Raw Veeva milestone labels are inconsistent. Always apply this mapping:
+
+'Contract / Budget'   → 'Contract Executed'
+'First Subject In'    → 'FSFV'
+'Last Subject In'     → 'LSFV'
+
+Standard milestone sequence: Site Selected → Contract Executed → IRB/EC Approval → SIV → FSFV
+
+Date priority: Use 'Actual Start Date' first. If null, fall back to 'Actual Finish Date'.
+Both can be null — handle gracefully.
+
+--- BD COMPLETION TARGETS — JOIN LOGIC ---
+
+The BD Phase 1/2 report uses a specific join pattern:
+
+1. FORWARD-LOOKING (upcoming completions):
+   a. Load TrialHub → filter to Ora-scoped indications + industry sponsors
+   b. Filter to primary completion date within target window (e.g., Jul 2026 – Jul 2027)
+   c. Match sponsors to crosswalk → get SF segment
+   d. Categorize: "SF — Has Wins", "SF — Prospect", "Not in SF"
+
+2. RECENTLY COMPLETED:
+   a. Load TrialHub → use RAW data (not Ora-scoped) for broader coverage
+   b. Filter to primary completion in past 0–6 months
+   c. Same crosswalk matching
+
+3. BUILD SCRIPT: /home/claude/build_ph12_v2.py contains the implementation.
+   This script should be referenced when rebuilding the report.
+
+--- SENSITIVITY TABLE ASSEMBLY ---
+
+A sensitivity table requires combining:
+- PSM assumption (from Veeva historical median OR TrialHub industry benchmark)
+- Site count scenarios (derived from PSM model: target_pts / (PSM × months))
+- Protocol enrollment window (from uploaded protocol or chat spec)
+
+Code pattern:
+  target_pts = 120
+  psm_scenarios = {'Low': 0.30, 'Base': 0.50, 'High': 0.70}
+  site_scenarios = {'Conservative': 12, 'Planned': 16, 'Aggressive': 20}
+
+  for psm_label, psm_val in psm_scenarios.items():
+      for site_label, n_sites in site_scenarios.items():
+          months = round(target_pts / (psm_val * n_sites), 1)
+          # Color: ≤protocol_window=green, ≤+20%=amber, >+20%=red
+
+================================================================
+END OF APPENDIX — CROSS-DATABASE CONCATENATION LOGIC
+================================================================

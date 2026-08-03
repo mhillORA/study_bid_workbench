@@ -991,8 +991,19 @@ const BUDDY_FALLBACK_ANSWER =
   "Tell me the indication (e.g. Dry Eye), geography if it matters (e.g. US), and whether you want a portfolio rollup, a pitch/feasibility read, or help on the open study.\n" +
   "You can also open Ora Clinical Intelligence, Site Scorecard, Ops Dashboard, or Studies and ask again from there.";
 
+function sanitizeBuddyMarkup(text) {
+  let s = String(text == null ? "" : text);
+  // GPT often closes as [/i]] or [[/i] instead of [[/i]]
+  s = s.replace(/\[\/([hi])\]\]/gi, "[[/$1]]");
+  s = s.replace(/\[\[\/([hi])\](?!\])/gi, "[[/$1]]");
+  s = s.replace(/(?<!\[)\[\/([hi])\](?!\])/gi, "[[/$1]]");
+  s = s.replace(/(?<!\[)\[([hi])\]\]/gi, "[[$1]]");
+  s = s.replace(/\[\[([hi])\](?![\]])/gi, "[[$1]]");
+  return s;
+}
+
 function ensureBuddyAnswer(text) {
-  const raw = String(text == null ? "" : text).trim();
+  const raw = sanitizeBuddyMarkup(String(text == null ? "" : text).trim());
   if (isEmptyOrRefusalAnswer(raw)) return BUDDY_FALLBACK_ANSWER;
   // Never surface literal null tokens as the whole answer
   if (/^\(?null\)?$/i.test(raw)) return BUDDY_FALLBACK_ANSWER;
