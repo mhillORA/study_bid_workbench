@@ -6047,17 +6047,42 @@
       .replaceAll(">", "&gt;");
   }
 
-  /** Buddy chat: [[h]] blue headers, [[i]] red important; accept common model variants. */
-  function formatBuddyHtml(raw) {
-    let s = String(raw == null ? "" : raw);
+  /** Strip every i-highlight variant (model mangles these into visible [/i]] garbage). */
+  function stripBuddyITags(raw) {
+    return String(raw == null ? "" : raw)
+      .replace(/\[{1,3}\s*\/?\s*i\s*\]{1,3}/gi, "")
+      .replace(/\({2}\s*\/?\s*i\s*\){2}/gi, "")
+      .replace(/<\/?i>/gi, "");
+  }
+
+  /** Normalize [[h]] variants only. */
+  function normalizeBuddyTags(raw) {
+    let s = stripBuddyITags(raw);
     s = s.replace(/\r\n/g, "\n");
-    // Soften leftover markdown / HTML the model still emits
+    s = s.replace(/\[{1,3}\s*\/\s*h\s*\]{1,3}/gi, "[[/h]]");
+    s = s.replace(/\[{1,3}\s*h\s*\]{1,3}/gi, "[[h]]");
+    s = s.replace(/\({2}\s*\/\s*h\s*\){2}/gi, "[[/h]]");
+    s = s.replace(/\({2}\s*h\s*\){2}/gi, "[[h]]");
+    return s;
+  }
+
+  /** Strip leftover header-tag debris inside chunk bodies. */
+  function stripBuddyTagDebris(raw) {
+    return stripBuddyITags(raw)
+      .replace(/\[{1,3}\s*\/?\s*h\s*\]{1,3}/gi, "")
+      .replace(/\({2}\s*\/?\s*h\s*\){2}/gi, "");
+  }
+
+  /** Buddy chat: [[h]] blue headers only — never render [[i]] (model breaks them). */
+  function formatBuddyHtml(raw) {
+    let s = normalizeBuddyTags(raw);
+    // Soften leftover markdown / HTML the model still emits (plain text, no i-tags)
     s = s.replace(/^#{1,6}\s+/gm, "");
-    s = s.replace(/\*\*\*([^*\n]+)\*\*\*/g, "[[i]]$1[[/i]]");
-    s = s.replace(/\*\*([^*\n]+)\*\*/g, "[[i]]$1[[/i]]");
-    s = s.replace(/__([^_\n]+)__/g, "[[i]]$1[[/i]]");
-    s = s.replace(/<\/?(?:strong|b)>/gi, (m) => (/^<\//.test(m) ? "[[/i]]" : "[[i]]"));
-    // Do NOT convert bare HTML <i> — collides with leftover [i] noise; only strong/b above
+    s = s.replace(/\*\*\*([^*\n]+)\*\*\*/g, "$1");
+    s = s.replace(/\*\*([^*\n]+)\*\*/g, "$1");
+    s = s.replace(/__([^_\n]+)__/g, "$1");
+    s = s.replace(/<\/?(?:strong|b)>/gi, "");
+    s = normalizeBuddyTags(s);
 
     // Humanize DB/JSON field keys that leak into chat
     const fieldLabels = [
@@ -6085,69 +6110,42 @@
       [/highTrustShare/g, "high-trust share"]
     ];
     for (const [re, label] of fieldLabels) s = s.replace(re, label);
-    // Brand casing — model sometimes emits ORa / ORA
     s = s.replace(/\bORa\b/g, "Ora");
     s = s.replace(/\bORA\b(?=\s+(?:Clinical|Veeva|sites?|median|PSM|history|score|vs)\b)/g, "Ora");
 
-    // Repair mangled markers GPT often emits: Abbott[/i]]  [[i]text[/i]]  [i]]…
-    s = s.replace(/\[\/([hi])\]\]/gi, "[[/$1]]"); // [/i]] → [[/i]]
-    s = s.replace(/\[\[\/([hi])\](?!\])/gi, "[[/$1]]"); // [[/i] → [[/i]]
-    s = s.replace(/(?<!\[)\[\/([hi])\](?!\])/gi, "[[/$1]]"); // [/i] → [[/i]]
-    s = s.replace(/(?<!\[)\[([hi])\]\]/gi, "[[$1]]"); // [i]] → [[i]]
-    s = s.replace(/\[\[([hi])\](?![\]])/gi, "[[$1]]"); // [[i] → [[i]]
-    s = s.replace(/\[\[\s*\/\s*(h|i)\s*\]\]/gi, (_, t) => `[[/${t.toLowerCase()}]]`);
-    s = s.replace(/\[\[\s*(h|i)\s*\]\]/gi, (_, t) => `[[${t.toLowerCase()}]]`);
-    s = s.replace(/\(\(\s*\/\s*(h|i)\s*\)\)/gi, (_, t) => `[[/${t.toLowerCase()}]]`);
-    s = s.replace(/\(\(\s*(h|i)\s*\)\)/gi, (_, t) => `[[${t.toLowerCase()}]]`);
-    s = s.replace(/(?<!\[)\[\s*\/\s*(h|i)\s*\](?!\])/gi, (_, t) => `[[/${t.toLowerCase()}]]`);
-    s = s.replace(/(?<!\[)\[\s*(h|i)\s*\](?!\])/gi, (_, t) => `[[${t.toLowerCase()}]]`);
-
-    // Pair open→close; auto-close unclosed tags at next opposite tag or end
+    // Pair [[h]] open→close only
     const chunks = [];
-    const tokenRe = /\[\[(\/?)(h|i)\]\]/gi;
+    const tokenRe = /\[\[(\/?)h\]\]/gi;
     let last = 0;
-    let open = null; // { type, buf }
+    let open = null;
     let m;
     while ((m = tokenRe.exec(s))) {
       const isClose = Boolean(m[1]);
-      const tag = m[2].toLowerCase();
       const before = s.slice(last, m.index);
       if (open) {
-        if (isClose && tag === open.type) {
-          chunks.push({ type: open.type, value: open.buf + before });
+        if (isClose) {
+          chunks.push({ type: "h", value: open.buf + before });
           open = null;
-        } else if (!isClose) {
-          // New open while open — close previous with accumulated text
-          chunks.push({ type: open.type, value: open.buf + before });
-          open = { type: tag, buf: "" };
         } else {
-          // Mismatched close — keep text, drop bad tag
-          open.buf += before;
+          chunks.push({ type: "h", value: open.buf + before });
+          open = { buf: "" };
         }
       } else if (!isClose) {
         if (before) chunks.push({ type: "text", value: before });
-        open = { type: tag, buf: "" };
-      } else {
-        // Orphan close (e.g. Abbott[[/i]] with no open) — drop tag, keep text
-        if (before) chunks.push({ type: "text", value: before });
+        open = { buf: "" };
+      } else if (before) {
+        chunks.push({ type: "text", value: before });
       }
       last = m.index + m[0].length;
     }
     const tail = s.slice(last);
-    if (open) chunks.push({ type: open.type, value: open.buf + tail });
+    if (open) chunks.push({ type: "h", value: open.buf + tail });
     else if (tail) chunks.push({ type: "text", value: tail });
-
-    const stripTagNoise = (v) =>
-      String(v || "")
-        .replace(/\[\[\s*\/?\s*[hi]\s*\]\]?/gi, "")
-        .replace(/\[\/?[hi]\]\]?/gi, "")
-        .replace(/\(\(\s*\/?\s*[hi]\s*\)\)/gi, "");
 
     return chunks
       .map((c) => {
-        const body = escapeHtml(stripTagNoise(c.value)).replaceAll("\n", "<br>");
+        const body = escapeHtml(stripBuddyTagDebris(c.value)).replaceAll("\n", "<br>");
         if (c.type === "h") return `<div class="buddy-h">${body}</div>`;
-        if (c.type === "i") return `<span class="buddy-i">${body}</span>`;
         return body;
       })
       .join("");
