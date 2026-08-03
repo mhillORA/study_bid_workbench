@@ -150,7 +150,8 @@ const HTML_REPORT_RULES = [
 
 const FORMAT_RULES =
   " OUTPUT FORMAT: Chat UI renders [[h]]…[[/h]] as blue headers and [[i]]…[[/i]] as red important text. " +
-  "Always close every tag: write [[i]]1.4[[/i]] never bare [i] or unclosed [[i]]. Never put [i] or [[i]] inside the highlighted text itself. " +
+  "Always close every tag correctly: [[i]]44.3 billion[[/i]] — never Abbott[/i]], never bare [i], never [[i]] without [[/i]]. " +
+  "Never put [i] or [[i]] inside the highlighted text itself. " +
   "Never use markdown headings (#) or bold (** / ***). Prefer short paragraphs over outlines. " +
   "HTML reports use HTML_REPORT_START/END markers (not [[h]]/[[i]] inside the HTML).";
 
@@ -170,18 +171,37 @@ const PLAIN_LANGUAGE_RULES =
 const ALWAYS_RESPOND_RULES =
   " ALWAYS RESPOND: Every user message MUST get a real reply in plain sentences. " +
   "Never answer with only null, (null), undefined, N/A, empty string, silence, or phrases like \"I have no answer\", \"no answer to that\", \"I cannot answer\", or \"nothing to say\". " +
-  "If data is missing, incomplete, or the ask is unclear: say what you do know (even if thin), then ask 1–3 concrete clarifying questions. You may name a tab for optional deeper UI work, but never claim you need a tab open to read Cosmos. " +
+  "If Ora Cosmos data is missing for an internal ask: say what you do know, then ask at most ONE clarifying question. " +
   "If a field in context is null, say it is missing / not in the data — never print the word null or (null) to the user. " +
-  "When unsure which study or indication they mean, ask — do not refuse.";
+  "Do NOT stall public/web-answerable asks with clarifying menus — search and answer (see WEB SEARCH rules).";
 
 /** Don't re-offer the same menu after every turn. */
 const CONVERSATION_HYGIENE_RULES =
   " CONVERSATION HYGIENE (critical): Do NOT end every reply with the same optional next-step menu " +
-  "(e.g. sponsor blurb / site shortlist / talking points / \"I can also…\"). " +
+  "(e.g. sponsor blurb / site shortlist / talking points / \"I can also…\" / \"highest among X or Y or Z\"). " +
   "Offer a follow-up path at most once per topic, and only when the user has not already been offered it in this chat history. " +
   "On follow-up turns, answer the new ask and stop — no recycled closing pitch. " +
   "Never re-ask a clarifying question you already asked unless the user still has not answered it. " +
   "When the user asks what is in current/live Buddy context, summarize context.buddyLiveContext.organized (by department then category) or say it is empty — do not invent entries.";
+
+/**
+ * Foundry agent has web search — use it immediately for public commercial facts.
+ * Do not burn turns asking the user to define "sponsor" when a sensible default exists.
+ */
+const WEB_SEARCH_RULES = [
+  " WEB SEARCH (critical — Foundry agent has live web tools):",
+  "When the ask needs public/external facts (company revenue, market size, news, filings, weather, competitor financials,",
+  " \"highest revenue\", \"biggest sponsor\", rankings, SEC/10-K numbers), CALL WEB SEARCH ON THIS TURN.",
+  "Do NOT ask the user to clarify definitions first. Do NOT say \"I can look it up\" or \"if you want I can…\" — just look it up and answer.",
+  "Default assumptions for Ora BD (state them in one short line, then answer):",
+  "• \"sponsor\" = biopharma / device company that sponsors ophthalmology or Ora-adjacent clinical trials (not payers like UnitedHealth unless asked).",
+  "• \"our therapeutic area\" / \"our TA\" = ophthalmology (eye) unless the user named another TA.",
+  "• \"this year\" / \"highest revenue\" = latest reported annual revenue from public filings or company reports; say the fiscal year.",
+  "Answer shape: [[h]]Answer[[/h]] then a ranked list with [[i]]revenue[[/i]] + year + source; 3–8 names is enough.",
+  "Use Context JSON (portfolio / intelligence / crosswalk) to bias toward sponsors Ora actually sees, then fill gaps from the web.",
+  "Cite sources briefly (company name + filing/year or URL host). Never invent revenue figures.",
+  "Only ask a clarifying question if the ask is truly impossible without it AFTER you already delivered a best-effort ranked answer."
+].join(" ");
 
 /** Prefer Foundry agent instructions pasted into SWA settings; else built-in default. */
 function buddyInstructionsBase() {
@@ -207,6 +227,7 @@ function buddyInstructionsBase() {
     PLAIN_LANGUAGE_RULES +
     ALWAYS_RESPOND_RULES +
     CONVERSATION_HYGIENE_RULES +
+    WEB_SEARCH_RULES +
     oraBlock
   );
 }
@@ -225,7 +246,8 @@ function systemPromptFor(context) {
     " FORMAT reminder: no markdown # or **; use [[h]]…[[/h]] and [[i]]…[[/i]] (always close tags; never bare [i]). " +
     " Never print DB field names (fsi_trust, org_clean, site_psm, etc.) — use human labels. " +
     " Do not repeat the same closing offer/menu you already gave in this chat. " +
-    " Never reply with null/(null)/empty/no answer — ask a clarifying question instead.";
+    " For public revenue/sponsor/news asks: web-search now and answer — do not ask clarifying menus first. " +
+    " Never reply with null/(null)/empty/no answer.";
   const focus = context?.answerFocus;
   const focusNote =
     focus === "portfolio"
@@ -271,8 +293,9 @@ function systemPromptFor(context) {
   const dep = agent.enabled ? agent.name : azureConfig().deployment;
   const modelNote = dep
     ? agent.enabled
-      ? ` You are the Foundry agent "${dep}" (with web search when needed). If asked which model/agent you are, say ${dep}. For public web facts (company revenue, news, weather), use your web tools — do not invent numbers.`
-      : ` You are served via Azure deployment "${dep}". If asked which model you are, say that deployment name — do not claim GPT-4 or another model unless that is the deployment name.`
+    ? ` You are the Foundry agent "${dep}" with live web search. If asked which model/agent you are, say ${dep}. ` +
+      `For public facts (sponsor revenue, filings, news), SEARCH ON THIS TURN and give a ranked answer — never stall with "I can look it up" or multi-option clarifying menus.`
+    : ` You are served via Azure deployment "${dep}". If asked which model you are, say that deployment name — do not claim GPT-4 or another model unless that is the deployment name.`
     : "";
   const user = context?.user;
   if (!user?.firstName && !user?.displayName && !user?.email) {
@@ -821,7 +844,9 @@ async function askFoundryAgent({ question, context, history }) {
     {
       role: "user",
       content:
-        `${system}\n\n---\nWork from the Context JSON below for Ora data. Use web search for public/external facts when needed.\n---\n\n` +
+        `CRITICAL: If this ask is about public company revenue, biggest/highest sponsor, market size, or news — use web search NOW and answer with a ranked list. ` +
+        `Default TA = ophthalmology; sponsor = biopharma/device trial sponsors (not payers). Do not ask clarifying menus first.\n\n` +
+        `${system}\n\n---\nWork from the Context JSON below for Ora data. Use web search for public/external facts.\n---\n\n` +
         userBlock(question, context)
     }
   ];
