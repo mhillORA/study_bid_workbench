@@ -6230,9 +6230,25 @@
       .replaceAll(">", "&gt;");
   }
 
+  /** Strip Foundry/web-search citation junk and other non-chat glyphs. */
+  function stripBuddyWeirdSymbols(raw) {
+    return String(raw == null ? "" : raw)
+      .replace(/【[^】]*】/g, "")
+      .replace(/〖[^〗]*〗/g, "")
+      .replace(/†[A-Za-z0-9._\-/: ]{0,80}/g, "")
+      .replace(/[‡※]/g, "")
+      .replace(/\[\d{1,3}\]/g, "")
+      .replace(/<\/?cite\b[^>]*>/gi, "")
+      .replace(/<\|[^|>]+\|>/g, "")
+      .replace(/[\u200B-\u200D\uFEFF\u2060]/g, "")
+      .replace(/\uFFFD/g, "")
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n{3,}/g, "\n\n");
+  }
+
   /** Normalize every [[h]]/[[i]] bracket variant; keep inner text. */
   function normalizeBuddyTags(raw) {
-    let s = String(raw == null ? "" : raw);
+    let s = stripBuddyWeirdSymbols(raw);
     s = s.replace(/\r\n/g, "\n");
     // Drop empty highlight shells ([[i]][[/i]]) — those become ", ," in lists
     s = s.replace(/\[{1,3}\s*([hi])\s*\]{1,3}\s*\[{1,3}\s*\/\s*\1\s*\]{1,3}/gi, "");
@@ -6247,7 +6263,7 @@
 
   /** Strip leftover tag debris inside a chunk (never used on whole answers before pairing). */
   function stripBuddyTagDebris(raw) {
-    return String(raw == null ? "" : raw)
+    return stripBuddyWeirdSymbols(raw)
       .replace(/\[{1,3}\s*\/?\s*[hi]\s*\]{1,3}/gi, "")
       .replace(/\({2}\s*\/?\s*[hi]\s*\){2}/gi, "");
   }

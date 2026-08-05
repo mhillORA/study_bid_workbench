@@ -160,6 +160,7 @@ const FORMAT_RULES =
   "Put the real words INSIDE the tags (never empty): [[i]]Abbott[[/i]] and [[i]]$44.3 billion[[/i]]. " +
   "Exact form: double brackets open AND close — [[i]]…[[/i]]. Wrong forms that break the UI: [/i]], [i]], [[i], Abbott[/i]]. " +
   "Never use markdown headings (#) or bold (** / ***). Prefer short paragraphs over outlines. " +
+  "Never emit web-search citation glyphs or footnote junk (【0】, †source, ‡, ※, [1], <cite>). Plain source names in parentheses are fine. " +
   "HTML reports use HTML_REPORT_START/END markers (not [[h]]/[[i]] inside the HTML).";
 
 /** Never dump Cosmos/JSON field keys into user-facing chat. */
@@ -1228,6 +1229,17 @@ function sanitizeBuddyMarkup(text) {
   // Normalize any bracket-count variant → canonical [[h]]/[[i]] (keeps inner text)
   s = s.replace(/\[{1,3}\s*\/\s*([hi])\s*\]{1,3}/gi, (_, t) => `[[/${t.toLowerCase()}]]`);
   s = s.replace(/\[{1,3}\s*([hi])\s*\]{1,3}/gi, (_, t) => `[[${t.toLowerCase()}]]`);
+  // Strip Foundry/web-search citation junk and other non-chat glyphs
+  s = s.replace(/【[^】]*】/g, "");
+  s = s.replace(/〖[^〗]*〗/g, "");
+  s = s.replace(/†[A-Za-z0-9._\-/: ]{0,80}/g, "");
+  s = s.replace(/[‡※]/g, "");
+  s = s.replace(/\[\d{1,3}\]/g, "");
+  s = s.replace(/<\/?cite\b[^>]*>/gi, "");
+  s = s.replace(/<\|[^|>]+\|>/g, "");
+  s = s.replace(/[\u200B-\u200D\uFEFF\u2060]/g, "");
+  s = s.replace(/\uFFFD/g, "");
+  s = s.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n");
   return s;
 }
 
