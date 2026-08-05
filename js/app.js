@@ -1909,6 +1909,63 @@
     return workspace;
   }
 
+  function ensureBuddyReportHtml(html) {
+    const raw = String(html || "").trim();
+    if (!raw) return "";
+    if (/^<!DOCTYPE\s+html/i.test(raw) || /^<html[\s>]/i.test(raw)) return raw;
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Ora report</title>
+<style>body{font-family:Segoe UI,system-ui,sans-serif;margin:24px;color:#1B2A4A;line-height:1.45}
+@media print{body{margin:12mm}}</style></head><body>${raw}</body></html>`;
+  }
+
+  /** Reliable print — popup+noopener returns null; iframe avoids blockers. */
+  function printBuddyReport(html) {
+    const full = ensureBuddyReportHtml(html);
+    if (!full) {
+      if (els.askStatus) els.askStatus.textContent = "No report HTML to print.";
+      return;
+    }
+    const existing = document.getElementById("buddyPrintFrame");
+    if (existing) existing.remove();
+    const iframe = document.createElement("iframe");
+    iframe.id = "buddyPrintFrame";
+    iframe.setAttribute("aria-hidden", "true");
+    iframe.style.cssText = "position:fixed;right:0;bottom:0;width:0;height:0;border:0;opacity:0;pointer-events:none;";
+    document.body.appendChild(iframe);
+
+    const win = iframe.contentWindow;
+    const doc = win && win.document;
+    if (!doc) {
+      if (els.askStatus) els.askStatus.textContent = "Could not open print frame.";
+      iframe.remove();
+      return;
+    }
+
+    let printed = false;
+    const doPrint = () => {
+      if (printed) return;
+      printed = true;
+      try {
+        win.focus();
+        win.print();
+      } catch (err) {
+        if (els.askStatus) els.askStatus.textContent = `Print failed: ${String(err.message || err)}`;
+      }
+      setTimeout(() => {
+        try {
+          iframe.remove();
+        } catch (_) {}
+      }, 1500);
+    };
+
+    iframe.addEventListener("load", () => setTimeout(doPrint, 50));
+    doc.open();
+    doc.write(full);
+    doc.close();
+    // Some browsers never fire load after document.write
+    setTimeout(doPrint, 400);
+  }
+
   function pushCreateProposal(content, createPayload) {
     const turn = {
       role: "assistant",
@@ -7138,20 +7195,8 @@
         if (printReport) {
           const id = printReport.getAttribute("data-buddy-report-print");
           const turn = state.askHistory.find((t) => t.htmlReport && t.htmlReport.id === id);
-          if (turn?.htmlReport?.html) {
-            const w = window.open("", "_blank", "noopener");
-            if (w) {
-              w.document.open();
-              w.document.write(turn.htmlReport.html);
-              w.document.close();
-              setTimeout(() => {
-                try {
-                  w.focus();
-                  w.print();
-                } catch (_) {}
-              }, 400);
-            }
-          }
+          if (turn?.htmlReport?.html) printBuddyReport(turn.htmlReport.html);
+          else if (els.askStatus) els.askStatus.textContent = "No report on that message.";
           return;
         }
         const dlReport = e.target.closest("[data-buddy-report-dl]");
