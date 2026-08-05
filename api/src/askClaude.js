@@ -1137,7 +1137,10 @@ async function askFoundryAgent({ question, context, history }) {
   }
 
   throw new Error(
-    `Foundry agent "${agent.name}" failed. Tried api-versions: ${failures.join(" | ")}. URL: ${agent.url}`
+    `Foundry agent "${agent.name}" failed. Tried api-versions: ${failures.join(" | ")}. ` +
+      `Confirm the agent name/deployment in Foundry, then set SWA FOUNDRY_AGENT_NAME to that exact name ` +
+      `(or FOUNDRY_AGENT_ENDPOINT to the full …/agents/<name>/endpoint/protocols/openai/responses URL). ` +
+      `URL used: ${agent.url}`
   );
 }
 
@@ -1274,12 +1277,52 @@ function extractAzureMessageText(respBody) {
 async function askAi(opts) {
   const status = providerStatus();
   let result;
-  if (status.active === "foundry_agent") result = await askFoundryAgent(opts);
-  else if (status.active === "azure_openai") result = await askAzureOpenAI(opts);
+  if (status.active === "foundry_agent") {
+    try {
+      result = await askFoundryAgent(opts);
+    } catch (agentErr) {
+      // If the agent was renamed/broken in Foundry, fall back to classic chat so Buddy still answers.
+      const cfg = azureConfig();
+      if (cfg.endpoint && cfg.apiKey && cfg.deployment && !isFoundryProjectEndpoint(cfg.endpoint)) {
+        try {
+          result = await askAzureOpenAI(opts);
+          result = {
+            ...result,
+            provider: "azure_openai_fallback",
+            agentError: String(agentErr.message || agentErr),
+            note: `Foundry agent failed; used deployment ${cfg.deployment} instead.`
+          };
+        } catch (_) {
+          throw agentErr;
+        }
+      } else if (cfg.endpoint && cfg.apiKey && cfg.deployment) {
+        // Project endpoint: still try chat completions path (may work on sibling openai host)
+        try {
+          result = await askAzureOpenAI(opts);
+          result = {
+            ...result,
+            provider: "azure_openai_fallback",
+            agentError: String(agentErr.message || agentErr),
+            note: `Foundry agent "${status.foundryAgentName}" failed; fell back to chat deployment "${cfg.deployment}".`
+          };
+        } catch (_) {
+          const hint =
+            ` Set SWA Application setting FOUNDRY_AGENT_NAME to the exact new agent name in Foundry ` +
+            `(health currently resolves agent as "${status.foundryAgentName}").`;
+          throw new Error(`${String(agentErr.message || agentErr)}${hint}`);
+        }
+      } else {
+        const hint =
+          ` Set SWA Application setting FOUNDRY_AGENT_NAME to the exact new agent name in Foundry ` +
+          `(health currently resolves agent as "${status.foundryAgentName}").`;
+        throw new Error(`${String(agentErr.message || agentErr)}${hint}`);
+      }
+    }
+  } else if (status.active === "azure_openai") result = await askAzureOpenAI(opts);
   else if (status.active === "claude") result = await askClaude(opts);
   else {
     throw new Error(
-      "Ask Buddy is not configured. Set AZURE_OPENAI_ENDPOINT (Foundry project), AZURE_OPENAI_API_KEY, and FOUNDRY_AGENT_NAME=BudgetBuddy2 — or classic AZURE_OPENAI_DEPLOYMENT for chat completions."
+      "Ask Buddy is not configured. Set AZURE_OPENAI_ENDPOINT (Foundry project), AZURE_OPENAI_API_KEY, and FOUNDRY_AGENT_NAME=<your agent> — or classic AZURE_OPENAI_DEPLOYMENT for chat completions."
     );
   }
   return { ...result, answer: ensureBuddyAnswer(result.answer) };
