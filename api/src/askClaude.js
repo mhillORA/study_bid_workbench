@@ -65,7 +65,9 @@ const INTELLIGENCE_RULES = [
   " VEEVA INDICATION CODING (critical): fact_site / fact_study indication is free-text with label variants. Queries use multi-term aliases + CONTAINS — never assume a single exact string. If indicationBenchmark.ora.studyCount > 0, you MUST name those sampleStudies (study_number + sponsor) even when studiesWithPsm is 0 / psm is null. Null PSM ≠ no Veeva data.",
   " NULL VEEVA PSM → INDUSTRY PROXY (critical): When Ora/Veeva studiesWithPsm is 0 (or site_psm all null) but studyCount > 0 OR the user asks for a PSM/enrollment rate: (1) still list the Ora studies/sites you have, (2) then give a PSM estimate from indicationBenchmark.trialhub.psmMedian (and P25/P75) and/or CT.gov enrollment/sites when computable, (3) label it clearly as an industry / CT.gov–TrialHub proxy — not Ora historical PSM, (4) if the always-on playbook has an indication planning range (e.g. Stargardt ~0.12), cite that too. Never invent a number with no source, and never say you cannot estimate when TrialHub/CT.gov/playbook ranges are present.",
   " SITE LISTING RULE (critical): If context.intelligence.indicationBenchmark.sites.topSitesByPsm OR sites.topSites OR sites.topOusSites OR countrySites.topSites OR legacyAnterior sites/leaderboard has rows, you MUST name at least 5–10 real sites with country and site PSM or enrolled in the reply. Do NOT say you need to open Clinical Intelligence instead of listing them. NAVIGATE:intelligence or NAVIGATE:scorecard may be added AFTER the list as optional follow-up — never as the only answer. Never print schema keys like org_clean / site_psm / fsi_trust — say site name, PSM, FSI trust.",
-  " COSMOS-FIRST RULE (critical): context.intelligence is queried live from Cosmos on every ask. You do NOT need the user to open Ora Clinical Intelligence or Site Scorecard first. Never say you cannot see site rows / PSM / CT.gov because a tab is not open.",
+  " COSMOS-FIRST RULE (critical): context.intelligence is queried live from Cosmos on every relevant ask. You do NOT need the user to open Ora Clinical Intelligence or Site Scorecard first. Never say you cannot see site rows / PSM / CT.gov because a tab is not open.",
+  " NO INVENTION (critical): Never invent PSM, enrollment rates, site counts, NCT ids, study numbers, sponsor lists, or Ora history. Numbers must come from Context JSON (intelligence / portfolio / cosmos) or ATTACHED DOCUMENTS. If Cosmos has no row, say \"not in Ora Cosmos data\" — do not fill gaps with made-up benchmarks. Chat specs from the user (e.g. 6 sites, 4 months) may be used as scenario inputs and must be labeled as user-stated.",
+  " SOURCE PRIORITY: (1) ATTACHED DOCUMENTS for protocol/template/branding/narrative the user provided (2) ORA COSMOS FACTS / context.intelligence for Ora Veeva + TrialHub + CT.gov numbers (3) context.portfolio only for all-studies budget rollups when asked (4) web search only for public commercial facts. Do not let a document attachment replace Cosmos for industry/Ora performance numbers.",
   " NO 'MISSING LEADERBOARD' HEDGE (critical): Never say you lack a dedicated site leaderboard, are grabbing closest matches, or only have known anchors — if trialhub.countryRank / countryRankOus.ranked has countries, THAT is the country leaderboard (cite trialMentions). If sites.topSites or topOusSites has org_clean rows (even with null site_psm), THAT is the site slate. If both are empty, say Cosmos has no Veeva site rows for that indication and lead with TrialHub/CT.gov country ranks only — still give the enrollmentPlan math.",
   " OUS / outside-US asks: lead with [[h]]Enrollment model[[/h]] using context.enrollmentPlan when present (patients, months, psm, sitesExact, sitesRecommendedWith20pctBuffer). Then [[h]]Top OUS countries[[/h]] from indicationBenchmark.trialhub.countryRankOus.ranked (country + trialMentions). Then [[h]]Sites[[/h]] from topOusSites / topSites when present. Propose a country mix that sums to sitesRecommendedWith20pctBuffer. Do not invent PI names.",
   " Neuroprotection: Veeva often has null site_psm; related Glaucoma / Optic Neuropathy TrialHub country frequency is intentionally included — use it. Prefer PSM assumption the user gave over inventing one.",
@@ -643,6 +645,83 @@ function formatAttachedDocumentsBlock(context) {
   return parts.join("\n");
 }
 
+function formatCosmosFactsBlock(context) {
+  const intel = context?.intelligence;
+  if (!intel || intel.error) {
+    if (intel?.error) {
+      return [
+        "ORA COSMOS FACTS — query failed.",
+        `Error: ${intel.error}`,
+        "Do NOT invent PSM/enrollment/site stats. Say Cosmos data was unavailable."
+      ].join("\n");
+    }
+    return "";
+  }
+
+  const bm = intel.indicationBenchmark;
+  const lines = [
+    "ORA COSMOS FACTS (live query — use these numbers; do not invent substitutes):",
+    `Source: ${intel.source || "ora_clinical_intelligence"} | attachedFrom: ${intel.attachedFrom || "cosmos"}`
+  ];
+
+  if (bm) {
+    lines.push(
+      `Indication: ${bm.indicationRequested || intel.query?.indication || "—"} | Geography: ${
+        bm.countryFilterLabel || intel.query?.country || "Global"
+      }`
+    );
+    const ora = bm.ora || {};
+    lines.push(
+      `Ora/Veeva: studyCount=${ora.studyCount ?? "—"}, studiesWithPsm=${ora.studiesWithPsm ?? "—"}, ` +
+        `psmMedian=${ora.psmMedian ?? "missing"}, psmP25=${ora.psmP25 ?? "—"}, psmP75=${ora.psmP75 ?? "—"}`
+    );
+    if (ora.note) lines.push(`Ora note: ${ora.note}`);
+    const samples = Array.isArray(ora.sampleStudies) ? ora.sampleStudies.slice(0, 8) : [];
+    for (const s of samples) {
+      lines.push(
+        `  - Ora study ${s.study_number || "?"} | ${s.sponsor || "?"} | PSM=${
+          s.psm == null ? "missing" : s.psm
+        } | enrolled=${s.total_enrolled == null ? "missing" : s.total_enrolled}`
+      );
+    }
+    const th = bm.trialhub || {};
+    lines.push(
+      `TrialHub industry: trialCount=${th.trialCount ?? "—"}, trialsWithPsm=${th.trialsWithPsm ?? "—"}, ` +
+        `psmMedian=${th.psmMedian ?? "missing"}, recruitingCount=${th.recruitingCount ?? "—"}`
+    );
+    if (th.note) lines.push(`TrialHub note: ${th.note}`);
+    const sites = bm.sites?.topSitesByPsm || bm.sites?.topSites || [];
+    if (Array.isArray(sites) && sites.length) {
+      lines.push("Top Ora sites (from Cosmos):");
+      for (const s of sites.slice(0, 10)) {
+        lines.push(
+          `  - ${s.org_clean || s.site || "?"} | ${s.country || "?"} | sitePSM=${
+            s.site_psm == null ? "missing" : s.site_psm
+          } | FSI=${s.fsi_trust || "—"}`
+        );
+      }
+    }
+    const plan = context.enrollmentPlan || intel.enrollmentPlan || bm.enrollmentPlan;
+    if (plan && plan.sitesExact != null) {
+      lines.push(
+        `Enrollment plan math: patients=${plan.patients ?? "—"}, months=${plan.months ?? "—"}, ` +
+          `psm=${plan.psm ?? "—"}, sitesExact=${plan.sitesExact}, recommended+20%=${
+            plan.sitesRecommendedWith20pctBuffer ?? "—"
+          }`
+      );
+    }
+  } else {
+    lines.push(
+      "No indicationBenchmark in this response. Do not invent industry/Ora PSM — say Cosmos did not return a benchmark for this ask."
+    );
+  }
+
+  lines.push(
+    "RULE: Quote these Cosmos figures (or explicitly say missing). Never fabricate a median/PSM/n when the field is missing/null."
+  );
+  return lines.join("\n");
+}
+
 /** Context JSON for the model — keep attachments OUT of the truncated blob (they're inlined above). */
 function contextJsonForModel(context) {
   const ctx = { ...(context || {}) };
@@ -674,7 +753,7 @@ function contextJsonForModel(context) {
     };
   }
 
-  // When files are attached, shrink portfolio noise so the model focuses on the docs
+  // When files are attached, shrink portfolio noise — but KEEP intelligence (Cosmos numbers)
   if (docs?.okCount > 0 || (docs?.files || []).some((f) => f && f.text)) {
     if (ctx.portfolio && typeof ctx.portfolio === "object") {
       ctx.portfolio = {
@@ -682,32 +761,73 @@ function contextJsonForModel(context) {
         databaseStudyCount: ctx.portfolio.databaseStudyCount,
         matchedStudyCount: ctx.portfolio.matchedStudyCount,
         note:
-          "Portfolio summary suppressed because the user attached documents — answer from ATTACHED DOCUMENTS first. Only use portfolio if they explicitly asked for all-studies/portfolio."
+          "Full portfolio rollup suppressed because documents are attached. Use ORA COSMOS FACTS / intelligence for feasibility numbers. Only expand portfolio if the user explicitly asked for all-studies/portfolio."
       };
     }
-    ctx.answerFocus = ctx.answerFocus === "single_study" ? "single_study" : "attachments";
+  }
+
+  // Prefer keeping indicationBenchmark if we must truncate
+  if (ctx.intelligence?.indicationBenchmark) {
+    const bm = ctx.intelligence.indicationBenchmark;
+    ctx.intelligence = {
+      source: ctx.intelligence.source,
+      attachedFrom: ctx.intelligence.attachedFrom,
+      query: ctx.intelligence.query,
+      note: ctx.intelligence.note,
+      indicationBenchmark: {
+        indicationRequested: bm.indicationRequested,
+        countryFilterLabel: bm.countryFilterLabel,
+        aliasesUsed: bm.aliasesUsed,
+        ora: bm.ora,
+        trialhub: {
+          trialCount: bm.trialhub?.trialCount,
+          trialsWithPsm: bm.trialhub?.trialsWithPsm,
+          psmMedian: bm.trialhub?.psmMedian,
+          psmP25: bm.trialhub?.psmP25,
+          psmP75: bm.trialhub?.psmP75,
+          recruitingCount: bm.trialhub?.recruitingCount,
+          note: bm.trialhub?.note,
+          sampleTrials: (bm.trialhub?.sampleTrials || []).slice(0, 6),
+          recruitingSample: (bm.trialhub?.recruitingSample || []).slice(0, 4),
+          countryRank: bm.trialhub?.countryRank
+            ? { ranked: (bm.trialhub.countryRank.ranked || []).slice(0, 8) }
+            : undefined
+        },
+        sites: {
+          topSitesByPsm: (bm.sites?.topSitesByPsm || bm.sites?.topSites || []).slice(0, 12)
+        }
+      },
+      enrollmentPlan: ctx.intelligence.enrollmentPlan || ctx.enrollmentPlan || undefined
+    };
   }
 
   const raw = JSON.stringify(ctx, null, 2);
-  // Leave headroom; attachments already consume tokens outside this blob
-  const max = docs?.okCount > 0 ? 60000 : 100000;
+  const max = docs?.okCount > 0 ? 80000 : 100000;
   return raw.length > max ? `${raw.slice(0, max)}\n…[context truncated]` : raw;
 }
 
 function userBlock(question, context) {
   const attached = formatAttachedDocumentsBlock(context);
+  const cosmosFacts = formatCosmosFactsBlock(context);
   const parts = ["Question:", question, ""];
   if (attached) {
     parts.push(attached);
     parts.push("---");
     parts.push("");
   }
-  parts.push("Context (JSON) — Ora study/intelligence data. Attachments above override this when they conflict:");
+  if (cosmosFacts) {
+    parts.push(cosmosFacts);
+    parts.push("---");
+    parts.push("");
+  }
+  parts.push(
+    "Context (JSON) — supporting detail. For numbers: ORA COSMOS FACTS above win. For protocol/template text: ATTACHED DOCUMENTS win. Never invent."
+  );
   parts.push(contextJsonForModel(context));
   parts.push("");
-  if (attached) {
+  if (attached || cosmosFacts) {
     parts.push(
-      "REQUIRED: Your answer must engage the attached document(s) by name. Do not substitute a portfolio rollup for reading the files."
+      "REQUIRED: Ground the answer. Cite attached file names for protocol/template points. Cite Ora/TrialHub Cosmos figures (or say missing) for performance/feasibility numbers. Do not make up medians, site lists, or win-theme stats."
     );
   } else {
     parts.push(
@@ -955,8 +1075,8 @@ async function askFoundryAgent({ question, context, history }) {
       content:
         `CRITICAL: If this ask is about public company revenue, biggest/highest sponsor, market size, or news — use web search NOW and answer with a ranked list. ` +
         `Default TA = ophthalmology; sponsor = biopharma/device trial sponsors (not payers). Do not ask clarifying menus first.\n\n` +
-        `CRITICAL: If ATTACHED DOCUMENTS appear below, READ THEM and answer from them — never ignore files for a portfolio overview.\n\n` +
-        `${system}\n\n---\nWork from ATTACHED DOCUMENTS first when present, then Context JSON for Ora data. Use web search for public/external facts.\n---\n\n` +
+        `CRITICAL: If ATTACHED DOCUMENTS appear below, READ THEM. If ORA COSMOS FACTS appear below, USE THOSE NUMBERS — never invent PSM/enrollment/site stats. Say missing when Cosmos fields are null.\n\n` +
+        `${system}\n\n---\nPriority: ATTACHED DOCUMENTS (protocol/template) → ORA COSMOS FACTS (performance numbers) → Context JSON → web for public facts only.\n---\n\n` +
         userBlock(question, context)
     }
   ];

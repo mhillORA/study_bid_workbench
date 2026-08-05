@@ -193,6 +193,7 @@ function isIntelligenceQuestion(question) {
     /\b(feasibility|site (mix|selection|performance|capacity)|competing trials?|competitor|competitive landscape)\b/.test(
       q
     ) ||
+    /\b(win\s+themes?|meeting\s+prep|call\s+prep|why\s+ora|talking\s+points?)\b/.test(q) ||
     /\b(which|best|top|recommend(?:ed)?|list|name|suggest)\b.{0,40}\b(sites?|countries|country)\b/.test(q) ||
     /\b(sites?|countries)\b.{0,40}\b(for|in|with|under|outside|ous)\b/.test(q) ||
     /\b(preferred|high[- ]performing|perform(?:ing)?)\s+sites?\b/.test(q) ||
@@ -200,12 +201,13 @@ function isIntelligenceQuestion(question) {
     /\b(screen[- ]?fail|dropout|recruit(ment)? (rate|days|benchmark))\b/.test(q) ||
     /\b(indication).{0,40}\b(benchmark|histor(y|ical)|industry|ora studies)\b/.test(q) ||
     /\b(how (fast|quickly)|typical).{0,40}\b(enroll|recruit|site)\b/.test(q) ||
-    /\b(veeva|ora (histor|performance|sites?))\b/.test(q) ||
+    /\b(veeva|ora (histor|performance|sites?|strength))\b/.test(q) ||
     /\b(country|countries|region|geography|united states|usa|uk|europe|eu|japan|china|canada|australia|ous|outside)\b/.test(
       q
     ) ||
     /\b(rfp|rfi|pricing|ballpark|goal bid|cost per patient)\b/.test(q) ||
-    /\b\d+\s*patients?\b/.test(q)
+    /\b\d+\s*(patients?|sites?|months?)\b/.test(q) ||
+    /\b(protocol|punctal|dry\s*eye|device\s+study)\b/.test(q)
   );
 }
 

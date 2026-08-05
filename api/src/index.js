@@ -1255,6 +1255,9 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
 
       const forceIntel =
         isIntelligenceQuestion(question) ||
+        wantsDocumentExport(question) ||
+        wantsHtmlVisual(question) ||
+        hasOkUpload ||
         isPricingQuestion(question) ||
         Boolean(nctFromQuestion(question)) ||
         Boolean(country) ||
@@ -1267,20 +1270,35 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
 
       // Always re-query Cosmos for intelligence — never reuse the browser's open-tab pack.
       // UI hints only supply default indication/country when the question does not name one.
-      if (forceIntel || indication || hints.clientName || snapIndication || country) {
+      // With attachments (protocol/slides), still pull Cosmos so Buddy cannot invent benchmarks.
+      if (forceIntel || indication || hints.clientName || snapIndication || country || hasOkUpload) {
         const rfpHint = extractRfpScenarioFromQuestion(question, body);
+        // Also sniff indication from attachment filenames/text when question is vague
+        let indFromFiles = null;
+        if (!indication && !rfpHint.indication && hasOkUpload) {
+          const blob = (uploaded.files || [])
+            .map((f) => `${f.name || ""}\n${String(f.text || "").slice(0, 4000)}`)
+            .join("\n");
+          indFromFiles = extractIndicationFromQuestion(blob);
+        }
         intelligence = await buildIntelligenceContext(getDb, {
           question,
-          indication: rfpHint.indication || indication,
+          indication: rfpHint.indication || indication || indFromFiles,
           country,
           clientName: hints.clientName || snapClient || null,
           sponsor: hints.clientName || snapClient || null,
-          force: forceIntel || Boolean(indication) || Boolean(country) || Boolean(rfpHint.indication)
+          force:
+            forceIntel ||
+            Boolean(indication) ||
+            Boolean(country) ||
+            Boolean(rfpHint.indication) ||
+            Boolean(indFromFiles) ||
+            hasOkUpload
         });
         if (intelligence && !intelligence.error) {
           intelligence.attachedFrom = "cosmos_query";
           intelligence.note =
-            "Queried live from Cosmos (ora_fact_* / TrialHub / CT.gov). Not dependent on which Workbench tab is open.";
+            "Queried live from Cosmos (ora_fact_* / TrialHub / CT.gov). Not dependent on which Workbench tab is open. Prefer these numbers over invented benchmarks.";
         }
       }
     } catch (err) {
