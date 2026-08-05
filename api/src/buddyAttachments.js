@@ -101,6 +101,40 @@ async function extractFromDocx(buffer) {
   return String(result?.value || "").slice(0, MAX_TEXT_CHARS);
 }
 
+/** Best-effort text from PowerPoint (.pptx) via slide XML. */
+async function extractFromPptx(buffer) {
+  const AdmZip = require("adm-zip");
+  const zip = new AdmZip(buffer);
+  const entries = zip
+    .getEntries()
+    .filter((e) => /^ppt\/slides\/slide\d+\.xml$/i.test(e.entryName))
+    .sort((a, b) => a.entryName.localeCompare(b.entryName, undefined, { numeric: true }));
+  if (!entries.length) throw new Error("No slides found in PowerPoint file");
+  const parts = [];
+  for (const entry of entries.slice(0, 40)) {
+    const xml = entry.getData().toString("utf8");
+    const texts = [];
+    const re = /<a:t[^>]*>([\s\S]*?)<\/a:t>/gi;
+    let m;
+    while ((m = re.exec(xml))) {
+      const t = String(m[1] || "")
+        .replace(/&amp;/g, "&")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&quot;/g, '"')
+        .trim();
+      if (t) texts.push(t);
+    }
+    if (texts.length) {
+      const slideNo = (entry.entryName.match(/slide(\d+)/i) || [])[1] || "?";
+      parts.push(`--- Slide ${slideNo} ---\n${texts.join(" ")}`);
+    }
+  }
+  const out = parts.join("\n\n").trim();
+  if (!out) throw new Error("No extractable text in PowerPoint slides");
+  return out.slice(0, MAX_TEXT_CHARS);
+}
+
 async function extractText(name, mimeType, buffer) {
   const ext = extOf(name);
   const mime = String(mimeType || "").toLowerCase();
@@ -132,6 +166,14 @@ async function extractText(name, mimeType, buffer) {
     return extractFromDocx(buffer);
   }
 
+  if (ext === "pptx" || mime.includes("presentationml")) {
+    return extractFromPptx(buffer);
+  }
+
+  if (ext === "ppt") {
+    throw new Error("Legacy .ppt not supported — save as .pptx or PDF");
+  }
+
   if (ext === "doc") {
     throw new Error("Legacy .doc not supported — save as .docx or PDF");
   }
@@ -139,7 +181,9 @@ async function extractText(name, mimeType, buffer) {
   // Last resort: try utf8 (works for some emails / mislabeled text)
   const asText = buffer.toString("utf8");
   if (/[\x00-\x08\x0e-\x1f]/.test(asText.slice(0, 2000))) {
-    throw new Error(`Unsupported file type .${ext || "unknown"} — use PDF, DOCX, XLSX, TXT, CSV, or MD`);
+    throw new Error(
+      `Unsupported file type .${ext || "unknown"} — use PDF, DOCX, PPTX, XLSX, TXT, CSV, or MD`
+    );
   }
   return asText.slice(0, MAX_TEXT_CHARS);
 }

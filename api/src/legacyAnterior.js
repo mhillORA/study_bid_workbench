@@ -56,18 +56,24 @@ function isLegacyAnteriorQuestion(question) {
   );
 }
 
-/** User wants a visual artifact — Buddy must emit HTML_REPORT. */
+/** User wants a visual/document artifact — Buddy must emit HTML_REPORT. */
 function wantsHtmlVisual(question) {
   const q = String(question || "").toLowerCase();
   if (!q) return false;
   return (
-    /\b(visual|html(\s+report)?|chart|graph|graphic|dashboard|slide|deck|print(?:able)?|pdf|heatmap|matrix|one[- ]pager|onepager)\b/.test(
+    /\b(visual|html(\s+report)?|chart|graph|graphic|dashboard|slide|deck|print(?:able)?|pdf|docx|word|heatmap|matrix|one[- ]pager|onepager|document|proposal|memo|leave[- ]behind|feasibility(\s+report)?|win\s+themes?|call\s+prep|meeting\s+prep)\b/.test(
       q
     ) ||
-    /\b(make|produce|build|create|generate|render|show|give|draw)\b.{0,50}\b(visual|html|chart|graph|table|report|deck|slide)\b/.test(
+    /\b(make|produce|build|create|generate|render|show|give|draw|draft|export|write|develop|help\s+me)\b.{0,80}\b(visual|html|chart|graph|table|report|deck|slide|doc|document|pdf|word|docx|proposal|memo|form|feasibility|win\s+themes?|template)\b/.test(
       q
     ) ||
-    /\b(table|board)\b.{0,30}\b(html|visual|report|printable)\b/.test(q)
+    /\b(table|board)\b.{0,30}\b(html|visual|report|printable)\b/.test(q) ||
+    /\b(follow|using|from|match|based on|in\s+my|standard)\b.{0,40}\b(brand|branding|template|style|styling|guidelines?|form|format)\b/.test(
+      q
+    ) ||
+    /\b(brand|branding|style guide|template)\b.{0,40}\b(create|make|produce|build|generate|doc|document|pdf|proposal|report|feasibility)\b/.test(
+      q
+    )
   );
 }
 

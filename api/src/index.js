@@ -22,6 +22,7 @@ const {
   buildRfpPricingPack
 } = require("./rfpPricing");
 const { normalizeBuddyAttachments } = require("./buddyAttachments");
+const { buildBuddyDocExports, wantsDocumentExport } = require("./buddyDocExport");
 
 function nctFromQuestion(question) {
   const m = String(question || "").match(/\b(NCT\d{8})\b/i);
@@ -1150,15 +1151,18 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
     }
 
     const hints = inferAskHints(question, body, clientDirectory);
-    // noStudy / empty selection = portfolio only. portfolio:true alone still allows single-study when studyId/snapshot sent.
+    // noStudy / empty selection = portfolio only — EXCEPT when the user attached docs
+    // (otherwise Buddy ignores the file and dumps a portfolio overview).
+    const attachmentDriven = hasOkUpload;
     const forcePortfolio =
-      body.noStudy === true ||
-      Boolean(hints.crossStudy) ||
-      (!body.studyId && !body.studySnapshot);
+      !attachmentDriven &&
+      (body.noStudy === true ||
+        Boolean(hints.crossStudy) ||
+        (!body.studyId && !body.studySnapshot));
     const studyId = forcePortfolio
       ? (String(question).match(/\b(O-\d{3,})\b/i) || [])[1] || null
       : hints.studyId;
-    const crossStudy = Boolean(hints.crossStudy) || forcePortfolio;
+    const crossStudy = !attachmentDriven && (Boolean(hints.crossStudy) || forcePortfolio);
     const history = body.history || [];
     const user = signedInUserFromRequest(request, body.user || null);
     const activeTab = body.activeTab ? String(body.activeTab) : null;
@@ -1166,8 +1170,11 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
     const editableFields = Array.isArray(body.editableFields) ? body.editableFields : null;
     const fieldsByTab = body.fieldsByTab && typeof body.fieldsByTab === "object" ? body.fieldsByTab : null;
 
-    const answerFocus =
-      forcePortfolio || crossStudy
+    const answerFocus = attachmentDriven
+      ? studyId || body.studySnapshot
+        ? "single_study"
+        : "attachments"
+      : forcePortfolio || crossStudy
         ? "portfolio"
         : studyId || body.studySnapshot
           ? "single_study"
@@ -1386,13 +1393,19 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       buddyLiveContext = { source: "error", error: String(err.message || err) };
     }
 
-    const visualAsk = wantsHtmlVisual(question);
+    const visualAsk =
+      wantsHtmlVisual(question) ||
+      wantsDocumentExport(question) ||
+      (hasOkUpload &&
+        /\b(create|make|produce|build|generate|draft|export|write)\b/i.test(question));
+    const docExportAsk = wantsDocumentExport(question) || Boolean(visualAsk && hasOkUpload);
     const openStudyId = body.studyId ? String(body.studyId).trim() : null;
     const contextPayload = {
       askedAt: new Date().toISOString(),
       source: requireCopilotKey ? "copilot_studio" : "workbench",
       answerFocus,
       wantsHtmlVisual: visualAsk,
+      wantsDocumentExport: docExportAsk,
       dataSources: {
         cosmosPortfolioQueried: Boolean(portfolio && portfolio.source === "cosmos_portfolio"),
         databaseStudyCount: portfolio?.databaseStudyCount ?? null,
@@ -1513,9 +1526,26 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
     };
 
     const result = await askAi({ question, context: contextPayload, history });
+    let answer = result.answer;
+    let docExports = [];
+    let reportTitle = null;
+    try {
+      if (visualAsk || docExportAsk || /HTML_REPORT_START/i.test(String(answer || ""))) {
+        const built = await buildBuddyDocExports(answer, question);
+        if (built.html) {
+          answer = built.answer;
+          // Re-attach markers so the client can still open HTML; also send binary exports
+          answer = `${built.answer}\n\nHTML_REPORT_START\n${built.html}\nHTML_REPORT_END`;
+          reportTitle = built.title;
+          docExports = built.exports || [];
+        }
+      }
+    } catch (exportErr) {
+      context.warn?.("buddy doc export failed", exportErr);
+    }
     const llm = providerStatus();
     return json(200, {
-      answer: result.answer,
+      answer,
       model: result.model,
       deployment: llm.deployment || result.model || null,
       provider: result.provider,
@@ -1524,6 +1554,17 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       clientName: hints.clientName || null,
       year: hints.year || null,
       answerFocus,
+      documentTitle: reportTitle,
+      exports: docExports.map((e) =>
+        e.contentBase64
+          ? {
+              format: e.format,
+              filename: e.filename,
+              mimeType: e.mimeType,
+              contentBase64: e.contentBase64
+            }
+          : { format: e.format, ok: false, error: e.error }
+      ),
       attachments: (uploaded.files || []).map((f) => ({
         name: f.name,
         ok: Boolean(f.ok),

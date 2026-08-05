@@ -11,8 +11,10 @@
     "@azure/functions": "^4.6.0",
     "adm-zip": "^0.5.16",
     "exceljs": "^4.4.0",
+    "html-to-docx": "^1.8.0",
     "mammoth": "^1.12.0",
-    "pdf-parse": "^2.4.5"
+    "pdf-parse": "^2.4.5",
+    "pdfkit": "^0.19.1"
   },
   "engines": {
     "node": ">=20.0.0"

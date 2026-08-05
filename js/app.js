@@ -1465,12 +1465,22 @@
         }
         let reportHtml = "";
         if (t.htmlReport && t.htmlReport.html) {
+          const exportBtns = (t.htmlReport.exports || [])
+            .filter((e) => e && e.contentBase64)
+            .map(
+              (e) =>
+                `<button type="button" class="btn btn-ghost" data-buddy-export="${escapeAttr(t.htmlReport.id)}" data-buddy-export-fmt="${escapeAttr(e.format)}">Download ${escapeHtml(
+                  String(e.format || "").toUpperCase()
+                )}</button>`
+            )
+            .join("");
           reportHtml = `<div class="buddy-report">
-            <div class="chat-who">Ora HTML report</div>
-            <p class="muted">Single-file navy/teal report — open in a new tab or download for Chrome print-to-PDF.</p>
+            <div class="chat-who">Document ready</div>
+            <p class="muted">Open the HTML report or download PDF / Word built from it.</p>
             <div class="buddy-proposal-actions">
               <button type="button" class="btn btn-primary" data-buddy-report-open="${escapeAttr(t.htmlReport.id)}">Open report</button>
               <button type="button" class="btn btn-ghost" data-buddy-report-dl="${escapeAttr(t.htmlReport.id)}">Download HTML</button>
+              ${exportBtns}
             </div>
           </div>`;
         }
@@ -1923,7 +1933,7 @@
     return { text: cleaned, html: html || null };
   }
 
-  function pushAssistant(content, patches, htmlReport) {
+  function pushAssistant(content, patches, htmlReport, exports) {
     const turn = { role: "assistant", content };
     if (patches && patches.length) {
       turn.proposal = {
@@ -1936,13 +1946,14 @@
       turn.htmlReport = {
         id: `h-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
         html: htmlReport,
-        filename: `ora-report-${new Date().toISOString().slice(0, 10)}.html`
+        filename: `ora-report-${new Date().toISOString().slice(0, 10)}.html`,
+        exports: Array.isArray(exports) ? exports.filter((e) => e && e.contentBase64) : []
       };
     }
     state.askHistory.push(turn);
   }
 
-  function applyBuddyAnswer(raw) {
+  function applyBuddyAnswer(raw, exports) {
     let text = String(raw || "").trim();
     const navMatch = text.match(/\bNAVIGATE:([a-z0-9_-]+)\b/i);
     let sectionId = null;
@@ -1957,7 +1968,7 @@
     const extracted = extractApplyPatches(text);
     text = extracted.text;
     if (!text) {
-      if (report.html) text = "HTML report ready — Open or Download below.";
+      if (report.html) text = "Document ready — Open or Download below.";
       else if (created.create) text = "Proposed a new study — click Create study to open it.";
       else if (extracted.patches.length) {
         text = "Proposed field updates — Apply to write them into the open study.";
@@ -1983,7 +1994,7 @@
     if (created.create) {
       pushCreateProposal(text, created.create);
     } else {
-      pushAssistant(text, extracted.patches, report.html);
+      pushAssistant(text, extracted.patches, report.html, exports);
     }
     if (sectionId === "__buddy__") openBuddy();
     else if (sectionId) {
@@ -2499,7 +2510,7 @@
       if (!res.ok) {
         pushAssistant(data.error || `Request failed (${res.status})`);
       } else {
-        applyBuddyAnswer(data.answer);
+        applyBuddyAnswer(data.answer, data.exports);
         if (Array.isArray(data.attachments) && data.attachments.some((a) => a && a.ok === false)) {
           const fails = data.attachments
             .filter((a) => a && a.ok === false)
@@ -7132,6 +7143,26 @@
             const a = document.createElement("a");
             a.href = url;
             a.download = turn.htmlReport.filename || "ora-report.html";
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 60_000);
+          }
+          return;
+        }
+        const exportBtn = e.target.closest("[data-buddy-export]");
+        if (exportBtn) {
+          const id = exportBtn.getAttribute("data-buddy-export");
+          const fmt = exportBtn.getAttribute("data-buddy-export-fmt");
+          const turn = state.askHistory.find((t) => t.htmlReport && t.htmlReport.id === id);
+          const file = (turn?.htmlReport?.exports || []).find((e) => e && e.format === fmt && e.contentBase64);
+          if (file) {
+            const bin = Uint8Array.from(atob(file.contentBase64), (c) => c.charCodeAt(0));
+            const blob = new Blob([bin], { type: file.mimeType || "application/octet-stream" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = file.filename || `ora-document.${fmt}`;
             document.body.appendChild(a);
             a.click();
             a.remove();

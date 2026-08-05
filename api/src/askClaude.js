@@ -23,7 +23,8 @@ const SYSTEM_PROMPT_DEFAULT = [
   "Section locks: context.sectionLocks lists tabs currently locked for editing (sectionId + holderName). You may READ and discuss locked tabs. Do NOT emit APPLY (or claim you changed values) for any path whose tab is in sectionLocks and held by someone else — instead say clearly e.g. 'Alex is editing Recruitment — ask them to Save and click Done before I can change that tab.' CREATE_STUDY for a new study is still allowed.",
   "APPLY paths must come from context.editableFields (path + label + tab). Prefer the activeTab when the user says a generic name like Notes. Examples: assumptions.recruitment.notes, drivers.enrolledSubjects, sites.0.country, sites.0.coreSites, clientName. Never invent paths. Do not claim the value is saved until the user clicks Apply in the UI.",
   "When context.user has a firstName (or displayName), greet them by first name when they say hi/hello or on the first reply of a chat — then skip greetings on follow-ups unless they greet you again.",
-  "UPLOADED FILES: When context.uploadedDocuments.files has ok entries with text, treat that text as source-of-truth for the ask (RFP, protocol, email, spreadsheet). Extract what is present, list only true gaps, never re-ask for facts already in the file, and flag assumptions clearly."
+  "UPLOADED FILES (critical): When ATTACHED DOCUMENTS appear in the user message, you MUST read them and answer from them. Name each file you used. Never ignore attachments in favor of a portfolio overview, generic BD pitch, or clarifying menu. Only ask for gaps that are truly missing after reading the files.",
+  "CREATE A DOC FROM ATTACHMENTS: If the user attaches branding/guidelines/template/slides AND a protocol/bid and asks to create a document/PDF/Word/feasibility report: emit HTML_REPORT_START…END that follows the branding/template and fills from the protocol + chat specs. Do not refuse because you cannot attach binary files — the app builds PDF/DOCX downloads from your HTML."
 ].join(" ");
 
 const PORTFOLIO_RULES =
@@ -137,16 +138,19 @@ function loadOraIntelligenceContext() {
 }
 
 const HTML_REPORT_RULES = [
-  " HTML REPORT PROTOCOL (critical): When the user asks for a visual, chart, graph, graphic, table view, dashboard, slide, deck, printable/PDF, HTML report, feasibility report, site recommendation, BD prep memo, competitive landscape, ELT deck, legacy table, or says make/produce/build/show a visual:",
+  " HTML / DOCUMENT PROTOCOL (critical): When the user asks for a visual, chart, dashboard, slide, deck, printable/PDF, Word/DOCX, document, proposal, memo, feasibility report, BD prep, competitive landscape, ELT deck, OR attaches branding/template/guidelines + a bid/RFP and asks you to create/produce a doc:",
   "(1) Give a short chat summary first using [[h]] / [[i]] (2–6 lines).",
-  "(2) You MUST also emit a full single-file HTML document between exactly these markers — chat-only is not enough when they asked for a visual:",
+  "(2) You MUST also emit a full single-file HTML document between exactly these markers — chat-only is not enough:",
   "HTML_REPORT_START",
   "<!DOCTYPE html>…complete document…",
   "HTML_REPORT_END",
-  "Use the Ora navy/teal design system from the always-on Ora Master Context (Section 18): page bg #F0F4F8, navy #1B2A4A, teal #1A7F8E, inline <style>, .header / .card / .card-hdr / .kpi / tables / alerts. Chrome print-to-PDF ready. No external CSS/JS.",
-  "Apply sponsor-facing vs internal rules from that Master Context (Section 10). Populate numbers only from Context JSON — never invent PSM, enrollment, or NCT rows.",
+  "The platform converts that HTML into downloadable PDF and Word (DOCX) for the user — so always emit the HTML block when they want a file/doc.",
+  "BRANDING / TEMPLATE FOLLOWS (critical): If context.uploadedDocuments includes branding, style guide, template, form, sample layout, OR prior slides PLUS a protocol/bid/RFP: mirror the structure and section order from the template/standard form when they say \"my standard template\"; apply colors/fonts/tone from branding or from the attached slides when described; fill content from the protocol + chat specs + Cosmos/TrialHub — never invent numbers. If branding colors are named (hex or words), use them in inline CSS. If branding is incomplete, use Ora navy/teal (#1B2A4A / #1A7F8E, page #F0F4F8) and say what you assumed.",
+  "MEETING PREP + FEASIBILITY (common BD ask): When the user prepares for a sponsor meeting (e.g. win themes + feasibility report) and attaches a protocol and/or slides: (A) In chat, give [[h]]Win themes[[/h]] (3–6 bullets: industry dry-eye / device enrollment reality + Ora strengths + site strategy). (B) In HTML_REPORT, produce the full feasibility report in their standard template (or Ora feasibility layout if no template text). Capture chat specs explicitly: sponsor, indication/device, site count scenarios (e.g. 6 vs 5 if no NIH grant), enrollment months, named academic sites vs Ora-pushed private sites (e.g. Core, Piedmont, Total Eye Care). Use intelligence/TrialHub for industry run-rate context when present.",
+  "Default Ora design when no branding attached: page bg #F0F4F8, navy #1B2A4A, teal #1A7F8E, inline <style>, .header / .card / .card-hdr / .kpi / tables / alerts. Print-ready. No external CSS/JS.",
+  "Apply sponsor-facing vs internal rules from Master Context. Populate numbers only from Context JSON / uploaded files — never invent PSM, enrollment, or NCT rows.",
   " LEGACY TABLE: context.legacyAnterior.htmlTable / indicationSites.topByEnrolled / trust.topSitesByEnrolled is queried from Cosmos (legacy_sites). Never ask the user to paste the legacy table. If those arrays are present, render them in the HTML_REPORT. If empty, say Cosmos returned no legacy rows — still emit an HTML shell with that message.",
-  "Chat-only asks (no visual/table/report wording) do not need HTML_REPORT blocks."
+  "Chat-only asks (no visual/table/report/doc/pdf wording and no create-a-doc-from-attachments ask) do not need HTML_REPORT blocks."
 ].join(" ");
 
 const FORMAT_RULES =
@@ -248,7 +252,7 @@ function systemPromptFor(context) {
     " Never print DB field names (fsi_trust, org_clean, site_psm, etc.) — use human labels. " +
     " Do not repeat the same closing offer/menu you already gave in this chat. " +
     " For public revenue/sponsor/news asks: web-search now and answer — do not ask clarifying menus first. " +
-    " When context.uploadedDocuments has file text: use it first; extract specs; only ask for real gaps. " +
+    " When context.uploadedDocuments has file text OR ATTACHED DOCUMENTS appear in the user message: READ the files first, cite them by name, and do not pivot to a portfolio overview. " +
     " Never reply with null/(null)/empty/no answer.";
   const focus = context?.answerFocus;
   const focusNote =
@@ -278,7 +282,10 @@ function systemPromptFor(context) {
         ? ` Enrollment plan is on intelligence.query — use those site counts with human labels.`
         : "";
   const visualNote = context?.wantsHtmlVisual
-    ? " CRITICAL: wantsHtmlVisual=true — you MUST emit HTML_REPORT_START … HTML_REPORT_END with a complete Ora navy/teal HTML document after a short chat summary. Do not answer with chat text only."
+    ? " CRITICAL: wantsHtmlVisual=true — you MUST emit HTML_REPORT_START … HTML_REPORT_END with a complete HTML document after a short chat summary. If branding/template uploads are present, follow them. Do not answer with chat text only. The app will offer PDF/Word downloads from your HTML."
+    : "";
+  const docNote = context?.wantsDocumentExport
+    ? " CRITICAL: wantsDocumentExport=true — produce a finished document via HTML_REPORT (branding + bid content). User expects downloadable PDF/Word."
     : "";
   const liveNote =
     context?.buddyLiveContext?.text
@@ -301,7 +308,7 @@ function systemPromptFor(context) {
     : "";
   const user = context?.user;
   if (!user?.firstName && !user?.displayName && !user?.email) {
-    return base + protocols + focusNote + intelNote + planNote + visualNote + liveNote + legacyNote + modelNote;
+    return base + protocols + focusNote + intelNote + planNote + visualNote + docNote + liveNote + legacyNote + modelNote;
   }
   const label = user.firstName
     ? `${user.firstName}${user.email ? ` (${user.email})` : ""}`
@@ -313,6 +320,7 @@ function systemPromptFor(context) {
     intelNote +
     planNote +
     visualNote +
+    docNote +
     liveNote +
     legacyNote +
     modelNote +
@@ -598,16 +606,115 @@ function buildHistoryMessages(history) {
   return messages;
 }
 
+function formatAttachedDocumentsBlock(context) {
+  const docs = context?.uploadedDocuments;
+  const files = Array.isArray(docs?.files) ? docs.files : [];
+  if (!files.length) return "";
+
+  const parts = [
+    "ATTACHED DOCUMENTS — READ THESE FIRST. They are the primary source for this ask.",
+    "Do NOT answer with a generic portfolio overview when documents are attached unless the user explicitly asked for portfolio/all-studies.",
+    "In your reply, name each file you used (e.g. \"From How could we have won…\") and ground the answer in that content.",
+    ""
+  ];
+
+  for (const f of files) {
+    const name = String(f?.name || "upload");
+    if (f?.ok === false || f?.error) {
+      parts.push(`=== FILE (FAILED): ${name} ===`);
+      parts.push(`Error: ${f.error || "could not extract text"}`);
+      parts.push(`=== END FILE ===`);
+      parts.push("");
+      continue;
+    }
+    const text = String(f?.text || "").trim();
+    if (!text) {
+      parts.push(`=== FILE (EMPTY): ${name} ===`);
+      parts.push("(no extractable text)");
+      parts.push(`=== END FILE ===`);
+      parts.push("");
+      continue;
+    }
+    parts.push(`=== FILE: ${name} (${text.length} chars) ===`);
+    parts.push(text);
+    parts.push(`=== END FILE: ${name} ===`);
+    parts.push("");
+  }
+  return parts.join("\n");
+}
+
+/** Context JSON for the model — keep attachments OUT of the truncated blob (they're inlined above). */
+function contextJsonForModel(context) {
+  const ctx = { ...(context || {}) };
+  const docs = ctx.uploadedDocuments;
+  if (docs && Array.isArray(docs.files)) {
+    ctx.uploadedDocuments = {
+      count: docs.count,
+      okCount: docs.okCount,
+      totalChars: docs.totalChars,
+      files: docs.files.map((f) =>
+        f && f.text
+          ? {
+              name: f.name,
+              mimeType: f.mimeType,
+              charCount: f.charCount,
+              ok: true,
+              textIncludedAbove: true,
+              preview: String(f.text).slice(0, 200)
+            }
+          : {
+              name: f?.name,
+              mimeType: f?.mimeType,
+              ok: false,
+              error: f?.error || "no text"
+            }
+      ),
+      note:
+        "Full file text is in the ATTACHED DOCUMENTS section above this JSON — read that section. Do not ignore attachments."
+    };
+  }
+
+  // When files are attached, shrink portfolio noise so the model focuses on the docs
+  if (docs?.okCount > 0 || (docs?.files || []).some((f) => f && f.text)) {
+    if (ctx.portfolio && typeof ctx.portfolio === "object") {
+      ctx.portfolio = {
+        source: ctx.portfolio.source,
+        databaseStudyCount: ctx.portfolio.databaseStudyCount,
+        matchedStudyCount: ctx.portfolio.matchedStudyCount,
+        note:
+          "Portfolio summary suppressed because the user attached documents — answer from ATTACHED DOCUMENTS first. Only use portfolio if they explicitly asked for all-studies/portfolio."
+      };
+    }
+    ctx.answerFocus = ctx.answerFocus === "single_study" ? "single_study" : "attachments";
+  }
+
+  const raw = JSON.stringify(ctx, null, 2);
+  // Leave headroom; attachments already consume tokens outside this blob
+  const max = docs?.okCount > 0 ? 60000 : 100000;
+  return raw.length > max ? `${raw.slice(0, max)}\n…[context truncated]` : raw;
+}
+
 function userBlock(question, context) {
-  return [
-    "Question:",
-    question,
-    "",
-    "Context (JSON):",
-    JSON.stringify(context || {}, null, 2).slice(0, 100000),
-    "",
-    "Reply format: plain text; optional [[h]]header[[/h]] (blue) and [[i]]important[[/i]] (red). Always put the text inside the tags. No markdown # or **."
-  ].join("\n");
+  const attached = formatAttachedDocumentsBlock(context);
+  const parts = ["Question:", question, ""];
+  if (attached) {
+    parts.push(attached);
+    parts.push("---");
+    parts.push("");
+  }
+  parts.push("Context (JSON) — Ora study/intelligence data. Attachments above override this when they conflict:");
+  parts.push(contextJsonForModel(context));
+  parts.push("");
+  if (attached) {
+    parts.push(
+      "REQUIRED: Your answer must engage the attached document(s) by name. Do not substitute a portfolio rollup for reading the files."
+    );
+  } else {
+    parts.push(
+      "Reply format: plain text; optional [[h]]header[[/h]] (blue) and [[i]]important[[/i]] (red). Always put the text inside the tags. No markdown # or **."
+    );
+  }
+  return parts.join("\n");
 }
 
 function isFoundryProjectEndpoint(endpoint) {
@@ -848,7 +955,8 @@ async function askFoundryAgent({ question, context, history }) {
       content:
         `CRITICAL: If this ask is about public company revenue, biggest/highest sponsor, market size, or news — use web search NOW and answer with a ranked list. ` +
         `Default TA = ophthalmology; sponsor = biopharma/device trial sponsors (not payers). Do not ask clarifying menus first.\n\n` +
-        `${system}\n\n---\nWork from the Context JSON below for Ora data. Use web search for public/external facts.\n---\n\n` +
+        `CRITICAL: If ATTACHED DOCUMENTS appear below, READ THEM and answer from them — never ignore files for a portfolio overview.\n\n` +
+        `${system}\n\n---\nWork from ATTACHED DOCUMENTS first when present, then Context JSON for Ora data. Use web search for public/external facts.\n---\n\n` +
         userBlock(question, context)
     }
   ];
