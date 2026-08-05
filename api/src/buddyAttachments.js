@@ -73,21 +73,29 @@ async function extractFromXlsx(buffer, name) {
 }
 
 async function extractFromPdf(buffer) {
-  let PDFParse;
+  // Prefer lightweight pdf-parse v1 API; fall back to v2 class API if present.
+  let pdfParseMod;
   try {
-    ({ PDFParse } = require("pdf-parse"));
+    pdfParseMod = require("pdf-parse");
   } catch {
     throw new Error("PDF support not installed on API (pdf-parse)");
   }
-  const parser = new PDFParse({ data: buffer });
-  try {
-    const result = await parser.getText();
-    return String(result?.text || "").slice(0, MAX_TEXT_CHARS);
-  } finally {
-    try {
-      await parser.destroy();
-    } catch (_) {}
+  if (typeof pdfParseMod === "function") {
+    const data = await pdfParseMod(buffer);
+    return String(data?.text || "").slice(0, MAX_TEXT_CHARS);
   }
+  if (pdfParseMod?.PDFParse) {
+    const parser = new pdfParseMod.PDFParse({ data: buffer });
+    try {
+      const result = await parser.getText();
+      return String(result?.text || "").slice(0, MAX_TEXT_CHARS);
+    } finally {
+      try {
+        await parser.destroy();
+      } catch (_) {}
+    }
+  }
+  throw new Error("Unsupported pdf-parse API");
 }
 
 async function extractFromDocx(buffer) {

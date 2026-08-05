@@ -1466,19 +1466,20 @@
         let reportHtml = "";
         if (t.htmlReport && t.htmlReport.html) {
           const exportBtns = (t.htmlReport.exports || [])
-            .filter((e) => e && e.contentBase64)
+            .filter((e) => e && e.contentBase64 && e.format && e.format !== "html")
             .map(
               (e) =>
                 `<button type="button" class="btn btn-ghost" data-buddy-export="${escapeAttr(t.htmlReport.id)}" data-buddy-export-fmt="${escapeAttr(e.format)}">Download ${escapeHtml(
-                  String(e.format || "").toUpperCase()
+                  e.format === "docx" ? "Word" : String(e.format || "").toUpperCase()
                 )}</button>`
             )
             .join("");
           reportHtml = `<div class="buddy-report">
             <div class="chat-who">Document ready</div>
-            <p class="muted">Open the HTML report or download PDF / Word built from it.</p>
+            <p class="muted">Open the report, print/save as PDF, or download Word.</p>
             <div class="buddy-proposal-actions">
               <button type="button" class="btn btn-primary" data-buddy-report-open="${escapeAttr(t.htmlReport.id)}">Open report</button>
+              <button type="button" class="btn btn-ghost" data-buddy-report-print="${escapeAttr(t.htmlReport.id)}">Print / PDF</button>
               <button type="button" class="btn btn-ghost" data-buddy-report-dl="${escapeAttr(t.htmlReport.id)}">Download HTML</button>
               ${exportBtns}
             </div>
@@ -7130,6 +7131,26 @@
             const url = URL.createObjectURL(blob);
             window.open(url, "_blank", "noopener");
             setTimeout(() => URL.revokeObjectURL(url), 60_000);
+          }
+          return;
+        }
+        const printReport = e.target.closest("[data-buddy-report-print]");
+        if (printReport) {
+          const id = printReport.getAttribute("data-buddy-report-print");
+          const turn = state.askHistory.find((t) => t.htmlReport && t.htmlReport.id === id);
+          if (turn?.htmlReport?.html) {
+            const w = window.open("", "_blank", "noopener");
+            if (w) {
+              w.document.open();
+              w.document.write(turn.htmlReport.html);
+              w.document.close();
+              setTimeout(() => {
+                try {
+                  w.focus();
+                  w.print();
+                } catch (_) {}
+              }, 400);
+            }
           }
           return;
         }
