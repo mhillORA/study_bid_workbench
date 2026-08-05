@@ -594,8 +594,12 @@ h1 {
   right: 1.25rem;
   bottom: 1.25rem;
   z-index: 45;
-  width: min(420px, calc(100vw - 1.5rem));
-  height: min(640px, calc(100vh - 2rem));
+  width: var(--buddy-w, min(420px, calc(100vw - 1.5rem)));
+  height: var(--buddy-h, min(640px, calc(100vh - 2rem)));
+  min-width: 300px;
+  min-height: 360px;
+  max-width: calc(100vw - 0.75rem);
+  max-height: calc(100vh - 0.75rem);
   display: flex;
   flex-direction: column;
   background: var(--panel, var(--card-bg));
@@ -604,6 +608,7 @@ h1 {
   border-radius: 16px;
   box-shadow: 0 18px 48px rgba(10, 20, 50, 0.28);
   overflow: hidden;
+  resize: both;
 }
 
 .buddy-panel[hidden] {
@@ -618,6 +623,13 @@ h1 {
   padding: 0.9rem 1rem;
   border-bottom: 1px solid var(--line);
   background: var(--card-bg);
+  flex-shrink: 0;
+}
+
+.buddy-panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
 }
 
 .buddy-panel-head .muted {
@@ -625,11 +637,25 @@ h1 {
   font-size: 0.8rem;
 }
 
-.buddy-close {
-  font-size: 1.35rem;
+.buddy-close,
+.buddy-icon-btn {
+  font-size: 1.2rem;
   line-height: 1;
   padding: 0.15rem 0.45rem;
   min-width: auto;
+}
+
+.buddy-resize-handle {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 14px;
+  height: 14px;
+  cursor: nwse-resize;
+  background: linear-gradient(135deg, var(--line) 0 2px, transparent 2px) 0 0 / 6px 6px,
+    linear-gradient(135deg, var(--line) 0 2px, transparent 2px) 3px 3px / 6px 6px;
+  background-repeat: no-repeat;
+  opacity: 0.7;
 }
 
 .buddy-chat-log {
@@ -639,6 +665,60 @@ h1 {
   border: none;
   border-radius: 0;
   background: transparent;
+  min-height: 0;
+}
+
+a.buddy-src {
+  display: inline-block;
+  max-width: 10em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+  font-size: 0.78em;
+  font-weight: 600;
+  color: var(--ora-teal, #1a7f8e);
+  text-decoration: none;
+  margin: 0 0.12em;
+}
+
+a.buddy-src:hover {
+  text-decoration: underline;
+}
+
+html.buddy-popout-mode,
+html.buddy-popout-mode body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+html.buddy-popout-mode .app-shell,
+html.buddy-popout-mode header,
+html.buddy-popout-mode .topbar,
+html.buddy-popout-mode nav,
+html.buddy-popout-mode .sidebar,
+html.buddy-popout-mode main,
+html.buddy-popout-mode .buddy-fab,
+html.buddy-popout-mode dialog {
+  display: none !important;
+}
+
+html.buddy-popout-mode .buddy-panel {
+  inset: 0;
+  right: 0;
+  bottom: 0;
+  width: 100% !important;
+  height: 100% !important;
+  max-width: none;
+  max-height: none;
+  border-radius: 0;
+  resize: none;
+}
+
+html.buddy-popout-mode .buddy-resize-handle,
+html.buddy-popout-mode #buddyPopout {
+  display: none !important;
 }
 
 .chat-turn.assistant .chat-body .buddy-h {

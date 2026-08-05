@@ -28,10 +28,24 @@ const SYSTEM_PROMPT_DEFAULT = [
 ].join(" ");
 
 const PORTFOLIO_RULES =
-  " DATA RULE: context.portfolio is queried from Cosmos DB across studies (databaseStudyCount / matchedStudyCount / averages / totals). " +
+  " DATA RULE: context.portfolio is queried from Cosmos DB across studies (databaseStudyCount / matchedStudyCount / averages / totals / byClient). " +
   "Questions about all studies, averages across studies, which study is largest, client rollups, or portfolio totals MUST use context.portfolio. " +
   "workingStudy and openStudyInUi are only the study open in the browser — never treat them as the full database. " +
-  "For average enrollment use portfolio.averages.enrolledSubjects and cite matchedStudyCount / studiesWithEnrollmentCount.";
+  "For average enrollment use portfolio.averages.enrolledSubjects and cite matchedStudyCount / studiesWithEnrollmentCount. " +
+  "FILTER TRUTH (critical): Only report a client/year filter when context.portfolio.filters.clientName or filters.year is non-null. " +
+  "If both are null, the query is the FULL Cosmos portfolio — never invent filters (e.g. \"BL only\") or claim the UI filtered the DB. " +
+  "Never invent reasons like \"filtered so it can reliably confirm 1 study\". " +
+  "If matchedStudyCount < databaseStudyCount, explain it ONLY from filters / note / filterError on context.portfolio — do not invent a reason. " +
+  "ORA EARNED $ vs SPONSOR COMPANY $ (critical): " +
+  "When the user asks how many studies we've run with clients/sponsors AND/OR to rank them by revenue/fees/what we've made/made off them — " +
+  "use context.portfolio.byClient: studyCount + grandTotal (or serviceFees). That is Ora bid/service-fee dollars from uploaded budgets — NOT the sponsor's corporate revenue, CHF/USD billions, 10-K filings, or web market caps. " +
+  "Label clearly as Ora fees / bid totals. Sort by grandTotal (fallback serviceFees). Cite studiesWithMoneyCount when some clients lack money. " +
+  "Only use web company revenue when they explicitly ask for the sponsor's own company revenue, biggest pharma by market revenue, filings, or similar public facts. " +
+  "If context.moneyIntent is \"ora_earned\", you MUST use portfolio byClient and MUST NOT web-search sponsor corporate revenue. " +
+  "INGEST / UPLOAD DATES (critical): portfolio.studies[].importedAt = first ingest into Cosmos; updatedAt = last workbench save. " +
+  "portfolio.recentlyIngested is newest-first for \"when did we ingest/upload/add\" asks. " +
+  "cosmos.study.importedAt / updatedAt and cosmos.version.createdAt are the same for the open study. " +
+  "When those fields are present, cite them — never say you cannot see when a study was ingested. Only say missing if importedAt and updatedAt are both null.";
 
 /**
  * Always appended — even when SWA overrides BUDDY_SYSTEM_PROMPT — so Buddy knows
@@ -160,7 +174,10 @@ const FORMAT_RULES =
   "Put the real words INSIDE the tags (never empty): [[i]]Abbott[[/i]] and [[i]]$44.3 billion[[/i]]. " +
   "Exact form: double brackets open AND close — [[i]]…[[/i]]. Wrong forms that break the UI: [/i]], [i]], [[i], Abbott[/i]]. " +
   "Never use markdown headings (#) or bold (** / ***). Prefer short paragraphs over outlines. " +
-  "Never emit web-search citation glyphs or footnote junk (【0】, †source, ‡, ※, [1], <cite>). Plain source names in parentheses are fine. " +
+  "Never emit web-search citation glyphs or footnote junk (【0】, †source, ‡, ※, [1], <cite>). " +
+  "Web sources: keep them tiny — at the end use [[h]]Sources[[/h]] then a short comma-separated list of hostnames only " +
+  "(e.g. sec.gov, bloomberg.com, investor.abbott.com). Never paste full URLs, long article titles, or numbered link dumps. " +
+  "Inline cites: (SEC 10-K 2025) or (bloomberg.com) is enough. " +
   "HTML reports use HTML_REPORT_START/END markers (not [[h]]/[[i]] inside the HTML).";
 
 /** Never dump Cosmos/JSON field keys into user-facing chat. */
@@ -198,16 +215,20 @@ const CONVERSATION_HYGIENE_RULES =
  */
 const WEB_SEARCH_RULES = [
   " WEB SEARCH (critical — Foundry agent has live web tools):",
-  "When the ask needs public/external facts (company revenue, market size, news, filings, weather, competitor financials,",
-  " \"highest revenue\", \"biggest sponsor\", rankings, SEC/10-K numbers), CALL WEB SEARCH ON THIS TURN.",
+  "When the ask needs public/external facts (sponsor COMPANY revenue, market size, news, filings, weather, competitor financials,",
+  " \"biggest pharma by revenue\", SEC/10-K numbers) AND it is NOT an Ora portfolio earned-fees ask, CALL WEB SEARCH ON THIS TURN.",
   "Do NOT ask the user to clarify definitions first. Do NOT say \"I can look it up\" or \"if you want I can…\" — just look it up and answer.",
   "Default assumptions for Ora BD (state them in one short line, then answer):",
   "• \"sponsor\" = biopharma / device company that sponsors ophthalmology or Ora-adjacent clinical trials (not payers like UnitedHealth unless asked).",
   "• \"our therapeutic area\" / \"our TA\" = ophthalmology (eye) unless the user named another TA.",
-  "• \"this year\" / \"highest revenue\" = latest reported annual revenue from public filings or company reports; say the fiscal year.",
-  "Answer shape: [[h]]Answer[[/h]] then a ranked list; wrap each revenue figure as [[i]]$44.3B[[/i]] with year + source; 3–8 names is enough.",
-  "Use Context JSON (portfolio / intelligence / crosswalk) to bias toward sponsors Ora actually sees, then fill gaps from the web.",
-  "Cite sources briefly (company name + filing/year or URL host). Never invent revenue figures.",
+  "• \"this year\" / \"highest company revenue\" = latest reported annual revenue from public filings; say the fiscal year.",
+  "ORA PORTFOLIO MONEY OVERRIDE (critical): If the ask is about studies we've run with clients, rank clients by revenue/fees, how much we've made, or similar —",
+  "DO NOT web search. Answer from context.portfolio.byClient (studyCount + grandTotal/serviceFees). Never show CHF/USD corporate billions for that ask.",
+  "If context.moneyIntent is \"ora_earned\", web search for revenue is forbidden.",
+  "Answer shape for public company revenue: [[h]]Answer[[/h]] then a ranked list; wrap each figure as [[i]]$44.3B[[/i]] with year + source; 3–8 names is enough.",
+  "Answer shape for Ora earned fees: [[h]]Clients by Ora fees[[/h]] then ranked lines: client — [[i]]$…[[/i]] fees — N studies (from portfolio).",
+  "Use Context JSON (portfolio / intelligence / crosswalk) to bias toward sponsors Ora actually sees, then fill gaps from the web only for public facts.",
+  "Cite sources briefly (company name + filing/year or URL host only — no full URLs or long link lists). Never invent revenue figures.",
   "Only ask a clarifying question if the ask is truly impossible without it AFTER you already delivered a best-effort ranked answer."
 ].join(" ");
 
@@ -248,13 +269,15 @@ function systemPromptFor(context) {
     " If context.sectionLocks shows another person on a tab, do not APPLY that tab — say who is editing it and that they must Save and Done first." +
     " To create a new study or HLBP from user-provided info end with CREATE_STUDY:{...json...} (set budgetType:\"HLBP\" and sites:[{country,coreSites}] for HLBP); user must click Create before it is saved." +
     " For cross-study / all-studies / average / client / year questions: set answer from context.portfolio (averages + totals + byClient); cite matchedStudyCount; do not use openStudyInUi or workingStudy for those answers." +
+    " For when a study was ingested/uploaded/added: use portfolio.recentlyIngested or studies[].importedAt / updatedAt (or cosmos.study dates) — do not claim dates are unavailable if present." +
     " For feasibility / PSM / TrialHub / competing trials / site performance / NCT / ophthalmology landscape: use context.intelligence; if site lists are present, NAME the sites — do not only NAVIGATE:intelligence." +
     " For legacy anterior-segment site trust / preferred sites / historical scheduled-screened-enrolled: use context.legacyAnterior when present." +
     " For past-bid pricing comps: use context.pricingScenarios when present; include CT.gov $ only if ctgovDollars.available." +
     " FORMAT reminder: no markdown # or **; use [[h]]…[[/h]] and [[i]]…[[/i]] (content inside tags; never empty [[i]][[/i]]; never [/i]]). " +
     " Never print DB field names (fsi_trust, org_clean, site_psm, etc.) — use human labels. " +
     " Do not repeat the same closing offer/menu you already gave in this chat. " +
-    " For public revenue/sponsor/news asks: web-search now and answer — do not ask clarifying menus first. " +
+    " For public company revenue / news asks (not Ora earned fees): web-search now and answer — do not ask clarifying menus first. " +
+    " If context.moneyIntent is \"ora_earned\": rank context.portfolio.byClient by grandTotal/serviceFees + studyCount — never web-search sponsor corporate revenue. " +
     " When context.uploadedDocuments has file text OR ATTACHED DOCUMENTS appear in the user message: READ the files first, cite them by name, and do not pivot to a portfolio overview. " +
     " Never reply with null/(null)/empty/no answer.";
   const focus = context?.answerFocus;
@@ -262,6 +285,12 @@ function systemPromptFor(context) {
     focus === "portfolio"
       ? " CRITICAL: answerFocus=portfolio — answer from context.portfolio (Cosmos DB) only; you may still use context.intelligence / context.legacyAnterior for feasibility if present."
       : " If the user asks about all studies or averages across studies, switch to context.portfolio even if a workingStudy is present.";
+  const moneyNote =
+    context?.moneyIntent === "ora_earned"
+      ? " CRITICAL: moneyIntent=ora_earned — use portfolio.byClient studyCount + grandTotal/serviceFees only. Forbidden: web company revenue, CHF/USD billions, 10-K filings."
+      : context?.moneyIntent === "public_company"
+        ? " moneyIntent=public_company — web-search sponsor/company revenue is OK."
+        : "";
   const hasSiteList = Boolean(
     context?.intelligence?.indicationBenchmark?.sites?.topSitesByPsm?.length ||
       context?.intelligence?.indicationBenchmark?.sites?.topSites?.length ||
@@ -308,13 +337,13 @@ function systemPromptFor(context) {
     ? agent.enabled
     ? ` You are "${display}" (Ask Buddy for Ora Clinical) with live web search. ` +
       `If asked who/what you are, say "${display}" or "Ask Buddy" — do not lead with the internal Foundry id "${dep}" unless they ask for the technical agent/deployment name. ` +
-      `For public facts (sponsor revenue, filings, news), SEARCH ON THIS TURN and give a ranked answer — never stall with "I can look it up" or multi-option clarifying menus.`
+      `For public facts (sponsor company revenue, filings, news) — unless moneyIntent=ora_earned — SEARCH ON THIS TURN and give a ranked answer — never stall with "I can look it up" or multi-option clarifying menus.`
     : ` You are "${display}", served via Azure. If asked who you are, say "${display}" or "Ask Buddy". ` +
       `Only mention the technical deployment name "${dep}" if they ask for the deployment/model id — do not claim GPT-4 or another model unless that is the deployment name.`
     : "";
   const user = context?.user;
   if (!user?.firstName && !user?.displayName && !user?.email) {
-    return base + protocols + focusNote + intelNote + planNote + visualNote + docNote + liveNote + legacyNote + modelNote;
+    return base + protocols + focusNote + moneyNote + intelNote + planNote + visualNote + docNote + liveNote + legacyNote + modelNote;
   }
   const label = user.firstName
     ? `${user.firstName}${user.email ? ` (${user.email})` : ""}`
@@ -323,6 +352,7 @@ function systemPromptFor(context) {
     base +
     protocols +
     focusNote +
+    moneyNote +
     intelNote +
     planNote +
     visualNote +
@@ -591,7 +621,9 @@ async function getStudyContext(studyId, { getDb }) {
         indication: study.indication,
         status: study.status,
         drivers: study.drivers,
-        sites: (study.sites || []).slice(0, 20)
+        sites: (study.sites || []).slice(0, 20),
+        importedAt: study.importedAt || null,
+        updatedAt: study.updatedAt || null
       },
       version: version
         ? {
@@ -599,7 +631,8 @@ async function getStudyContext(studyId, { getDb }) {
             label: version.label,
             lineItemCount: version.lineItemCount,
             totals: version.totals,
-            sourceFileName: version.sourceFileName
+            sourceFileName: version.sourceFileName,
+            createdAt: version.createdAt || null
           }
         : null,
       lineItemSample: lineSample,
@@ -1094,10 +1127,11 @@ async function askFoundryAgent({ question, context, history }) {
     {
       role: "user",
       content:
-        `CRITICAL: If this ask is about public company revenue, biggest/highest sponsor, market size, or news — use web search NOW and answer with a ranked list. ` +
+        `CRITICAL: If moneyIntent/context says ora_earned OR the ask is studies we've run with clients / rank by revenue we've made — use context.portfolio.byClient (studyCount + grandTotal/serviceFees). Do NOT web-search sponsor corporate revenue (no CHF/USD billions). ` +
+        `If this ask is about public COMPANY revenue, biggest pharma, market size, or news — use web search NOW and answer with a ranked list. ` +
         `Default TA = ophthalmology; sponsor = biopharma/device trial sponsors (not payers). Do not ask clarifying menus first.\n\n` +
         `CRITICAL: If ATTACHED DOCUMENTS appear below, READ THEM. If ORA COSMOS FACTS appear below, USE THOSE NUMBERS — never invent PSM/enrollment/site stats. Say missing when Cosmos fields are null.\n\n` +
-        `${system}\n\n---\nPriority: ATTACHED DOCUMENTS (protocol/template) → ORA COSMOS FACTS (performance numbers) → Context JSON → web for public facts only.\n---\n\n` +
+        `${system}\n\n---\nPriority: ATTACHED DOCUMENTS (protocol/template) → ORA COSMOS FACTS (performance numbers) → Context JSON portfolio for Ora fees → web for public company facts only.\n---\n\n` +
         userBlock(question, context)
     }
   ];

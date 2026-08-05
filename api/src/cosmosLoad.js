@@ -344,7 +344,8 @@ async function buildPortfolioContext({ clientName = null, year = null, limit = 5
       discount: money.discount ?? null,
       lineItemCount: money.lineItemCount ?? null,
       versionLabel: money.versionLabel ?? null,
-      updatedAt: s.updatedAt || s.importedAt || null
+      importedAt: s.importedAt || null,
+      updatedAt: s.updatedAt || null
     });
   }
 
@@ -413,6 +414,20 @@ async function buildPortfolioContext({ clientName = null, year = null, limit = 5
 
   const enrollmentN = rows.filter((r) => typeof r.enrolledSubjects === "number").length;
 
+  const recentlyIngested = [...rows]
+    .filter((r) => r.importedAt || r.updatedAt)
+    .sort((a, b) =>
+      String(b.importedAt || b.updatedAt || "").localeCompare(String(a.importedAt || a.updatedAt || ""))
+    )
+    .slice(0, 25)
+    .map((r) => ({
+      studyId: r.studyId,
+      clientName: r.clientName,
+      title: r.title,
+      importedAt: r.importedAt,
+      updatedAt: r.updatedAt
+    }));
+
   return {
     source: "cosmos_portfolio",
     filters: {
@@ -449,17 +464,24 @@ async function buildPortfolioContext({ clientName = null, year = null, limit = 5
       serviceFees: r.serviceFees,
       passThroughs: r.passThroughs,
       grandTotal: r.grandTotal,
-      enrolledSubjects: r.enrolledSubjects
+      enrolledSubjects: r.enrolledSubjects,
+      importedAt: r.importedAt,
+      updatedAt: r.updatedAt
     })),
+    recentlyIngested,
     clientNamesInDatabase: clientNames.slice(0, 100),
     studies: rows.slice(0, 100),
     notes: [
       "Money fields come from Exec Sum totals on each study's current version (Total Service Fees, pass-throughs).",
       "grandTotal ≈ serviceFees + passThroughs when both exist; otherwise serviceFees alone.",
+      "byClient.grandTotal / serviceFees = Ora earned bid dollars from that client — NOT the client's corporate revenue.",
+      "importedAt = when the study was first ingested/uploaded into Cosmos; updatedAt = last save in the workbench.",
+      "recentlyIngested = newest studies by importedAt (fallback updatedAt) — use for 'when did we ingest / upload / add' asks.",
       "We do not have true profit/GM% in this portfolio extract — 'most profitable' should be answered as highest grandTotal/serviceFees unless margin fields appear in a single-study cosmos context.",
       "For average patient enrollment across ALL studies use averages.enrolledSubjects (not workingStudy / openStudyInUi).",
       "Totals sum drivers and money; missing drivers/money on a study contribute 0 to totals but are excluded from averages.",
-      "Year filter uses updatedAt/importedAt calendar year when present."
+      "Year filter uses updatedAt/importedAt calendar year when present.",
+      "filters.clientName / filters.year are null when the full portfolio was queried — do not invent a client filter."
     ]
   };
 }

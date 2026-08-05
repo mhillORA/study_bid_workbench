@@ -133,6 +133,8 @@
     buddyFab: document.getElementById("buddyFab"),
     buddyPanel: document.getElementById("buddyPanel"),
     buddyClose: document.getElementById("buddyClose"),
+    buddyPopout: document.getElementById("buddyPopout"),
+    buddyResizeHandle: document.getElementById("buddyResizeHandle"),
     askLog: document.getElementById("askLog"),
     askInput: document.getElementById("askInput"),
     btnAsk: document.getElementById("btnAsk"),
@@ -1386,11 +1388,96 @@
     if (els.buddyPanel) {
       els.buddyPanel.hidden = false;
       els.buddyPanel.setAttribute("aria-hidden", "false");
+      applyBuddyPanelSize();
     }
     if (els.buddyFab) els.buddyFab.setAttribute("aria-expanded", "true");
     paintBuddyChat();
     refreshBuddyModelLabel();
     if (els.askInput) els.askInput.focus();
+  }
+
+  const BUDDY_SIZE_KEY = "sbw.buddyPanelSize";
+  const BUDDY_HIST_KEY = "sbw.buddyAskHistory";
+
+  function applyBuddyPanelSize() {
+    if (!els.buddyPanel || document.documentElement.classList.contains("buddy-popout-mode")) return;
+    try {
+      const raw = localStorage.getItem(BUDDY_SIZE_KEY);
+      if (!raw) return;
+      const { w, h } = JSON.parse(raw);
+      if (w) els.buddyPanel.style.setProperty("--buddy-w", `${Math.max(300, Number(w))}px`);
+      if (h) els.buddyPanel.style.setProperty("--buddy-h", `${Math.max(360, Number(h))}px`);
+    } catch (_) {}
+  }
+
+  function persistBuddyPanelSize() {
+    if (!els.buddyPanel) return;
+    const rect = els.buddyPanel.getBoundingClientRect();
+    if (rect.width < 50 || rect.height < 50) return;
+    try {
+      localStorage.setItem(BUDDY_SIZE_KEY, JSON.stringify({ w: Math.round(rect.width), h: Math.round(rect.height) }));
+    } catch (_) {}
+  }
+
+  function persistBuddyHistory() {
+    try {
+      localStorage.setItem(BUDDY_HIST_KEY, JSON.stringify(state.askHistory.slice(-50)));
+    } catch (_) {}
+  }
+
+  function loadBuddyHistory() {
+    try {
+      const raw = localStorage.getItem(BUDDY_HIST_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed) && parsed.length) state.askHistory = parsed;
+    } catch (_) {}
+  }
+
+  function popOutBuddy() {
+    const url = new URL(location.href);
+    url.searchParams.set("buddyPopout", "1");
+    window.open(url.toString(), "sbw-buddy", "popup=yes,width=520,height=780");
+    persistBuddyHistory();
+    closeBuddy();
+  }
+
+  function initBuddyChrome() {
+    loadBuddyHistory();
+    applyBuddyPanelSize();
+    if (new URLSearchParams(location.search).get("buddyPopout") === "1") {
+      document.documentElement.classList.add("buddy-popout-mode");
+      openBuddy();
+    }
+    if (els.buddyPopout) els.buddyPopout.addEventListener("click", popOutBuddy);
+    if (els.buddyPanel) {
+      // Native CSS resize ends without an event — poll on pointer up
+      els.buddyPanel.addEventListener("mouseup", persistBuddyPanelSize);
+      els.buddyPanel.addEventListener("touchend", persistBuddyPanelSize);
+    }
+    if (els.buddyResizeHandle && els.buddyPanel) {
+      let drag = null;
+      els.buddyResizeHandle.addEventListener("pointerdown", (e) => {
+        e.preventDefault();
+        const rect = els.buddyPanel.getBoundingClientRect();
+        drag = { x: e.clientX, y: e.clientY, w: rect.width, h: rect.height };
+        els.buddyResizeHandle.setPointerCapture(e.pointerId);
+      });
+      els.buddyResizeHandle.addEventListener("pointermove", (e) => {
+        if (!drag) return;
+        // Handle is top-left; dragging NW grows/shrinks from BR anchor
+        const dw = drag.x - e.clientX;
+        const dh = drag.y - e.clientY;
+        const nw = Math.min(window.innerWidth - 12, Math.max(300, drag.w + dw));
+        const nh = Math.min(window.innerHeight - 12, Math.max(360, drag.h + dh));
+        els.buddyPanel.style.setProperty("--buddy-w", `${nw}px`);
+        els.buddyPanel.style.setProperty("--buddy-h", `${nh}px`);
+      });
+      els.buddyResizeHandle.addEventListener("pointerup", () => {
+        drag = null;
+        persistBuddyPanelSize();
+      });
+    }
   }
 
   async function refreshBuddyModelLabel() {
@@ -1505,6 +1592,7 @@
       els.askStatus.textContent = state.buddyBusy ? "Thinking…" : "";
     }
     if (els.btnAsk) els.btnAsk.disabled = !!state.buddyBusy;
+    persistBuddyHistory();
   }
 
   function formatPatchValue(v) {
@@ -6287,6 +6375,31 @@
       .replace(/\({2}\s*\/?\s*[hi]\s*\){2}/gi, "");
   }
 
+  /** Host-only compact link for web sources. */
+  function buddyHostFromUrl(url) {
+    try {
+      return new URL(url).hostname.replace(/^www\./i, "") || "link";
+    } catch (_) {
+      return "link";
+    }
+  }
+
+  function linkifyBuddySources(html) {
+    let s = String(html || "");
+    // Markdown [title](url) → compact host link
+    s = s.replace(/\[([^\]]{1,120})\]\((https?:\/\/[^)\s]+)\)/gi, (_, _title, url) => {
+      const host = buddyHostFromUrl(url);
+      return `<a class="buddy-src" href="${escapeAttr(url)}" target="_blank" rel="noopener noreferrer" title="${escapeAttr(url)}">${escapeHtml(host)}</a>`;
+    });
+    // Bare URLs (skip ones already inside href=")
+    s = s.replace(/(?<!href=["'])(https?:\/\/[^\s<>"'）】]+)/gi, (url) => {
+      const clean = url.replace(/[.,;:!?)\]}]+$/g, "");
+      const host = buddyHostFromUrl(clean);
+      return `<a class="buddy-src" href="${escapeAttr(clean)}" target="_blank" rel="noopener noreferrer" title="${escapeAttr(clean)}">${escapeHtml(host)}</a>`;
+    });
+    return s;
+  }
+
   /** Buddy chat: [[h]] blue headers, [[i]] red important — repair mangled tags, keep text. */
   function formatBuddyHtml(raw) {
     let s = normalizeBuddyTags(raw);
@@ -6359,7 +6472,9 @@
 
     return chunks
       .map((c) => {
-        const body = escapeHtml(stripBuddyTagDebris(c.value)).replaceAll("\n", "<br>");
+        const body = linkifyBuddySources(
+          escapeHtml(stripBuddyTagDebris(c.value)).replaceAll("\n", "<br>")
+        );
         if (c.type === "h") return `<div class="buddy-h">${body}</div>`;
         if (c.type === "i") return `<span class="buddy-i">${body}</span>`;
         return body;
@@ -7409,6 +7524,7 @@
 
   bind();
   bindTheme();
+  initBuddyChrome();
   render();
   paintBuddyChat();
   markSaved();

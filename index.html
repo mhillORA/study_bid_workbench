@@ -75,7 +75,10 @@
         <strong>Ask Buddy</strong>
         <p class="muted" id="buddyModelLabel">Ask Buddy · Budget Buddy</p>
       </div>
-      <button type="button" class="btn btn-ghost buddy-close" id="buddyClose" aria-label="Close Buddy">×</button>
+      <div class="buddy-panel-actions">
+        <button type="button" class="btn btn-ghost buddy-icon-btn" id="buddyPopout" title="Open in new window" aria-label="Open Buddy in new window">↗</button>
+        <button type="button" class="btn btn-ghost buddy-close" id="buddyClose" aria-label="Close Buddy">×</button>
+      </div>
     </header>
     <div class="chat-log buddy-chat-log" id="askLog"></div>
     <div class="ask-compose buddy-compose">
@@ -88,6 +91,7 @@
         <span class="muted" id="askStatus"></span>
       </div>
     </div>
+    <div class="buddy-resize-handle" id="buddyResizeHandle" title="Drag to resize" aria-hidden="true"></div>
   </aside>
 
   <dialog id="newStudyDialog" class="dialog">

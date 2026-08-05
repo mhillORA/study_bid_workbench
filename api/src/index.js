@@ -84,6 +84,40 @@ function isCrossStudyQuestion(question) {
   return false;
 }
 
+/** True when the user clearly asked about a named client/sponsor (not a soft substring hit). */
+function hasExplicitClientCue(question) {
+  const q = String(question || "");
+  return (
+    /\b(?:with|for|from|client|sponsor|customer|account)\s+[A-Za-z0-9]/i.test(q) ||
+    /\bstudies?\s+(?:for|with|from)\s+[A-Za-z0-9]/i.test(q) ||
+    /\b[A-Za-z][A-Za-z0-9 .&'+-]{1,40}\s+studies\b/i.test(q)
+  );
+}
+
+/**
+ * Match a Cosmos client name in the question with word boundaries.
+ * Short names (≤3 chars, e.g. "BL") must be whole words — never substrings of
+ * "reliably", "table", "problem", etc.
+ */
+function clientNameMentionedInQuestion(question, clientName) {
+  const name = String(clientName || "").trim();
+  if (!name || name.length < 2) return false;
+  const q = String(question || "");
+  const escaped = name
+    .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    .replace(/\s+/g, "\\s+")
+    .replace(/\+/g, "\\+");
+  // Whole-phrase / whole-word match (handles "Bausch + Lomb", "Alcon", "BL")
+  if (new RegExp(`(?:^|[^A-Za-z0-9])${escaped}(?=[^A-Za-z0-9]|$)`, "i").test(q)) {
+    return true;
+  }
+  // Longer unique names may appear without clean boundaries (possessives, punctuation)
+  if (name.length >= 5 && q.toLowerCase().includes(name.toLowerCase())) {
+    return true;
+  }
+  return false;
+}
+
 function inferAskHints(question, body, clientNames) {
   const q = String(question || "");
   const crossStudy = isCrossStudyQuestion(q) || body.portfolio === true;
@@ -109,25 +143,49 @@ function inferAskHints(question, body, clientNames) {
     }
   }
 
-  if (!clientName && Array.isArray(clientNames) && clientNames.length) {
-    const lower = q.toLowerCase();
+  // Soft directory scan: only when the user seems to name a client.
+  // All-studies mode (noStudy) without an explicit client cue must stay unfiltered.
+  const allowSoftClient =
+    !body.noStudy || hasExplicitClientCue(q) || Boolean(body.clientName);
+
+  if (!clientName && allowSoftClient && Array.isArray(clientNames) && clientNames.length) {
     const sorted = [...clientNames].sort((a, b) => String(b).length - String(a).length);
     for (const name of sorted) {
-      if (name && lower.includes(String(name).toLowerCase())) {
+      if (clientNameMentionedInQuestion(q, name)) {
         clientName = name;
         break;
       }
     }
   }
 
-  if (!clientName) {
+  if (!clientName && hasExplicitClientCue(q)) {
     const m = q.match(
-      /\b(?:with|for|client|sponsor|customer)\s+([A-Za-z][A-Za-z0-9 .&'-]{1,40?}?)(?:\s+last|\s+in\s+20|\s+studies|\s+patients|\s+enrollment|\?|$)/i
+      /\b(?:with|for|from|client|sponsor|customer|account)\s+([A-Za-z][A-Za-z0-9 .&'+-]{1,40?}?)(?:\s+last|\s+in\s+20|\s+studies|\s+patients|\s+enrollment|\?|$)/i
     );
     if (m) clientName = m[1].trim();
   }
 
   return { studyId, clientName, year, crossStudy };
+}
+
+/** Ora earned fees (portfolio) vs sponsor corporate revenue (web). */
+function inferMoneyIntent(question) {
+  const q = String(question || "").toLowerCase();
+  if (!q) return null;
+  const publicCue =
+    /\b(their|company|corporate|market\s*cap|10-?k|sec\s*filing|biggest\s+pharma|largest\s+(pharma|biotech)|public(ly)?\s+trad|wall\s*street)\b/.test(
+      q
+    );
+  const oraCue =
+    /\b(we(?:'ve| have)?\s+(?:made|earned|billed|won)|our\s+(?:revenue|fees|billings)|how much (?:we|we've|ora)|ora(?:'s)?\s+(?:revenue|fees)|made off|rank(?:ed)? by (?:revenue|fees|dollars)|by (?:revenue|fees).{0,40}(?:client|sponsor|stud)|(?:client|sponsor)s?.{0,40}by (?:revenue|fees)|studies?\s+(?:we(?:'ve| have)?\s+)?(?:run|done|worked).{0,80}(?:revenue|fees)|(?:revenue|fees).{0,80}studies?\s+(?:with|we|we've))\b/.test(
+      q
+    ) ||
+    (/\b(revenue|fees|billings|dollars)\b/.test(q) &&
+      /\b(studies?|clients?|sponsors?|portfolio|by client|each)\b/.test(q) &&
+      !publicCue);
+  if (oraCue && !publicCue) return "ora_earned";
+  if (publicCue) return "public_company";
+  return null;
 }
 
 function claimMap(claims) {
@@ -1151,6 +1209,16 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
     }
 
     const hints = inferAskHints(question, body, clientDirectory);
+    // Belt-and-suspenders: never keep a 1–3 char client filter without an explicit cue
+    if (
+      hints.clientName &&
+      String(hints.clientName).trim().length <= 3 &&
+      !body.clientName &&
+      !hasExplicitClientCue(question)
+    ) {
+      hints.clientName = null;
+    }
+    const moneyIntent = inferMoneyIntent(question);
     // noStudy / empty selection = portfolio only — EXCEPT when the user attached docs
     // (otherwise Buddy ignores the file and dumps a portfolio overview).
     const attachmentDriven = hasOkUpload;
@@ -1422,6 +1490,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       askedAt: new Date().toISOString(),
       source: requireCopilotKey ? "copilot_studio" : "workbench",
       answerFocus,
+      moneyIntent,
       wantsHtmlVisual: visualAsk,
       wantsDocumentExport: docExportAsk,
       dataSources: {

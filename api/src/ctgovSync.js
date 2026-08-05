@@ -16,18 +16,43 @@ const PAGE_SIZE = 100;
 const OVERLAP_HOURS = 36;
 const USER_AGENT = "OraStudyBidWorkbench/1.0 (ctgov-delta-api)";
 
-/** Full ophthalmology condition search — MeSH Eye Diseases + broad ocular/retinal terms (not a curated shortlist). */
+/**
+ * Ophthalmology condition search — ocular-specific terms.
+ * Avoid bare neuroprotection / Graves / Fuchs / blindness / visual impairment (pull hearing & pulmonary noise).
+ * isOcularTrial() post-filters remaining false positives.
+ */
 const COND_QUERY =
   "(Eye Diseases OR Ophthalmology OR ocular OR ophthalmic OR retina OR retinal OR cornea OR corneal OR " +
   "glaucoma OR cataract OR uveitis OR macular OR conjunctivitis OR \"dry eye\" OR \"optic nerve\" OR " +
   "\"optic neuropath\" OR blepharitis OR strabismus OR amblyopia OR keratoconus OR myopia OR presbyopia OR " +
   "Stargardt OR \"retinitis pigmentosa\" OR \"inherited retinal\" OR choroideremia OR achromatopsia OR " +
-  "\"Leber congenital\" OR \"Leber hereditary\" OR vitreous OR intraocular OR \"anterior segment\" OR " +
-  "\"posterior segment\" OR \"visual impairment\" OR blindness OR nystagmus OR \"thyroid eye\" OR Graves OR " +
+  "\"Leber congenital\" OR \"Leber hereditary optic\" OR vitreous OR intraocular OR \"anterior segment\" OR " +
+  "\"posterior segment\" OR nystagmus OR \"thyroid eye\" OR \"Graves ophthalmopathy\" OR \"Graves orbitopathy\" OR " +
   "\"retinal vein\" OR \"geographic atrophy\" OR \"diabetic macular\" OR \"diabetic retinopathy\" OR " +
-  "neuroprotection OR NAION OR LHON OR Fuchs OR meibomian OR \"macular hole\" OR epiretinal OR " +
+  "\"retinal neuroprotection\" OR \"ocular neuroprotection\" OR \"optic nerve neuroprotection\" OR " +
+  "NAION OR LHON OR \"Fuchs endothelial\" OR \"Fuchs dystrophy\" OR meibomian OR \"macular hole\" OR epiretinal OR " +
   "\"central serous\" OR \"uveal melanoma\" OR \"ocular melanoma\" OR \"Best disease\" OR \"cone dystrophy\" OR " +
-  "\"rod dystrophy\" OR \"X-linked retinoschisis\" OR retinoblastoma)";
+  "\"rod dystrophy\" OR \"X-linked retinoschisis\" OR retinoblastoma OR Usher OR \"Hermansky-Pudlak\")";
+
+/** Strong ocular anchors — study must match at least one (conditions + title). */
+const CORE_OCULAR_RE =
+  /ophthalm|ocular|\beyes?\b|retina|retinal|cornea|glaucoma|cataract|uveit|macular|conjunctiv|dry\s*eye|optic\s*(nerve|neuropath|neuritis)|blephar|strabismus|amblyopia|keratocon|keratit|myopia|presbyopia|stargardt|vitreous|intraocular|nystagmus|thyroid\s*eye|meibomian|uveal\s*melanoma|ocular\s*melanoma|retinoblastoma|fuchs|naion|\blhon\b|retinitis|choroid|epiretinal|geographic\s*atrophy|diabetic\s*(macular|retinopath)|neurotrophic\s*kerat|orbitopath|graves\.?\s*(ophthalm|orbit)|best\s*disease|achromatopsia|choroideremia|usher|hermansky|albinism|visual\s*acuity|anterior\s*segment|posterior\s*segment|sclera|iris\b|lens\b|pupil/i;
+
+/** Hearing / pulmonary noise without a strong eye disease → drop. */
+const HEARING_PULM_RE =
+  /\b(hearing\s*(loss|impair)|deafness|otolog|cochlear|pulmonary|copd|\blungs?\b|asthma|respiratory\s*(disease|fail)|bronchitis|emphysema|otitis)\b/i;
+
+const STRONG_EYE_DISEASE_RE =
+  /ophthalm|ocular|retina|retinal|cornea|glaucoma|cataract|uveit|macular\s*degeneration|dry\s*eye|optic\s*neuropath|retinoblastoma|stargardt|kerat|strabismus|amblyopia|thyroid\s*eye|meibomian|uveal\s*melanoma|usher|hermansky|choroid|epiretinal|geographic\s*atrophy|diabetic\s*(macular|retinopath)|fuchs|naion|\blhon\b|neurotrophic/i;
+
+function isOcularTrial(doc) {
+  const blob = [...(doc.conditions || []), doc.title, doc.officialTitle]
+    .filter(Boolean)
+    .join(" | ");
+  if (!blob || !CORE_OCULAR_RE.test(blob)) return false;
+  if (HEARING_PULM_RE.test(blob) && !STRONG_EYE_DISEASE_RE.test(blob)) return false;
+  return true;
+}
 
 const INDICATION_RULES = [
   [/neurotrophic kerat/i, "Neurotrophic Keratitis"],
@@ -544,9 +569,15 @@ async function runCtgovSync(getDb, opts = {}) {
   }
 
   const byId = new Map();
+  let skippedNonOcular = 0;
   for (const raw of studies) {
     const doc = flattenStudy(raw, importedAt);
-    if (doc.id) byId.set(doc.id, doc);
+    if (!doc.id) continue;
+    if (!isOcularTrial(doc)) {
+      skippedNonOcular += 1;
+      continue;
+    }
+    byId.set(doc.id, doc);
   }
   const docs = [...byId.values()];
 
@@ -606,7 +637,8 @@ async function runCtgovSync(getDb, opts = {}) {
       added: added.length,
       changed: changed.length,
       unchanged,
-      fetched: docs.length
+      fetched: docs.length,
+      skippedNonOcular
     },
     // Cap payload size for the UI
     added: added.slice(0, 75),

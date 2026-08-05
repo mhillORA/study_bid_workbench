@@ -45,18 +45,20 @@ OVERLAP_HOURS = 36
 REQUEST_PAUSE_S = 0.15
 USER_AGENT = "OraStudyBidWorkbench/1.0 (ctgov-delta; contact=bd-budgets)"
 
-# Full ophthalmology condition search — MeSH Eye Diseases + broad ocular/retinal terms (not a curated shortlist).
+# Ophthalmology condition search — ocular-specific (avoid bare neuroprotection/Graves/Fuchs/blindness).
+# Python ingest should also post-filter with is_ocular_trial if ported; API sync does.
 COND_QUERY = (
     "(Eye Diseases OR Ophthalmology OR ocular OR ophthalmic OR retina OR retinal OR cornea OR corneal OR "
     "glaucoma OR cataract OR uveitis OR macular OR conjunctivitis OR \"dry eye\" OR \"optic nerve\" OR "
     "\"optic neuropath\" OR blepharitis OR strabismus OR amblyopia OR keratoconus OR myopia OR presbyopia OR "
     "Stargardt OR \"retinitis pigmentosa\" OR \"inherited retinal\" OR choroideremia OR achromatopsia OR "
-    "\"Leber congenital\" OR \"Leber hereditary\" OR vitreous OR intraocular OR \"anterior segment\" OR "
-    "\"posterior segment\" OR \"visual impairment\" OR blindness OR nystagmus OR \"thyroid eye\" OR Graves OR "
+    "\"Leber congenital\" OR \"Leber hereditary optic\" OR vitreous OR intraocular OR \"anterior segment\" OR "
+    "\"posterior segment\" OR nystagmus OR \"thyroid eye\" OR \"Graves ophthalmopathy\" OR \"Graves orbitopathy\" OR "
     "\"retinal vein\" OR \"geographic atrophy\" OR \"diabetic macular\" OR \"diabetic retinopathy\" OR "
-    "neuroprotection OR NAION OR LHON OR Fuchs OR meibomian OR \"macular hole\" OR epiretinal OR "
+    "\"retinal neuroprotection\" OR \"ocular neuroprotection\" OR \"optic nerve neuroprotection\" OR "
+    "NAION OR LHON OR \"Fuchs endothelial\" OR \"Fuchs dystrophy\" OR meibomian OR \"macular hole\" OR epiretinal OR "
     "\"central serous\" OR \"uveal melanoma\" OR \"ocular melanoma\" OR \"Best disease\" OR \"cone dystrophy\" OR "
-    "\"rod dystrophy\" OR \"X-linked retinoschisis\" OR retinoblastoma)"
+    "\"rod dystrophy\" OR \"X-linked retinoschisis\" OR retinoblastoma OR Usher OR \"Hermansky-Pudlak\")"
 )
 
 # Map CT.gov condition strings → Ora-ish indication labels for partition + joins.
