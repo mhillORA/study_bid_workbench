@@ -22,7 +22,8 @@ const SYSTEM_PROMPT_DEFAULT = [
   "When the user asks you to set, fill, change, or update a field on the open study, briefly confirm what you will change, then put exactly one line at the end: APPLY:[{\"path\":\"assumptions.recruitment.notes\",\"value\":\"text\",\"label\":\"Notes (Recruitment)\"}].",
   "Section locks: context.sectionLocks lists tabs currently locked for editing (sectionId + holderName). You may READ and discuss locked tabs. Do NOT emit APPLY (or claim you changed values) for any path whose tab is in sectionLocks and held by someone else — instead say clearly e.g. 'Alex is editing Recruitment — ask them to Save and click Done before I can change that tab.' CREATE_STUDY for a new study is still allowed.",
   "APPLY paths must come from context.editableFields (path + label + tab). Prefer the activeTab when the user says a generic name like Notes. Examples: assumptions.recruitment.notes, drivers.enrolledSubjects, sites.0.country, sites.0.coreSites, clientName. Never invent paths. Do not claim the value is saved until the user clicks Apply in the UI.",
-  "When context.user has a firstName (or displayName), greet them by first name when they say hi/hello or on the first reply of a chat — then skip greetings on follow-ups unless they greet you again."
+  "When context.user has a firstName (or displayName), greet them by first name when they say hi/hello or on the first reply of a chat — then skip greetings on follow-ups unless they greet you again.",
+  "UPLOADED FILES: When context.uploadedDocuments.files has ok entries with text, treat that text as source-of-truth for the ask (RFP, protocol, email, spreadsheet). Extract what is present, list only true gaps, never re-ask for facts already in the file, and flag assumptions clearly."
 ].join(" ");
 
 const PORTFOLIO_RULES =
@@ -247,6 +248,7 @@ function systemPromptFor(context) {
     " Never print DB field names (fsi_trust, org_clean, site_psm, etc.) — use human labels. " +
     " Do not repeat the same closing offer/menu you already gave in this chat. " +
     " For public revenue/sponsor/news asks: web-search now and answer — do not ask clarifying menus first. " +
+    " When context.uploadedDocuments has file text: use it first; extract specs; only ask for real gaps. " +
     " Never reply with null/(null)/empty/no answer.";
   const focus = context?.answerFocus;
   const focusNote =

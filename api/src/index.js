@@ -21,6 +21,7 @@ const {
   extractRfpScenarioFromQuestion,
   buildRfpPricingPack
 } = require("./rfpPricing");
+const { normalizeBuddyAttachments } = require("./buddyAttachments");
 
 function nctFromQuestion(question) {
   const m = String(question || "").match(/\b(NCT\d{8})\b/i);
@@ -1128,8 +1129,14 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
     }
 
     const body = await request.json();
-    const question = String(body.question || "").trim();
-    if (!question) return json(400, { error: "question is required" });
+    const uploaded = await normalizeBuddyAttachments(body.attachments);
+    const hasOkUpload = (uploaded.files || []).some((f) => f.ok && f.text);
+    let question = String(body.question || "").trim();
+    if (!question && hasOkUpload) {
+      question =
+        "Please review the attached file(s). Extract key specs, summarize what you found, list gaps, and answer based on the file content.";
+    }
+    if (!question) return json(400, { error: "question is required (or attach a file)" });
 
     // ALWAYS query Cosmos for the full portfolio — Buddy must not be limited to the open UI study.
     let portfolioFull = null;
@@ -1480,7 +1487,29 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
               group: f.group,
               value: f.value
             })),
-      fieldsByTab: answerFocus === "portfolio" ? null : fieldsByTab
+      fieldsByTab: answerFocus === "portfolio" ? null : fieldsByTab,
+      uploadedDocuments: {
+        count: (uploaded.files || []).length,
+        okCount: (uploaded.files || []).filter((f) => f.ok).length,
+        totalChars: uploaded.totalChars || 0,
+        files: (uploaded.files || []).map((f) =>
+          f.ok
+            ? {
+                name: f.name,
+                mimeType: f.mimeType,
+                charCount: f.charCount,
+                text: f.text
+              }
+            : {
+                name: f.name,
+                mimeType: f.mimeType,
+                ok: false,
+                error: f.error
+              }
+        ),
+        note:
+          "User-attached files for this ask. Prefer these over guessing. Extract specs from them; do not ask for facts already present. If a file failed, say so briefly."
+      }
     };
 
     const result = await askAi({ question, context: contextPayload, history });
@@ -1495,6 +1524,12 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       clientName: hints.clientName || null,
       year: hints.year || null,
       answerFocus,
+      attachments: (uploaded.files || []).map((f) => ({
+        name: f.name,
+        ok: Boolean(f.ok),
+        charCount: f.charCount || 0,
+        error: f.error || null
+      })),
       portfolioMatched: portfolio?.matchedStudyCount ?? null,
       databaseStudyCount: portfolio?.databaseStudyCount ?? null,
       intelligenceAttached: Boolean(intelligence && intelligence.source === "ora_clinical_intelligence"),

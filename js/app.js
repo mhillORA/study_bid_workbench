@@ -10,6 +10,7 @@
     results: {},
     askHistory: [],
     buddyOpen: false,
+    buddyAttachments: [],
     buddyBusy: false,
     source: "none", // none | cosmos | buddy
     versions: [],
@@ -135,6 +136,9 @@
     askLog: document.getElementById("askLog"),
     askInput: document.getElementById("askInput"),
     btnAsk: document.getElementById("btnAsk"),
+    btnBuddyAttach: document.getElementById("btnBuddyAttach"),
+    buddyFileInput: document.getElementById("buddyFileInput"),
+    buddyAttachChips: document.getElementById("buddyAttachChips"),
     askStatus: document.getElementById("askStatus"),
     compareOverlay: document.getElementById("compareOverlay"),
     requestDialog: document.getElementById("requestDialog"),
@@ -2259,18 +2263,120 @@
     paintBuddyChat();
   }
 
+  const BUDDY_ATTACH_MAX = 4;
+  const BUDDY_ATTACH_MAX_BYTES = 4 * 1024 * 1024;
+  const BUDDY_ATTACH_EXTS = new Set([
+    "pdf", "docx", "xlsx", "xlsm", "csv", "txt", "md", "markdown", "json", "html", "htm"
+  ]);
+
+  function buddyFileExt(name) {
+    const m = String(name || "").toLowerCase().match(/\.([a-z0-9]+)$/);
+    return m ? m[1] : "";
+  }
+
+  function paintBuddyAttachChips() {
+    const el = els.buddyAttachChips;
+    if (!el) return;
+    const files = state.buddyAttachments || [];
+    if (!files.length) {
+      el.hidden = true;
+      el.innerHTML = "";
+      return;
+    }
+    el.hidden = false;
+    el.innerHTML = files
+      .map(
+        (f, i) =>
+          `<span class="buddy-attach-chip"><span title="${escapeAttr(f.name)}">${escapeHtml(f.name)}</span>` +
+          `<button type="button" data-buddy-detach="${i}" aria-label="Remove ${escapeAttr(f.name)}">×</button></span>`
+      )
+      .join("");
+  }
+
+  function addBuddyFiles(fileList) {
+    const incoming = Array.from(fileList || []);
+    if (!incoming.length) return;
+    const next = [...(state.buddyAttachments || [])];
+    for (const file of incoming) {
+      if (next.length >= BUDDY_ATTACH_MAX) {
+        if (els.askStatus) els.askStatus.textContent = `Max ${BUDDY_ATTACH_MAX} files per ask.`;
+        break;
+      }
+      const ext = buddyFileExt(file.name);
+      if (!BUDDY_ATTACH_EXTS.has(ext)) {
+        if (els.askStatus) els.askStatus.textContent = `Unsupported type: ${file.name}`;
+        continue;
+      }
+      if (file.size > BUDDY_ATTACH_MAX_BYTES) {
+        if (els.askStatus) els.askStatus.textContent = `${file.name} is over 4 MB.`;
+        continue;
+      }
+      if (next.some((f) => f.name === file.name && f.size === file.size)) continue;
+      next.push(file);
+    }
+    state.buddyAttachments = next;
+    paintBuddyAttachChips();
+  }
+
+  function bufferToBase64(buffer) {
+    const bytes = new Uint8Array(buffer);
+    let binary = "";
+    const chunk = 0x8000;
+    for (let i = 0; i < bytes.length; i += chunk) {
+      binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+    }
+    return btoa(binary);
+  }
+
+  async function readBuddyAttachment(file) {
+    const ext = buddyFileExt(file.name);
+    const mimeType = file.type || "";
+    const textLike = ["txt", "md", "markdown", "csv", "json", "html", "htm"].includes(ext);
+    if (textLike) {
+      const text = await file.text();
+      return { name: file.name, mimeType: mimeType || "text/plain", encoding: "utf8", content: text };
+    }
+    const buf = await file.arrayBuffer();
+    return {
+      name: file.name,
+      mimeType: mimeType || "application/octet-stream",
+      encoding: "base64",
+      content: bufferToBase64(buf)
+    };
+  }
+
   async function sendAsk() {
     const input = els.askInput;
     const question = (input && input.value || "").trim();
-    if (!question) {
-      if (els.askStatus) els.askStatus.textContent = "Type a question first.";
+    const pendingFiles = Array.isArray(state.buddyAttachments) ? [...state.buddyAttachments] : [];
+    if (!question && !pendingFiles.length) {
+      if (els.askStatus) els.askStatus.textContent = "Type a question or attach a file.";
       return;
     }
     if (!state.buddyOpen) openBuddy();
-    state.askHistory.push({ role: "user", content: question });
-    if (input) input.value = "";
 
-    const navOnly = matchNavigateOnly(question);
+    let attachmentsPayload = [];
+    if (pendingFiles.length) {
+      try {
+        attachmentsPayload = await Promise.all(pendingFiles.map((f) => readBuddyAttachment(f)));
+      } catch (err) {
+        if (els.askStatus) els.askStatus.textContent = `Could not read file: ${String(err.message || err)}`;
+        return;
+      }
+    }
+
+    const fileLabel = pendingFiles.length
+      ? `\n\n📎 ${pendingFiles.map((f) => f.name).join(", ")}`
+      : "";
+    state.askHistory.push({
+      role: "user",
+      content: (question || "Please review the attached file(s).") + fileLabel
+    });
+    if (input) input.value = "";
+    state.buddyAttachments = [];
+    paintBuddyAttachChips();
+
+    const navOnly = !pendingFiles.length ? matchNavigateOnly(question) : null;
     if (navOnly) {
       if (navOnly === "__buddy__") {
         pushAssistant("Buddy is open — ask me anything about this study.");
@@ -2284,7 +2390,7 @@
       return;
     }
 
-    if (matchHlbpStart(question)) {
+    if (!pendingFiles.length && matchHlbpStart(question)) {
       startBlankHlbp();
       openBuddy();
       pushAssistant(
@@ -2295,7 +2401,7 @@
       return;
     }
 
-    const fillOnly = matchFillOnly(question);
+    const fillOnly = !pendingFiles.length ? matchFillOnly(question) : null;
     if (fillOnly && fillOnly.length) {
       if (!hasOpenStudy()) {
         pushAssistant("No study is selected. Click New study or open one from Studies before editing fields — or stay in All studies mode to ask portfolio questions.");
@@ -2385,7 +2491,8 @@
           history: state.askHistory.slice(0, -1).map((t) => ({
             role: t.role,
             content: t.content
-          }))
+          })),
+          attachments: attachmentsPayload
         })
       });
       const data = await res.json().catch(() => ({}));
@@ -2393,6 +2500,13 @@
         pushAssistant(data.error || `Request failed (${res.status})`);
       } else {
         applyBuddyAnswer(data.answer);
+        if (Array.isArray(data.attachments) && data.attachments.some((a) => a && a.ok === false)) {
+          const fails = data.attachments
+            .filter((a) => a && a.ok === false)
+            .map((a) => `${a.name}: ${a.error || "failed"}`)
+            .join("; ");
+          if (fails) pushAssistant(`Some attachments could not be read: ${fails}`);
+        }
         if (els.askStatus) {
           const modelLabel = data.deployment || data.model || "";
           const modelNote = modelLabel ? ` · ${modelLabel}` : "";
@@ -6938,6 +7052,39 @@
     if (els.buddyFab) els.buddyFab.addEventListener("click", openBuddy);
     if (els.buddyClose) els.buddyClose.addEventListener("click", closeBuddy);
     if (els.btnAsk) els.btnAsk.addEventListener("click", sendAsk);
+    if (els.btnBuddyAttach && els.buddyFileInput) {
+      els.btnBuddyAttach.addEventListener("click", () => els.buddyFileInput.click());
+      els.buddyFileInput.addEventListener("change", () => {
+        addBuddyFiles(els.buddyFileInput.files);
+        els.buddyFileInput.value = "";
+      });
+    }
+    if (els.buddyAttachChips) {
+      els.buddyAttachChips.addEventListener("click", (e) => {
+        const btn = e.target.closest("[data-buddy-detach]");
+        if (!btn) return;
+        const idx = Number(btn.getAttribute("data-buddy-detach"));
+        if (!Number.isFinite(idx)) return;
+        state.buddyAttachments.splice(idx, 1);
+        paintBuddyAttachChips();
+      });
+    }
+    if (els.buddyCompose || els.askInput) {
+      const dropZone = document.querySelector(".buddy-compose");
+      if (dropZone) {
+        const clearDrag = () => dropZone.classList.remove("buddy-drag");
+        dropZone.addEventListener("dragover", (e) => {
+          e.preventDefault();
+          dropZone.classList.add("buddy-drag");
+        });
+        dropZone.addEventListener("dragleave", clearDrag);
+        dropZone.addEventListener("drop", (e) => {
+          e.preventDefault();
+          clearDrag();
+          addBuddyFiles(e.dataTransfer && e.dataTransfer.files);
+        });
+      }
+    }
     if (els.askInput) {
       els.askInput.addEventListener("keydown", (e) => {
         if (e.key === "Enter" && !e.shiftKey) {
