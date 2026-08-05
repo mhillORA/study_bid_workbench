@@ -61,7 +61,7 @@ const INTELLIGENCE_RULES = [
   "6) ora_ctgov_trials (ClinicalTrials.gov ophthalmology feed, daily delta ~5AM Eastern): public registry landscape. Key fields: nct, title, status, phase, conditions, oraIndication, sponsor, sponsorClass, enrollment, countries, startDate, lastUpdatePostDate, hasResults. Use when context.intelligence.ctgov is present or user asks about CT.gov / registry / recruiting ophthalmology trials.",
   " USE CASES — match the ask to the right source:",
   "• Feasibility / \"how fast do we enroll\" / typical PSM for an indication → context.intelligence.indicationBenchmark (Ora median PSM + TrialHub median psm_common + site medians). Prefer medians; cite studiesWithPsm / trialsWithPsm counts.",
-  "• Competing / recruiting industry trials → intelligence.indicationBenchmark.trialhub.recruitingSample / sampleTrials (NCT + sponsor + status).",
+  "• Competing / recruiting industry trials → intelligence.indicationBenchmark.trialhub.recruitingSample / sampleTrials OR trialhubOverview.recruitingSample (NCT + sponsor + status).",
   "• Site selection / which sites perform → LIST real site names from context.intelligence.indicationBenchmark.sites.topSitesByPsm (org_clean + country + site_psm + fsi_trust). Also use countrySites.topSites when present. Optional: NAVIGATE:scorecard for the full scorecard UI — never as a substitute for naming sites.",
   "• Region / country feasibility (US, UK, Germany, Japan, …) → use countryFilter on sites + ctgov + TrialHub countries; cite geography explicitly.",
   "• Site Scorecard (Ora vs industry) → oraScore vs industryScore/Δ; Deeper dive = recommended site slate for enrollment goals. Prefer medians; null ≠ 0.",
@@ -70,6 +70,10 @@ const INTELLIGENCE_RULES = [
   "• Ops briefing (section status, fill requests, what to do next) → workingStudy.sectionStatus / requests / drivers; suggest NAVIGATE:ops or NAVIGATE:reviews.",
   "• Sponsor already in SF? BD owner / tier? → intelligence.sponsorCrosswalk.",
   "• NCT lookup → intelligence.nctLookup (TrialHub) and/or intelligence.ctgov.",
+  "• CT.gov dashboard / registry overview (no indication named) → intelligence.ctgovOverview (totalCount, indicationRank, statusRank, recentSample, countryRank). If totalCount > 0 you HAVE data — never say CT.gov is empty.",
+  "• CT.gov by indication → intelligence.ctgov (trialCount, sample, recruitingSample).",
+  "• TrialHub / trial hub / trialhub.com dashboard (no indication) → intelligence.trialhubOverview (totalCount, indicationRank, psmMedian, recentSample, countryRank). If totalCount > 0 you HAVE data — never say TrialHub is empty.",
+  "• TrialHub by indication → indicationBenchmark.trialhub.",
   "• Budget dollars / uploaded bid portfolio → context.portfolio (not intelligence).",
   "• HLBP form asks → CREATE_STUDY with budgetType HLBP + sites country mix, NAVIGATE:hlbp, then APPLY missing fields as the user answers. Past-bid dollar comps may use context.pricingScenarios when present — label them as comparable past service fees, not 'the HLBP form'.",
   "• CT.gov dollars → only when pricingScenarios.ctgovDollars.available or intelligence.ctgov.dollarMentions.available. Those are rare free-text mentions (not CRO bids). If unavailable, say CT.gov has no structured bid costs — do not invent.",
@@ -766,8 +770,92 @@ function formatCosmosFactsBlock(context) {
     }
   } else {
     lines.push(
-      "No indicationBenchmark in this response. Do not invent industry/Ora PSM — say Cosmos did not return a benchmark for this ask."
+      "No indicationBenchmark in this response (often OK for portfolio/CT.gov-overview asks)."
     );
+  }
+
+  const cg = intel.ctgov;
+  if (cg && !cg.error) {
+    lines.push(
+      `CT.gov (indication): trialCount=${cg.trialCount ?? "—"}, recruiting=${cg.recruitingCount ?? "—"}, ` +
+        `geo=${cg.countryFilterLabel || "Global"}`
+    );
+    for (const t of (cg.sample || []).slice(0, 8)) {
+      lines.push(
+        `  - ${t.nct || "?"} | ${t.oraIndication || "?"} | ${t.status || "?"} | ${t.sponsor || "?"} | n=${
+          t.enrollment == null ? "—" : t.enrollment
+        }`
+      );
+    }
+  }
+
+  const cgo = intel.ctgovOverview;
+  if (cgo && !cgo.error) {
+    lines.push(
+      `CT.gov OVERVIEW (ophthalmology feed): totalCount=${cgo.totalCount ?? "—"}, sample=${cgo.sampleCount ?? "—"}, ` +
+        `recruitingInSample=${cgo.recruitingCount ?? "—"}, geo=${cgo.countryFilterLabel || "Global"}`
+    );
+    if (cgo.sync?.lastSuccessfulSync) {
+      lines.push(`CT.gov last sync: ${cgo.sync.lastSuccessfulSync}`);
+    }
+    for (const row of (cgo.indicationRank || []).slice(0, 12)) {
+      lines.push(`  - indication ${row.indication}: ${row.count} in sample`);
+    }
+    for (const t of (cgo.recentSample || []).slice(0, 10)) {
+      lines.push(
+        `  - ${t.nct || "?"} | ${t.oraIndication || "?"} | ${t.status || "?"} | ${t.title || ""}`.slice(0, 160)
+      );
+    }
+    lines.push(
+      "RULE: If CT.gov OVERVIEW totalCount > 0 (or recentSample has rows), you HAVE CT.gov data — build the dashboard from it. Never say there is no CT.gov data."
+    );
+  } else if (intel.query?.ctgovIntent) {
+    lines.push(
+      "CT.gov overview was requested but empty/error — say the ophthalmology feed may need a sync, do not invent NCTs."
+    );
+  }
+
+  const tho = intel.trialhubOverview;
+  if (tho && !tho.error) {
+    lines.push(
+      `TrialHub OVERVIEW: totalCount=${tho.totalCount ?? "—"}, sample=${tho.sampleCount ?? "—"}, ` +
+        `trialsWithPsm=${tho.trialsWithPsm ?? "—"}, psmMedian=${tho.psmMedian ?? "missing"}, ` +
+        `recruitingInSample=${tho.recruitingCount ?? "—"}, geo=${tho.countryFilterLabel || "Global"}`
+    );
+    for (const row of (tho.indicationRank || []).slice(0, 12)) {
+      lines.push(`  - indication ${row.indication}: ${row.count} in sample`);
+    }
+    for (const t of (tho.recentSample || []).slice(0, 10)) {
+      lines.push(
+        `  - ${t.nct || "?"} | ${t.indication || "?"} | ${t.status || "?"} | ${t.sponsor || "?"} | PSM=${
+          t.psm_common ?? t.th_actual_psm ?? "missing"
+        }`.slice(0, 160)
+      );
+    }
+    lines.push(
+      "RULE: If TrialHub OVERVIEW totalCount > 0 (or recentSample has rows), you HAVE TrialHub data — build the dashboard from it. Never say TrialHub is empty/missing."
+    );
+  } else if (intel.query?.trialhubIntent) {
+    lines.push(
+      "TrialHub overview was requested but empty/error — say a TrialHub upload may be needed on the Intelligence tab, do not invent NCTs."
+    );
+  }
+
+  const inv = intel.inventory;
+  if (inv && !inv.error) {
+    const cgCount = inv.ctgov?.count ?? inv.counts?.ora_ctgov_trials ?? inv.ora_ctgov_trials;
+    const thCount = inv.trialhub?.count ?? inv.counts?.ora_trialhub_trials ?? inv.ora_trialhub_trials;
+    lines.push(
+      `Cosmos inventory: CT.gov trials=${cgCount ?? "—"}, TrialHub trials=${thCount ?? "—"}, ` +
+        `Ora studies=${inv.counts?.ora_fact_study ?? inv.ora_fact_study ?? "—"}, Ora sites=${
+          inv.counts?.ora_fact_site ?? inv.ora_fact_site ?? "—"
+        }`
+    );
+    if ((Number(cgCount) > 0 || Number(thCount) > 0) && !cgo && !tho && !cg) {
+      lines.push(
+        "RULE: Inventory shows trials exist — do NOT say CT.gov/TrialHub data is missing. Ask for an indication if you need a narrower cut, or use overviews when present."
+      );
+    }
   }
 
   lines.push(

@@ -185,10 +185,37 @@ function indicationAliases(raw) {
   return [...out];
 }
 
+function isCtgovQuestion(question) {
+  const q = String(question || "").toLowerCase();
+  if (!q) return false;
+  return (
+    /\b(clinical\s*trials?\.?\s*gov|ct\s*\.?\s*gov|ctgov|ct\-gov)\b/.test(q) ||
+    /\b(registry|public registry)\b.{0,40}\b(trial|study|ophthalm|ocular|eye|dashboard|data)\b/.test(q) ||
+    /\b(ophthalm|ocular|eye)\b.{0,40}\b(registry|clinical\s*trials?)\b/.test(q) ||
+    /\b(dashboard|overview|landscape)\b.{0,40}\b(ct\s*\.?\s*gov|ctgov|registry|clinical\s*trials?)\b/.test(q)
+  );
+}
+
+function isTrialhubQuestion(question) {
+  const q = String(question || "").toLowerCase();
+  if (!q) return false;
+  return (
+    /\btrial\s*hub\b/.test(q) ||
+    /\btrialhub\b/.test(q) ||
+    /\btrial[-_]?hub\b/.test(q) ||
+    /\btrialhub\.com\b/.test(q) ||
+    /\bwww\.trialhub\b/.test(q) ||
+    /\bindustry\s+(benchmark|trial|psm|landscape|dashboard)\b/.test(q) ||
+    /\b(dashboard|overview|landscape)\b.{0,40}\b(trial\s*hub|trialhub|industry)\b/.test(q)
+  );
+}
+
 function isIntelligenceQuestion(question) {
   const q = String(question || "").toLowerCase();
   if (!q) return false;
   return (
+    isCtgovQuestion(q) ||
+    isTrialhubQuestion(q) ||
     /\b(psm|patients?\s*per\s*site|pts?\s*\/\s*site|enrollment rate|enrolment rate)\b/.test(q) ||
     /\b(feasibility|site (mix|selection|performance|capacity)|competing trials?|competitor|competitive landscape)\b/.test(
       q
@@ -197,7 +224,7 @@ function isIntelligenceQuestion(question) {
     /\b(which|best|top|recommend(?:ed)?|list|name|suggest)\b.{0,40}\b(sites?|countries|country)\b/.test(q) ||
     /\b(sites?|countries)\b.{0,40}\b(for|in|with|under|outside|ous)\b/.test(q) ||
     /\b(preferred|high[- ]performing|perform(?:ing)?)\s+sites?\b/.test(q) ||
-    /\b(trialhub|trial hub|industry (benchmark|trial|psm)|nct\d*|clinicaltrials\.gov|ct\.gov|ctgov)\b/.test(q) ||
+    /\bnct\d*\b/.test(q) ||
     /\b(screen[- ]?fail|dropout|recruit(ment)? (rate|days|benchmark))\b/.test(q) ||
     /\b(indication).{0,40}\b(benchmark|histor(y|ical)|industry|ora studies)\b/.test(q) ||
     /\b(how (fast|quickly)|typical).{0,40}\b(enroll|recruit|site)\b/.test(q) ||
@@ -1278,6 +1305,185 @@ async function lookupCtgovNct(database, nct) {
   }
 }
 
+/**
+ * Portfolio-wide CT.gov snapshot when the user asks for CT.gov / registry dashboard
+ * without naming an indication. Still ophthalmology feed only (ora_ctgov_trials).
+ * Avoid ORDER BY — Cosmos cross-partition ORDER BY often fails without a composite index.
+ */
+async function ctgovOverview(database, country = null) {
+  const countries = parseCountryFilter(country);
+  try {
+    const totalRows = await queryAll(
+      database.container("ora_ctgov_trials"),
+      "SELECT VALUE COUNT(1) FROM c WHERE c.docType = @t",
+      [{ name: "@t", value: "ora_ctgov_trials" }]
+    );
+    const totalCount = totalRows[0] ?? 0;
+
+    let sampleQ = `SELECT TOP 100 c.nct, c.title, c.oraIndication, c.status, c.phase, c.sponsor, c.sponsorClass,
+              c.enrollment, c.countries, c.startDate, c.lastUpdatePostDate, c.hasResults
+       FROM c WHERE c.docType = @t`;
+    const params = [{ name: "@t", value: "ora_ctgov_trials" }];
+    const geo = ctgovCountrySqlClause(countries, "cgo");
+    sampleQ += geo.sql;
+    params.push(...geo.params);
+    let sample = [];
+    try {
+      sample = await queryAll(database.container("ora_ctgov_trials"), sampleQ, params);
+    } catch (err) {
+      // Retry without geo clause if ARRAY/EXISTS geo SQL fails on some docs
+      sample = await queryAll(
+        database.container("ora_ctgov_trials"),
+        `SELECT TOP 100 c.nct, c.title, c.oraIndication, c.status, c.phase, c.sponsor, c.sponsorClass,
+                c.enrollment, c.countries, c.startDate, c.lastUpdatePostDate, c.hasResults
+         FROM c WHERE c.docType = @t`,
+        [{ name: "@t", value: "ora_ctgov_trials" }]
+      );
+    }
+    sample = [...sample].sort((a, b) =>
+      String(b.lastUpdatePostDate || "").localeCompare(String(a.lastUpdatePostDate || ""))
+    );
+
+    const byIndication = {};
+    const byStatus = {};
+    for (const t of sample) {
+      const ind = t.oraIndication || "_unknown";
+      byIndication[ind] = (byIndication[ind] || 0) + 1;
+      const st = t.status || "_unknown";
+      byStatus[st] = (byStatus[st] || 0) + 1;
+    }
+    const indicationRank = Object.entries(byIndication)
+      .map(([indication, count]) => ({ indication, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 20);
+    const statusRank = Object.entries(byStatus)
+      .map(([status, count]) => ({ status, count }))
+      .sort((a, b) => b.count - a.count);
+    const recruiting = sample.filter((t) => /recruit/i.test(String(t.status || "")));
+    const countryRank = rankCountriesFromTrials(sample, { ousOnly: false, limit: 15 });
+    const countryRankOus = rankCountriesFromTrials(sample, { ousOnly: true, limit: 12 });
+
+    let sync = null;
+    try {
+      const { resource } = await database
+        .container("syncState")
+        .item("ctgov_ophthalmology", "ctgov_ophthalmology")
+        .read();
+      sync = resource
+        ? {
+            lastSuccessfulSync: resource.lastSuccessfulSync || null,
+            lastUpserted: resource.lastUpserted || null,
+            mode: resource.mode || null
+          }
+        : null;
+    } catch (_) {}
+
+    return {
+      scope: "ophthalmology_feed",
+      totalCount,
+      sampleCount: sample.length,
+      countryFilter: countries,
+      countryFilterLabel: countries ? countries.join(", ") : "Global",
+      indicationRank,
+      statusRank,
+      recruitingCount: recruiting.length,
+      recruitingSample: recruiting.slice(0, 12),
+      recentSample: sample.slice(0, 15),
+      countryRank,
+      countryRankOus,
+      sync,
+      note:
+        totalCount > 0
+          ? "Live from Cosmos ora_ctgov_trials (ophthalmology CT.gov feed). indicationRank/statusRank are from the sample window; totalCount is full container. Use for CT.gov dashboards even with no indication."
+          : "ora_ctgov_trials is empty — run CT.gov sync from the Intelligence tab."
+    };
+  } catch (err) {
+    return { error: String(err.message || err), totalCount: 0 };
+  }
+}
+
+/**
+ * Portfolio-wide TrialHub snapshot (ora_trialhub_trials) when no indication is named.
+ */
+async function trialhubOverview(database, country = null) {
+  const countries = parseCountryFilter(country);
+  try {
+    const totalRows = await queryAll(
+      database.container("ora_trialhub_trials"),
+      "SELECT VALUE COUNT(1) FROM c WHERE c.docType = @t",
+      [{ name: "@t", value: "ora_trialhub_trials" }]
+    );
+    const totalCount = totalRows[0] ?? 0;
+
+    let sampleQ = `SELECT TOP 100 c.nct, c.title, c.sponsor, c.indication, c.phase, c.status, c.patients,
+              c.planned_sites, c.actual_sites, c.psm_common, c.th_actual_psm, c.recruit_days,
+              c.countries, c.in_ora_indication, c.lead_sponsor_type
+       FROM c WHERE c.docType = @t`;
+    const params = [{ name: "@t", value: "ora_trialhub_trials" }];
+    // Soft country filter via post-filter (TrialHub countries field shapes vary)
+    let sample = await queryAll(database.container("ora_trialhub_trials"), sampleQ, params);
+    if (countries && countries.length) {
+      const filtered = sample.filter((t) => countriesMatch(t.countries, countries));
+      if (filtered.length) sample = filtered;
+    }
+
+    const byIndication = {};
+    const byStatus = {};
+    const bySponsor = {};
+    const psmVals = [];
+    for (const t of sample) {
+      const ind = t.indication || "_unknown";
+      byIndication[ind] = (byIndication[ind] || 0) + 1;
+      const st = t.status || "_unknown";
+      byStatus[st] = (byStatus[st] || 0) + 1;
+      const sp = t.sponsor || "_unknown";
+      bySponsor[sp] = (bySponsor[sp] || 0) + 1;
+      const psm = t.psm_common != null ? Number(t.psm_common) : t.th_actual_psm != null ? Number(t.th_actual_psm) : null;
+      if (psm != null && !Number.isNaN(psm) && psm > 0) psmVals.push(psm);
+    }
+    psmVals.sort((a, b) => a - b);
+    const mid = (arr) => (arr.length ? arr[Math.floor(arr.length / 2)] : null);
+    const indicationRank = Object.entries(byIndication)
+      .map(([indication, count]) => ({ indication, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 20);
+    const statusRank = Object.entries(byStatus)
+      .map(([status, count]) => ({ status, count }))
+      .sort((a, b) => b.count - a.count);
+    const sponsorRank = Object.entries(bySponsor)
+      .map(([sponsor, count]) => ({ sponsor, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 15);
+    const recruiting = sample.filter((t) => /recruit/i.test(String(t.status || "")));
+    const countryRank = rankCountriesFromTrials(sample, { ousOnly: false, limit: 15 });
+    const countryRankOus = rankCountriesFromTrials(sample, { ousOnly: true, limit: 12 });
+
+    return {
+      scope: "trialhub_feed",
+      totalCount,
+      sampleCount: sample.length,
+      countryFilter: countries,
+      countryFilterLabel: countries ? countries.join(", ") : "Global",
+      indicationRank,
+      statusRank,
+      sponsorRank,
+      trialsWithPsm: psmVals.length,
+      psmMedian: mid(psmVals),
+      recruitingCount: recruiting.length,
+      recruitingSample: recruiting.slice(0, 12),
+      recentSample: sample.slice(0, 15),
+      countryRank,
+      countryRankOus,
+      note:
+        totalCount > 0
+          ? "Live from Cosmos ora_trialhub_trials. Use for TrialHub / industry dashboards even with no indication. totalCount is full container; ranks are from sample."
+          : "ora_trialhub_trials is empty — upload a TrialHub export on the Intelligence tab."
+    };
+  } catch (err) {
+    return { error: String(err.message || err), totalCount: 0 };
+  }
+}
+
 async function ctgovByIndication(database, indication, country = null) {
   const aliases = indicationAliases(indication);
   if (!aliases.length) return null;
@@ -1373,6 +1579,8 @@ async function buildIntelligenceContext(getDb, opts = {}) {
   } = opts;
 
   const wantsIntel = force || isIntelligenceQuestion(question);
+  const wantsCtgov = isCtgovQuestion(question);
+  const wantsTrialhub = isTrialhubQuestion(question);
   const nct = extractNct(question);
   const qIndication = extractIndicationFromQuestion(question);
   const ousOnly = wantsOusOnly(question);
@@ -1387,7 +1595,14 @@ async function buildIntelligenceContext(getDb, opts = {}) {
   const resolvedIndication = indication || qIndication;
 
   // Skip entirely if nothing to hang a query on and question isn't intelligence-shaped
-  if (!wantsIntel && !resolvedIndication && !nct && !clientName && !sponsor && !resolvedCountries) {
+  if (
+    !wantsIntel &&
+    !resolvedIndication &&
+    !nct &&
+    !clientName &&
+    !sponsor &&
+    !resolvedCountries
+  ) {
     return null;
   }
 
@@ -1402,6 +1617,7 @@ async function buildIntelligenceContext(getDb, opts = {}) {
       "TrialHub vs Ora vs CT.gov indication labels may differ; aliasesUsed lists what was queried.",
       "Prefer fsi_trust=high when comparing site_psm.",
       "ctgov = ClinicalTrials.gov ophthalmology feed (daily delta).",
+      "ctgovOverview / trialhubOverview = feed-wide snapshots when no indication was named — use for dashboards. Never say CT.gov or TrialHub data is missing if totalCount > 0 or recentSample has rows.",
       "When countryFilter is set (array), site/CT.gov/TrialHub results match ANY of those countries. Null/Global = all geographies.",
       "For OUS / outside-US asks: use trialhub.countryRankOus (or countryRank) for ranked countries with trialMentions counts — that IS the country leaderboard.",
       "sites.topSites / topSitesByPsm / topOusSites are the site slate. If site_psm is null, still name org_clean. Never say you lack a site leaderboard when these arrays have rows OR countryRank.ranked has rows.",
@@ -1418,17 +1634,27 @@ async function buildIntelligenceContext(getDb, opts = {}) {
       clientName: clientName || null,
       sponsor: sponsor || null,
       intelligenceIntent: wantsIntel,
+      ctgovIntent: wantsCtgov,
+      trialhubIntent: wantsTrialhub,
       enrollmentPlan
     }
   };
 
   try {
+    // Always attach container inventory so Buddy can never claim feeds "don't exist"
+    // when Cosmos has rows.
+    try {
+      out.inventory = await getIntelligenceHealth(getDb);
+    } catch (invErr) {
+      out.inventory = { error: String(invErr.message || invErr) };
+    }
+
     if (nct) {
       out.nctLookup = await lookupNct(database, nct);
       out.ctgovNct = await lookupCtgovNct(database, nct);
     }
 
-    if (resolvedIndication || wantsIntel || resolvedCountries || ousOnly) {
+    if (resolvedIndication || wantsIntel || resolvedCountries || ousOnly || wantsCtgov || wantsTrialhub) {
       const ind = resolvedIndication || qIndication;
       if (ind) {
         out.indicationBenchmark = await benchmarkIndication(database, ind, resolvedCountries, {
@@ -1463,12 +1689,21 @@ async function buildIntelligenceContext(getDb, opts = {}) {
             org_clean: s.org_clean,
             country: s.country,
             indication: s.indication,
-            site_psm: round(s.site_psm),
+            site_psm: s.site_psm,
             total_enrolled: s.total_enrolled,
             fsi_trust: s.fsi_trust,
             study_name: s.study_name
           }))
         };
+      }
+
+      // Feed-wide overviews whenever CT.gov / TrialHub / dashboard-style asks need them
+      const needFeedOverview = wantsCtgov || wantsTrialhub || (!ind && wantsIntel);
+      if (needFeedOverview || wantsCtgov) {
+        out.ctgovOverview = await ctgovOverview(database, resolvedCountries);
+      }
+      if (needFeedOverview || wantsTrialhub) {
+        out.trialhubOverview = await trialhubOverview(database, resolvedCountries);
       }
     }
 
@@ -1479,10 +1714,6 @@ async function buildIntelligenceContext(getDb, opts = {}) {
     const who = sponsor || clientName;
     if (who) {
       out.sponsorCrosswalk = await lookupSponsorCrosswalk(database, who);
-    }
-
-    if (wantsIntel && !out.indicationBenchmark && !out.nctLookup && !out.countrySites) {
-      out.inventory = await getIntelligenceHealth(getDb);
     }
 
     out.elapsedMs = Date.now() - started;
@@ -1846,6 +2077,8 @@ module.exports = {
   INDICATION_GROUPS,
   INDICATION_UI_LABELS,
   isIntelligenceQuestion,
+  isCtgovQuestion,
+  isTrialhubQuestion,
   indicationAliases,
   extractIndicationFromQuestion,
   extractCountryFromQuestion,
