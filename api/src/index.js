@@ -1566,6 +1566,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       answer,
       model: result.model,
       deployment: llm.deployment || result.model || null,
+      displayName: llm.displayName || null,
       provider: result.provider,
       usage: result.usage,
       studyId: answerFocus === "portfolio" ? null : studyId || clientStudy?.studyId || null,

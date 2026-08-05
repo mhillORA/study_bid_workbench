@@ -303,11 +303,14 @@ function systemPromptFor(context) {
     : "";
   const agent = foundryAgentConfig();
   const dep = agent.enabled ? agent.name : azureConfig().deployment;
+  const display = buddyDisplayName(dep);
   const modelNote = dep
     ? agent.enabled
-    ? ` You are the Foundry agent "${dep}" with live web search. If asked which model/agent you are, say ${dep}. ` +
+    ? ` You are "${display}" (Ask Buddy for Ora Clinical) with live web search. ` +
+      `If asked who/what you are, say "${display}" or "Ask Buddy" — do not lead with the internal Foundry id "${dep}" unless they ask for the technical agent/deployment name. ` +
       `For public facts (sponsor revenue, filings, news), SEARCH ON THIS TURN and give a ranked answer — never stall with "I can look it up" or multi-option clarifying menus.`
-    : ` You are served via Azure deployment "${dep}". If asked which model you are, say that deployment name — do not claim GPT-4 or another model unless that is the deployment name.`
+    : ` You are "${display}", served via Azure. If asked who you are, say "${display}" or "Ask Buddy". ` +
+      `Only mention the technical deployment name "${dep}" if they ask for the deployment/model id — do not claim GPT-4 or another model unless that is the deployment name.`
     : "";
   const user = context?.user;
   if (!user?.firstName && !user?.displayName && !user?.email) {
@@ -381,6 +384,22 @@ const FOUNDRY_AGENT_ENDPOINT_ALIASES = [
 
 /** Default agent when project endpoint is present (user's BudgetBuddy2 + web search). */
 const DEFAULT_FOUNDRY_AGENT_NAME = "BudgetBuddy2";
+
+/** Friendly label for UI / self-intro — not the Foundry resource id. */
+function buddyDisplayName(technicalName) {
+  const custom = envSet("FOUNDRY_AGENT_DISPLAY_NAME") || envSet("BUDDY_DISPLAY_NAME");
+  if (custom) return custom;
+  const raw = String(technicalName || "").trim();
+  const compact = raw.toLowerCase().replace(/[^a-z0-9]/g, "");
+  if (!compact || compact === "buddy" || compact.startsWith("budgetbuddy")) return "Budget Buddy";
+  if (compact.startsWith("askbuddy")) return "Buddy";
+  // Soft-format other CamelCase names: FooBar2 → Foo Bar
+  return raw
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/([A-Za-z])(\d+)/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim() || "Buddy";
+}
 
 function azureConfig() {
   const endpoint = envSetAny(AZURE_ENDPOINT_ALIASES);
@@ -487,6 +506,7 @@ function providerStatus() {
     azureOpenAI: azure,
     foundryAgent: agent.enabled,
     foundryAgentName: agent.name || null,
+    displayName: buddyDisplayName(agent.enabled ? agent.name : cfg.deployment),
     claude,
     active,
     // Deployment / agent name only (not a secret)
@@ -1336,5 +1356,6 @@ module.exports = {
   getStudyContext,
   providerStatus,
   ensureBuddyAnswer,
-  foundryAgentConfig
+  foundryAgentConfig,
+  buddyDisplayName
 };

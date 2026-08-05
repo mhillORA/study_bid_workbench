@@ -1399,12 +1399,17 @@
     try {
       const res = await fetch(apiUrl("/api/health"));
       const data = await res.json().catch(() => ({}));
-      const dep = data?.llm?.deployment || data?.llm?.resolvedFrom?.deployment || "";
-      const active = data?.llm?.active || "";
-      if (dep) {
-        el.textContent = `Study bid helper · ${dep}${active ? ` (${active})` : ""}`;
-      } else if (active) {
-        el.textContent = `Study bid helper · provider ${active}`;
+      const label =
+        data?.llm?.displayName ||
+        (String(data?.llm?.deployment || "").toLowerCase().includes("budgetbuddy")
+          ? "Budget Buddy"
+          : "") ||
+        data?.llm?.deployment ||
+        "";
+      if (label) {
+        el.textContent = `Ask Buddy · ${label}`;
+      } else if (data?.llm?.active) {
+        el.textContent = `Ask Buddy · online`;
       }
     } catch (_) {}
   }
@@ -2591,7 +2596,7 @@
           if (fails) pushAssistant(`Some attachments could not be read: ${fails}`);
         }
         if (els.askStatus) {
-          const modelLabel = data.deployment || data.model || "";
+          const modelLabel = data.displayName || data.deployment || data.model || "";
           const modelNote = modelLabel ? ` · ${modelLabel}` : "";
           const intelBits = [];
           if (data.intelligenceQuery?.indication) intelBits.push(data.intelligenceQuery.indication);
