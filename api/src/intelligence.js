@@ -189,8 +189,9 @@ function isCtgovQuestion(question) {
   const q = String(question || "").toLowerCase();
   if (!q) return false;
   return (
-    /\b(clinical\s*trials?\.?\s*gov|ct\s*\.?\s*gov|ctgov|ct\-gov)\b/.test(q) ||
-    /\b(registry|public registry)\b.{0,40}\b(trial|study|ophthalm|ocular|eye|dashboard|data)\b/.test(q) ||
+    /\b(clinical\s*trials?\.?\s*gov|clinicaltrials|ct\s*\.?\s*gov|ctgov|ct\-gov)\b/.test(q) ||
+    /\b(registry|public registry)\b.{0,50}\b(trial|study|ophthalm|ocular|eye|dashboard|data|overview|feed)\b/.test(q) ||
+    /\b(dashboard|overview|landscape|feed|data)\b.{0,40}\b(registry|clinical\s*trials?)\b/.test(q) ||
     /\b(ophthalm|ocular|eye)\b.{0,40}\b(registry|clinical\s*trials?)\b/.test(q) ||
     /\b(dashboard|overview|landscape)\b.{0,40}\b(ct\s*\.?\s*gov|ctgov|registry|clinical\s*trials?)\b/.test(q)
   );
@@ -205,8 +206,41 @@ function isTrialhubQuestion(question) {
     /\btrial[-_]?hub\b/.test(q) ||
     /\btrialhub\.com\b/.test(q) ||
     /\bwww\.trialhub\b/.test(q) ||
-    /\bindustry\s+(benchmark|trial|psm|landscape|dashboard)\b/.test(q) ||
-    /\b(dashboard|overview|landscape)\b.{0,40}\b(trial\s*hub|trialhub|industry)\b/.test(q)
+    /\bindustry\s+(benchmark|trial|psm|landscape|dashboard|data|feed)\b/.test(q) ||
+    /\b(competitive|industry)\s+(database|landscape|feed)\b/.test(q) ||
+    /\b(dashboard|overview|landscape|data|feed)\b.{0,40}\b(trial\s*hub|trialhub|industry)\b/.test(q)
+  );
+}
+
+function isVeevaQuestion(question) {
+  const q = String(question || "").toLowerCase();
+  if (!q) return false;
+  return (
+    /\bveeva\b/.test(q) ||
+    /\bora\s+(histor(?:y|ical)|performance|veeva|fact[_ ]?stud|fact[_ ]?site)\b/.test(q) ||
+    /\b(ora_fact_study|ora_fact_site|fact_study|fact_site)\b/.test(q) ||
+    /\b(dashboard|overview|landscape)\b.{0,40}\b(veeva|ora\s+histor|ora\s+performance|ora\s+sites?)\b/.test(q) ||
+    /\b(veeva|ora\s+histor|ora\s+sites?)\b.{0,40}\b(dashboard|overview|data|feed)\b/.test(q)
+  );
+}
+
+function isCrosswalkQuestion(question) {
+  const q = String(question || "").toLowerCase();
+  if (!q) return false;
+  return (
+    /\b(crosswalk|sponsor\s+crosswalk|sf\s+match|salesforce)\b/.test(q) ||
+    /\b(no_sf_match|confirmed_new|previously_confirmed|in_sf_inactive)\b/.test(q) ||
+    /\b(sf\s+(account|owner|tier)|salesforce\s+(account|owner|tier))\b/.test(q) ||
+    /\b(which|what)\b.{0,40}\b(sponsors?|clients?)\b.{0,40}\b(sf|salesforce|crosswalk)\b/.test(q)
+  );
+}
+
+function isSourceOverviewQuestion(question) {
+  return (
+    isCtgovQuestion(question) ||
+    isTrialhubQuestion(question) ||
+    isVeevaQuestion(question) ||
+    isCrosswalkQuestion(question)
   );
 }
 
@@ -214,8 +248,7 @@ function isIntelligenceQuestion(question) {
   const q = String(question || "").toLowerCase();
   if (!q) return false;
   return (
-    isCtgovQuestion(q) ||
-    isTrialhubQuestion(q) ||
+    isSourceOverviewQuestion(q) ||
     /\b(psm|patients?\s*per\s*site|pts?\s*\/\s*site|enrollment rate|enrolment rate)\b/.test(q) ||
     /\b(feasibility|site (mix|selection|performance|capacity)|competing trials?|competitor|competitive landscape)\b/.test(
       q
@@ -228,7 +261,6 @@ function isIntelligenceQuestion(question) {
     /\b(screen[- ]?fail|dropout|recruit(ment)? (rate|days|benchmark))\b/.test(q) ||
     /\b(indication).{0,40}\b(benchmark|histor(y|ical)|industry|ora studies)\b/.test(q) ||
     /\b(how (fast|quickly)|typical).{0,40}\b(enroll|recruit|site)\b/.test(q) ||
-    /\b(veeva|ora (histor|performance|sites?|strength))\b/.test(q) ||
     /\b(country|countries|region|geography|united states|usa|uk|europe|eu|japan|china|canada|australia|ous|outside)\b/.test(
       q
     ) ||
@@ -483,19 +515,129 @@ function parseCountryFilter(input) {
   return out.length ? out : null;
 }
 
+/** Short ISO/alias codes that collide with English stopwords — only match with geo cues. */
+const AMBIGUOUS_COUNTRY_KEYS = new Set([
+  "in", // India vs "in our feed"
+  "us", // United States vs "tell us"
+  "is", // Iceland vs "is there"
+  "no", // Norway vs "no data"
+  "at", // Austria vs "at sites"
+  "be", // Belgium vs "be careful"
+  "id", // Indonesia vs "id"
+  "me", // Montenegro
+  "to", // Tonga
+  "do", // Dominican Republic
+  "so", // Somalia
+  "as", // American Samoa
+  "by", // Belarus
+  "or", // "or"
+  "an", // Netherlands Antilles-ish
+  "it", // Italy vs "it"
+  "on", // Ontario-ish
+  "if",
+  "am", // Armenia
+  "pm",
+  "can", // Canada vs "can you"
+  "are", // UAE vs "are there"
+  "per", // Peru vs "per site"
+  "my", // Malaysia vs "my sites"
+  "nor", // Norway vs "nor"
+  "fin", // Finland vs "fin"
+  "pol", // Poland
+  "col", // Colombia vs "col"
+  "arm", // if present
+  "and" // Andorra if present
+]);
+
 function extractCountryFromQuestion(question) {
   const q = String(question || "");
   const lower = q.toLowerCase();
   if (/\b(global|worldwide|all countries)\b/.test(lower)) return null;
-  // Longest alias keys first
+
+  // Strip leading "the " so "in the US" / "in the United Kingdom" normalize
+  const stripThe = (s) => String(s || "").trim().replace(/^the\s+/i, "").trim();
+
+  // Explicit geo patterns first (safer than bare alias scan)
+  const explicit = q.match(
+    /\b(?:in|for|across|within|from|country|region|geography|based in)\s+([A-Za-z][A-Za-z .'-]{1,40?}?)(?:\s+for|\s+indication|\s+psm|\s+sites?|\s+trials?|\s+studies?|\?|$|,)/i
+  );
+  if (explicit) {
+    const cand = stripThe(explicit[1]);
+    const key = countryKey(cand);
+    // Reject English filler after "in/for" (and bare ambiguous ISO codes — "for us", "country is")
+    const filler =
+      /^(our|the|a|an|this|that|these|those|any|all|my|your|their|its|feed|data|cosmos|question|ask|dashboard|overview|context|veeva|trialhub|ct\.?gov)\b/i.test(
+        cand
+      );
+    if (!filler && !AMBIGUOUS_COUNTRY_KEYS.has(key)) {
+      if (COUNTRY_ALIASES[key]) return COUNTRY_ALIASES[key];
+      // Free-text country names (Germany, Japan, …) — require length so "in data" does not invent
+      if (key.length >= 4) {
+        const n = normalizeCountryName(cand);
+        if (n && (COUNTRY_ALIASES[countryKey(n)] || key.length >= 4)) {
+          // Prefer alias canonical form when known; else title-cased name
+          return COUNTRY_ALIASES[countryKey(n)] || n;
+        }
+      }
+    }
+  }
+
+  // Longest alias keys first — ambiguous short codes need strong geo cues (not "for us" / "country is")
   const keys = Object.keys(COUNTRY_ALIASES).sort((a, b) => b.length - a.length);
   for (const k of keys) {
+    if (AMBIGUOUS_COUNTRY_KEYS.has(k)) {
+      if (k === "us") {
+        // Pronoun "us" is extremely common — require "the US" / "US sites" / explicit country=
+        if (
+          !/\b(?:in|across|within|from|to)\s+the\s+us\b/.test(lower) &&
+          !/\b(?:country|region|geography)\s*(?:[=:]\s*|\s+is\s+)?\s*us\b/.test(lower) &&
+          !/\bus\s+sites?\b/.test(lower) &&
+          !/\bsites?\s+in\s+(?:the\s+)?us\b/.test(lower) &&
+          !/\btrials?\s+in\s+(?:the\s+)?us\b/.test(lower) &&
+          !/\b(?:located|based)\s+in\s+(?:the\s+)?us\b/.test(lower)
+        ) {
+          continue;
+        }
+        return COUNTRY_ALIASES[k];
+      }
+      if (k === "in") {
+        // ISO "IN" (India) — never match English preposition "in"
+        if (!/\b(?:country|iso(?:\s*code)?)\s*(?:[=:]\s*|\s+is\s+|code\s+)?in\b/.test(lower)) continue;
+        return COUNTRY_ALIASES[k];
+      }
+      if (k === "is") {
+        // Iceland ISO — never match English "is" / "country is Germany"
+        if (!/\b(?:country|iso(?:\s*code)?)\s*(?:[=:]\s*|code\s+)is\b/.test(lower)) continue;
+        return COUNTRY_ALIASES[k];
+      }
+      if (k === "can" || k === "are" || k === "per" || k === "my" || k === "nor") {
+        // English auxiliaries / "per site" / "my sites" — require country/iso label
+        const reAux = new RegExp(
+          `(?:country|region|geography|iso(?:\\s*code)?)\\s*(?:[=:]\\s*|\\s+is\\s+|code\\s+)?${k}\\b`,
+          "i"
+        );
+        if (!reAux.test(lower)) continue;
+        return COUNTRY_ALIASES[k];
+      }
+      // Other stopword codes: require country/iso/region label, not bare in/for
+      const reAmb = new RegExp(
+        `(?:country|region|geography|iso(?:\\s*code)?)\\s*(?:[=:]\\s*|\\s+is\\s+|code\\s+)?${k.replace(/\s+/g, "\\s+")}\\b`,
+        "i"
+      );
+      if (!reAmb.test(lower)) continue;
+      return COUNTRY_ALIASES[k];
+    }
+    if (k.length <= 2) {
+      // Other 2-letter codes: require a light geo cue (not pronoun phrases)
+      const reShort = new RegExp(
+        `(?:country|region|geography|in|across|within)\\s+(?:the\\s+)?${k}\\b`,
+        "i"
+      );
+      if (!reShort.test(lower)) continue;
+      return COUNTRY_ALIASES[k];
+    }
     if (new RegExp(`\\b${k.replace(/\s+/g, "\\s+")}\\b`, "i").test(lower)) return COUNTRY_ALIASES[k];
   }
-  const m = q.match(
-    /\b(?:in|for|across|country|region|geography)\s+([A-Za-z][A-Za-z .'-]{1,40?}?)(?:\s+for|\s+indication|\s+psm|\s+sites?|\?|$)/i
-  );
-  if (m) return normalizeCountryName(m[1]);
   return null;
 }
 
@@ -536,10 +678,21 @@ function extractIndicationFromQuestion(question) {
       return label;
     }
   }
-  const m = q.match(/\b(?:indication|in)\s+([A-Za-z][A-Za-z0-9 /()-]{2,60})/i);
+  // Only explicit "indication …" — bare "in …" false-positives (in Cosmos, in the US, in our feed)
+  const m = q.match(/\bindication\s*[:=]?\s+([A-Za-z][A-Za-z0-9 /()-]{2,60})/i);
   if (!m) return null;
   const raw = m[1].trim().replace(/[?.!,;]+$/, "");
-  return preferredIndicationLabel(raw) || raw;
+  const preferred = preferredIndicationLabel(raw);
+  // Prefer known labels; refuse free-text that looks like filler/geo/source names
+  if (preferred && preferred !== raw) return preferred;
+  if (
+    /^(our|the|a|an|this|cosmos|veeva|trialhub|ct\.?gov|dashboard|overview|global|worldwide)\b/i.test(
+      raw
+    )
+  ) {
+    return null;
+  }
+  return preferred || raw;
 }
 
 /** Related Veeva/TrialHub labels when the asked indication is thin in Cosmos. */
@@ -1484,6 +1637,151 @@ async function trialhubOverview(database, country = null) {
   }
 }
 
+/** Ora/Veeva feed-wide snapshot (ora_fact_study + ora_fact_site) when no indication named. */
+async function veevaOverview(database) {
+  try {
+    const studyCountRows = await queryAll(
+      database.container("ora_fact_study"),
+      "SELECT VALUE COUNT(1) FROM c WHERE c.docType = @t",
+      [{ name: "@t", value: "ora_fact_study" }]
+    );
+    const siteCountRows = await queryAll(
+      database.container("ora_fact_site"),
+      "SELECT VALUE COUNT(1) FROM c WHERE c.docType = @t",
+      [{ name: "@t", value: "ora_fact_site" }]
+    );
+    const studies = await queryAll(
+      database.container("ora_fact_study"),
+      `SELECT TOP 100 c.study_number, c.sponsor, c.indication, c.phase, c.psm, c.total_enrolled,
+              c.n_contributing_sites, c.enroll_months, c.lifecycle_state, c.countries
+       FROM c WHERE c.docType = @t`,
+      [{ name: "@t", value: "ora_fact_study" }]
+    );
+    const sites = await queryAll(
+      database.container("ora_fact_site"),
+      `SELECT TOP 80 c.org_clean, c.country, c.indication, c.site_psm, c.total_enrolled, c.fsi_trust, c.study_name
+       FROM c WHERE c.docType = @t`,
+      [{ name: "@t", value: "ora_fact_site" }]
+    );
+
+    const byIndication = {};
+    const psmVals = [];
+    for (const s of studies) {
+      const ind = s.indication || "_unknown";
+      byIndication[ind] = (byIndication[ind] || 0) + 1;
+      const psm = s.psm != null ? Number(s.psm) : null;
+      if (psm != null && !Number.isNaN(psm) && psm > 0) psmVals.push(psm);
+    }
+    psmVals.sort((a, b) => a - b);
+    const mid = (arr) => (arr.length ? arr[Math.floor(arr.length / 2)] : null);
+    const indicationRank = Object.entries(byIndication)
+      .map(([indication, count]) => ({ indication, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 20);
+    const topSites = [...sites]
+      .filter((s) => s.org_clean)
+      .sort((a, b) => (b.site_psm || 0) - (a.site_psm || 0))
+      .slice(0, 12)
+      .map((s) => ({
+        org_clean: s.org_clean,
+        country: s.country,
+        indication: s.indication,
+        site_psm: s.site_psm,
+        total_enrolled: s.total_enrolled,
+        fsi_trust: s.fsi_trust,
+        study_name: s.study_name
+      }));
+    const sampleStudies = studies.slice(0, 15).map((s) => ({
+      study_number: s.study_number,
+      sponsor: s.sponsor,
+      indication: s.indication,
+      phase: s.phase,
+      psm: s.psm,
+      total_enrolled: s.total_enrolled
+    }));
+
+    const studyCount = studyCountRows[0] ?? 0;
+    const siteCount = siteCountRows[0] ?? 0;
+    return {
+      scope: "ora_veeva",
+      studyCount,
+      siteCount,
+      sampleStudyCount: studies.length,
+      studiesWithPsm: psmVals.length,
+      psmMedian: mid(psmVals),
+      indicationRank,
+      sampleStudies,
+      topSites,
+      note:
+        studyCount > 0 || siteCount > 0
+          ? "Live from Cosmos ora_fact_study / ora_fact_site (Ora Veeva). Use for Veeva/Ora-history dashboards even with no indication. Ranks from sample window; studyCount/siteCount are full container."
+          : "Ora Veeva containers are empty — run intelligence ingest."
+    };
+  } catch (err) {
+    return { error: String(err.message || err), studyCount: 0, siteCount: 0 };
+  }
+}
+
+/** Sponsor crosswalk rollup when user asks about Salesforce / crosswalk without a named sponsor. */
+async function crosswalkOverview(database) {
+  try {
+    const totalRows = await queryAll(
+      database.container("ora_sponsor_crosswalk"),
+      "SELECT VALUE COUNT(1) FROM c WHERE c.docType = @t",
+      [{ name: "@t", value: "ora_sponsor_crosswalk" }]
+    );
+    const sample = await queryAll(
+      database.container("ora_sponsor_crosswalk"),
+      `SELECT TOP 120 c.trialhub_veeva_sponsor, c.sf_account_name, c.sf_owner, c.tier, c.crosswalk_status, c.score
+       FROM c WHERE c.docType = @t`,
+      [{ name: "@t", value: "ora_sponsor_crosswalk" }]
+    );
+    const byStatus = {};
+    const byTier = {};
+    for (const r of sample) {
+      const st = r.crosswalk_status || "_unknown";
+      byStatus[st] = (byStatus[st] || 0) + 1;
+      const tier = r.tier || "_unknown";
+      byTier[tier] = (byTier[tier] || 0) + 1;
+    }
+    const statusRank = Object.entries(byStatus)
+      .map(([status, count]) => ({ status, count }))
+      .sort((a, b) => b.count - a.count);
+    const tierRank = Object.entries(byTier)
+      .map(([tier, count]) => ({ tier, count }))
+      .sort((a, b) => b.count - a.count);
+    const noSf = sample.filter((r) => /no_sf_match/i.test(String(r.crosswalk_status || ""))).slice(0, 15);
+    const totalCount = totalRows[0] ?? 0;
+    return {
+      scope: "sponsor_crosswalk",
+      totalCount,
+      sampleCount: sample.length,
+      statusRank,
+      tierRank,
+      noSfMatchSample: noSf.map((r) => ({
+        trialhub_veeva_sponsor: r.trialhub_veeva_sponsor,
+        sf_account_name: r.sf_account_name,
+        sf_owner: r.sf_owner,
+        tier: r.tier,
+        crosswalk_status: r.crosswalk_status
+      })),
+      recentSample: sample.slice(0, 15).map((r) => ({
+        trialhub_veeva_sponsor: r.trialhub_veeva_sponsor,
+        sf_account_name: r.sf_account_name,
+        sf_owner: r.sf_owner,
+        tier: r.tier,
+        crosswalk_status: r.crosswalk_status
+      })),
+      note:
+        totalCount > 0
+          ? "Live from Cosmos ora_sponsor_crosswalk. Use for Salesforce/crosswalk dashboards. Never say crosswalk is empty if totalCount > 0."
+          : "Sponsor crosswalk container is empty."
+    };
+  } catch (err) {
+    return { error: String(err.message || err), totalCount: 0 };
+  }
+}
+
 async function ctgovByIndication(database, indication, country = null) {
   const aliases = indicationAliases(indication);
   if (!aliases.length) return null;
@@ -1581,6 +1879,9 @@ async function buildIntelligenceContext(getDb, opts = {}) {
   const wantsIntel = force || isIntelligenceQuestion(question);
   const wantsCtgov = isCtgovQuestion(question);
   const wantsTrialhub = isTrialhubQuestion(question);
+  const wantsVeeva = isVeevaQuestion(question);
+  const wantsCrosswalk = isCrosswalkQuestion(question);
+  const wantsSourceOverview = isSourceOverviewQuestion(question);
   const nct = extractNct(question);
   const qIndication = extractIndicationFromQuestion(question);
   const ousOnly = wantsOusOnly(question);
@@ -1617,7 +1918,7 @@ async function buildIntelligenceContext(getDb, opts = {}) {
       "TrialHub vs Ora vs CT.gov indication labels may differ; aliasesUsed lists what was queried.",
       "Prefer fsi_trust=high when comparing site_psm.",
       "ctgov = ClinicalTrials.gov ophthalmology feed (daily delta).",
-      "ctgovOverview / trialhubOverview = feed-wide snapshots when no indication was named — use for dashboards. Never say CT.gov or TrialHub data is missing if totalCount > 0 or recentSample has rows.",
+      "ctgovOverview / trialhubOverview / veevaOverview / crosswalkOverview = feed-wide snapshots when no indication was named — use for dashboards. Never say a feed is missing if its totalCount/studyCount > 0 or recentSample has rows.",
       "When countryFilter is set (array), site/CT.gov/TrialHub results match ANY of those countries. Null/Global = all geographies.",
       "For OUS / outside-US asks: use trialhub.countryRankOus (or countryRank) for ranked countries with trialMentions counts — that IS the country leaderboard.",
       "sites.topSites / topSitesByPsm / topOusSites are the site slate. If site_psm is null, still name org_clean. Never say you lack a site leaderboard when these arrays have rows OR countryRank.ranked has rows.",
@@ -1636,6 +1937,8 @@ async function buildIntelligenceContext(getDb, opts = {}) {
       intelligenceIntent: wantsIntel,
       ctgovIntent: wantsCtgov,
       trialhubIntent: wantsTrialhub,
+      veevaIntent: wantsVeeva,
+      crosswalkIntent: wantsCrosswalk,
       enrollmentPlan
     }
   };
@@ -1654,7 +1957,16 @@ async function buildIntelligenceContext(getDb, opts = {}) {
       out.ctgovNct = await lookupCtgovNct(database, nct);
     }
 
-    if (resolvedIndication || wantsIntel || resolvedCountries || ousOnly || wantsCtgov || wantsTrialhub) {
+    if (
+      resolvedIndication ||
+      wantsIntel ||
+      resolvedCountries ||
+      ousOnly ||
+      wantsCtgov ||
+      wantsTrialhub ||
+      wantsVeeva ||
+      wantsCrosswalk
+    ) {
       const ind = resolvedIndication || qIndication;
       if (ind) {
         out.indicationBenchmark = await benchmarkIndication(database, ind, resolvedCountries, {
@@ -1672,14 +1984,23 @@ async function buildIntelligenceContext(getDb, opts = {}) {
           });
         }
       } else if (resolvedCountries) {
-        // Country-only: sample Ora sites in those countries
+        // Country-only: prefer sites with PSM, then fall back to any sites in-country
         const params = [{ name: "@t", value: "ora_fact_site" }];
         let q = `SELECT TOP 80 c.org_clean, c.country, c.indication, c.site_psm, c.total_enrolled, c.fsi_trust, c.study_name
            FROM c WHERE c.docType = @t AND IS_DEFINED(c.site_psm) AND c.site_psm > 0`;
         const geo = countrySqlClause("c.country", resolvedCountries, "geo");
         q += geo.sql;
         params.push(...geo.params);
-        const rows = await queryAll(database.container("ora_fact_site"), q, params);
+        let rows = await queryAll(database.container("ora_fact_site"), q, params);
+        if (!rows.length) {
+          const params2 = [{ name: "@t", value: "ora_fact_site" }];
+          let q2 = `SELECT TOP 80 c.org_clean, c.country, c.indication, c.site_psm, c.total_enrolled, c.fsi_trust, c.study_name
+             FROM c WHERE c.docType = @t`;
+          const geo2 = countrySqlClause("c.country", resolvedCountries, "geo2");
+          q2 += geo2.sql;
+          params2.push(...geo2.params);
+          rows = await queryAll(database.container("ora_fact_site"), q2, params2);
+        }
         const sorted = [...rows].sort((a, b) => (b.site_psm || 0) - (a.site_psm || 0));
         out.countrySites = {
           countries: resolvedCountries,
@@ -1693,17 +2014,27 @@ async function buildIntelligenceContext(getDb, opts = {}) {
             total_enrolled: s.total_enrolled,
             fsi_trust: s.fsi_trust,
             study_name: s.study_name
-          }))
+          })),
+          note:
+            sorted.length && sorted.every((s) => s.site_psm == null || s.site_psm === 0)
+              ? "Sites listed; site_psm missing for this geo slice — still name sites, do not invent PSM."
+              : undefined
         };
       }
 
-      // Feed-wide overviews whenever CT.gov / TrialHub / dashboard-style asks need them
-      const needFeedOverview = wantsCtgov || wantsTrialhub || (!ind && wantsIntel);
+      // Feed-wide overviews for source dashboards / indication-less intel
+      const needFeedOverview = wantsSourceOverview || (!ind && wantsIntel);
       if (needFeedOverview || wantsCtgov) {
         out.ctgovOverview = await ctgovOverview(database, resolvedCountries);
       }
       if (needFeedOverview || wantsTrialhub) {
         out.trialhubOverview = await trialhubOverview(database, resolvedCountries);
+      }
+      if (needFeedOverview || wantsVeeva) {
+        out.veevaOverview = await veevaOverview(database);
+      }
+      if (needFeedOverview || wantsCrosswalk) {
+        out.crosswalkOverview = await crosswalkOverview(database);
       }
     }
 
@@ -2079,6 +2410,9 @@ module.exports = {
   isIntelligenceQuestion,
   isCtgovQuestion,
   isTrialhubQuestion,
+  isVeevaQuestion,
+  isCrosswalkQuestion,
+  isSourceOverviewQuestion,
   indicationAliases,
   extractIndicationFromQuestion,
   extractCountryFromQuestion,

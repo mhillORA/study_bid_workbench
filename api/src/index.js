@@ -9,6 +9,7 @@ const {
   buildLegacyRecruitmentBoard,
   getIntelligenceHealth,
   isIntelligenceQuestion,
+  isSourceOverviewQuestion,
   extractIndicationFromQuestion,
   extractCountryFromQuestion
 } = require("./intelligence");
@@ -1317,12 +1318,16 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         null;
       const qIndication = extractIndicationFromQuestion(question);
       const qCountry = extractCountryFromQuestion(question);
-      // Cosmos-first: question text wins over whatever tab/hint is open in the browser
-      const indication = qIndication || hintIndication || snapIndication || null;
-      const country = qCountry || hintCountry || null;
+      const sourceOverviewAsk = isSourceOverviewQuestion(question);
+      // Cosmos-first: question text wins over whatever tab/hint is open in the browser.
+      // Source dashboards (CT.gov / TrialHub / Veeva / crosswalk): ignore open-study indication
+      // so Dry Eye (etc.) does not hijack a feed-wide overview ask.
+      const indication = qIndication || (sourceOverviewAsk ? null : hintIndication || snapIndication) || null;
+      const country = qCountry || (sourceOverviewAsk && !qCountry ? null : hintCountry) || null;
 
       const forceIntel =
         isIntelligenceQuestion(question) ||
+        sourceOverviewAsk ||
         wantsDocumentExport(question) ||
         wantsHtmlVisual(question) ||
         hasOkUpload ||
@@ -1343,7 +1348,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         const rfpHint = extractRfpScenarioFromQuestion(question, body);
         // Also sniff indication from attachment filenames/text when question is vague
         let indFromFiles = null;
-        if (!indication && !rfpHint.indication && hasOkUpload) {
+        if (!indication && !rfpHint.indication && hasOkUpload && !sourceOverviewAsk) {
           const blob = (uploaded.files || [])
             .map((f) => `${f.name || ""}\n${String(f.text || "").slice(0, 4000)}`)
             .join("\n");
@@ -1353,8 +1358,8 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
           question,
           indication: rfpHint.indication || indication || indFromFiles,
           country,
-          clientName: hints.clientName || snapClient || null,
-          sponsor: hints.clientName || snapClient || null,
+          clientName: sourceOverviewAsk ? null : hints.clientName || snapClient || null,
+          sponsor: sourceOverviewAsk ? null : hints.clientName || snapClient || null,
           force:
             forceIntel ||
             Boolean(indication) ||

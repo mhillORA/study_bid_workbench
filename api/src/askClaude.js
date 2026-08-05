@@ -68,12 +68,14 @@ const INTELLIGENCE_RULES = [
   "• BD/sales pitch asks (\"why Ora\", \"what do I tell the sponsor\", RFI bullets) → lead with Ora median vs industry, geography, top sites, competitive recruiting; end with 3 short talking points.",
   "• Leadership asks (portfolio totals, averages, which client/study is largest, year rollups) → context.portfolio first; one headline + n, then brief implications.",
   "• Ops briefing (section status, fill requests, what to do next) → workingStudy.sectionStatus / requests / drivers; suggest NAVIGATE:ops or NAVIGATE:reviews.",
-  "• Sponsor already in SF? BD owner / tier? → intelligence.sponsorCrosswalk.",
-  "• NCT lookup → intelligence.nctLookup (TrialHub) and/or intelligence.ctgov.",
+  "• Sponsor already in SF? BD owner / tier? → intelligence.sponsorCrosswalk. Crosswalk dashboard (no sponsor named) → intelligence.crosswalkOverview (totalCount, statusRank, tierRank, noSfMatchSample).",
+  "• NCT lookup → intelligence.nctLookup (TrialHub) and/or intelligence.ctgovNct / ctgov.",
   "• CT.gov dashboard / registry overview (no indication named) → intelligence.ctgovOverview (totalCount, indicationRank, statusRank, recentSample, countryRank). If totalCount > 0 you HAVE data — never say CT.gov is empty.",
   "• CT.gov by indication → intelligence.ctgov (trialCount, sample, recruitingSample).",
   "• TrialHub / trial hub / trialhub.com dashboard (no indication) → intelligence.trialhubOverview (totalCount, indicationRank, psmMedian, recentSample, countryRank). If totalCount > 0 you HAVE data — never say TrialHub is empty.",
   "• TrialHub by indication → indicationBenchmark.trialhub.",
+  "• Veeva / Ora history dashboard (no indication) → intelligence.veevaOverview (studyCount, siteCount, psmMedian, indicationRank, sampleStudies, topSites). If studyCount/siteCount > 0 you HAVE data.",
+  "• Country-only site asks (no indication) → intelligence.countrySites.topSites — list sites even when site_psm is null.",
   "• Budget dollars / uploaded bid portfolio → context.portfolio (not intelligence).",
   "• HLBP form asks → CREATE_STUDY with budgetType HLBP + sites country mix, NAVIGATE:hlbp, then APPLY missing fields as the user answers. Past-bid dollar comps may use context.pricingScenarios when present — label them as comparable past service fees, not 'the HLBP form'.",
   "• CT.gov dollars → only when pricingScenarios.ctgovDollars.available or intelligence.ctgov.dollarMentions.available. Those are rare free-text mentions (not CRO bids). If unavailable, say CT.gov has no structured bid costs — do not invent.",
@@ -295,8 +297,21 @@ function systemPromptFor(context) {
       : context?.moneyIntent === "public_company"
         ? " moneyIntent=public_company — web-search sponsor/company revenue is OK."
         : "";
+  const hasOverviewPack = Boolean(
+    context?.intelligence?.ctgovOverview?.totalCount > 0 ||
+      context?.intelligence?.ctgovOverview?.recentSample?.length ||
+      context?.intelligence?.trialhubOverview?.totalCount > 0 ||
+      context?.intelligence?.trialhubOverview?.recentSample?.length ||
+      context?.intelligence?.veevaOverview?.studyCount > 0 ||
+      context?.intelligence?.veevaOverview?.siteCount > 0 ||
+      context?.intelligence?.crosswalkOverview?.totalCount > 0 ||
+      context?.intelligence?.inventory?.ctgov?.count > 0 ||
+      context?.intelligence?.inventory?.trialhub?.count > 0 ||
+      context?.intelligence?.nctLookup ||
+      context?.intelligence?.ctgovNct
+  );
   const hasSiteList = Boolean(
-    context?.intelligence?.indicationBenchmark?.sites?.topSitesByPsm?.length ||
+      context?.intelligence?.indicationBenchmark?.sites?.topSitesByPsm?.length ||
       context?.intelligence?.indicationBenchmark?.sites?.topSites?.length ||
       context?.intelligence?.indicationBenchmark?.sites?.topOusSites?.length ||
       context?.intelligence?.indicationBenchmark?.trialhub?.countryRankOus?.ranked?.length ||
@@ -308,7 +323,9 @@ function systemPromptFor(context) {
   const intelNote = context?.intelligence
     ? hasSiteList
       ? " context.intelligence IS attached WITH site rows and/or TrialHub countryRank — list concrete countries (trial mentions) and site names when present. Never claim you lack a leaderboard. Never print JSON keys. NAVIGATE is optional after the list."
-      : " context.intelligence IS attached but site/country lists are empty — give medians/NCT/enrollment plan if present, then ask for indication/geography if needed. Do not pretend a tab open will magically list sites without data."
+      : hasOverviewPack
+        ? " context.intelligence IS attached WITH feed overview and/or inventory (ctgovOverview / trialhubOverview / veevaOverview / crosswalkOverview / inventory / NCT). You HAVE that source data — summarize counts, ranks, and samples. Do NOT say the feed is missing or ask for an indication first when the user asked for a dashboard/overview."
+        : " context.intelligence IS attached but site/country lists are empty — give medians/NCT/enrollment plan if present, then ask for indication/geography if needed. Do not pretend a tab open will magically list sites without data."
     : " context.intelligence may be absent on this turn; for site/feasibility asks, ask for indication if missing, or say data was not attached — do not only NAVIGATE:intelligence with no substance.";
   const planNote = context?.enrollmentPlan?.sitesExact != null
     ? ` Enrollment plan is attached — cite exact sites=${context.enrollmentPlan.sitesExact} and recommended with 20% buffer=${context.enrollmentPlan.sitesRecommendedWith20pctBuffer} using those human labels (not JSON keys).`
@@ -841,6 +858,77 @@ function formatCosmosFactsBlock(context) {
     );
   }
 
+  const vo = intel.veevaOverview;
+  if (vo && !vo.error) {
+    lines.push(
+      `Veeva/Ora OVERVIEW: studyCount=${vo.studyCount ?? "—"}, siteCount=${vo.siteCount ?? "—"}, ` +
+        `studiesWithPsm=${vo.studiesWithPsm ?? "—"}, psmMedian=${vo.psmMedian ?? "missing"}`
+    );
+    for (const row of (vo.indicationRank || []).slice(0, 12)) {
+      lines.push(`  - indication ${row.indication}: ${row.count} in sample`);
+    }
+    for (const s of (vo.sampleStudies || []).slice(0, 8)) {
+      lines.push(
+        `  - Ora study ${s.study_number || "?"} | ${s.sponsor || "?"} | ${s.indication || "?"} | PSM=${
+          s.psm == null ? "missing" : s.psm
+        }`
+      );
+    }
+    lines.push(
+      "RULE: If Veeva/Ora OVERVIEW studyCount or siteCount > 0, you HAVE Ora Veeva data — never say Veeva/Ora history is missing."
+    );
+  } else if (intel.query?.veevaIntent) {
+    lines.push("Veeva/Ora overview was requested but empty/error — say intelligence ingest may be needed.");
+  }
+
+  const xw = intel.crosswalkOverview;
+  if (xw && !xw.error) {
+    lines.push(
+      `Sponsor CROSSWALK OVERVIEW: totalCount=${xw.totalCount ?? "—"}, sample=${xw.sampleCount ?? "—"}`
+    );
+    for (const row of (xw.statusRank || []).slice(0, 8)) {
+      lines.push(`  - status ${row.status}: ${row.count}`);
+    }
+    for (const r of (xw.noSfMatchSample || xw.recentSample || []).slice(0, 8)) {
+      lines.push(
+        `  - ${r.trialhub_veeva_sponsor || "?"} → SF ${r.sf_account_name || "—"} | ${
+          r.crosswalk_status || "?"
+        } | owner=${r.sf_owner || "—"}`
+      );
+    }
+    lines.push(
+      "RULE: If CROSSWALK OVERVIEW totalCount > 0, you HAVE crosswalk data — never say Salesforce/crosswalk is missing."
+    );
+  } else if (intel.query?.crosswalkIntent) {
+    lines.push("Crosswalk overview was requested but empty/error.");
+  }
+
+  const cs = intel.countrySites;
+  if (cs?.topSites?.length) {
+    lines.push(
+      `Country sites (${cs.countryFilterLabel || cs.country || (cs.countries || []).join(", ") || "—"}): sampleCount=${
+        cs.sampleCount ?? cs.topSites.length
+      }`
+    );
+    for (const s of cs.topSites.slice(0, 12)) {
+      lines.push(
+        `  - ${s.org_clean || "?"} | ${s.country || "?"} | ${s.indication || "?"} | sitePSM=${
+          s.site_psm == null ? "missing" : s.site_psm
+        }`
+      );
+    }
+    if (cs.note) lines.push(`Country sites note: ${cs.note}`);
+  }
+
+  const nctL = intel.nctLookup || intel.ctgovNct;
+  if (nctL && !nctL.error) {
+    lines.push(
+      `NCT lookup: ${nctL.nct || intel.query?.nct || "—"} | source=${nctL.source || "—"} | status=${
+        nctL.status || "—"
+      } | indication=${nctL.indication || nctL.oraIndication || "—"}`
+    );
+  }
+
   const inv = intel.inventory;
   if (inv && !inv.error) {
     const cgCount = inv.ctgov?.count ?? inv.counts?.ora_ctgov_trials ?? inv.ora_ctgov_trials;
@@ -908,14 +996,31 @@ function contextJsonForModel(context) {
     }
   }
 
-  // Prefer keeping indicationBenchmark if we must truncate
+  // Prefer keeping indicationBenchmark if we must shrink — but NEVER drop feed overviews /
+  // inventory / NCT / countrySites (those are how dashboard asks stay grounded).
   if (ctx.intelligence?.indicationBenchmark) {
-    const bm = ctx.intelligence.indicationBenchmark;
+    const intel = ctx.intelligence;
+    const bm = intel.indicationBenchmark;
+    const trimOverview = (o, sampleKey = "recentSample") => {
+      if (!o || o.error) return o;
+      const copy = { ...o };
+      if (Array.isArray(copy[sampleKey])) copy[sampleKey] = copy[sampleKey].slice(0, 12);
+      if (Array.isArray(copy.indicationRank)) copy.indicationRank = copy.indicationRank.slice(0, 15);
+      if (Array.isArray(copy.statusRank)) copy.statusRank = copy.statusRank.slice(0, 10);
+      if (Array.isArray(copy.sampleStudies)) copy.sampleStudies = copy.sampleStudies.slice(0, 10);
+      if (Array.isArray(copy.topSites)) copy.topSites = copy.topSites.slice(0, 10);
+      if (Array.isArray(copy.noSfMatchSample)) copy.noSfMatchSample = copy.noSfMatchSample.slice(0, 10);
+      if (copy.countryRank?.ranked) {
+        copy.countryRank = { ranked: copy.countryRank.ranked.slice(0, 10) };
+      }
+      return copy;
+    };
     ctx.intelligence = {
-      source: ctx.intelligence.source,
-      attachedFrom: ctx.intelligence.attachedFrom,
-      query: ctx.intelligence.query,
-      note: ctx.intelligence.note,
+      source: intel.source,
+      attachedFrom: intel.attachedFrom,
+      query: intel.query,
+      note: intel.note,
+      rules: intel.rules,
       indicationBenchmark: {
         indicationRequested: bm.indicationRequested,
         countryFilterLabel: bm.countryFilterLabel,
@@ -933,13 +1038,38 @@ function contextJsonForModel(context) {
           recruitingSample: (bm.trialhub?.recruitingSample || []).slice(0, 4),
           countryRank: bm.trialhub?.countryRank
             ? { ranked: (bm.trialhub.countryRank.ranked || []).slice(0, 8) }
+            : undefined,
+          countryRankOus: bm.trialhub?.countryRankOus
+            ? { ranked: (bm.trialhub.countryRankOus.ranked || []).slice(0, 8) }
             : undefined
         },
         sites: {
-          topSitesByPsm: (bm.sites?.topSitesByPsm || bm.sites?.topSites || []).slice(0, 12)
+          topSitesByPsm: (bm.sites?.topSitesByPsm || bm.sites?.topSites || []).slice(0, 12),
+          topOusSites: (bm.sites?.topOusSites || []).slice(0, 12)
         }
       },
-      enrollmentPlan: ctx.intelligence.enrollmentPlan || ctx.enrollmentPlan || undefined
+      enrollmentPlan: intel.enrollmentPlan || ctx.enrollmentPlan || undefined,
+      ctgov: intel.ctgov
+        ? {
+            ...intel.ctgov,
+            sample: (intel.ctgov.sample || []).slice(0, 10),
+            recruitingSample: (intel.ctgov.recruitingSample || []).slice(0, 6)
+          }
+        : undefined,
+      ctgovOverview: trimOverview(intel.ctgovOverview),
+      trialhubOverview: trimOverview(intel.trialhubOverview),
+      veevaOverview: trimOverview(intel.veevaOverview, "sampleStudies"),
+      crosswalkOverview: trimOverview(intel.crosswalkOverview),
+      countrySites: intel.countrySites
+        ? {
+            ...intel.countrySites,
+            topSites: (intel.countrySites.topSites || []).slice(0, 12)
+          }
+        : undefined,
+      inventory: intel.inventory,
+      nctLookup: intel.nctLookup,
+      ctgovNct: intel.ctgovNct,
+      sponsorCrosswalk: intel.sponsorCrosswalk
     };
   }
 
