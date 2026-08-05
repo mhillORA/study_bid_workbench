@@ -2332,10 +2332,10 @@
     paintBuddyChat();
   }
 
-  const BUDDY_ATTACH_MAX = 4;
+  const BUDDY_ATTACH_MAX = 8;
   const BUDDY_ATTACH_MAX_BYTES = 4 * 1024 * 1024;
   const BUDDY_ATTACH_EXTS = new Set([
-    "pdf", "docx", "xlsx", "xlsm", "csv", "txt", "md", "markdown", "json", "html", "htm"
+    "pdf", "docx", "pptx", "xlsx", "xlsm", "csv", "txt", "md", "markdown", "json", "html", "htm"
   ]);
 
   function buddyFileExt(name) {
@@ -2353,38 +2353,52 @@
       return;
     }
     el.hidden = false;
-    el.innerHTML = files
-      .map(
-        (f, i) =>
-          `<span class="buddy-attach-chip"><span title="${escapeAttr(f.name)}">${escapeHtml(f.name)}</span>` +
-          `<button type="button" data-buddy-detach="${i}" aria-label="Remove ${escapeAttr(f.name)}">×</button></span>`
-      )
-      .join("");
+    el.innerHTML =
+      `<span class="muted buddy-attach-count">${files.length} file${files.length === 1 ? "" : "s"}</span>` +
+      files
+        .map(
+          (f, i) =>
+            `<span class="buddy-attach-chip"><span title="${escapeAttr(f.name)}">${escapeHtml(f.name)}</span>` +
+            `<button type="button" data-buddy-detach="${i}" aria-label="Remove ${escapeAttr(f.name)}">×</button></span>`
+        )
+        .join("");
   }
 
   function addBuddyFiles(fileList) {
     const incoming = Array.from(fileList || []);
     if (!incoming.length) return;
     const next = [...(state.buddyAttachments || [])];
+    let added = 0;
+    let skipped = 0;
     for (const file of incoming) {
       if (next.length >= BUDDY_ATTACH_MAX) {
-        if (els.askStatus) els.askStatus.textContent = `Max ${BUDDY_ATTACH_MAX} files per ask.`;
-        break;
+        skipped += 1;
+        continue;
       }
       const ext = buddyFileExt(file.name);
       if (!BUDDY_ATTACH_EXTS.has(ext)) {
         if (els.askStatus) els.askStatus.textContent = `Unsupported type: ${file.name}`;
+        skipped += 1;
         continue;
       }
       if (file.size > BUDDY_ATTACH_MAX_BYTES) {
         if (els.askStatus) els.askStatus.textContent = `${file.name} is over 4 MB.`;
+        skipped += 1;
         continue;
       }
       if (next.some((f) => f.name === file.name && f.size === file.size)) continue;
       next.push(file);
+      added += 1;
     }
     state.buddyAttachments = next;
     paintBuddyAttachChips();
+    if (els.askStatus) {
+      if (next.length >= BUDDY_ATTACH_MAX && (added || skipped)) {
+        els.askStatus.textContent = `${next.length}/${BUDDY_ATTACH_MAX} files attached (max reached).`;
+      } else if (added) {
+        els.askStatus.textContent = `${next.length} file${next.length === 1 ? "" : "s"} attached — add more or Send.`;
+      }
+    }
   }
 
   function bufferToBase64(buffer) {

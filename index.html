@@ -80,10 +80,10 @@
     <div class="chat-log buddy-chat-log" id="askLog"></div>
     <div class="ask-compose buddy-compose">
       <div class="buddy-attach-chips" id="buddyAttachChips" hidden></div>
-      <textarea id="askInput" class="textarea" rows="3" placeholder="Ask Buddy… attach a protocol/RFP/PDF/Excel if helpful"></textarea>
+      <textarea id="askInput" class="textarea" rows="3" placeholder="Ask Buddy… attach multiple files (protocol, slides, template…)"></textarea>
       <div class="buddy-compose-row">
-        <input type="file" id="buddyFileInput" hidden accept=".pdf,.docx,.xlsx,.xlsm,.csv,.txt,.md,.json,.html,.htm" multiple />
-        <button type="button" class="btn btn-ghost" id="btnBuddyAttach" title="Attach files (PDF, Word, Excel, text)">Attach</button>
+        <input type="file" id="buddyFileInput" hidden accept=".pdf,.docx,.pptx,.xlsx,.xlsm,.csv,.txt,.md,.json,.html,.htm" multiple />
+        <button type="button" class="btn btn-ghost" id="btnBuddyAttach" title="Attach multiple files (Ctrl/Cmd+click or Shift+click in the picker)">Attach files</button>
         <button type="button" class="btn btn-primary" id="btnAsk">Send</button>
         <span class="muted" id="askStatus"></span>
       </div>

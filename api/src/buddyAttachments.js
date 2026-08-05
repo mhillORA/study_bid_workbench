@@ -1,14 +1,14 @@
 /**
  * Buddy chat attachments — extract text for LLM context.
- * Supports: txt/md/csv/json/html, xlsx/xls/csv via ExcelJS, pdf, docx.
+ * Supports: txt/md/csv/json/html, xlsx, pdf, docx, pptx.
  */
 
 const ExcelJS = require("exceljs");
 
-const MAX_FILES = 4;
+const MAX_FILES = 8;
 const MAX_BYTES_EACH = 4 * 1024 * 1024;
 const MAX_TEXT_CHARS = 80000;
-const MAX_TOTAL_CHARS = 120000;
+const MAX_TOTAL_CHARS = 180000;
 
 function extOf(name) {
   const m = String(name || "").toLowerCase().match(/\.([a-z0-9]+)$/);
