@@ -657,9 +657,6 @@ h1 {
 .chat-turn.assistant .chat-body .buddy-i {
   color: #b91c1c;
   font-weight: 700;
-  background: rgba(185, 28, 28, 0.08);
-  padding: 0 0.15em;
-  border-radius: 3px;
 }
 
 [data-theme="dark"] .chat-turn.assistant .chat-body .buddy-h {
@@ -668,7 +665,6 @@ h1 {
 
 [data-theme="dark"] .chat-turn.assistant .chat-body .buddy-i {
   color: #fca5a5;
-  background: rgba(252, 165, 165, 0.12);
 }
 
 .benchmark-filter-grid {
