@@ -49,6 +49,7 @@ In Azure Portal → your Static Web App → **Configuration** → **Application 
 | `SF_LOGIN_URL` | `https://login.salesforce.com` (prod) |
 | `SF_JWT_PRIVATE_KEY` | Full PEM of `ora_intel_sf.key` (see below) |
 | `SF_TIER_FIELD` | `Tier__c` |
+| `SF_GROUPING_FIELD` | `Ora_Grouping__c` |
 | `SF_API_VERSION` | `59.0` (optional) |
 
 ### Pasting the private key
