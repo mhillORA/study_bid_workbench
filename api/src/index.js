@@ -13,7 +13,14 @@ const {
   extractIndicationFromQuestion,
   extractCountryFromQuestion
 } = require("./intelligence");
-const { isLegacyAnteriorQuestion, buildLegacyAnteriorContext, userConsentedLegacyEnrollment, wantsHtmlVisual, isLegacyTableAsk } = require("./legacyAnterior");
+const {
+  isLegacyAnteriorQuestion,
+  isLegacyOverviewQuestion,
+  buildLegacyAnteriorContext,
+  userConsentedLegacyEnrollment,
+  wantsHtmlVisual,
+  isLegacyTableAsk
+} = require("./legacyAnterior");
 const { loadLiveContext, saveLiveContext } = require("./buddyLiveContext");
 const { runCtgovSync, getCtgovSyncStatus, remapCtgovIndications } = require("./ctgovSync");
 const { ingestTrialHubUpload } = require("./trialhubIngest");
@@ -69,16 +76,21 @@ function isCrossStudyQuestion(question) {
   const q = String(question || "").toLowerCase();
   if (!q) return false;
   // Explicit multi-study / portfolio intent
+  // NOTE: RFP/ballpark/pricing alone is NOT cross-study — keep the open study for "this protocol" asks.
   if (
     /\b(all studies|across (all )?studies|every study|entire portfolio|whole portfolio|portfolio)\b/.test(q) ||
     /\b(across|among|between)\b.{0,40}\bstudies\b/.test(q) ||
     /\b(how many studies|which study|which studies|largest study|biggest study|most expensive|highest budget)\b/.test(q) ||
-    /\b(largest|biggest|highest|top)\b.{0,40}\b(budget|fee|enrollment|study|studies)\b/.test(q) ||
+    /\b(largest|biggest|highest|top)\b.{0,40}\b(budget|fee|enrollment|study|studies|client|sponsor)\b/.test(q) ||
     /\b(average|avg|mean|median|total|sum|rollup)\b.{0,60}\b(across|all|every|portfolio|studies)\b/.test(q) ||
     /\b(enroll|patient|subject|budget|fee).{0,40}\b(across|all studies|every study)\b/.test(q) ||
     /\bstudies\b.{0,40}\b(last year|this year|in 20\d{2}|overall|combined)\b/.test(q) ||
     /\bcompare\b.{0,40}\bstud(y|ies)\b/.test(q) ||
-    /\b(rfp|rfi|ballpark|pricing|goal bid|cost per patient|sets? of numbers)\b/.test(q)
+    /\b(client|sponsor)\s+concentration\b/.test(q) ||
+    /\b(rank|ranking|leaderboard)\b.{0,40}\b(client|sponsor|fees?|revenue)\b/.test(q) ||
+    /\b(by\s+year|year\s+over\s+year|yoy|ingest(?:ion)?\s+freshness|what(?:'s| is) in (?:the )?(?:db|database|cosmos))\b/.test(
+      q
+    )
   ) {
     return true;
   }
@@ -119,9 +131,24 @@ function clientNameMentionedInQuestion(question, clientName) {
   return false;
 }
 
+function extractYearFromQuestion(question) {
+  const q = String(question || "");
+  if (/\blast\s+year\b/i.test(q)) return new Date().getFullYear() - 1;
+  if (/\bthis\s+year\b/i.test(q)) return new Date().getFullYear();
+  // Require a year cue — bare "2024" in industry text must NOT filter the portfolio
+  const ym = q.match(
+    /\b(?:in|for|during|year|fy|calendar\s+year|cy)\s*(20\d{2})\b|\b(20\d{2})\s+(?:studies|bids?|budgets?|portfolio|ingest|uploads?)\b|\byear\s*[=:]\s*(20\d{2})\b/i
+  );
+  if (ym) return Number(ym[1] || ym[2] || ym[3]);
+  return null;
+}
+
 function inferAskHints(question, body, clientNames) {
   const q = String(question || "");
-  const crossStudy = isCrossStudyQuestion(q) || body.portfolio === true;
+  // body.portfolio=true means "include portfolio rollup" (frontend always sends it).
+  // It must NOT force cross-study focus — that drops the open study for ops/BD asks.
+  const crossStudy =
+    isCrossStudyQuestion(q) || body.crossStudy === true || body.noStudy === true;
   // Explicit O-##### in the question wins; otherwise open-study id from the UI
   // must NOT bind cross-study / "all studies" questions to one workbook.
   const explicitStudy =
@@ -134,20 +161,11 @@ function inferAskHints(question, body, clientNames) {
 
   let clientName = body.clientName ? String(body.clientName).trim() : null;
   let year = body.year != null && body.year !== "" ? Number(body.year) : null;
+  if (!year || Number.isNaN(year)) year = extractYearFromQuestion(q);
 
-  if (!year || Number.isNaN(year)) {
-    if (/\blast\s+year\b/i.test(q)) year = new Date().getFullYear() - 1;
-    else {
-      const ym = q.match(/\b(20\d{2})\b/);
-      if (ym) year = Number(ym[1]);
-      else year = null;
-    }
-  }
-
-  // Soft directory scan: only when the user seems to name a client.
-  // All-studies mode (noStudy) without an explicit client cue must stay unfiltered.
-  const allowSoftClient =
-    !body.noStudy || hasExplicitClientCue(q) || Boolean(body.clientName);
+  // Soft directory scan only with an explicit client cue (or body.clientName).
+  // Open-study mode must not substring-match client names out of English prose.
+  const allowSoftClient = hasExplicitClientCue(q) || Boolean(body.clientName);
 
   if (!clientName && allowSoftClient && Array.isArray(clientNames) && clientNames.length) {
     const sorted = [...clientNames].sort((a, b) => String(b).length - String(a).length);
@@ -181,9 +199,13 @@ function inferMoneyIntent(question) {
     /\b(we(?:'ve| have)?\s+(?:made|earned|billed|won)|our\s+(?:revenue|fees|billings)|how much (?:we|we've|ora)|ora(?:'s)?\s+(?:revenue|fees)|made off|rank(?:ed)? by (?:revenue|fees|dollars)|by (?:revenue|fees).{0,40}(?:client|sponsor|stud)|(?:client|sponsor)s?.{0,40}by (?:revenue|fees)|studies?\s+(?:we(?:'ve| have)?\s+)?(?:run|done|worked).{0,80}(?:revenue|fees)|(?:revenue|fees).{0,80}studies?\s+(?:with|we|we've))\b/.test(
       q
     ) ||
-    (/\b(revenue|fees|billings|dollars)\b/.test(q) &&
-      /\b(studies?|clients?|sponsors?|portfolio|by client|each)\b/.test(q) &&
-      !publicCue);
+    (/\b(revenue|fees|billings|dollars|spend|billed)\b/.test(q) &&
+      /\b(studies?|clients?|sponsors?|portfolio|by client|each|concentration|rank)\b/.test(q) &&
+      !publicCue) ||
+    (/\b(top|biggest|largest|rank(?:ed)?|concentration)\b.{0,40}\b(client|sponsor)s?\b/.test(q) &&
+      /\b(revenue|fees|dollars|billings|money|spend|paid|pay)\b/.test(q) &&
+      !publicCue) ||
+    /\b(who\s+pays\s+us|pays?\s+us\s+the\s+most|client\s+concentration)\b/.test(q);
   if (oraCue && !publicCue) return "ora_earned";
   if (publicCue) return "public_company";
   return null;
@@ -1220,13 +1242,20 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       hints.clientName = null;
     }
     const moneyIntent = inferMoneyIntent(question);
+    // Ora-earned fee rankings are always portfolio-scope (even with a study open)
+    if (moneyIntent === "ora_earned") {
+      hints.crossStudy = true;
+      hints.studyId = hints.studyId && /\b(O-\d{3,})\b/i.test(question) ? hints.studyId : null;
+    }
     // noStudy / empty selection = portfolio only — EXCEPT when the user attached docs
     // (otherwise Buddy ignores the file and dumps a portfolio overview).
+    // body.portfolio=true only means "attach portfolio data" — not force focus.
     const attachmentDriven = hasOkUpload;
     const forcePortfolio =
       !attachmentDriven &&
       (body.noStudy === true ||
         Boolean(hints.crossStudy) ||
+        moneyIntent === "ora_earned" ||
         (!body.studyId && !body.studySnapshot));
     const studyId = forcePortfolio
       ? (String(question).match(/\b(O-\d{3,})\b/i) || [])[1] || null
@@ -1319,6 +1348,10 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       const qIndication = extractIndicationFromQuestion(question);
       const qCountry = extractCountryFromQuestion(question);
       const sourceOverviewAsk = isSourceOverviewQuestion(question);
+      const catalogAsk =
+        /\b(what(?:'s| is) in (?:the )?(?:db|database|cosmos)|data\s+catalog|container\s+counts?|ingest(?:ion)?\s+freshness|how many (?:trials|studies|sites) (?:in|does) (?:cosmos|the db|the database))\b/i.test(
+          question
+        );
       // Cosmos-first: question text wins over whatever tab/hint is open in the browser.
       // Source dashboards (CT.gov / TrialHub / Veeva / crosswalk): ignore open-study indication
       // so Dry Eye (etc.) does not hijack a feed-wide overview ask.
@@ -1328,6 +1361,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       const forceIntel =
         isIntelligenceQuestion(question) ||
         sourceOverviewAsk ||
+        catalogAsk ||
         wantsDocumentExport(question) ||
         wantsHtmlVisual(question) ||
         hasOkUpload ||
@@ -1336,10 +1370,10 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         Boolean(country) ||
         Boolean(indication) ||
         Boolean(qIndication) ||
-        Boolean(hintIndication) ||
-        Boolean(hintCountry) ||
-        activeTab === "intelligence" ||
-        activeTab === "scorecard";
+        // Hint country/indication alone should not force intel unless the ask is intel-shaped —
+        // sitting on the Intelligence tab must not hijack unrelated leadership/ops asks.
+        (Boolean(hintIndication || hintCountry) &&
+          (isIntelligenceQuestion(question) || sourceOverviewAsk || catalogAsk));
 
       // Always re-query Cosmos for intelligence — never reuse the browser's open-tab pack.
       // UI hints only supply default indication/country when the question does not name one.
@@ -1383,21 +1417,24 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
     try {
       const legacyHint =
         body.legacyHint && typeof body.legacyHint === "object" ? body.legacyHint : {};
+      const legacyOverviewAsk = isLegacyOverviewQuestion(question);
       const enrollmentConsent =
         body.includeLegacyEnrollment === true ||
         body.useLegacyEnrollment === true ||
         userConsentedLegacyEnrollment(question, history) ||
         isLegacyTableAsk(question) ||
+        legacyOverviewAsk ||
         (wantsHtmlVisual(question) && isLegacyAnteriorQuestion(question));
       const forceLegacy =
         isLegacyAnteriorQuestion(question) ||
         isLegacyTableAsk(question) ||
+        legacyOverviewAsk ||
         Boolean(
           legacyHint.siteName ||
             legacyHint.studyName ||
             legacyHint.siteId ||
             legacyHint.studyId ||
-            legacyHint.indication
+            (!legacyOverviewAsk && legacyHint.indication)
         ) ||
         Boolean(body.legacyPack && body.legacyPack.source === "legacy_anterior_segment") ||
         enrollmentConsent;
@@ -1408,19 +1445,19 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
           enrollmentIncluded: Boolean(body.legacyPack.enrollmentIncluded || enrollmentConsent),
           note: "Legacy anterior-segment pack from client (not re-queried)."
         };
-      } else if (
-        forceLegacy ||
-        /\b(site|sites|feasib|trust|prefer|enroll|pi|investigator)\b/i.test(question)
-      ) {
+      } else if (forceLegacy || isLegacyAnteriorQuestion(question) || isLegacyTableAsk(question)) {
         const snap = body.studySnapshot || clientStudy || null;
-        const legacyIndication =
-          extractIndicationFromQuestion(question) ||
-          legacyHint.indication ||
-          (body.intelligenceHint && body.intelligenceHint.indication) ||
-          body.indication ||
-          (snap && snap.indication) ||
-          (cosmosContext && cosmosContext.study && cosmosContext.study.indication) ||
-          null;
+        const qLegacyInd = extractIndicationFromQuestion(question);
+        // Overview/dashboard asks: ignore open-study / tab indication (same class as CT.gov)
+        const legacyIndication = legacyOverviewAsk
+          ? qLegacyInd
+          : qLegacyInd ||
+            legacyHint.indication ||
+            (body.intelligenceHint && body.intelligenceHint.indication) ||
+            body.indication ||
+            (snap && snap.indication) ||
+            (cosmosContext && cosmosContext.study && cosmosContext.study.indication) ||
+            null;
         legacyAnterior = await buildLegacyAnteriorContext(getDb, {
           question,
           siteName: legacyHint.siteName || null,

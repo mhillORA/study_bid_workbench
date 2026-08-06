@@ -231,6 +231,9 @@ function isCrosswalkQuestion(question) {
     /\b(crosswalk|sponsor\s+crosswalk|sf\s+match|salesforce)\b/.test(q) ||
     /\b(no_sf_match|confirmed_new|previously_confirmed|in_sf_inactive)\b/.test(q) ||
     /\b(sf\s+(account|owner|tier)|salesforce\s+(account|owner|tier))\b/.test(q) ||
+    /\b(who|whose|owner|owns)\b.{0,50}\b(sf|salesforce|account)\b/.test(q) ||
+    /\b(bd\s+owner|account\s+owner|sf\s+owner)\b/.test(q) ||
+    /\b(tier)\b.{0,40}\b(sf|salesforce|sponsor|client|account)\b/.test(q) ||
     /\b(which|what)\b.{0,40}\b(sponsors?|clients?)\b.{0,40}\b(sf|salesforce|crosswalk)\b/.test(q)
   );
 }

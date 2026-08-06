@@ -403,6 +403,50 @@ async function buildPortfolioContext({ clientName = null, year = null, limit = 5
       (a, b) => b.grandTotal - a.grandTotal || b.serviceFees - a.serviceFees || b.studyCount - a.studyCount
     );
 
+  const portfolioGrand = sum("grandTotal") || sum("serviceFees") || 0;
+  const portfolioStudies = rows.length || 1;
+  const byClientWithShare = byClient.map((b) => ({
+    ...b,
+    pctOfGrandTotal:
+      portfolioGrand > 0
+        ? Math.round(((b.grandTotal || b.serviceFees || 0) / portfolioGrand) * 1000) / 10
+        : null,
+    pctOfStudies: Math.round((b.studyCount / portfolioStudies) * 1000) / 10
+  }));
+
+  const byYearMap = {};
+  for (const r of rows) {
+    const y = r.year || "(unknown)";
+    if (!byYearMap[y]) {
+      byYearMap[y] = { year: y, studyCount: 0, grandTotal: 0, serviceFees: 0, enrolledSubjects: 0 };
+    }
+    const b = byYearMap[y];
+    b.studyCount += 1;
+    b.grandTotal += typeof r.grandTotal === "number" ? r.grandTotal : 0;
+    b.serviceFees += typeof r.serviceFees === "number" ? r.serviceFees : 0;
+    b.enrolledSubjects += typeof r.enrolledSubjects === "number" ? r.enrolledSubjects : 0;
+  }
+  const byYear = Object.values(byYearMap).sort((a, b) => {
+    if (a.year === "(unknown)") return 1;
+    if (b.year === "(unknown)") return -1;
+    return String(b.year).localeCompare(String(a.year));
+  });
+
+  const byIndicationMap = {};
+  for (const r of rows) {
+    const key = r.indication || "(unknown)";
+    if (!byIndicationMap[key]) {
+      byIndicationMap[key] = { indication: key, studyCount: 0, grandTotal: 0, enrolledSubjects: 0 };
+    }
+    const b = byIndicationMap[key];
+    b.studyCount += 1;
+    b.grandTotal += typeof r.grandTotal === "number" ? r.grandTotal : 0;
+    b.enrolledSubjects += typeof r.enrolledSubjects === "number" ? r.enrolledSubjects : 0;
+  }
+  const byIndication = Object.values(byIndicationMap)
+    .sort((a, b) => b.studyCount - a.studyCount || b.grandTotal - a.grandTotal)
+    .slice(0, 25);
+
   const withMoney = rows.filter((r) => typeof r.grandTotal === "number" || typeof r.serviceFees === "number");
   const mostExpensive = [...withMoney].sort(
     (a, b) => (b.grandTotal ?? b.serviceFees ?? 0) - (a.grandTotal ?? a.serviceFees ?? 0)
@@ -456,7 +500,9 @@ async function buildPortfolioContext({ clientName = null, year = null, limit = 5
       grandTotal: avg("grandTotal"),
       note: "Averages are the mean across matched studies that have that field (missing values excluded). Use averages.enrolledSubjects for 'average enrollment across all studies'."
     },
-    byClient: byClient.slice(0, 40),
+    byClient: byClientWithShare.slice(0, 40),
+    byYear,
+    byIndication,
     highestBudgetStudies: mostExpensive.map((r) => ({
       studyId: r.studyId,
       clientName: r.clientName,
@@ -475,6 +521,8 @@ async function buildPortfolioContext({ clientName = null, year = null, limit = 5
       "Money fields come from Exec Sum totals on each study's current version (Total Service Fees, pass-throughs).",
       "grandTotal ≈ serviceFees + passThroughs when both exist; otherwise serviceFees alone.",
       "byClient.grandTotal / serviceFees = Ora earned bid dollars from that client — NOT the client's corporate revenue.",
+      "byClient.pctOfGrandTotal / pctOfStudies = concentration share of matched portfolio.",
+      "byYear / byIndication = rollups for leadership year and indication asks.",
       "importedAt = when the study was first ingested/uploaded into Cosmos; updatedAt = last save in the workbench.",
       "recentlyIngested = newest studies by importedAt (fallback updatedAt) — use for 'when did we ingest / upload / add' asks.",
       "We do not have true profit/GM% in this portfolio extract — 'most profitable' should be answered as highest grandTotal/serviceFees unless margin fields appear in a single-study cosmos context.",

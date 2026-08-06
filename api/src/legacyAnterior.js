@@ -45,14 +45,37 @@ function isLegacyAnteriorQuestion(question) {
   if (!q) return false;
   return (
     /\b(legacy|anterior[\s-]?segment|as overview|anterior overview)\b/.test(q) ||
-    /\blegacy\b.{0,40}\b(table|board|list|recruit|enroll|visual|html|report|data)\b/.test(q) ||
-    /\b(table|board|list|visual|html|report)\b.{0,40}\blegacy\b/.test(q) ||
+    /\blegacy\b.{0,40}\b(table|board|list|recruit|enroll|visual|html|report|data|dashboard|overview)\b/.test(
+      q
+    ) ||
+    /\b(table|board|list|visual|html|report|dashboard|overview)\b.{0,40}\blegacy\b/.test(q) ||
     /\b(site trust|trusted sites?|relationship preference|preferred sites?)\b/.test(q) ||
     /\b(advantages|disadvantages|relationship notes)\b/.test(q) ||
     /\b(which sites?).{0,40}\b(trust|prefer|perform|enroll|feasib)/.test(q) ||
     /\b(site|sites?).{0,30}\b(feasib|histor|legacy|anterior|scheduled|screened|enrolled)\b/.test(q) ||
     /\b(pi|principal investigator).{0,40}\b(site|study|enroll)/.test(q) ||
     /\b(target scheduled|lplv|visit ?1)\b/.test(q)
+  );
+}
+
+/** Feed-wide legacy board/dashboard — do not hijack with open-study indication. */
+function isLegacyOverviewQuestion(question) {
+  const q = String(question || "").toLowerCase();
+  if (!q) return false;
+  if (!/\b(legacy|anterior[\s-]?segment)\b/.test(q)) return false;
+  // Named indication in the question → not a feed-wide overview
+  try {
+    const { extractIndicationFromQuestion } = require("./intelligence");
+    if (extractIndicationFromQuestion(question)) return false;
+  } catch (_) {
+    /* ignore */
+  }
+  return (
+    /\b(dashboard|overview|board|leaderboard|table|recruit(?:ment)?\s+data|all\s+sites|full\s+(?:board|table))\b/.test(
+      q
+    ) ||
+    /\blegacy\b.{0,30}\b(data|feed|cosmos)\b/.test(q) ||
+    /\b(what(?:'s| is)|show|give|list)\b.{0,40}\blegacy\b/.test(q)
   );
 }
 
@@ -82,8 +105,11 @@ function isLegacyTableAsk(question) {
   const q = String(question || "").toLowerCase();
   if (!q) return false;
   return (
-    /\blegacy\b.{0,50}\b(table|board|leaderboard|recruit|enroll|matrix|spreadsheet)\b/.test(q) ||
-    /\b(table|board|leaderboard|recruit|enroll)\b.{0,50}\blegacy\b/.test(q) ||
+    /\blegacy\b.{0,50}\b(table|board|leaderboard|recruit|enroll|matrix|spreadsheet|dashboard|overview)\b/.test(
+      q
+    ) ||
+    /\b(table|board|leaderboard|recruit|enroll|dashboard|overview)\b.{0,50}\blegacy\b/.test(q) ||
+    isLegacyOverviewQuestion(question) ||
     (wantsHtmlVisual(q) && /\blegacy\b/.test(q))
   );
 }
@@ -875,6 +901,7 @@ function userConsentedLegacyEnrollment(question, history = []) {
 module.exports = {
   DATASET,
   isLegacyAnteriorQuestion,
+  isLegacyOverviewQuestion,
   isLegacyTableAsk,
   wantsHtmlVisual,
   extractLegacyNameHints,

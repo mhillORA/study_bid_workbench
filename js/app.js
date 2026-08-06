@@ -133,6 +133,7 @@
     buddyFab: document.getElementById("buddyFab"),
     buddyPanel: document.getElementById("buddyPanel"),
     buddyClose: document.getElementById("buddyClose"),
+    buddyClear: document.getElementById("buddyClear"),
     buddyPopout: document.getElementById("buddyPopout"),
     buddyResizeHandle: document.getElementById("buddyResizeHandle"),
     askLog: document.getElementById("askLog"),
@@ -1442,6 +1443,14 @@
     closeBuddy();
   }
 
+  function clearBuddyChat() {
+    state.askHistory = [];
+    try {
+      localStorage.removeItem(BUDDY_HIST_KEY);
+    } catch (_) {}
+    paintBuddyChat();
+  }
+
   function initBuddyChrome() {
     loadBuddyHistory();
     applyBuddyPanelSize();
@@ -1449,6 +1458,7 @@
       document.documentElement.classList.add("buddy-popout-mode");
       openBuddy();
     }
+    if (els.buddyClear) els.buddyClear.addEventListener("click", clearBuddyChat);
     if (els.buddyPopout) els.buddyPopout.addEventListener("click", popOutBuddy);
     if (els.buddyPanel) {
       // Native CSS resize ends without an event — poll on pointer up
@@ -2604,8 +2614,15 @@
     const portfolioMode = !hasOpenStudy();
     const askAcross =
       /\b(all studies|across (all )?studies|every study|portfolio|average|avg|mean)\b/.test(qLower) ||
-      /\b(how many studies|which study|largest study|biggest study)\b/.test(qLower) ||
-      /\b(across|among)\b.{0,40}\bstudies\b/.test(qLower);
+      /\b(how many studies|which study|largest study|biggest study|most expensive|highest budget)\b/.test(
+        qLower
+      ) ||
+      /\b(across|among)\b.{0,40}\bstudies\b/.test(qLower) ||
+      /\b(client|sponsor)\s+concentration\b/.test(qLower) ||
+      /\b(rank|ranking)\b.{0,40}\b(client|sponsor|fees?|revenue)\b/.test(qLower) ||
+      /\b(who\s+pays\s+us|pays?\s+us\s+the\s+most|by\s+year|ingest(?:ion)?\s+freshness)\b/.test(qLower) ||
+      (/\b(revenue|fees|billings|dollars)\b/.test(qLower) &&
+        /\b(clients?|sponsors?|studies?|portfolio)\b/.test(qLower));
     const wantPortfolio = portfolioMode || askAcross;
     try {
       const res = await fetch(apiUrl("/api/ask"), {
@@ -5083,6 +5100,11 @@
       state.hlbpBaseline = null;
       state.editingSectionId = null;
       state.lockStatus = "";
+      // Fresh Buddy thread when switching studies — avoid stale filters/claims poisoning follow-ups
+      state.askHistory = [];
+      try {
+        localStorage.removeItem("sbw.buddyAskHistory");
+      } catch (_) {}
       if (String(state.study.budgetType || "").toUpperCase() === "HLBP") {
         captureHlbpBaseline();
         if (state.sectionId !== "ops") state.sectionId = "hlbp";

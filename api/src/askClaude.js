@@ -66,8 +66,12 @@ const INTELLIGENCE_RULES = [
   "• Region / country feasibility (US, UK, Germany, Japan, …) → use countryFilter on sites + ctgov + TrialHub countries; cite geography explicitly.",
   "• Site Scorecard (Ora vs industry) → oraScore vs industryScore/Δ; Deeper dive = recommended site slate for enrollment goals. Prefer medians; null ≠ 0.",
   "• BD/sales pitch asks (\"why Ora\", \"what do I tell the sponsor\", RFI bullets) → lead with Ora median vs industry, geography, top sites, competitive recruiting; end with 3 short talking points.",
-  "• Leadership asks (portfolio totals, averages, which client/study is largest, year rollups) → context.portfolio first; one headline + n, then brief implications.",
+  "• BD call prep / win themes / meeting prep → indicationBenchmark + sponsorCrosswalk (owner/tier) + competing recruitingSample + 3 talking points; emit HTML_REPORT when they ask for a leave-behind. Prefer open-study indication/client when the question does not name one.",
+  "• Leadership briefing / exec one-pager → context.portfolio (totals, byClient with pctOfGrandTotal, byYear, byIndication, highestBudgetStudies, recentlyIngested) + intelligence.inventory when present. Headline + n first.",
+  "• What's in the DB / Cosmos catalog / ingest freshness → portfolio.databaseStudyCount + recentlyIngested + intelligence.inventory (+ CT.gov sync time when present).",
+  "• Client concentration / who pays us the most → portfolio.byClient sorted by grandTotal with pctOfGrandTotal — Ora fees only.",
   "• Ops briefing (section status, fill requests, what to do next) → workingStudy.sectionStatus / requests / drivers; suggest NAVIGATE:ops or NAVIGATE:reviews.",
+  "• Legacy recruitment board / anterior overview (no indication) → legacyAnterior trust + topByEnrolled / counts. If enrollmentIncluded or htmlTable present, list enrollment; never ask user to paste the table.",
   "• Sponsor already in SF? BD owner / tier? → intelligence.sponsorCrosswalk. Crosswalk dashboard (no sponsor named) → intelligence.crosswalkOverview (totalCount, statusRank, tierRank, noSfMatchSample).",
   "• NCT lookup → intelligence.nctLookup (TrialHub) and/or intelligence.ctgovNct / ctgov.",
   "• CT.gov dashboard / registry overview (no indication named) → intelligence.ctgovOverview (totalCount, indicationRank, statusRank, recentSample, countryRank). If totalCount > 0 you HAVE data — never say CT.gov is empty.",
@@ -318,6 +322,7 @@ function systemPromptFor(context) {
       context?.intelligence?.indicationBenchmark?.trialhub?.countryRank?.ranked?.length ||
       context?.intelligence?.countrySites?.topSites?.length ||
       context?.legacyAnterior?.indicationSites?.topByEnrolled?.length ||
+      context?.legacyAnterior?.trust?.topSitesByEnrolled?.length ||
       context?.legacyAnterior?.trust?.leaderboard?.length
   );
   const intelNote = context?.intelligence
@@ -347,8 +352,11 @@ function systemPromptFor(context) {
         ? " context.buddyLiveContext is empty — if asked what is in live context, say nothing has been appended yet and suggest Buddy Context tab."
         : "";
   const legacyNote = context?.legacyAnterior
-    ? context.legacyAnterior.enrollmentIncluded || context.legacyAnterior.htmlTable
-      ? " context.legacyAnterior IS attached WITH enrollment/htmlTable from Cosmos — use it; never ask the user to paste the legacy table."
+    ? context.legacyAnterior.enrollmentIncluded ||
+      context.legacyAnterior.htmlTable ||
+      context.legacyAnterior.indicationSites?.topByEnrolled?.length ||
+      context.legacyAnterior.trust?.topSitesByEnrolled?.length
+      ? " context.legacyAnterior IS attached WITH site/enrollment rows from Cosmos — list them; never ask the user to paste the legacy table."
       : " context.legacyAnterior IS attached for trust notes only — ASK before citing legacy enrollment numbers (enrollmentIncluded=false)."
     : "";
   const agent = foundryAgentConfig();
@@ -720,19 +728,143 @@ function formatAttachedDocumentsBlock(context) {
   return parts.join("\n");
 }
 
-function formatCosmosFactsBlock(context) {
-  const intel = context?.intelligence;
-  if (!intel || intel.error) {
-    if (intel?.error) {
-      return [
-        "ORA COSMOS FACTS — query failed.",
-        `Error: ${intel.error}`,
-        "Do NOT invent PSM/enrollment/site stats. Say Cosmos data was unavailable."
-      ].join("\n");
+function formatMoney(n) {
+  if (n == null || typeof n !== "number" || Number.isNaN(n)) return "—";
+  if (Math.abs(n) >= 1e6) return `$${(n / 1e6).toFixed(2)}M`;
+  if (Math.abs(n) >= 1e3) return `$${Math.round(n).toLocaleString("en-US")}`;
+  return `$${n}`;
+}
+
+function formatPortfolioFactsBlock(context) {
+  const p = context?.portfolio;
+  if (!p || p.error || p.source === "cosmos_portfolio_error") {
+    if (p?.error) {
+      return [`PORTFOLIO FACTS — query failed: ${p.error}`, "Do NOT invent fee/client rankings."].join(
+        "\n"
+      );
     }
     return "";
   }
+  if (p.source !== "cosmos_portfolio" && !p.matchedStudyCount && !p.databaseStudyCount) return "";
 
+  const lines = [
+    "PORTFOLIO FACTS (Cosmos bid studies — Ora earned fees, NOT sponsor corporate revenue):",
+    `Studies in DB=${p.databaseStudyCount ?? "—"} | matched=${p.matchedStudyCount ?? "—"} | withMoney=${
+      p.studiesWithMoneyCount ?? "—"
+    } | withEnrollment=${p.studiesWithEnrollmentCount ?? "—"}`,
+    `Filters: client=${p.filters?.clientName ?? "none"} | year=${p.filters?.year ?? "none"} — if both none, this is the FULL portfolio.`,
+    `Totals: grandTotal=${formatMoney(p.totals?.grandTotal)} | serviceFees=${formatMoney(
+      p.totals?.serviceFees
+    )} | enrolledSubjects=${p.totals?.enrolledSubjects ?? "—"}`,
+    `Averages: enrolledSubjects=${p.averages?.enrolledSubjects ?? "—"} | grandTotal=${formatMoney(
+      p.averages?.grandTotal
+    )}`
+  ];
+  const clients = Array.isArray(p.byClient) ? p.byClient.slice(0, 12) : [];
+  if (clients.length) {
+    lines.push("Top clients by Ora fees (grandTotal / studyCount / % of fees):");
+    for (const c of clients) {
+      lines.push(
+        `  - ${c.clientName}: studies=${c.studyCount} | fees=${formatMoney(
+          c.grandTotal || c.serviceFees
+        )} | share=${c.pctOfGrandTotal != null ? c.pctOfGrandTotal + "%" : "—"}`
+      );
+    }
+  }
+  const years = Array.isArray(p.byYear) ? p.byYear.slice(0, 8) : [];
+  if (years.length) {
+    lines.push("By year:");
+    for (const y of years) {
+      lines.push(
+        `  - ${y.year}: studies=${y.studyCount} | fees=${formatMoney(y.grandTotal || y.serviceFees)}`
+      );
+    }
+  }
+  const inds = Array.isArray(p.byIndication) ? p.byIndication.slice(0, 8) : [];
+  if (inds.length) {
+    lines.push("Top indications by study count:");
+    for (const i of inds) {
+      lines.push(
+        `  - ${i.indication}: studies=${i.studyCount} | fees=${formatMoney(i.grandTotal)}`
+      );
+    }
+  }
+  const hi = Array.isArray(p.highestBudgetStudies) ? p.highestBudgetStudies.slice(0, 5) : [];
+  if (hi.length) {
+    lines.push("Highest-budget studies:");
+    for (const s of hi) {
+      lines.push(
+        `  - ${s.studyId || "?"} | ${s.clientName || "?"} | ${formatMoney(s.grandTotal || s.serviceFees)}`
+      );
+    }
+  }
+  const recent = Array.isArray(p.recentlyIngested) ? p.recentlyIngested.slice(0, 5) : [];
+  if (recent.length) {
+    lines.push("Recently ingested:");
+    for (const s of recent) {
+      lines.push(
+        `  - ${s.studyId || "?"} | ${s.clientName || "?"} | imported=${s.importedAt || "—"} | updated=${
+          s.updatedAt || "—"
+        }`
+      );
+    }
+  }
+  lines.push(
+    "RULE: Use these portfolio figures for leadership / fee rankings. Never say you lack client rankings when Top clients rows exist. Never web-search sponsor corporate revenue when moneyIntent=ora_earned."
+  );
+  return lines.join("\n");
+}
+
+function formatLegacyFactsBlock(context) {
+  const L = context?.legacyAnterior;
+  if (!L || L.error) return "";
+  const lines = [
+    "LEGACY ANTERIOR FACTS (separate from Veeva — historical site trust / recruitment):",
+    `counts: sites=${L.counts?.sites ?? "—"}, studies=${L.counts?.studies ?? "—"}, outcomes=${
+      L.counts?.outcomes ?? "—"
+    } | enrollmentIncluded=${L.enrollmentIncluded ? "yes" : "no"}`
+  ];
+  const top =
+    L.indicationSites?.topByEnrolled ||
+    L.trust?.topSitesByEnrolled ||
+    L.trust?.leaderboard ||
+    [];
+  if (Array.isArray(top) && top.length) {
+    lines.push(`Top legacy sites (${top.length} shown):`);
+    for (const s of top.slice(0, 10)) {
+      const m = s.metrics || {};
+      lines.push(
+        `  - ${s.siteName || s.name || "?"} | pref=${s.relationshipPreference || "—"} | enrolled=${
+          m.enrolled == null ? (L.enrollmentIncluded ? "—" : "hidden") : m.enrolled
+        }`
+      );
+    }
+    lines.push("RULE: You HAVE legacy site rows — list them. Never ask the user to paste the legacy table.");
+  } else if (L.counts?.sites > 0) {
+    lines.push(
+      "RULE: Legacy containers have sites — if enrollment is hidden, still cite trust/preference notes or ask once to include enrollment."
+    );
+  }
+  return lines.join("\n");
+}
+
+function formatCosmosFactsBlock(context) {
+  const blocks = [];
+  const portfolioFacts = formatPortfolioFactsBlock(context);
+  if (portfolioFacts) blocks.push(portfolioFacts);
+
+  const intel = context?.intelligence;
+  if (!intel || intel.error) {
+    if (intel?.error) {
+      blocks.push(
+        [
+          "ORA COSMOS FACTS — intelligence query failed.",
+          `Error: ${intel.error}`,
+          "Do NOT invent PSM/enrollment/site stats. Say Cosmos intelligence data was unavailable."
+        ].join("\n")
+      );
+    }
+  } else {
   const bm = intel.indicationBenchmark;
   const lines = [
     "ORA COSMOS FACTS (live query — use these numbers; do not invent substitutes):",
@@ -903,6 +1035,24 @@ function formatCosmosFactsBlock(context) {
     lines.push("Crosswalk overview was requested but empty/error.");
   }
 
+  const scw = intel.sponsorCrosswalk;
+  if (scw && !scw.error) {
+    const hits = Array.isArray(scw.matches) ? scw.matches : Array.isArray(scw) ? scw : scw.hit ? [scw] : [];
+    if (hits.length || scw.sf_account_name || scw.trialhub_veeva_sponsor) {
+      lines.push("Sponsor CROSSWALK (named):");
+      const rows = hits.length
+        ? hits.slice(0, 8)
+        : [scw];
+      for (const r of rows) {
+        lines.push(
+          `  - ${r.trialhub_veeva_sponsor || r.sponsor || "?"} → ${r.sf_account_name || "—"} | owner=${
+            r.sf_owner || "—"
+          } | tier=${r.tier || "—"} | status=${r.crosswalk_status || "—"}`
+        );
+      }
+    }
+  }
+
   const cs = intel.countrySites;
   if (cs?.topSites?.length) {
     lines.push(
@@ -949,7 +1099,13 @@ function formatCosmosFactsBlock(context) {
   lines.push(
     "RULE: Quote these Cosmos figures (or explicitly say missing). Never fabricate a median/PSM/n when the field is missing/null."
   );
-  return lines.join("\n");
+  blocks.push(lines.join("\n"));
+  }
+
+  const legacyFacts = formatLegacyFactsBlock(context);
+  if (legacyFacts) blocks.push(legacyFacts);
+
+  return blocks.join("\n\n");
 }
 
 /** Context JSON for the model — keep attachments OUT of the truncated blob (they're inlined above). */
@@ -983,16 +1139,34 @@ function contextJsonForModel(context) {
     };
   }
 
-  // When files are attached, shrink portfolio noise — but KEEP intelligence (Cosmos numbers)
+  // When files are attached, shrink portfolio noise — but KEEP fee rankings for ora_earned / portfolio focus
   if (docs?.okCount > 0 || (docs?.files || []).some((f) => f && f.text)) {
     if (ctx.portfolio && typeof ctx.portfolio === "object") {
-      ctx.portfolio = {
-        source: ctx.portfolio.source,
-        databaseStudyCount: ctx.portfolio.databaseStudyCount,
-        matchedStudyCount: ctx.portfolio.matchedStudyCount,
-        note:
-          "Full portfolio rollup suppressed because documents are attached. Use ORA COSMOS FACTS / intelligence for feasibility numbers. Only expand portfolio if the user explicitly asked for all-studies/portfolio."
-      };
+      if (ctx.moneyIntent === "ora_earned" || ctx.answerFocus === "portfolio") {
+        ctx.portfolio = {
+          source: ctx.portfolio.source,
+          databaseStudyCount: ctx.portfolio.databaseStudyCount,
+          matchedStudyCount: ctx.portfolio.matchedStudyCount,
+          studiesWithMoneyCount: ctx.portfolio.studiesWithMoneyCount,
+          filters: ctx.portfolio.filters,
+          totals: ctx.portfolio.totals,
+          averages: ctx.portfolio.averages,
+          byClient: (ctx.portfolio.byClient || []).slice(0, 15),
+          byYear: (ctx.portfolio.byYear || []).slice(0, 8),
+          byIndication: (ctx.portfolio.byIndication || []).slice(0, 8),
+          highestBudgetStudies: (ctx.portfolio.highestBudgetStudies || []).slice(0, 8),
+          recentlyIngested: (ctx.portfolio.recentlyIngested || []).slice(0, 8),
+          note: "Portfolio kept (trimmed) because moneyIntent/answerFocus needs fee rankings alongside attachments."
+        };
+      } else {
+        ctx.portfolio = {
+          source: ctx.portfolio.source,
+          databaseStudyCount: ctx.portfolio.databaseStudyCount,
+          matchedStudyCount: ctx.portfolio.matchedStudyCount,
+          note:
+            "Full portfolio rollup suppressed because documents are attached. Use ORA COSMOS FACTS / intelligence for feasibility numbers. Only expand portfolio if the user explicitly asked for all-studies/portfolio."
+        };
+      }
     }
   }
 
@@ -1431,7 +1605,7 @@ async function askClaude({ question, context, history }) {
 
   const payload = {
     model,
-    max_tokens: 1024,
+    max_tokens: 4096,
     system: systemPromptFor(context),
     messages
   };
