@@ -52,6 +52,9 @@
       syncBusy: false,
       syncMessage: "",
       syncDeltas: null,
+      sfSyncStatus: null,
+      sfSyncBusy: false,
+      sfSyncMessage: "",
       trialhubUploadBusy: false,
       trialhubUploadMessage: "",
       trialhubUploadResult: null
@@ -2791,6 +2794,11 @@
       const sdata = await sres.json().catch(() => ({}));
       if (sres.ok) state.intelligence.syncStatus = sdata;
     } catch (_) {}
+    try {
+      const sfres = await fetch(apiUrl("/api/salesforce/sync"));
+      const sfdata = await sfres.json().catch(() => ({}));
+      if (sfres.ok) state.intelligence.sfSyncStatus = sfdata;
+    } catch (_) {}
     state.intelligence.loading = false;
     if (state.sectionId === "intelligence") render();
   }
@@ -2873,6 +2881,41 @@
       state.intelligence.syncDeltas = null;
     }
     state.intelligence.syncBusy = false;
+    if (state.sectionId === "intelligence") render();
+  }
+
+  async function runSalesforceSyncManual() {
+    if (state.intelligence.sfSyncBusy) return;
+    state.intelligence.sfSyncBusy = true;
+    state.intelligence.sfSyncMessage = "Refreshing sponsor crosswalk from Salesforce…";
+    if (state.sectionId === "intelligence") render();
+    try {
+      const res = await fetch(apiUrl("/api/salesforce/sync"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({})
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        state.intelligence.sfSyncMessage = data.error || `Salesforce sync failed (${res.status})`;
+      } else if (data.skipped) {
+        state.intelligence.sfSyncMessage =
+          data.error || data.reason || "Salesforce not configured yet (set SF_* App Settings).";
+      } else {
+        const parts = [
+          `Salesforce: ${data.updated ?? 0} updated · ${data.unchanged ?? 0} unchanged · ${
+            data.missingInSf ?? 0
+          } missing in SF`
+        ];
+        if (data.withSfId != null) parts.push(`${data.withSfId} Ids queried`);
+        if (data.elapsedMs) parts.push(`${Math.round(data.elapsedMs / 1000)}s`);
+        state.intelligence.sfSyncMessage = parts.join(" · ");
+      }
+      await loadIntelligenceHealth();
+    } catch (err) {
+      state.intelligence.sfSyncMessage = `Salesforce sync error: ${String(err)}`;
+    }
+    state.intelligence.sfSyncBusy = false;
     if (state.sectionId === "intelligence") render();
   }
 
@@ -3171,6 +3214,23 @@
         }</p>`
       : `<p class="muted" style="margin:0.35rem 0 0;">CT.gov sync status unavailable yet.</p>`;
 
+    const sfWrap = state.intelligence.sfSyncStatus || {};
+    const sfSync = sfWrap.sync || {};
+    const sfLast = sfSync.lastSuccessfulSync || sfSync.lastRunAt || null;
+    const sfConfigured = sfWrap.configured === true;
+    const sfMeta = `<p class="muted" style="margin:0.35rem 0 0;">Salesforce: ${
+      sfConfigured ? "configured" : "not configured (set SF_* App Settings)"
+    }${sfLast ? ` · last sync ${escapeHtml(String(sfLast))}` : ""}${
+      sfWrap.crosswalkWithSfId != null
+        ? ` · ${Number(sfWrap.crosswalkWithSfId).toLocaleString()} crosswalk Ids`
+        : ""
+    }${sfWrap.tierField ? ` · tier field <code>${escapeHtml(String(sfWrap.tierField))}</code>` : ""}</p>`;
+    const sfMsg = state.intelligence.sfSyncMessage
+      ? `<p class="muted" style="margin-top:0.5rem;">${escapeHtml(state.intelligence.sfSyncMessage)}</p>`
+      : "";
+    const sfBusy = state.intelligence.sfSyncBusy;
+    const sfDisabled = sfBusy ? "disabled" : "";
+
     if (!h) {
       return `<div class="card wide"><h3>Data status</h3><p class="muted">Loading intelligence containers…</p></div>`;
     }
@@ -3228,9 +3288,14 @@
           <button type="button" class="btn btn-primary" id="btnCtgovSync" ${syncDisabled}>${
             state.intelligence.syncBusy ? "Syncing…" : "Sync CT.gov now"
           }</button>
+          <button type="button" class="btn btn-primary" id="btnSalesforceSync" ${sfDisabled}>${
+            sfBusy ? "Syncing SF…" : "Sync Salesforce now"
+          }</button>
         </div>
         ${syncMeta}
         ${syncMsg}
+        ${sfMeta}
+        ${sfMsg}
         ${renderCtgovSyncDeltas(state.intelligence.syncDeltas)}
       </div>
       <div class="card wide" style="margin-top:1rem;">
@@ -6912,6 +6977,10 @@
       }
       if (e.target.id === "btnCtgovSync") {
         runCtgovSyncManual();
+        return;
+      }
+      if (e.target.id === "btnSalesforceSync") {
+        runSalesforceSyncManual();
         return;
       }
       if (e.target.id === "btnTrialhubUpload") {

@@ -23,6 +23,7 @@ const {
 } = require("./legacyAnterior");
 const { loadLiveContext, saveLiveContext } = require("./buddyLiveContext");
 const { runCtgovSync, getCtgovSyncStatus, remapCtgovIndications } = require("./ctgovSync");
+const { runSalesforceCrosswalkSync, getSalesforceSyncStatus } = require("./salesforceSync");
 const { ingestTrialHubUpload } = require("./trialhubIngest");
 const {
   isPricingQuestion,
@@ -1124,6 +1125,56 @@ app.http("ctgovSync", {
       const result = await runCtgovSync(getDb, {
         full,
         triggeredBy: auth.via === "copilot_key" ? "scheduler_or_key" : `ui:${auth.user?.email || auth.user?.userId || "user"}`
+      });
+      return json(result.ok || result.skipped ? 200 : 500, result);
+    } catch (err) {
+      context.error(err);
+      return json(500, { ok: false, error: String(err.message || err) });
+    }
+  }
+});
+
+app.http("salesforceSync", {
+  methods: ["GET", "POST", "OPTIONS"],
+  authLevel: "anonymous",
+  route: "salesforce/sync",
+  handler: async (request, context) => {
+    if (request.method === "OPTIONS") {
+      return {
+        status: 204,
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+          "Access-Control-Allow-Headers": "content-type, x-copilot-key"
+        }
+      };
+    }
+    try {
+      if (request.method === "GET") {
+        const status = await getSalesforceSyncStatus(getDb);
+        return json(200, status);
+      }
+
+      const auth = authorizeCtgovSync(request);
+      if (!auth.ok) {
+        return json(401, {
+          error: "Unauthorized — sign in, or pass x-copilot-key (same as Copilot Ask key)"
+        });
+      }
+
+      let body = {};
+      try {
+        body = (await request.json()) || {};
+      } catch (_) {
+        body = {};
+      }
+      const dryRun = body.dryRun === true || request.query.get("dryRun") === "true";
+      const result = await runSalesforceCrosswalkSync(getDb, {
+        dryRun,
+        triggeredBy:
+          auth.via === "copilot_key"
+            ? "scheduler_or_key"
+            : `ui:${auth.user?.email || auth.user?.userId || "user"}`
       });
       return json(result.ok || result.skipped ? 200 : 500, result);
     } catch (err) {

@@ -1,0 +1,196 @@
+/**
+ * Salesforce JWT Bearer client for Ora Intelligence Tool.
+ * Env (SWA App Settings):
+ *   SF_CLIENT_ID          Connected/External Client App Consumer Key
+ *   SF_USERNAME           Integration user username (email)
+ *   SF_LOGIN_URL          https://login.salesforce.com (prod) or https://test.salesforce.com
+ *   SF_JWT_PRIVATE_KEY    PEM private key matching the cert uploaded to SF
+ *   SF_API_VERSION        optional, default 59.0
+ *   SF_TIER_FIELD         optional Account field API name, default Tier__c
+ */
+
+const crypto = require("crypto");
+
+function env(name) {
+  const v = String(process.env[name] || "").trim();
+  if (!v || v.includes("SET_IN")) return "";
+  return v;
+}
+
+function normalizePem(raw) {
+  let s = String(raw || "").trim();
+  if (!s) return "";
+  // Azure App Settings often store newlines as \n
+  s = s.replace(/\\n/g, "\n");
+  if (!s.includes("BEGIN") && !s.includes("\n")) {
+    // Bare base64 body — wrap as PKCS#8
+    const body = s.replace(/\s+/g, "");
+    const lines = body.match(/.{1,64}/g) || [body];
+    s = `-----BEGIN PRIVATE KEY-----\n${lines.join("\n")}\n-----END PRIVATE KEY-----`;
+  }
+  return s;
+}
+
+function b64url(input) {
+  const buf = Buffer.isBuffer(input) ? input : Buffer.from(input);
+  return buf.toString("base64").replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
+}
+
+function salesforceConfig() {
+  const clientId = env("SF_CLIENT_ID");
+  const username = env("SF_USERNAME");
+  const loginUrl = (env("SF_LOGIN_URL") || "https://login.salesforce.com").replace(/\/$/, "");
+  const privateKey = normalizePem(env("SF_JWT_PRIVATE_KEY"));
+  const apiVersion = env("SF_API_VERSION") || "59.0";
+  const tierField = (env("SF_TIER_FIELD") || "Tier__c").replace(/[^A-Za-z0-9_]/g, "");
+  const configured = Boolean(clientId && username && privateKey);
+  return { clientId, username, loginUrl, privateKey, apiVersion, tierField, configured };
+}
+
+function buildJwtAssertion(cfg) {
+  const header = { alg: "RS256", typ: "JWT" };
+  const now = Math.floor(Date.now() / 1000);
+  const claims = {
+    iss: cfg.clientId,
+    sub: cfg.username,
+    aud: cfg.loginUrl,
+    exp: now + 3 * 60
+  };
+  const enc = `${b64url(JSON.stringify(header))}.${b64url(JSON.stringify(claims))}`;
+  const sign = crypto.createSign("RSA-SHA256");
+  sign.update(enc);
+  sign.end();
+  const sig = sign.sign(cfg.privateKey);
+  return `${enc}.${b64url(sig)}`;
+}
+
+async function getSalesforceAccessToken(cfg = salesforceConfig()) {
+  if (!cfg.configured) {
+    const missing = [];
+    if (!cfg.clientId) missing.push("SF_CLIENT_ID");
+    if (!cfg.username) missing.push("SF_USERNAME");
+    if (!cfg.privateKey) missing.push("SF_JWT_PRIVATE_KEY");
+    throw new Error(`Salesforce not configured — set ${missing.join(", ")} in SWA App Settings`);
+  }
+  const assertion = buildJwtAssertion(cfg);
+  const body = new URLSearchParams({
+    grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+    assertion
+  });
+  const res = await fetch(`${cfg.loginUrl}/services/oauth2/token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body
+  });
+  const text = await res.text();
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch (_) {
+    throw new Error(`Salesforce token non-JSON (${res.status}): ${text.slice(0, 240)}`);
+  }
+  if (!res.ok) {
+    throw new Error(
+      `Salesforce token failed (${res.status}): ${json.error || ""} ${json.error_description || text}`.trim()
+    );
+  }
+  if (!json.access_token || !json.instance_url) {
+    throw new Error("Salesforce token response missing access_token / instance_url");
+  }
+  return {
+    accessToken: json.access_token,
+    instanceUrl: String(json.instance_url).replace(/\/$/, ""),
+    issuedAt: json.issued_at || null,
+    apiVersion: cfg.apiVersion,
+    tierField: cfg.tierField
+  };
+}
+
+async function sfGet(session, pathAndQuery) {
+  const url = pathAndQuery.startsWith("http")
+    ? pathAndQuery
+    : `${session.instanceUrl}${pathAndQuery}`;
+  const res = await fetch(url, {
+    headers: {
+      Authorization: `Bearer ${session.accessToken}`,
+      Accept: "application/json"
+    }
+  });
+  const text = await res.text();
+  let json;
+  try {
+    json = JSON.parse(text);
+  } catch (_) {
+    throw new Error(`Salesforce GET non-JSON (${res.status}): ${text.slice(0, 240)}`);
+  }
+  if (!res.ok) {
+    const msg = Array.isArray(json)
+      ? json.map((e) => e.message || e.errorCode).join("; ")
+      : json.message || json.error || text;
+    throw new Error(`Salesforce GET failed (${res.status}): ${msg}`);
+  }
+  return json;
+}
+
+/** Run SOQL; follows nextRecordsUrl until done. */
+async function soqlQuery(session, soql) {
+  const q = encodeURIComponent(soql);
+  let data = await sfGet(session, `/services/data/v${session.apiVersion}/query?q=${q}`);
+  const records = [...(data.records || [])];
+  while (!data.done && data.nextRecordsUrl) {
+    data = await sfGet(session, data.nextRecordsUrl);
+    records.push(...(data.records || []));
+  }
+  return records;
+}
+
+/**
+ * Fetch Accounts by Id list. Returns Map id -> { id, name, ownerName, tier, isDeleted }
+ */
+async function fetchAccountsByIds(session, ids, opts = {}) {
+  const tierField = opts.tierField || session.tierField || "Tier__c";
+  const unique = [...new Set((ids || []).map((id) => String(id || "").trim()).filter(Boolean))];
+  const byId = new Map();
+  const chunkSize = 100;
+  for (let i = 0; i < unique.length; i += chunkSize) {
+    const chunk = unique.slice(i, i + chunkSize);
+    const inList = chunk.map((id) => `'${id.replace(/'/g, "\\'")}'`).join(",");
+    const soql =
+      `SELECT Id, Name, IsDeleted, Owner.Name, ${tierField} ` +
+      `FROM Account WHERE Id IN (${inList})`;
+    let records;
+    try {
+      records = await soqlQuery(session, soql);
+    } catch (err) {
+      // Tier field missing — retry without it
+      if (String(err.message || err).includes(tierField)) {
+        records = await soqlQuery(
+          session,
+          `SELECT Id, Name, IsDeleted, Owner.Name FROM Account WHERE Id IN (${inList})`
+        );
+      } else {
+        throw err;
+      }
+    }
+    for (const r of records) {
+      const id = r.Id;
+      if (!id) continue;
+      byId.set(id, {
+        id,
+        name: r.Name || null,
+        ownerName: (r.Owner && r.Owner.Name) || null,
+        tier: r[tierField] != null ? r[tierField] : null,
+        isDeleted: Boolean(r.IsDeleted)
+      });
+    }
+  }
+  return byId;
+}
+
+module.exports = {
+  salesforceConfig,
+  getSalesforceAccessToken,
+  soqlQuery,
+  fetchAccountsByIds,
+  normalizePem
+};
