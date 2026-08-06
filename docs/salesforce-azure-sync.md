@@ -6,9 +6,22 @@ Live refresh of Cosmos `ora_sponsor_crosswalk` owner / tier / account name from 
 
 - Reads crosswalk rows that already have `sf_account_id`
 - SOQL those Accounts in Salesforce
-- Updates `sf_account_name`, `sf_owner`, `tier` (`Tier__c` by default)
+- Updates `sf_account_name`, `sf_owner`, `tier` (`Tier__c`), `ora_grouping` (`Ora_Grouping__c`)
 - Sets `sfAccountActive` / `sf_sync_note` if the Id is missing
 - **Does not change** `crosswalk_status` (Cosmos partition key)
+
+### Fields pulled from Salesforce Account
+
+| Salesforce | Cosmos crosswalk field |
+|---|---|
+| `Id` | (matched on existing `sf_account_id`) |
+| `Name` | `sf_account_name` |
+| `Owner.Name` | `sf_owner` |
+| `Tier__c` | `tier` |
+| `Ora_Grouping__c` | `ora_grouping` |
+| missing / deleted | `sfAccountActive=false` + note |
+
+Not pulled yet: Opportunities, Contacts, Activities, custom fields beyond the above.
 
 Endpoints:
 

@@ -1090,7 +1090,7 @@ async function lookupSponsorCrosswalk(database, sponsorOrClient) {
   // Exact on renamed field, then CONTAINS both ways (bounded)
   let rows = await queryAll(
     container,
-    `SELECT TOP 5 c.trialhub_veeva_sponsor, c.sf_account_name, c.sf_account_id, c.sf_owner, c.tier, c.crosswalk_status, c.score
+    `SELECT TOP 5 c.trialhub_veeva_sponsor, c.sf_account_name, c.sf_account_id, c.sf_owner, c.tier, c.ora_grouping, c.crosswalk_status, c.score
      FROM c WHERE c.docType = @t AND (
        c.trialhub_veeva_sponsor = @n OR c.sf_account_name = @n OR c.sf_canonical_name = @n OR c.sponsor_name = @n
      )`,
@@ -1102,7 +1102,7 @@ async function lookupSponsorCrosswalk(database, sponsorOrClient) {
   if (!rows.length) {
     rows = await queryAll(
       container,
-      `SELECT TOP 8 c.trialhub_veeva_sponsor, c.sf_account_name, c.sf_account_id, c.sf_owner, c.tier, c.crosswalk_status, c.score
+      `SELECT TOP 8 c.trialhub_veeva_sponsor, c.sf_account_name, c.sf_account_id, c.sf_owner, c.tier, c.ora_grouping, c.crosswalk_status, c.score
        FROM c WHERE c.docType = @t AND (
          CONTAINS(c.trialhub_veeva_sponsor, @n, true) OR
          CONTAINS(c.sf_account_name, @n, true)

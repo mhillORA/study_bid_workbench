@@ -7,6 +7,7 @@
  *   SF_JWT_PRIVATE_KEY    PEM private key matching the cert uploaded to SF
  *   SF_API_VERSION        optional, default 59.0
  *   SF_TIER_FIELD         optional Account field API name, default Tier__c
+ *   SF_GROUPING_FIELD     optional Account field API name, default Ora_Grouping__c
  */
 
 const crypto = require("crypto");
@@ -36,15 +37,23 @@ function b64url(input) {
   return buf.toString("base64").replace(/=/g, "").replace(/\+/g, "-").replace(/\//g, "_");
 }
 
+function safeApiField(name, fallback) {
+  const cleaned = String(name || fallback || "")
+    .trim()
+    .replace(/[^A-Za-z0-9_]/g, "");
+  return cleaned || fallback;
+}
+
 function salesforceConfig() {
   const clientId = env("SF_CLIENT_ID");
   const username = env("SF_USERNAME");
   const loginUrl = (env("SF_LOGIN_URL") || "https://login.salesforce.com").replace(/\/$/, "");
   const privateKey = normalizePem(env("SF_JWT_PRIVATE_KEY"));
   const apiVersion = env("SF_API_VERSION") || "59.0";
-  const tierField = (env("SF_TIER_FIELD") || "Tier__c").replace(/[^A-Za-z0-9_]/g, "");
+  const tierField = safeApiField(env("SF_TIER_FIELD") || "Tier__c", "Tier__c");
+  const groupingField = safeApiField(env("SF_GROUPING_FIELD") || "Ora_Grouping__c", "Ora_Grouping__c");
   const configured = Boolean(clientId && username && privateKey);
-  return { clientId, username, loginUrl, privateKey, apiVersion, tierField, configured };
+  return { clientId, username, loginUrl, privateKey, apiVersion, tierField, groupingField, configured };
 }
 
 function buildJwtAssertion(cfg) {
@@ -102,7 +111,8 @@ async function getSalesforceAccessToken(cfg = salesforceConfig()) {
     instanceUrl: String(json.instance_url).replace(/\/$/, ""),
     issuedAt: json.issued_at || null,
     apiVersion: cfg.apiVersion,
-    tierField: cfg.tierField
+    tierField: cfg.tierField,
+    groupingField: cfg.groupingField
   };
 }
 
@@ -145,29 +155,55 @@ async function soqlQuery(session, soql) {
 }
 
 /**
- * Fetch Accounts by Id list. Returns Map id -> { id, name, ownerName, tier, isDeleted }
+ * Fetch Accounts by Id list.
+ * Returns Map id -> { id, name, ownerName, tier, oraGrouping, isDeleted }
  */
 async function fetchAccountsByIds(session, ids, opts = {}) {
   const tierField = opts.tierField || session.tierField || "Tier__c";
+  const groupingField = opts.groupingField || session.groupingField || "Ora_Grouping__c";
   const unique = [...new Set((ids || []).map((id) => String(id || "").trim()).filter(Boolean))];
   const byId = new Map();
   const chunkSize = 100;
+
+  async function queryChunk(chunk, fields) {
+    const inList = chunk.map((id) => `'${id.replace(/'/g, "\\'")}'`).join(",");
+    const soql = `SELECT ${fields.join(", ")} FROM Account WHERE Id IN (${inList})`;
+    return soqlQuery(session, soql);
+  }
+
   for (let i = 0; i < unique.length; i += chunkSize) {
     const chunk = unique.slice(i, i + chunkSize);
-    const inList = chunk.map((id) => `'${id.replace(/'/g, "\\'")}'`).join(",");
-    const soql =
-      `SELECT Id, Name, IsDeleted, Owner.Name, ${tierField} ` +
-      `FROM Account WHERE Id IN (${inList})`;
+    let fields = ["Id", "Name", "IsDeleted", "Owner.Name", tierField, groupingField];
     let records;
     try {
-      records = await soqlQuery(session, soql);
+      records = await queryChunk(chunk, fields);
     } catch (err) {
-      // Tier field missing — retry without it
-      if (String(err.message || err).includes(tierField)) {
-        records = await soqlQuery(
-          session,
-          `SELECT Id, Name, IsDeleted, Owner.Name FROM Account WHERE Id IN (${inList})`
-        );
+      const msg = String(err.message || err);
+      // Drop custom fields that aren't visible / don't exist, retry leaner
+      if (msg.includes(groupingField)) {
+        fields = fields.filter((f) => f !== groupingField);
+        try {
+          records = await queryChunk(chunk, fields);
+        } catch (err2) {
+          if (String(err2.message || err2).includes(tierField)) {
+            fields = fields.filter((f) => f !== tierField);
+            records = await queryChunk(chunk, fields);
+          } else {
+            throw err2;
+          }
+        }
+      } else if (msg.includes(tierField)) {
+        fields = fields.filter((f) => f !== tierField);
+        try {
+          records = await queryChunk(chunk, fields);
+        } catch (err2) {
+          if (String(err2.message || err2).includes(groupingField)) {
+            fields = fields.filter((f) => f !== groupingField);
+            records = await queryChunk(chunk, fields);
+          } else {
+            throw err2;
+          }
+        }
       } else {
         throw err;
       }
@@ -180,6 +216,7 @@ async function fetchAccountsByIds(session, ids, opts = {}) {
         name: r.Name || null,
         ownerName: (r.Owner && r.Owner.Name) || null,
         tier: r[tierField] != null ? r[tierField] : null,
+        oraGrouping: r[groupingField] != null ? r[groupingField] : null,
         isDeleted: Boolean(r.IsDeleted)
       });
     }

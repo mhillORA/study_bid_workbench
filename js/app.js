@@ -3224,7 +3224,11 @@
       sfWrap.crosswalkWithSfId != null
         ? ` · ${Number(sfWrap.crosswalkWithSfId).toLocaleString()} crosswalk Ids`
         : ""
-    }${sfWrap.tierField ? ` · tier field <code>${escapeHtml(String(sfWrap.tierField))}</code>` : ""}</p>`;
+    }${sfWrap.tierField ? ` · tier <code>${escapeHtml(String(sfWrap.tierField))}</code>` : ""}${
+      sfWrap.groupingField
+        ? ` · grouping <code>${escapeHtml(String(sfWrap.groupingField))}</code>`
+        : ""
+    }</p>`;
     const sfMsg = state.intelligence.sfSyncMessage
       ? `<p class="muted" style="margin-top:0.5rem;">${escapeHtml(state.intelligence.sfSyncMessage)}</p>`
       : "";

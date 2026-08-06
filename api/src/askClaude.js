@@ -56,7 +56,7 @@ const INTELLIGENCE_RULES = [
   "1) ora_fact_study (~249 Ora studies from Veeva CTM): study-level enrollment / PSM for Ora's own history. Key fields: study_number, sponsor, indication, phase, psm, study_rate_pt_mo, total_enrolled, n_contributing_sites, enroll_months, screen_fail_rate_recomputed, lifecycle_state, countries.",
   "2) ora_fact_site (~3613 site×study rows from Veeva): site performance. Key fields: study_name (joins to study_number), org_clean (canonical site), country, indication, site_psm, total_enrolled, site_enroll_months, fsi_trust (prefer \"high\"), screen_fail_rate.",
   "3) ora_trialhub_trials (live TrialHub uploads, upsert by NCT): competitive landscape / industry PSM. Key fields: nct, title, sponsor, indication, phase, status, patients, planned_sites, actual_sites, psm_common, th_actual_psm, recruit_days, countries, in_ora_indication, lead_sponsor_type.",
-  "4) ora_sponsor_crosswalk (~642): TrialHub/Veeva sponsor name → Salesforce. Key fields: trialhub_veeva_sponsor, sf_account_name, sf_account_id, sf_owner, tier, crosswalk_status (confirmed_new | previously_confirmed | no_sf_match | in_sf_inactive). no_sf_match = prospecting targets.",
+  "4) ora_sponsor_crosswalk (~642): TrialHub/Veeva sponsor name → Salesforce. Key fields: trialhub_veeva_sponsor, sf_account_name, sf_account_id, sf_owner, tier, ora_grouping (Ora Grouping from SF Ora_Grouping__c), crosswalk_status (confirmed_new | previously_confirmed | no_sf_match | in_sf_inactive). no_sf_match = prospecting targets.",
   "5) ora_site_alias_table (~46): variant site names → canonical_name (already applied into org_clean where possible).",
   "6) ora_ctgov_trials (ClinicalTrials.gov ophthalmology feed, daily delta ~5AM Eastern): public registry landscape. Key fields: nct, title, status, phase, conditions, oraIndication, sponsor, sponsorClass, enrollment, countries, startDate, lastUpdatePostDate, hasResults. Use when context.intelligence.ctgov is present or user asks about CT.gov / registry / recruiting ophthalmology trials.",
   " USE CASES — match the ask to the right source:",
@@ -72,7 +72,7 @@ const INTELLIGENCE_RULES = [
   "• Client concentration / who pays us the most → portfolio.byClient sorted by grandTotal with pctOfGrandTotal — Ora fees only.",
   "• Ops briefing (section status, fill requests, what to do next) → workingStudy.sectionStatus / requests / drivers; suggest NAVIGATE:ops or NAVIGATE:reviews.",
   "• Legacy recruitment board / anterior overview (no indication) → legacyAnterior trust + topByEnrolled / counts. If enrollmentIncluded or htmlTable present, list enrollment; never ask user to paste the table.",
-  "• Sponsor already in SF? BD owner / tier? → intelligence.sponsorCrosswalk. Crosswalk dashboard (no sponsor named) → intelligence.crosswalkOverview (totalCount, statusRank, tierRank, noSfMatchSample).",
+  "• Sponsor already in SF? BD owner / tier / Ora grouping? → intelligence.sponsorCrosswalk (sf_owner, tier, ora_grouping). Crosswalk dashboard (no sponsor named) → intelligence.crosswalkOverview (totalCount, statusRank, tierRank, noSfMatchSample).",
   "• NCT lookup → intelligence.nctLookup (TrialHub) and/or intelligence.ctgovNct / ctgov.",
   "• CT.gov dashboard / registry overview (no indication named) → intelligence.ctgovOverview (totalCount, indicationRank, statusRank, recentSample, countryRank). If totalCount > 0 you HAVE data — never say CT.gov is empty.",
   "• CT.gov by indication → intelligence.ctgov (trialCount, sample, recruitingSample).",
@@ -1047,7 +1047,7 @@ function formatCosmosFactsBlock(context) {
         lines.push(
           `  - ${r.trialhub_veeva_sponsor || r.sponsor || "?"} → ${r.sf_account_name || "—"} | owner=${
             r.sf_owner || "—"
-          } | tier=${r.tier || "—"} | status=${r.crosswalk_status || "—"}`
+          } | tier=${r.tier || "—"} | grouping=${r.ora_grouping || "—"} | status=${r.crosswalk_status || "—"}`
         );
       }
     }

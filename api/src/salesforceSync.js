@@ -122,7 +122,10 @@ async function runSalesforceCrosswalkSync(getDb, opts = {}) {
 
   let accounts;
   try {
-    accounts = await fetchAccountsByIds(session, accountIds, { tierField: cfg.tierField });
+    accounts = await fetchAccountsByIds(session, accountIds, {
+      tierField: cfg.tierField,
+      groupingField: cfg.groupingField
+    });
   } catch (err) {
     await writeSyncState(database, {
       lastRunAt: new Date().toISOString(),
@@ -162,12 +165,16 @@ async function runSalesforceCrosswalkSync(getDb, opts = {}) {
       if (acct.name) next.sf_account_name = acct.name;
       if (acct.ownerName) next.sf_owner = acct.ownerName;
       if (acct.tier != null && String(acct.tier).trim() !== "") next.tier = acct.tier;
+      if (acct.oraGrouping != null && String(acct.oraGrouping).trim() !== "") {
+        next.ora_grouping = acct.oraGrouping;
+      }
     }
 
     const changed =
       next.sf_account_name !== row.sf_account_name ||
       next.sf_owner !== row.sf_owner ||
       next.tier !== row.tier ||
+      next.ora_grouping !== row.ora_grouping ||
       next.sfAccountActive !== row.sfAccountActive ||
       next.sf_sync_note !== row.sf_sync_note;
 
@@ -202,6 +209,7 @@ async function runSalesforceCrosswalkSync(getDb, opts = {}) {
     missingInSf,
     errorCount: errors.length,
     tierField: cfg.tierField,
+    groupingField: cfg.groupingField,
     dryRun
   };
 
@@ -215,7 +223,7 @@ async function runSalesforceCrosswalkSync(getDb, opts = {}) {
     lastDeltas: deltas,
     lastError: errors.length ? errors.slice(0, 5).join(" | ") : null,
     note: ok
-      ? `Refreshed owner/tier/name from Salesforce (${cfg.tierField}). crosswalk_status unchanged (Cosmos PK).`
+      ? `Refreshed owner/tier/grouping/name from Salesforce (${cfg.tierField}, ${cfg.groupingField}). crosswalk_status unchanged (Cosmos PK).`
       : "Completed with upsert errors — see lastError."
   });
 
@@ -247,6 +255,7 @@ async function getSalesforceSyncStatus(getDb) {
     configured: cfg.configured,
     loginUrl: cfg.loginUrl,
     tierField: cfg.tierField,
+    groupingField: cfg.groupingField,
     usernameSet: Boolean(cfg.username),
     clientIdSet: Boolean(cfg.clientId),
     privateKeySet: Boolean(cfg.privateKey),
