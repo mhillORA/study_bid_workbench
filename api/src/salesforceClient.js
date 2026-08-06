@@ -33,7 +33,7 @@ function stripWrappingQuotes(s) {
 function normalizePem(raw) {
   let s = stripWrappingQuotes(raw);
   if (!s) return "";
-  // Azure App Settings: literal \n / \\n, CRLF, collapsed whitespace
+  // Azure App Settings: literal \n / \\n, CRLF
   s = s.replace(/\\\\n/g, "\n").replace(/\\n/g, "\n").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
   // BOM / zero-width junk from copy-paste
   s = s.replace(/^\uFEFF/, "").replace(/[\u200B-\u200D\u2060]/g, "");
@@ -42,7 +42,8 @@ function normalizePem(raw) {
     return s; // leave as-is; loader will reject with a clear message
   }
 
-  if (!/BEGIN\s[\w\s]+PRIVATE KEY/i.test(s)) {
+  // Match PKCS#8 ("PRIVATE KEY") and PKCS#1 ("RSA PRIVATE KEY")
+  if (!/BEGIN\s+(?:RSA\s+)?PRIVATE KEY/i.test(s)) {
     // Bare base64 body — wrap as PKCS#8
     const body = s.replace(/\s+/g, "");
     if (!body) return "";
@@ -62,12 +63,14 @@ function normalizePem(raw) {
   return s;
 }
 
+const JWT_KEY_DOC_ID = "salesforce_jwt_key";
+
 /**
  * Resolve key material from App Settings.
  * Prefer SF_JWT_PRIVATE_KEY_B64 (base64 of whole .key file) — Azure won't mangle it.
  * @returns {{ pem?: string, der?: Buffer, source: string }}
  */
-function resolveJwtKeyMaterial() {
+function resolveJwtKeyMaterialFromEnv() {
   const b64raw = stripWrappingQuotes(env("SF_JWT_PRIVATE_KEY_B64"));
   if (b64raw) {
     const cleaned = b64raw.replace(/\s+/g, "");
@@ -89,6 +92,94 @@ function resolveJwtKeyMaterial() {
   const pemRaw = env("SF_JWT_PRIVATE_KEY");
   if (!pemRaw) return { source: "none" };
   return { pem: normalizePem(pemRaw), source: "SF_JWT_PRIVATE_KEY" };
+}
+
+/** @deprecated sync alias — prefer resolveJwtKeyMaterialAsync(getDb) */
+function resolveJwtKeyMaterial() {
+  return resolveJwtKeyMaterialFromEnv();
+}
+
+async function readCosmosJwtKey(getDb) {
+  if (!getDb) return null;
+  try {
+    const database = getDb();
+    const { resource } = await database.container("syncState").item(JWT_KEY_DOC_ID, JWT_KEY_DOC_ID).read();
+    if (!resource || !resource.keyB64) return null;
+    return resource;
+  } catch (err) {
+    if (err.code === 404) return null;
+    return null;
+  }
+}
+
+async function saveCosmosJwtKey(getDb, opts = {}) {
+  const database = getDb();
+  try {
+    await database.containers.createIfNotExists({
+      id: "syncState",
+      partitionKey: { paths: ["/id"] }
+    });
+  } catch (_) {
+    /* exists */
+  }
+
+  let pemText = "";
+  if (opts.keyB64) {
+    const buf = Buffer.from(String(opts.keyB64).replace(/\s+/g, ""), "base64");
+    pemText = buf.toString("utf8");
+  } else if (opts.pem) {
+    pemText = String(opts.pem);
+  } else {
+    throw new Error("Provide pem or keyB64");
+  }
+
+  const material = { pem: normalizePem(pemText), source: "upload" };
+  // Prove it loads before saving
+  loadJwtPrivateKey(material);
+
+  const keyB64 = Buffer.from(material.pem, "utf8").toString("base64");
+  const doc = {
+    id: JWT_KEY_DOC_ID,
+    docType: "syncState",
+    job: JWT_KEY_DOC_ID,
+    keyB64,
+    updatedAt: new Date().toISOString(),
+    updatedBy: opts.updatedBy || "api",
+    note: "Salesforce JWT RSA private key (PEM as base64). Used when App Settings PEM is mangled."
+  };
+  await database.container("syncState").items.upsert(doc);
+  return {
+    ok: true,
+    source: "cosmos:salesforce_jwt_key",
+    updatedAt: doc.updatedAt,
+    parseOk: true
+  };
+}
+
+async function resolveJwtKeyMaterialAsync(getDb) {
+  const fromEnv = resolveJwtKeyMaterialFromEnv();
+  if (fromEnv.source !== "none" && (fromEnv.pem || fromEnv.der)) {
+    // Prefer env only if it actually loads — mangled Azure PEM should fall through to Cosmos
+    try {
+      loadJwtPrivateKey(fromEnv);
+      return fromEnv;
+    } catch (_) {
+      /* fall through to Cosmos */
+    }
+  }
+
+  const stored = await readCosmosJwtKey(getDb);
+  if (stored?.keyB64) {
+    const buf = Buffer.from(String(stored.keyB64).replace(/\s+/g, ""), "base64");
+    const asText = buf.toString("utf8");
+    if (/BEGIN[\s\w]*PRIVATE KEY/i.test(asText)) {
+      return { pem: normalizePem(asText), source: "cosmos:salesforce_jwt_key" };
+    }
+    return { der: buf, source: "cosmos:salesforce_jwt_key(der)" };
+  }
+
+  if (fromEnv.source !== "none") return fromEnv; // return mangled so caller sees real error
+  return { source: "none" };
 }
 
 function tryCreatePrivateKey(opts) {
@@ -197,10 +288,11 @@ function loadJwtPrivateKey(materialOrPem) {
 }
 
 /** Safe diagnostics for Data Status (never returns key material). */
-function diagnoseJwtPrivateKey() {
+async function diagnoseJwtPrivateKey(getDb = null) {
   const out = {
     pemSet: Boolean(env("SF_JWT_PRIVATE_KEY")),
     b64Set: Boolean(env("SF_JWT_PRIVATE_KEY_B64")),
+    cosmosKeySet: false,
     source: null,
     parseOk: false,
     keyType: null,
@@ -209,7 +301,11 @@ function diagnoseJwtPrivateKey() {
     error: null
   };
   try {
-    const material = resolveJwtKeyMaterial();
+    const stored = await readCosmosJwtKey(getDb);
+    out.cosmosKeySet = Boolean(stored?.keyB64);
+  } catch (_) {}
+  try {
+    const material = await resolveJwtKeyMaterialAsync(getDb);
     out.source = material.source;
     if (material.pem) {
       out.charLength = material.pem.length;
@@ -247,7 +343,7 @@ function salesforceConfig() {
   let privateKey = "";
   let keySource = "none";
   try {
-    const material = resolveJwtKeyMaterial();
+    const material = resolveJwtKeyMaterialFromEnv();
     keySource = material.source;
     privateKey = material.pem || (material.der ? "__DER__" : "");
   } catch (_) {
@@ -256,9 +352,8 @@ function salesforceConfig() {
   const apiVersion = env("SF_API_VERSION") || "59.0";
   const tierField = safeApiField(env("SF_TIER_FIELD") || "Tier__c", "Tier__c");
   const groupingField = safeApiField(env("SF_GROUPING_FIELD") || "Ora_Grouping__c", "Ora_Grouping__c");
-  const configured = Boolean(
-    clientId && username && (env("SF_JWT_PRIVATE_KEY") || env("SF_JWT_PRIVATE_KEY_B64"))
-  );
+  // Client + username required; JWT key may come from App Settings OR Cosmos upload
+  const configured = Boolean(clientId && username);
   return {
     clientId,
     username,
@@ -268,11 +363,12 @@ function salesforceConfig() {
     apiVersion,
     tierField,
     groupingField,
-    configured
+    configured,
+    envKeySet: Boolean(env("SF_JWT_PRIVATE_KEY") || env("SF_JWT_PRIVATE_KEY_B64"))
   };
 }
 
-function buildJwtAssertion(cfg) {
+async function buildJwtAssertion(cfg, getDb) {
   const header = { alg: "RS256", typ: "JWT" };
   const now = Math.floor(Date.now() / 1000);
   const claims = {
@@ -282,7 +378,13 @@ function buildJwtAssertion(cfg) {
     exp: now + 3 * 60
   };
   const enc = `${b64url(JSON.stringify(header))}.${b64url(JSON.stringify(claims))}`;
-  const keyObject = loadJwtPrivateKey(resolveJwtKeyMaterial());
+  const material = await resolveJwtKeyMaterialAsync(getDb);
+  if (material.source === "none") {
+    throw new Error(
+      "No Salesforce JWT private key. Upload ora_intel_sf.key on Data Status, or set SF_JWT_PRIVATE_KEY_B64."
+    );
+  }
+  const keyObject = loadJwtPrivateKey(material);
   const sign = crypto.createSign("RSA-SHA256");
   sign.update(enc);
   sign.end();
@@ -290,17 +392,14 @@ function buildJwtAssertion(cfg) {
   return `${enc}.${b64url(sig)}`;
 }
 
-async function getSalesforceAccessToken(cfg = salesforceConfig()) {
+async function getSalesforceAccessToken(cfg = salesforceConfig(), getDb = null) {
   if (!cfg.configured) {
     const missing = [];
     if (!cfg.clientId) missing.push("SF_CLIENT_ID");
     if (!cfg.username) missing.push("SF_USERNAME");
-    if (!env("SF_JWT_PRIVATE_KEY") && !env("SF_JWT_PRIVATE_KEY_B64")) {
-      missing.push("SF_JWT_PRIVATE_KEY_B64 (or SF_JWT_PRIVATE_KEY)");
-    }
     throw new Error(`Salesforce not configured — set ${missing.join(", ")} in SWA App Settings`);
   }
-  const assertion = buildJwtAssertion(cfg);
+  const assertion = await buildJwtAssertion(cfg, getDb);
   const body = new URLSearchParams({
     grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
     assertion
@@ -534,6 +633,9 @@ module.exports = {
   normalizePem,
   loadJwtPrivateKey,
   resolveJwtKeyMaterial,
+  resolveJwtKeyMaterialAsync,
+  saveCosmosJwtKey,
   diagnoseJwtPrivateKey,
+  JWT_KEY_DOC_ID,
   sfGet
 };

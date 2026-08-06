@@ -105,7 +105,7 @@ async function runSalesforceCrosswalkSync(getDb, opts = {}) {
 
   let session;
   try {
-    session = await getSalesforceAccessToken(cfg);
+    session = await getSalesforceAccessToken(cfg, getDb);
   } catch (err) {
     await writeSyncState(database, {
       lastRunAt: new Date().toISOString(),
@@ -252,6 +252,7 @@ async function getSalesforceSyncStatus(getDb) {
     );
     withSfId = rows[0] || 0;
   } catch (_) {}
+  const jwtKey = await diagnoseJwtPrivateKey(getDb);
   return {
     configured: cfg.configured,
     loginUrl: cfg.loginUrl,
@@ -259,9 +260,9 @@ async function getSalesforceSyncStatus(getDb) {
     groupingField: cfg.groupingField,
     usernameSet: Boolean(cfg.username),
     clientIdSet: Boolean(cfg.clientId),
-    privateKeySet: Boolean(cfg.privateKey) || Boolean(process.env.SF_JWT_PRIVATE_KEY_B64),
-    keySource: cfg.keySource || null,
-    jwtKey: diagnoseJwtPrivateKey(),
+    privateKeySet: Boolean(cfg.envKeySet) || Boolean(jwtKey.cosmosKeySet) || Boolean(jwtKey.parseOk),
+    keySource: jwtKey.source || cfg.keySource || null,
+    jwtKey,
     crosswalkWithSfId: withSfId,
     sync: state
       ? {

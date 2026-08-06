@@ -113,14 +113,14 @@ async function runSalesforceTablesSync(getDb, opts = {}) {
       ok: false,
       skipped: true,
       reason: "not_configured",
-      error: "Salesforce App Settings missing (SF_CLIENT_ID, SF_USERNAME, SF_JWT_PRIVATE_KEY).",
+      error: "Salesforce App Settings missing (SF_CLIENT_ID, SF_USERNAME). JWT key via App Settings or Data Status upload.",
       elapsedMs: 0
     };
   }
 
   let session;
   try {
-    session = await getSalesforceAccessToken(cfg);
+    session = await getSalesforceAccessToken(cfg, getDb);
   } catch (err) {
     return { ok: false, error: String(err.message || err), elapsedMs: Date.now() - started };
   }
