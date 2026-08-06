@@ -10,6 +10,7 @@ const {
   getIntelligenceHealth,
   isIntelligenceQuestion,
   isSourceOverviewQuestion,
+  isSalesforceDataQuestion,
   extractIndicationFromQuestion,
   extractCountryFromQuestion
 } = require("./intelligence");
@@ -24,6 +25,7 @@ const {
 const { loadLiveContext, saveLiveContext } = require("./buddyLiveContext");
 const { runCtgovSync, getCtgovSyncStatus, remapCtgovIndications } = require("./ctgovSync");
 const { runSalesforceCrosswalkSync, getSalesforceSyncStatus } = require("./salesforceSync");
+const { runSalesforceTablesSync, getSalesforceTablesStatus } = require("./salesforceTables");
 const { ingestTrialHubUpload } = require("./trialhubIngest");
 const {
   isPricingQuestion,
@@ -1152,7 +1154,13 @@ app.http("salesforceSync", {
     try {
       if (request.method === "GET") {
         const status = await getSalesforceSyncStatus(getDb);
-        return json(200, status);
+        let tables = null;
+        try {
+          tables = await getSalesforceTablesStatus(getDb);
+        } catch (_) {
+          tables = null;
+        }
+        return json(200, { ...status, tables });
       }
 
       const auth = authorizeCtgovSync(request);
@@ -1169,12 +1177,34 @@ app.http("salesforceSync", {
         body = {};
       }
       const dryRun = body.dryRun === true || request.query.get("dryRun") === "true";
+      const tables =
+        body.tables === true ||
+        body.mode === "tables" ||
+        request.query.get("tables") === "true" ||
+        request.query.get("mode") === "tables";
+      const triggeredBy =
+        auth.via === "copilot_key"
+          ? "scheduler_or_key"
+          : `ui:${auth.user?.email || auth.user?.userId || "user"}`;
+
+      if (tables) {
+        const onlyRaw = body.only || request.query.get("only");
+        const only = Array.isArray(onlyRaw)
+          ? onlyRaw
+          : typeof onlyRaw === "string" && onlyRaw.trim()
+            ? onlyRaw.split(/[,|;]+/).map((s) => s.trim()).filter(Boolean)
+            : null;
+        const result = await runSalesforceTablesSync(getDb, {
+          dryRun: false,
+          only,
+          triggeredBy
+        });
+        return json(result.ok || result.skipped ? 200 : 500, result);
+      }
+
       const result = await runSalesforceCrosswalkSync(getDb, {
         dryRun,
-        triggeredBy:
-          auth.via === "copilot_key"
-            ? "scheduler_or_key"
-            : `ui:${auth.user?.email || auth.user?.userId || "user"}`
+        triggeredBy
       });
       return json(result.ok || result.skipped ? 200 : 500, result);
     } catch (err) {
@@ -1399,6 +1429,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       const qIndication = extractIndicationFromQuestion(question);
       const qCountry = extractCountryFromQuestion(question);
       const sourceOverviewAsk = isSourceOverviewQuestion(question);
+      const salesforceAsk = isSalesforceDataQuestion(question);
       const catalogAsk =
         /\b(what(?:'s| is) in (?:the )?(?:db|database|cosmos)|data\s+catalog|container\s+counts?|ingest(?:ion)?\s+freshness|how many (?:trials|studies|sites) (?:in|does) (?:cosmos|the db|the database))\b/i.test(
           question
@@ -1412,6 +1443,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       const forceIntel =
         isIntelligenceQuestion(question) ||
         sourceOverviewAsk ||
+        salesforceAsk ||
         catalogAsk ||
         wantsDocumentExport(question) ||
         wantsHtmlVisual(question) ||
@@ -1424,7 +1456,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         // Hint country/indication alone should not force intel unless the ask is intel-shaped —
         // sitting on the Intelligence tab must not hijack unrelated leadership/ops asks.
         (Boolean(hintIndication || hintCountry) &&
-          (isIntelligenceQuestion(question) || sourceOverviewAsk || catalogAsk));
+          (isIntelligenceQuestion(question) || sourceOverviewAsk || catalogAsk || salesforceAsk));
 
       // Always re-query Cosmos for intelligence — never reuse the browser's open-tab pack.
       // UI hints only supply default indication/country when the question does not name one.

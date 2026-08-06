@@ -73,6 +73,7 @@ const INTELLIGENCE_RULES = [
   "• Ops briefing (section status, fill requests, what to do next) → workingStudy.sectionStatus / requests / drivers; suggest NAVIGATE:ops or NAVIGATE:reviews.",
   "• Legacy recruitment board / anterior overview (no indication) → legacyAnterior trust + topByEnrolled / counts. If enrollmentIncluded or htmlTable present, list enrollment; never ask user to paste the table.",
   "• Sponsor already in SF? BD owner / tier / Ora grouping? → intelligence.sponsorCrosswalk (sf_owner, tier, ora_grouping). Crosswalk dashboard (no sponsor named) → intelligence.crosswalkOverview (totalCount, statusRank, tierRank, noSfMatchSample).",
+  "• Salesforce Accounts / Opportunities / Activity Requests (ARs) / services (Product2) → intelligence.salesforceData (ora_sf_* mirrors). If counts are 0, say Sync SF tables is needed. Never invent pipeline Amount/Stage.",
   "• NCT lookup → intelligence.nctLookup (TrialHub) and/or intelligence.ctgovNct / ctgov.",
   "• CT.gov dashboard / registry overview (no indication named) → intelligence.ctgovOverview (totalCount, indicationRank, statusRank, recentSample, countryRank). If totalCount > 0 you HAVE data — never say CT.gov is empty.",
   "• CT.gov by indication → intelligence.ctgov (trialCount, sample, recruitingSample).",
@@ -1102,6 +1103,50 @@ function formatCosmosFactsBlock(context) {
   blocks.push(lines.join("\n"));
   }
 
+  const sf = context?.intelligence?.salesforceData;
+  if (sf && !sf.error) {
+    const sfLines = [
+      "SALESFORCE FACTS (Cosmos ora_sf_* mirrors — use for SF Account / Opp / AR / services asks):",
+      `counts: accounts=${sf.counts?.ora_sf_account ?? "—"}, opps=${sf.counts?.ora_sf_opportunity ?? "—"}, ARs=${
+        sf.counts?.ora_sf_activity_request ?? "—"
+      }, lines=${sf.counts?.ora_sf_opportunity_line ?? "—"}, services=${sf.counts?.ora_sf_services ?? "—"}`
+    ];
+    if (sf.empty) {
+      sfLines.push(
+        "RULE: SF tables empty — tell user to run Intelligence → Sync SF tables. You may still use sponsorCrosswalk for owner/tier/grouping."
+      );
+    } else {
+      for (const a of (sf.accounts || []).slice(0, 8)) {
+        sfLines.push(
+          `  - Account ${a.name || "?"} | owner=${a.owner || "—"} | tier=${a.tier || "—"} | grouping=${
+            a.oraGrouping || "—"
+          }`
+        );
+      }
+      for (const o of (sf.opportunities || []).slice(0, 8)) {
+        sfLines.push(
+          `  - Opp ${o.name || "?"} | stage=${o.stage || "—"} | amount=${
+            o.amount == null ? "—" : o.amount
+          } | close=${o.closeDate || "—"} | owner=${o.owner || "—"}`
+        );
+      }
+      for (const ar of (sf.activityRequests || []).slice(0, 6)) {
+        sfLines.push(`  - AR ${ar.name || ar.id || "?"} | status=${ar.status || "—"}`);
+      }
+      for (const s of (sf.services || []).slice(0, 6)) {
+        sfLines.push(`  - Service ${s.name || "?"} | code=${s.productCode || "—"} | family=${s.family || "—"}`);
+      }
+      sfLines.push(
+        "RULE: If counts > 0 you HAVE Salesforce data — answer from these rows. Never invent Amount/Stage/AR status."
+      );
+    }
+    blocks.push(sfLines.join("\n"));
+  } else if (context?.intelligence?.query?.salesforceIntent) {
+    blocks.push(
+      "SALESFORCE FACTS — pack missing/error. Say Sync SF tables may be needed; do not invent SF pipeline data."
+    );
+  }
+
   const legacyFacts = formatLegacyFactsBlock(context);
   if (legacyFacts) blocks.push(legacyFacts);
 
@@ -1243,7 +1288,17 @@ function contextJsonForModel(context) {
       inventory: intel.inventory,
       nctLookup: intel.nctLookup,
       ctgovNct: intel.ctgovNct,
-      sponsorCrosswalk: intel.sponsorCrosswalk
+      sponsorCrosswalk: intel.sponsorCrosswalk,
+      salesforceData: intel.salesforceData
+        ? {
+            ...intel.salesforceData,
+            accounts: (intel.salesforceData.accounts || []).slice(0, 10),
+            opportunities: (intel.salesforceData.opportunities || []).slice(0, 12),
+            activityRequests: (intel.salesforceData.activityRequests || []).slice(0, 10),
+            opportunityLines: (intel.salesforceData.opportunityLines || []).slice(0, 15),
+            services: (intel.salesforceData.services || []).slice(0, 12)
+          }
+        : undefined
     };
   }
 

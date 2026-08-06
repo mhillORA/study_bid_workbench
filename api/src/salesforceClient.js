@@ -142,16 +142,97 @@ async function sfGet(session, pathAndQuery) {
   return json;
 }
 
-/** Run SOQL; follows nextRecordsUrl until done. */
-async function soqlQuery(session, soql) {
+/** Describe an sObject; returns queryable field API names (capped). */
+async function describeSObject(session, objectName) {
+  const name = String(objectName || "").trim();
+  if (!name) throw new Error("describeSObject requires objectName");
+  const data = await sfGet(session, `/services/data/v${session.apiVersion}/sobjects/${encodeURIComponent(name)}/describe`);
+  const skipTypes = new Set([
+    "base64",
+    "address",
+    "location",
+    "complexvalue",
+    "datacategorygroupreference"
+  ]);
+  const fields = [];
+  for (const f of data.fields || []) {
+    if (!f || !f.queryable || f.deprecatedAndHidden) continue;
+    if (skipTypes.has(String(f.type || "").toLowerCase())) continue;
+    // Avoid huge long-text blobs by default (still allow custom __c)
+    if (f.type === "textarea" && f.length > 8000 && !String(f.name).endsWith("__c")) continue;
+    fields.push(f.name);
+  }
+  // Prefer Id + Name first
+  fields.sort((a, b) => {
+    if (a === "Id") return -1;
+    if (b === "Id") return 1;
+    if (a === "Name") return -1;
+    if (b === "Name") return 1;
+    return a.localeCompare(b);
+  });
+  const allQueryable = fields.slice(); // before cap — used for must-have joins
+  const maxFields = Number(process.env.SF_MAX_FIELDS || 90);
+  return {
+    name: data.name || name,
+    label: data.label || name,
+    fields: fields.slice(0, maxFields),
+    allQueryable,
+    fieldCountAvailable: fields.length,
+    queryable: Boolean(data.queryable)
+  };
+}
+
+/** Run SOQL; follows nextRecordsUrl until done. Optional maxRecords cap. */
+async function soqlQuery(session, soql, opts = {}) {
+  const maxRecords = opts.maxRecords != null ? Number(opts.maxRecords) : null;
   const q = encodeURIComponent(soql);
   let data = await sfGet(session, `/services/data/v${session.apiVersion}/query?q=${q}`);
   const records = [...(data.records || [])];
   while (!data.done && data.nextRecordsUrl) {
+    if (maxRecords != null && records.length >= maxRecords) break;
     data = await sfGet(session, data.nextRecordsUrl);
     records.push(...(data.records || []));
   }
-  return records;
+  return maxRecords != null ? records.slice(0, maxRecords) : records;
+}
+
+/** Pull all (or capped) rows for an object using describe-selected fields. */
+async function queryFullObject(session, objectName, opts = {}) {
+  const desc = await describeSObject(session, objectName);
+  if (!desc.queryable || !desc.fields.length) {
+    throw new Error(`${objectName} is not queryable or has no fields`);
+  }
+  let fieldSet = new Set(desc.fields);
+  if (objectName === "OpportunityLineItem") {
+    for (const must of [
+      "OpportunityId",
+      "Product2Id",
+      "PricebookEntryId",
+      "Quantity",
+      "TotalPrice",
+      "UnitPrice",
+      "Name",
+      "ProductCode"
+    ]) {
+      if ((desc.allQueryable || []).includes(must)) fieldSet.add(must);
+    }
+  }
+  const fieldList = [...fieldSet];
+  const soql = `SELECT ${fieldList.join(",")} FROM ${objectName}`;
+  try {
+    const records = await soqlQuery(session, soql, { maxRecords: opts.maxRecords });
+    return { objectName, fields: fieldList, records, describe: desc };
+  } catch (err) {
+    const lean = [
+      "Id",
+      ...fieldList.filter((f) => f === "Name" || f.endsWith("__c") || f.endsWith("Id")).slice(0, 40)
+    ];
+    const uniq = [...new Set(lean)];
+    const records = await soqlQuery(session, `SELECT ${uniq.join(",")} FROM ${objectName}`, {
+      maxRecords: opts.maxRecords
+    });
+    return { objectName, fields: uniq, records, describe: desc, note: String(err.message || err) };
+  }
 }
 
 /**
@@ -228,6 +309,9 @@ module.exports = {
   salesforceConfig,
   getSalesforceAccessToken,
   soqlQuery,
+  describeSObject,
+  queryFullObject,
   fetchAccountsByIds,
-  normalizePem
+  normalizePem,
+  sfGet
 };

@@ -247,11 +247,22 @@ function isSourceOverviewQuestion(question) {
   );
 }
 
+function isSalesforceDataQuestion(question) {
+  try {
+    const { isSalesforceDataQuestion: fn } = require("./salesforceTables");
+    return fn(question);
+  } catch (_) {
+    const q = String(question || "").toLowerCase();
+    return /\b(salesforce|\bsf\b|opportunit|activity request|\bars?\b|ora grouping)\b/.test(q);
+  }
+}
+
 function isIntelligenceQuestion(question) {
   const q = String(question || "").toLowerCase();
   if (!q) return false;
   return (
     isSourceOverviewQuestion(q) ||
+    isSalesforceDataQuestion(q) ||
     /\b(psm|patients?\s*per\s*site|pts?\s*\/\s*site|enrollment rate|enrolment rate)\b/.test(q) ||
     /\b(feasibility|site (mix|selection|performance|capacity)|competing trials?|competitor|competitive landscape)\b/.test(
       q
@@ -1884,6 +1895,7 @@ async function buildIntelligenceContext(getDb, opts = {}) {
   const wantsTrialhub = isTrialhubQuestion(question);
   const wantsVeeva = isVeevaQuestion(question);
   const wantsCrosswalk = isCrosswalkQuestion(question);
+  const wantsSalesforce = isSalesforceDataQuestion(question);
   const wantsSourceOverview = isSourceOverviewQuestion(question);
   const nct = extractNct(question);
   const qIndication = extractIndicationFromQuestion(question);
@@ -1905,7 +1917,8 @@ async function buildIntelligenceContext(getDb, opts = {}) {
     !nct &&
     !clientName &&
     !sponsor &&
-    !resolvedCountries
+    !resolvedCountries &&
+    !wantsSalesforce
   ) {
     return null;
   }
@@ -1921,6 +1934,7 @@ async function buildIntelligenceContext(getDb, opts = {}) {
       "TrialHub vs Ora vs CT.gov indication labels may differ; aliasesUsed lists what was queried.",
       "Prefer fsi_trust=high when comparing site_psm.",
       "ctgov = ClinicalTrials.gov ophthalmology feed (daily delta).",
+      "salesforce / salesforceData = Cosmos mirrors of SF Account, Opportunity, Activity_Request__c, OpportunityLineItem, Product2 (ora_sf_services). Use for pipeline / owner / AR / services asks after tables sync.",
       "ctgovOverview / trialhubOverview / veevaOverview / crosswalkOverview = feed-wide snapshots when no indication was named — use for dashboards. Never say a feed is missing if its totalCount/studyCount > 0 or recentSample has rows.",
       "When countryFilter is set (array), site/CT.gov/TrialHub results match ANY of those countries. Null/Global = all geographies.",
       "For OUS / outside-US asks: use trialhub.countryRankOus (or countryRank) for ranked countries with trialMentions counts — that IS the country leaderboard.",
@@ -1942,6 +1956,7 @@ async function buildIntelligenceContext(getDb, opts = {}) {
       trialhubIntent: wantsTrialhub,
       veevaIntent: wantsVeeva,
       crosswalkIntent: wantsCrosswalk,
+      salesforceIntent: wantsSalesforce,
       enrollmentPlan
     }
   };
@@ -1968,7 +1983,8 @@ async function buildIntelligenceContext(getDb, opts = {}) {
       wantsCtgov ||
       wantsTrialhub ||
       wantsVeeva ||
-      wantsCrosswalk
+      wantsCrosswalk ||
+      wantsSalesforce
     ) {
       const ind = resolvedIndication || qIndication;
       if (ind) {
@@ -2048,6 +2064,19 @@ async function buildIntelligenceContext(getDb, opts = {}) {
     const who = sponsor || clientName;
     if (who) {
       out.sponsorCrosswalk = await lookupSponsorCrosswalk(database, who);
+    }
+
+    if (wantsSalesforce || wantsCrosswalk || who) {
+      try {
+        const { buildSalesforceBuddyContext } = require("./salesforceTables");
+        out.salesforceData = await buildSalesforceBuddyContext(getDb, {
+          question,
+          clientName: who || clientName,
+          sponsor: who || sponsor
+        });
+      } catch (sfErr) {
+        out.salesforceData = { error: String(sfErr.message || sfErr) };
+      }
     }
 
     out.elapsedMs = Date.now() - started;
@@ -2415,6 +2444,7 @@ module.exports = {
   isTrialhubQuestion,
   isVeevaQuestion,
   isCrosswalkQuestion,
+  isSalesforceDataQuestion,
   isSourceOverviewQuestion,
   indicationAliases,
   extractIndicationFromQuestion,

@@ -55,6 +55,8 @@
       sfSyncStatus: null,
       sfSyncBusy: false,
       sfSyncMessage: "",
+      sfTablesBusy: false,
+      sfTablesMessage: "",
       trialhubUploadBusy: false,
       trialhubUploadMessage: "",
       trialhubUploadResult: null
@@ -2919,6 +2921,44 @@
     if (state.sectionId === "intelligence") render();
   }
 
+  async function runSalesforceTablesSyncManual() {
+    if (state.intelligence.sfTablesBusy) return;
+    state.intelligence.sfTablesBusy = true;
+    state.intelligence.sfTablesMessage =
+      "Pulling Salesforce tables (Accounts, Opps, ARs, services) into Cosmos — may take a minute…";
+    if (state.sectionId === "intelligence") render();
+    try {
+      const res = await fetch(apiUrl("/api/salesforce/sync"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tables: true })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        state.intelligence.sfTablesMessage = data.error || `SF tables sync failed (${res.status})`;
+      } else if (data.skipped) {
+        state.intelligence.sfTablesMessage =
+          data.error || "Salesforce not configured (set SF_* App Settings).";
+      } else {
+        const bits = (data.results || []).map(
+          (r) => `${r.object}: ${r.upserted ?? 0}/${r.fetched ?? 0}${r.error ? " ERR" : ""}`
+        );
+        state.intelligence.sfTablesMessage = [
+          data.incomplete ? "Partial (re-run to continue)" : "SF tables synced",
+          bits.join(" · "),
+          data.elapsedMs ? `${Math.round(data.elapsedMs / 1000)}s` : ""
+        ]
+          .filter(Boolean)
+          .join(" · ");
+      }
+      await loadIntelligenceHealth();
+    } catch (err) {
+      state.intelligence.sfTablesMessage = `SF tables sync error: ${String(err)}`;
+    }
+    state.intelligence.sfTablesBusy = false;
+    if (state.sectionId === "intelligence") render();
+  }
+
   async function runTrialhubUpload({ dryRun = false } = {}) {
     if (state.intelligence.trialhubUploadBusy) return;
     const input = document.getElementById("trialhubUploadInput");
@@ -3234,6 +3274,27 @@
       : "";
     const sfBusy = state.intelligence.sfSyncBusy;
     const sfDisabled = sfBusy ? "disabled" : "";
+    const sfTables = sfWrap.tables || {};
+    const sfTableRows = Array.isArray(sfTables.tables) ? sfTables.tables : [];
+    const sfTablesLast =
+      sfTables.sync?.lastSuccessfulSync || sfTables.sync?.lastRunAt || null;
+    const sfTablesBusy = state.intelligence.sfTablesBusy;
+    const sfTablesDisabled = sfTablesBusy || !sfConfigured ? "disabled" : "";
+    const sfTablesMsg = state.intelligence.sfTablesMessage
+      ? `<p class="muted" style="margin-top:0.5rem;">${escapeHtml(state.intelligence.sfTablesMessage)}</p>`
+      : "";
+    const sfTablesMeta = sfTableRows.length
+      ? `<p class="muted" style="margin:0.35rem 0 0;">SF tables (Buddy context): ${sfTableRows
+          .map(
+            (t) =>
+              `${escapeHtml(t.container || t.sfObject)}=${
+                typeof t.count === "number" ? Number(t.count).toLocaleString() : "—"
+              }`
+          )
+          .join(" · ")}${
+          sfTablesLast ? ` · last ${escapeHtml(String(sfTablesLast))}` : ""
+        }</p>`
+      : `<p class="muted" style="margin:0.35rem 0 0;">SF tables not synced yet — use <strong>Sync SF tables</strong> after App Settings are set.</p>`;
 
     if (!h) {
       return `<div class="card wide"><h3>Data status</h3><p class="muted">Loading intelligence containers…</p></div>`;
@@ -3295,11 +3356,16 @@
           <button type="button" class="btn btn-primary" id="btnSalesforceSync" ${sfDisabled}>${
             sfBusy ? "Syncing SF…" : "Sync Salesforce now"
           }</button>
+          <button type="button" class="btn btn-primary" id="btnSalesforceTablesSync" ${sfTablesDisabled}>${
+            sfTablesBusy ? "Syncing SF tables…" : "Sync SF tables"
+          }</button>
         </div>
         ${syncMeta}
         ${syncMsg}
         ${sfMeta}
         ${sfMsg}
+        ${sfTablesMeta}
+        ${sfTablesMsg}
         ${renderCtgovSyncDeltas(state.intelligence.syncDeltas)}
       </div>
       <div class="card wide" style="margin-top:1rem;">
@@ -6985,6 +7051,10 @@
       }
       if (e.target.id === "btnSalesforceSync") {
         runSalesforceSyncManual();
+        return;
+      }
+      if (e.target.id === "btnSalesforceTablesSync") {
+        runSalesforceTablesSyncManual();
         return;
       }
       if (e.target.id === "btnTrialhubUpload") {

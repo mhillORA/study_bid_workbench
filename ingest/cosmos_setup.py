@@ -31,6 +31,12 @@ CONTAINERS = [
     {"id": "ora_site_alias_table", "partition_key": "/country"},
     # ClinicalTrials.gov ophthalmology feed (daily delta pull).
     {"id": "ora_ctgov_trials", "partition_key": "/oraIndication"},
+    # Salesforce live mirrors (Ora Intelligence Tool JWT sync)
+    {"id": "ora_sf_account", "partition_key": "/id"},
+    {"id": "ora_sf_opportunity", "partition_key": "/id"},
+    {"id": "ora_sf_activity_request", "partition_key": "/id"},
+    {"id": "ora_sf_opportunity_line", "partition_key": "/id"},
+    {"id": "ora_sf_services", "partition_key": "/id"},
     # Watermarks / cursors for scheduled sync jobs.
     {"id": "syncState", "partition_key": "/id"},
 ]

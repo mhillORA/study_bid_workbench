@@ -21,13 +21,24 @@ Live refresh of Cosmos `ora_sponsor_crosswalk` owner / tier / account name from 
 | `Ora_Grouping__c` | `ora_grouping` |
 | missing / deleted | `sfAccountActive=false` + note |
 
-Not pulled yet: Opportunities, Contacts, Activities, custom fields beyond the above.
+### Full table sync (Buddy context)
+
+Separate button / POST mode pulls whole SF objects into Cosmos for Buddy Q&A:
+
+| Salesforce object | Cosmos container |
+|---|---|
+| Account | `ora_sf_account` |
+| Opportunity | `ora_sf_opportunity` |
+| `Activity_Request__c` | `ora_sf_activity_request` |
+| OpportunityLineItem | `ora_sf_opportunity_line` |
+| Product2 (services) | `ora_sf_services` |
 
 Endpoints:
 
-- `GET /api/salesforce/sync` — config + last sync status  
-- `POST /api/salesforce/sync` — run refresh (signed-in user or `x-copilot-key`)  
-- `POST /api/salesforce/sync` with `{ "dryRun": true }` — count only  
+- `GET /api/salesforce/sync` — config + crosswalk status + `tables` counts  
+- `POST /api/salesforce/sync` — crosswalk refresh (signed-in or `x-copilot-key`)  
+- `POST /api/salesforce/sync` with `{ "dryRun": true }` — crosswalk count only  
+- `POST /api/salesforce/sync` with `{ "tables": true }` — full table pull for Buddy
 
 ## Salesforce (already done checklist)
 
@@ -65,14 +76,27 @@ Save settings and wait for the SWA API to restart (~1–2 min).
 
 ## Run a sync
 
-In the app: **Ora Clinical Intelligence** → **Sync Salesforce now**  
-Or:
+In the app: **Ora Clinical Intelligence** → Data status:
+
+1. **Sync Salesforce now** — refreshes crosswalk owner / tier / grouping  
+2. **Sync SF tables** — pulls Accounts, Opps, ARs, line items, Product2 into `ora_sf_*` (needed before Buddy can answer pipeline questions)
+
+Or via API:
 
 ```bash
+# Crosswalk
 curl -X POST https://<your-swa>/api/salesforce/sync \
   -H "Content-Type: application/json" \
   -H "x-copilot-key: <COPILOT_ASK_KEY>"
+
+# Full tables (Buddy)
+curl -X POST https://<your-swa>/api/salesforce/sync \
+  -H "Content-Type: application/json" \
+  -H "x-copilot-key: <COPILOT_ASK_KEY>" \
+  -d '{"tables":true}'
 ```
+
+If the tables sync hits the time budget, click **Sync SF tables** again — it continues remaining objects.
 
 ## Common errors
 
