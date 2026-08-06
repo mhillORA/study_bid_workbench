@@ -76,7 +76,7 @@ Save settings and wait for the SWA API to restart (~1–2 min).
 
 ## Run a sync
 
-In the app: **Ora Clinical Intelligence** → Data status:
+In the app: **Data Status** tab:
 
 1. **Sync Salesforce now** — refreshes crosswalk owner / tier / grouping  
 2. **Sync SF tables** — pulls Accounts, Opps, ARs, line items, Product2 into `ora_sf_*` (needed before Buddy can answer pipeline questions)
@@ -106,6 +106,7 @@ If the tables sync hits the time budget, click **Sync SF tables** again — it c
 | `invalid_client_id` | Wrong `SF_CLIENT_ID` |
 | `user hasn’t approved this consumer` | Same as pre-authorize |
 | Certificate / JWT signature | Key must match the cert uploaded to SF |
+| `routines::unsupported` / DECODER | `SF_JWT_PRIVATE_KEY` is mangled, encrypted, or wrong format. Paste the full unencrypted `.key` PEM. If Azure collapses newlines, use one line with `\n`. Convert with: `openssl pkcs8 -topk8 -nocrypt -in ora_intel_sf.key -out ora_intel_sf_pkcs8.key` |
 | Tier field invalid | Confirm `SF_TIER_FIELD=Tier__c` |
 
 ## Security

@@ -21,15 +21,86 @@ function env(name) {
 function normalizePem(raw) {
   let s = String(raw || "").trim();
   if (!s) return "";
-  // Azure App Settings often store newlines as \n
-  s = s.replace(/\\n/g, "\n");
-  if (!s.includes("BEGIN") && !s.includes("\n")) {
+  // Azure App Settings: quoted values, literal \n, or CRLF
+  if (
+    (s.startsWith('"') && s.endsWith('"')) ||
+    (s.startsWith("'") && s.endsWith("'"))
+  ) {
+    s = s.slice(1, -1).trim();
+  }
+  s = s.replace(/\\n/g, "\n").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  // BOM / zero-width junk from copy-paste
+  s = s.replace(/^\uFEFF/, "").replace(/[\u200B-\u200D\u2060]/g, "");
+
+  if (!/BEGIN\s[\w\s]+PRIVATE KEY/.test(s)) {
     // Bare base64 body — wrap as PKCS#8
     const body = s.replace(/\s+/g, "");
+    if (!body) return "";
     const lines = body.match(/.{1,64}/g) || [body];
     s = `-----BEGIN PRIVATE KEY-----\n${lines.join("\n")}\n-----END PRIVATE KEY-----`;
+  } else {
+    // Re-wrap base64 body to 64-char lines (Azure sometimes collapses whitespace)
+    const m = s.match(
+      /-----BEGIN ([A-Z0-9 ]+PRIVATE KEY)-----([\s\S]+?)-----END \1-----/i
+    );
+    if (m) {
+      const label = m[1].toUpperCase().replace(/\s+/g, " ").trim();
+      const body = m[2].replace(/\s+/g, "");
+      const lines = body.match(/.{1,64}/g) || [body];
+      s = `-----BEGIN ${label}-----\n${lines.join("\n")}\n-----END ${label}-----`;
+    }
   }
   return s;
+}
+
+/**
+ * Load RSA private key for JWT signing.
+ * Handles PKCS#8 / PKCS#1 headers and common Azure paste mangling.
+ * Surfaces a clear message for encrypted keys / bad PEM (OpenSSL "routines::unsupported").
+ */
+function loadJwtPrivateKey(pem) {
+  const normalized = normalizePem(pem);
+  if (!normalized) {
+    throw new Error("SF_JWT_PRIVATE_KEY is empty after normalize");
+  }
+  if (/ENCRYPTED PRIVATE KEY/i.test(normalized)) {
+    throw new Error(
+      "SF_JWT_PRIVATE_KEY is encrypted. Export an unencrypted key (openssl pkcs8 -topk8 -nocrypt) matching the cert uploaded to Salesforce."
+    );
+  }
+
+  const candidates = [normalized];
+  // Swap PKCS#1 ↔ PKCS#8 headers if one label was pasted with the wrong BEGIN/END
+  if (/BEGIN RSA PRIVATE KEY/i.test(normalized)) {
+    candidates.push(
+      normalized
+        .replace(/BEGIN RSA PRIVATE KEY/gi, "BEGIN PRIVATE KEY")
+        .replace(/END RSA PRIVATE KEY/gi, "END PRIVATE KEY")
+    );
+  } else if (/BEGIN PRIVATE KEY/i.test(normalized)) {
+    candidates.push(
+      normalized
+        .replace(/BEGIN PRIVATE KEY/gi, "BEGIN RSA PRIVATE KEY")
+        .replace(/END PRIVATE KEY/gi, "END RSA PRIVATE KEY")
+    );
+  }
+
+  let lastErr = null;
+  for (const key of candidates) {
+    try {
+      return crypto.createPrivateKey({ key, format: "pem" });
+    } catch (err) {
+      lastErr = err;
+    }
+  }
+
+  const msg = String(lastErr && lastErr.message ? lastErr.message : lastErr);
+  if (/unsupported|DECODER|digital envelope|ERR_OSSL/i.test(msg)) {
+    throw new Error(
+      `SF_JWT_PRIVATE_KEY could not be loaded (${msg}). Paste the full unencrypted .key PEM (-----BEGIN … PRIVATE KEY----- through END), with \\n for newlines if Azure collapses them. Key must match the .crt uploaded to Salesforce.`
+    );
+  }
+  throw new Error(`SF_JWT_PRIVATE_KEY invalid: ${msg}`);
 }
 
 function b64url(input) {
@@ -66,10 +137,11 @@ function buildJwtAssertion(cfg) {
     exp: now + 3 * 60
   };
   const enc = `${b64url(JSON.stringify(header))}.${b64url(JSON.stringify(claims))}`;
+  const keyObject = loadJwtPrivateKey(cfg.privateKey);
   const sign = crypto.createSign("RSA-SHA256");
   sign.update(enc);
   sign.end();
-  const sig = sign.sign(cfg.privateKey);
+  const sig = sign.sign(keyObject);
   return `${enc}.${b64url(sig)}`;
 }
 
@@ -313,5 +385,6 @@ module.exports = {
   queryFullObject,
   fetchAccountsByIds,
   normalizePem,
+  loadJwtPrivateKey,
   sfGet
 };

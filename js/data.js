@@ -16,6 +16,7 @@ SBW.sections = [
   { id: "studies", label: "Studies", department: null },
   { id: "versions", label: "Versions / Diff", department: null },
   { id: "intelligence", label: "Ora Clinical Intelligence", department: null },
+  { id: "data-status", label: "Data Status", department: null },
   { id: "scorecard", label: "Site Scorecard", department: null },
   { id: "buddy-context", label: "Buddy Context", department: null },
   { id: "hlbp", label: "HLBP", department: null, navGroup: "budget" },

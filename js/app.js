@@ -499,6 +499,9 @@
     if (sectionId === "intelligence") {
       ensureIntelligenceLoaded();
     }
+    if (sectionId === "data-status") {
+      ensureIntelligenceLoaded();
+    }
     if (sectionId === "ops") {
       ensureOpsLoaded();
     }
@@ -1064,6 +1067,16 @@
       "feasibility",
       "trialhub",
       "psm"
+    ],
+    "data-status": [
+      "data status",
+      "data",
+      "sync",
+      "uploads",
+      "ct.gov sync",
+      "salesforce sync",
+      "sf tables",
+      "trialhub upload"
     ],
     scorecard: ["scorecard", "site scorecard", "site scores", "sites"],
     "buddy-context": ["buddy context", "context", "live context", "ingest context", "buddy ingest"],
@@ -2782,6 +2795,14 @@
     }
   }
 
+  function isDataStatusTab() {
+    return state.sectionId === "data-status";
+  }
+
+  function refreshDataStatusIfOpen() {
+    if (isDataStatusTab()) render();
+  }
+
   async function loadIntelligenceHealth() {
     state.intelligence.loading = true;
     try {
@@ -2802,7 +2823,7 @@
       if (sfres.ok) state.intelligence.sfSyncStatus = sfdata;
     } catch (_) {}
     state.intelligence.loading = false;
-    if (state.sectionId === "intelligence") render();
+    if (state.sectionId === "intelligence" || isDataStatusTab()) render();
   }
 
   async function runIntelligenceQuery(indication) {
@@ -2847,7 +2868,7 @@
     state.intelligence.syncBusy = true;
     state.intelligence.syncMessage = "Running ClinicalTrials.gov delta sync…";
     state.intelligence.syncDeltas = null;
-    if (state.sectionId === "intelligence") render();
+    refreshDataStatusIfOpen();
     try {
       const res = await fetch(apiUrl("/api/ctgov/sync"), {
         method: "POST",
@@ -2883,14 +2904,14 @@
       state.intelligence.syncDeltas = null;
     }
     state.intelligence.syncBusy = false;
-    if (state.sectionId === "intelligence") render();
+    refreshDataStatusIfOpen();
   }
 
   async function runSalesforceSyncManual() {
     if (state.intelligence.sfSyncBusy) return;
     state.intelligence.sfSyncBusy = true;
     state.intelligence.sfSyncMessage = "Refreshing sponsor crosswalk from Salesforce…";
-    if (state.sectionId === "intelligence") render();
+    refreshDataStatusIfOpen();
     try {
       const res = await fetch(apiUrl("/api/salesforce/sync"), {
         method: "POST",
@@ -2918,7 +2939,7 @@
       state.intelligence.sfSyncMessage = `Salesforce sync error: ${String(err)}`;
     }
     state.intelligence.sfSyncBusy = false;
-    if (state.sectionId === "intelligence") render();
+    refreshDataStatusIfOpen();
   }
 
   async function runSalesforceTablesSyncManual() {
@@ -2926,7 +2947,7 @@
     state.intelligence.sfTablesBusy = true;
     state.intelligence.sfTablesMessage =
       "Pulling Salesforce tables (Accounts, Opps, ARs, services) into Cosmos — may take a minute…";
-    if (state.sectionId === "intelligence") render();
+    refreshDataStatusIfOpen();
     try {
       const res = await fetch(apiUrl("/api/salesforce/sync"), {
         method: "POST",
@@ -2956,7 +2977,7 @@
       state.intelligence.sfTablesMessage = `SF tables sync error: ${String(err)}`;
     }
     state.intelligence.sfTablesBusy = false;
-    if (state.sectionId === "intelligence") render();
+    refreshDataStatusIfOpen();
   }
 
   async function runTrialhubUpload({ dryRun = false } = {}) {
@@ -2965,7 +2986,7 @@
     if (!input || !input.files || !input.files.length) {
       state.intelligence.trialhubUploadMessage = "Choose a TrialHub .xlsx first.";
       state.intelligence.trialhubUploadResult = null;
-      if (state.sectionId === "intelligence") render();
+      refreshDataStatusIfOpen();
       return;
     }
     const file = input.files[0];
@@ -2974,7 +2995,7 @@
       ? `Parsing ${file.name} (dry run)…`
       : `Ingesting ${file.name} into Cosmos (dedupe by NCT)…`;
     state.intelligence.trialhubUploadResult = null;
-    if (state.sectionId === "intelligence") render();
+    refreshDataStatusIfOpen();
     try {
       const buf = await file.arrayBuffer();
       const url = apiUrl(`/api/trialhub/upload${dryRun ? "?dry=true" : ""}`);
@@ -3011,7 +3032,7 @@
       state.intelligence.trialhubUploadResult = null;
     }
     state.intelligence.trialhubUploadBusy = false;
-    if (state.sectionId === "intelligence") render();
+    refreshDataStatusIfOpen();
   }
 
   function renderCtgovSyncDeltas(deltas) {
@@ -3541,6 +3562,17 @@
       ${crosswalk}`;
   }
 
+  function renderDataStatus() {
+    return `
+      <div class="grid">
+        <div class="card wide">
+          <h3>Data Status</h3>
+          <p class="muted">Upload and sync feeds Buddy uses (TrialHub, CT.gov, Salesforce). Benchmark queries stay on Ora Clinical Intelligence.</p>
+        </div>
+        ${renderIntelligenceHealthCard()}
+      </div>`;
+  }
+
   function renderIntelligence() {
     const status = state.intelligence.status
       ? `<p class="muted" style="margin-top:0.5rem;">${escapeHtml(state.intelligence.status)}</p>`
@@ -3558,10 +3590,9 @@
       : "";
     return `
       <div class="grid">
-        ${renderIntelligenceHealthCard()}
         <div class="card wide">
           <h3>Indication &amp; region benchmark</h3>
-          <p class="muted">For BD/sales: Ora vs industry PSM and competitive recruiting for proposals. For leadership: a quick feasibility read by indication and geography.</p>
+          <p class="muted">For BD/sales: Ora vs industry PSM and competitive recruiting for proposals. For leadership: a quick feasibility read by indication and geography. Syncs and uploads live on the <strong>Data Status</strong> tab.</p>
           <div class="benchmark-filter-grid">
             <div class="benchmark-filter-field">
               <label class="field-label" for="intelIndication">Indication</label>
@@ -6673,6 +6704,7 @@
       case "studies": html = renderStudies(); break;
       case "versions": html = renderVersions(); break;
       case "intelligence": html = renderIntelligence(); break;
+      case "data-status": html = renderDataStatus(); break;
       case "scorecard": html = renderScorecard(); break;
       case "buddy-context": html = renderBuddyContext(); break;
       case "overview": html = renderOverview(); break;
