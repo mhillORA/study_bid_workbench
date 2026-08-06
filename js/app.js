@@ -3290,6 +3290,16 @@
         ? ` · grouping <code>${escapeHtml(String(sfWrap.groupingField))}</code>`
         : ""
     }</p>`;
+    const jwtKey = sfWrap.jwtKey || {};
+    const jwtKeyMeta = sfWrap.privateKeySet
+      ? `<p class="muted" style="margin:0.35rem 0 0;">JWT key: ${
+          jwtKey.parseOk
+            ? `OK (${escapeHtml(String(jwtKey.keyType || "rsa"))} · ${escapeHtml(
+                String(jwtKey.source || "—")
+              )})`
+            : `NOT LOADABLE — ${escapeHtml(String(jwtKey.error || "unknown error"))}. Prefer App Setting <code>SF_JWT_PRIVATE_KEY_B64</code> (base64 of the whole .key file).`
+        }</p>`
+      : "";
     const sfMsg = state.intelligence.sfSyncMessage
       ? `<p class="muted" style="margin-top:0.5rem;">${escapeHtml(state.intelligence.sfSyncMessage)}</p>`
       : "";
@@ -3384,6 +3394,7 @@
         ${syncMeta}
         ${syncMsg}
         ${sfMeta}
+        ${jwtKeyMeta}
         ${sfMsg}
         ${sfTablesMeta}
         ${sfTablesMsg}

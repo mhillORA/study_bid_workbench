@@ -58,21 +58,33 @@ In Azure Portal → your Static Web App → **Configuration** → **Application 
 | `SF_CLIENT_ID` | Consumer Key from the SF app |
 | `SF_USERNAME` | Integration user username (login email) |
 | `SF_LOGIN_URL` | `https://login.salesforce.com` (prod) |
-| `SF_JWT_PRIVATE_KEY` | Full PEM of `ora_intel_sf.key` (see below) |
+| `SF_JWT_PRIVATE_KEY_B64` | **Preferred.** Base64 of the entire `ora_intel_sf.key` file (one line — Azure won’t mangle newlines) |
+| `SF_JWT_PRIVATE_KEY` | Full PEM (often breaks in App Settings → `DECODER routines::unsupported`) |
 | `SF_TIER_FIELD` | `Tier__c` |
 | `SF_GROUPING_FIELD` | `Ora_Grouping__c` |
 | `SF_API_VERSION` | `59.0` (optional) |
 
-### Pasting the private key
+### Pasting the private key (use base64)
 
-1. Open `ora_intel_sf.key` in Notepad  
-2. Copy **everything**, including  
-   `-----BEGIN … KEY-----` and `-----END … KEY-----`  
-3. Paste into `SF_JWT_PRIVATE_KEY`  
-4. If the portal mangles newlines, replace real newlines with `\n` so it is one line, e.g.  
-   `-----BEGIN PRIVATE KEY-----\nMIIE...\n-----END PRIVATE KEY-----`
+Azure App Settings regularly corrupt multi-line PEMs. Use **base64** instead:
 
-Save settings and wait for the SWA API to restart (~1–2 min).
+**PowerShell (on the machine that has the .key):**
+```powershell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("C:\path\to\ora_intel_sf.key"))
+```
+
+**Azure Cloud Shell / bash:**
+```bash
+base64 -w0 ora_intel_sf.key && echo
+```
+
+1. Copy the single-line output  
+2. Add App Setting `SF_JWT_PRIVATE_KEY_B64` = that string  
+3. You can leave `SF_JWT_PRIVATE_KEY` blank (or delete it)  
+4. Save → wait for API restart (~1–2 min)  
+5. **Data Status** should show `JWT key: OK`
+
+Still optional: paste PEM into `SF_JWT_PRIVATE_KEY` with `\n` for newlines — base64 is more reliable.
 
 ## Run a sync
 
@@ -106,7 +118,7 @@ If the tables sync hits the time budget, click **Sync SF tables** again — it c
 | `invalid_client_id` | Wrong `SF_CLIENT_ID` |
 | `user hasn’t approved this consumer` | Same as pre-authorize |
 | Certificate / JWT signature | Key must match the cert uploaded to SF |
-| `routines::unsupported` / DECODER | `SF_JWT_PRIVATE_KEY` is mangled, encrypted, or wrong format. Paste the full unencrypted `.key` PEM. If Azure collapses newlines, use one line with `\n`. Convert with: `openssl pkcs8 -topk8 -nocrypt -in ora_intel_sf.key -out ora_intel_sf_pkcs8.key` |
+| `routines::unsupported` / DECODER | Azure mangled the PEM. Set `SF_JWT_PRIVATE_KEY_B64` to base64 of the whole `.key` file (see above). Do not paste the `.crt`. |
 | Tier field invalid | Confirm `SF_TIER_FIELD=Tier__c` |
 
 ## Security

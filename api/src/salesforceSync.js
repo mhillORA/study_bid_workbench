@@ -7,7 +7,8 @@
 const {
   salesforceConfig,
   getSalesforceAccessToken,
-  fetchAccountsByIds
+  fetchAccountsByIds,
+  diagnoseJwtPrivateKey
 } = require("./salesforceClient");
 
 const SYNC_ID = "salesforce_crosswalk";
@@ -258,7 +259,9 @@ async function getSalesforceSyncStatus(getDb) {
     groupingField: cfg.groupingField,
     usernameSet: Boolean(cfg.username),
     clientIdSet: Boolean(cfg.clientId),
-    privateKeySet: Boolean(cfg.privateKey),
+    privateKeySet: Boolean(cfg.privateKey) || Boolean(process.env.SF_JWT_PRIVATE_KEY_B64),
+    keySource: cfg.keySource || null,
+    jwtKey: diagnoseJwtPrivateKey(),
     crosswalkWithSfId: withSfId,
     sync: state
       ? {

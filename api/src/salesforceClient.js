@@ -1,13 +1,14 @@
 /**
  * Salesforce JWT Bearer client for Ora Intelligence Tool.
  * Env (SWA App Settings):
- *   SF_CLIENT_ID          Connected/External Client App Consumer Key
- *   SF_USERNAME           Integration user username (email)
- *   SF_LOGIN_URL          https://login.salesforce.com (prod) or https://test.salesforce.com
- *   SF_JWT_PRIVATE_KEY    PEM private key matching the cert uploaded to SF
- *   SF_API_VERSION        optional, default 59.0
- *   SF_TIER_FIELD         optional Account field API name, default Tier__c
- *   SF_GROUPING_FIELD     optional Account field API name, default Ora_Grouping__c
+ *   SF_CLIENT_ID             Connected/External Client App Consumer Key
+ *   SF_USERNAME              Integration user username (email)
+ *   SF_LOGIN_URL             https://login.salesforce.com (prod) or https://test.salesforce.com
+ *   SF_JWT_PRIVATE_KEY       PEM private key matching the cert uploaded to SF
+ *   SF_JWT_PRIVATE_KEY_B64   Preferred: base64 of the entire .key file (avoids Azure newline mangling)
+ *   SF_API_VERSION           optional, default 59.0
+ *   SF_TIER_FIELD            optional Account field API name, default Tier__c
+ *   SF_GROUPING_FIELD        optional Account field API name, default Ora_Grouping__c
  */
 
 const crypto = require("crypto");
@@ -18,33 +19,41 @@ function env(name) {
   return v;
 }
 
-function normalizePem(raw) {
-  let s = String(raw || "").trim();
-  if (!s) return "";
-  // Azure App Settings: quoted values, literal \n, or CRLF
+function stripWrappingQuotes(s) {
+  let out = String(s || "").trim();
   if (
-    (s.startsWith('"') && s.endsWith('"')) ||
-    (s.startsWith("'") && s.endsWith("'"))
+    (out.startsWith('"') && out.endsWith('"')) ||
+    (out.startsWith("'") && out.endsWith("'"))
   ) {
-    s = s.slice(1, -1).trim();
+    out = out.slice(1, -1).trim();
   }
-  s = s.replace(/\\n/g, "\n").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+  return out;
+}
+
+function normalizePem(raw) {
+  let s = stripWrappingQuotes(raw);
+  if (!s) return "";
+  // Azure App Settings: literal \n / \\n, CRLF, collapsed whitespace
+  s = s.replace(/\\\\n/g, "\n").replace(/\\n/g, "\n").replace(/\r\n/g, "\n").replace(/\r/g, "\n");
   // BOM / zero-width junk from copy-paste
   s = s.replace(/^\uFEFF/, "").replace(/[\u200B-\u200D\u2060]/g, "");
 
-  if (!/BEGIN\s[\w\s]+PRIVATE KEY/.test(s)) {
+  if (/BEGIN\s+CERTIFICATE/i.test(s) && !/PRIVATE KEY/i.test(s)) {
+    return s; // leave as-is; loader will reject with a clear message
+  }
+
+  if (!/BEGIN\s[\w\s]+PRIVATE KEY/i.test(s)) {
     // Bare base64 body — wrap as PKCS#8
     const body = s.replace(/\s+/g, "");
     if (!body) return "";
     const lines = body.match(/.{1,64}/g) || [body];
     s = `-----BEGIN PRIVATE KEY-----\n${lines.join("\n")}\n-----END PRIVATE KEY-----`;
   } else {
-    // Re-wrap base64 body to 64-char lines (Azure sometimes collapses whitespace)
-    const m = s.match(
-      /-----BEGIN ([A-Z0-9 ]+PRIVATE KEY)-----([\s\S]+?)-----END \1-----/i
-    );
+    // Loose BEGIN/END match (Azure may alter END label spacing/case)
+    const m = s.match(/-----BEGIN ([^-]+)-----([\s\S]*?)-----END ([^-]+)-----/i);
     if (m) {
-      const label = m[1].toUpperCase().replace(/\s+/g, " ").trim();
+      let label = m[1].toUpperCase().replace(/\s+/g, " ").trim();
+      if (!/PRIVATE KEY/i.test(label)) label = "PRIVATE KEY";
       const body = m[2].replace(/\s+/g, "");
       const lines = body.match(/.{1,64}/g) || [body];
       s = `-----BEGIN ${label}-----\n${lines.join("\n")}\n-----END ${label}-----`;
@@ -54,23 +63,86 @@ function normalizePem(raw) {
 }
 
 /**
- * Load RSA private key for JWT signing.
- * Handles PKCS#8 / PKCS#1 headers and common Azure paste mangling.
- * Surfaces a clear message for encrypted keys / bad PEM (OpenSSL "routines::unsupported").
+ * Resolve key material from App Settings.
+ * Prefer SF_JWT_PRIVATE_KEY_B64 (base64 of whole .key file) — Azure won't mangle it.
+ * @returns {{ pem?: string, der?: Buffer, source: string }}
  */
-function loadJwtPrivateKey(pem) {
-  const normalized = normalizePem(pem);
+function resolveJwtKeyMaterial() {
+  const b64raw = stripWrappingQuotes(env("SF_JWT_PRIVATE_KEY_B64"));
+  if (b64raw) {
+    const cleaned = b64raw.replace(/\s+/g, "");
+    let buf;
+    try {
+      buf = Buffer.from(cleaned, "base64");
+    } catch (_) {
+      throw new Error("SF_JWT_PRIVATE_KEY_B64 is not valid base64");
+    }
+    if (!buf.length) throw new Error("SF_JWT_PRIVATE_KEY_B64 decoded to empty");
+    const asText = buf.toString("utf8");
+    if (/BEGIN[\s\w]*PRIVATE KEY/i.test(asText)) {
+      return { pem: normalizePem(asText), source: "SF_JWT_PRIVATE_KEY_B64(pem)" };
+    }
+    // Raw DER bytes (pkcs8 or pkcs1)
+    return { der: buf, source: "SF_JWT_PRIVATE_KEY_B64(der)" };
+  }
+
+  const pemRaw = env("SF_JWT_PRIVATE_KEY");
+  if (!pemRaw) return { source: "none" };
+  return { pem: normalizePem(pemRaw), source: "SF_JWT_PRIVATE_KEY" };
+}
+
+function tryCreatePrivateKey(opts) {
+  return crypto.createPrivateKey(opts);
+}
+
+/**
+ * Load RSA private key for JWT signing.
+ * Handles PKCS#8 / PKCS#1 PEM, DER, and Azure paste mangling.
+ */
+function loadJwtPrivateKey(materialOrPem) {
+  const material =
+    materialOrPem && typeof materialOrPem === "object" && (materialOrPem.pem || materialOrPem.der)
+      ? materialOrPem
+      : { pem: typeof materialOrPem === "string" ? materialOrPem : "", source: "arg" };
+
+  if (material.der && Buffer.isBuffer(material.der)) {
+    for (const type of ["pkcs8", "pkcs1"]) {
+      try {
+        const key = tryCreatePrivateKey({ key: material.der, format: "der", type });
+        if (key.asymmetricKeyType && key.asymmetricKeyType !== "rsa") {
+          throw new Error(`Key type is ${key.asymmetricKeyType}; Salesforce JWT needs RSA (RS256)`);
+        }
+        return key;
+      } catch (_) {
+        /* try next */
+      }
+    }
+  }
+
+  const normalized = normalizePem(material.pem || "");
   if (!normalized) {
-    throw new Error("SF_JWT_PRIVATE_KEY is empty after normalize");
+    throw new Error(
+      "No Salesforce private key set. Prefer SF_JWT_PRIVATE_KEY_B64 (base64 of ora_intel_sf.key). See docs/salesforce-azure-sync.md"
+    );
+  }
+  if (/BEGIN\s+CERTIFICATE/i.test(normalized) && !/PRIVATE KEY/i.test(normalized)) {
+    throw new Error(
+      "SF_JWT_PRIVATE_KEY looks like a .crt certificate. Paste the matching .key private key (or its base64 as SF_JWT_PRIVATE_KEY_B64)."
+    );
   }
   if (/ENCRYPTED PRIVATE KEY/i.test(normalized)) {
     throw new Error(
-      "SF_JWT_PRIVATE_KEY is encrypted. Export an unencrypted key (openssl pkcs8 -topk8 -nocrypt) matching the cert uploaded to Salesforce."
+      "Private key is encrypted. Convert with: openssl pkcs8 -topk8 -nocrypt -in ora_intel_sf.key -out ora_intel_sf_pkcs8.key"
     );
+  }
+  if (/OPENSSH PRIVATE KEY/i.test(normalized)) {
+    throw new Error("OpenSSH private keys are not supported. Use an RSA PEM from openssl.");
+  }
+  if (/EC PRIVATE KEY/i.test(normalized)) {
+    throw new Error("EC private keys are not supported for Salesforce JWT. Use RSA (openssl genrsa).");
   }
 
   const candidates = [normalized];
-  // Swap PKCS#1 ↔ PKCS#8 headers if one label was pasted with the wrong BEGIN/END
   if (/BEGIN RSA PRIVATE KEY/i.test(normalized)) {
     candidates.push(
       normalized
@@ -86,21 +158,74 @@ function loadJwtPrivateKey(pem) {
   }
 
   let lastErr = null;
-  for (const key of candidates) {
+  for (const keyPem of candidates) {
     try {
-      return crypto.createPrivateKey({ key, format: "pem" });
+      const key = tryCreatePrivateKey({ key: keyPem, format: "pem" });
+      if (key.asymmetricKeyType && key.asymmetricKeyType !== "rsa") {
+        throw new Error(`Key type is ${key.asymmetricKeyType}; Salesforce JWT needs RSA (RS256)`);
+      }
+      return key;
     } catch (err) {
       lastErr = err;
     }
   }
 
-  const msg = String(lastErr && lastErr.message ? lastErr.message : lastErr);
-  if (/unsupported|DECODER|digital envelope|ERR_OSSL/i.test(msg)) {
-    throw new Error(
-      `SF_JWT_PRIVATE_KEY could not be loaded (${msg}). Paste the full unencrypted .key PEM (-----BEGIN … PRIVATE KEY----- through END), with \\n for newlines if Azure collapses them. Key must match the .crt uploaded to Salesforce.`
-    );
+  // Last resort: DER from PEM body
+  const bodyMatch = normalized.match(/-----BEGIN [^-]+-----([\s\S]*?)-----END [^-]+-----/i);
+  if (bodyMatch) {
+    const der = Buffer.from(bodyMatch[1].replace(/\s+/g, ""), "base64");
+    for (const type of ["pkcs8", "pkcs1"]) {
+      try {
+        const key = tryCreatePrivateKey({ key: der, format: "der", type });
+        if (key.asymmetricKeyType && key.asymmetricKeyType !== "rsa") {
+          throw new Error(`Key type is ${key.asymmetricKeyType}; Salesforce JWT needs RSA (RS256)`);
+        }
+        return key;
+      } catch (err) {
+        lastErr = err;
+      }
+    }
   }
-  throw new Error(`SF_JWT_PRIVATE_KEY invalid: ${msg}`);
+
+  const msg = String(lastErr && lastErr.message ? lastErr.message : lastErr);
+  throw new Error(
+    `SF JWT private key could not be loaded (${msg}). ` +
+      `Azure often mangles PEM newlines — set SF_JWT_PRIVATE_KEY_B64 to base64 of the whole .key file instead ` +
+      `(PowerShell: [Convert]::ToBase64String([IO.File]::ReadAllBytes('ora_intel_sf.key'))). ` +
+      `Key must be unencrypted RSA matching the .crt on the External Client App.`
+  );
+}
+
+/** Safe diagnostics for Data Status (never returns key material). */
+function diagnoseJwtPrivateKey() {
+  const out = {
+    pemSet: Boolean(env("SF_JWT_PRIVATE_KEY")),
+    b64Set: Boolean(env("SF_JWT_PRIVATE_KEY_B64")),
+    source: null,
+    parseOk: false,
+    keyType: null,
+    header: null,
+    charLength: null,
+    error: null
+  };
+  try {
+    const material = resolveJwtKeyMaterial();
+    out.source = material.source;
+    if (material.pem) {
+      out.charLength = material.pem.length;
+      const hm = material.pem.match(/-----BEGIN ([^-]+)-----/i);
+      out.header = hm ? hm[1].trim() : null;
+    } else if (material.der) {
+      out.charLength = material.der.length;
+      out.header = "DER";
+    }
+    const key = loadJwtPrivateKey(material);
+    out.parseOk = true;
+    out.keyType = key.asymmetricKeyType || "rsa";
+  } catch (err) {
+    out.error = String(err.message || err);
+  }
+  return out;
 }
 
 function b64url(input) {
@@ -119,12 +244,32 @@ function salesforceConfig() {
   const clientId = env("SF_CLIENT_ID");
   const username = env("SF_USERNAME");
   const loginUrl = (env("SF_LOGIN_URL") || "https://login.salesforce.com").replace(/\/$/, "");
-  const privateKey = normalizePem(env("SF_JWT_PRIVATE_KEY"));
+  let privateKey = "";
+  let keySource = "none";
+  try {
+    const material = resolveJwtKeyMaterial();
+    keySource = material.source;
+    privateKey = material.pem || (material.der ? "__DER__" : "");
+  } catch (_) {
+    privateKey = "";
+  }
   const apiVersion = env("SF_API_VERSION") || "59.0";
   const tierField = safeApiField(env("SF_TIER_FIELD") || "Tier__c", "Tier__c");
   const groupingField = safeApiField(env("SF_GROUPING_FIELD") || "Ora_Grouping__c", "Ora_Grouping__c");
-  const configured = Boolean(clientId && username && privateKey);
-  return { clientId, username, loginUrl, privateKey, apiVersion, tierField, groupingField, configured };
+  const configured = Boolean(
+    clientId && username && (env("SF_JWT_PRIVATE_KEY") || env("SF_JWT_PRIVATE_KEY_B64"))
+  );
+  return {
+    clientId,
+    username,
+    loginUrl,
+    privateKey,
+    keySource,
+    apiVersion,
+    tierField,
+    groupingField,
+    configured
+  };
 }
 
 function buildJwtAssertion(cfg) {
@@ -137,7 +282,7 @@ function buildJwtAssertion(cfg) {
     exp: now + 3 * 60
   };
   const enc = `${b64url(JSON.stringify(header))}.${b64url(JSON.stringify(claims))}`;
-  const keyObject = loadJwtPrivateKey(cfg.privateKey);
+  const keyObject = loadJwtPrivateKey(resolveJwtKeyMaterial());
   const sign = crypto.createSign("RSA-SHA256");
   sign.update(enc);
   sign.end();
@@ -150,7 +295,9 @@ async function getSalesforceAccessToken(cfg = salesforceConfig()) {
     const missing = [];
     if (!cfg.clientId) missing.push("SF_CLIENT_ID");
     if (!cfg.username) missing.push("SF_USERNAME");
-    if (!cfg.privateKey) missing.push("SF_JWT_PRIVATE_KEY");
+    if (!env("SF_JWT_PRIVATE_KEY") && !env("SF_JWT_PRIVATE_KEY_B64")) {
+      missing.push("SF_JWT_PRIVATE_KEY_B64 (or SF_JWT_PRIVATE_KEY)");
+    }
     throw new Error(`Salesforce not configured — set ${missing.join(", ")} in SWA App Settings`);
   }
   const assertion = buildJwtAssertion(cfg);
@@ -386,5 +533,7 @@ module.exports = {
   fetchAccountsByIds,
   normalizePem,
   loadJwtPrivateKey,
+  resolveJwtKeyMaterial,
+  diagnoseJwtPrivateKey,
   sfGet
 };
