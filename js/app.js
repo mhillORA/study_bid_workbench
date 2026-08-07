@@ -9,6 +9,8 @@
     dirty: false,
     results: {},
     askHistory: [],
+    buddyChatId: null,
+    buddyChatsOpen: false,
     buddyOpen: false,
     buddyAttachments: [],
     buddyBusy: false,
@@ -1417,7 +1419,241 @@
   }
 
   const BUDDY_SIZE_KEY = "sbw.buddyPanelSize";
-  const BUDDY_HIST_KEY = "sbw.buddyAskHistory";
+  const BUDDY_HIST_KEY = "sbw.buddyAskHistory"; // legacy single-thread key
+  const BUDDY_CHATS_MAX = 40;
+  const BUDDY_TURNS_MAX = 50;
+
+  function buddyChatsStorageKey() {
+    const u = String(state.entraUser?.email || state.userId || "local")
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9@._-]+/g, "_")
+      .slice(0, 80);
+    return `sbw.buddyChats.v1.${u || "local"}`;
+  }
+
+  function newBuddyChatId() {
+    return `c-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+  }
+
+  function titleFromTurns(turns) {
+    const firstUser = (turns || []).find((t) => t && t.role === "user" && String(t.content || "").trim());
+    const raw = String(firstUser?.content || "")
+      .replace(/\s+/g, " ")
+      .replace(/^📎\s*/, "")
+      .trim();
+    if (!raw) return "New chat";
+    return raw.length > 72 ? `${raw.slice(0, 69)}…` : raw;
+  }
+
+  function emptyBuddyChatStore() {
+    return { version: 1, activeId: null, chats: [] };
+  }
+
+  function readBuddyChatStore() {
+    try {
+      const raw = localStorage.getItem(buddyChatsStorageKey());
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && Array.isArray(parsed.chats)) {
+          return {
+            version: 1,
+            activeId: parsed.activeId || null,
+            chats: parsed.chats.filter((c) => c && c.id)
+          };
+        }
+      }
+    } catch (_) {}
+    // Migrate legacy single-thread history once
+    try {
+      const legacy = localStorage.getItem(BUDDY_HIST_KEY);
+      if (legacy) {
+        const turns = JSON.parse(legacy);
+        if (Array.isArray(turns) && turns.length) {
+          const id = newBuddyChatId();
+          const chat = {
+            id,
+            title: titleFromTurns(turns),
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+            workflow: state.buddyWorkflow || "auto",
+            turns: turns.slice(-BUDDY_TURNS_MAX)
+          };
+          const store = { version: 1, activeId: id, chats: [chat] };
+          writeBuddyChatStore(store);
+          try {
+            localStorage.removeItem(BUDDY_HIST_KEY);
+          } catch (_) {}
+          return store;
+        }
+      }
+    } catch (_) {}
+    return emptyBuddyChatStore();
+  }
+
+  function writeBuddyChatStore(store) {
+    try {
+      const chats = (store.chats || [])
+        .slice()
+        .sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || "")))
+        .slice(0, BUDDY_CHATS_MAX);
+      localStorage.setItem(
+        buddyChatsStorageKey(),
+        JSON.stringify({
+          version: 1,
+          activeId: store.activeId || (chats[0] && chats[0].id) || null,
+          chats
+        })
+      );
+    } catch (_) {}
+  }
+
+  function formatBuddyChatWhen(iso) {
+    if (!iso) return "";
+    const t = Date.parse(iso);
+    if (!Number.isFinite(t)) return "";
+    const diff = Date.now() - t;
+    if (diff < 60_000) return "just now";
+    if (diff < 3600_000) return `${Math.floor(diff / 60_000)}m ago`;
+    if (diff < 86400_000) return `${Math.floor(diff / 3600_000)}h ago`;
+    if (diff < 7 * 86400_000) return `${Math.floor(diff / 86400_000)}d ago`;
+    try {
+      return new Date(t).toLocaleDateString();
+    } catch (_) {
+      return "";
+    }
+  }
+
+  function persistBuddyHistory() {
+    const turns = (state.askHistory || []).slice(-BUDDY_TURNS_MAX);
+    const store = readBuddyChatStore();
+    let id = state.buddyChatId;
+    if (!id) {
+      id = newBuddyChatId();
+      state.buddyChatId = id;
+    }
+    const now = new Date().toISOString();
+    const existing = store.chats.find((c) => c.id === id);
+    const chat = {
+      id,
+      title: titleFromTurns(turns) || existing?.title || "New chat",
+      createdAt: existing?.createdAt || now,
+      updatedAt: now,
+      workflow: state.buddyWorkflow || existing?.workflow || "auto",
+      turns
+    };
+    store.chats = [chat, ...store.chats.filter((c) => c.id !== id)];
+    store.activeId = id;
+    writeBuddyChatStore(store);
+    if (state.buddyChatsOpen) paintBuddyChatsList();
+  }
+
+  function loadBuddyHistory() {
+    const store = readBuddyChatStore();
+    let chat = store.chats.find((c) => c.id === store.activeId) || store.chats[0] || null;
+    if (!chat) {
+      state.buddyChatId = null;
+      state.askHistory = [];
+      return;
+    }
+    state.buddyChatId = chat.id;
+    state.askHistory = Array.isArray(chat.turns) ? chat.turns.slice(-BUDDY_TURNS_MAX) : [];
+    if (chat.workflow && chat.workflow !== state.buddyWorkflow) {
+      // Keep user's current mode preference; only restore if still default auto
+      if (!localStorage.getItem("sbw.buddyWorkflow")) setBuddyWorkflow(chat.workflow);
+    }
+  }
+
+  function paintBuddyChatsList() {
+    const list = document.getElementById("buddyChatsList");
+    if (!list) return;
+    const store = readBuddyChatStore();
+    if (!store.chats.length) {
+      list.innerHTML = `<p class="muted" style="margin:0.35rem 0.25rem;">No saved chats yet. Send a message, or click New.</p>`;
+      return;
+    }
+    list.innerHTML = store.chats
+      .map((c) => {
+        const active = c.id === state.buddyChatId;
+        const n = Array.isArray(c.turns) ? c.turns.length : 0;
+        const when = formatBuddyChatWhen(c.updatedAt);
+        return `<div class="buddy-chat-item ${active ? "active" : ""}" data-buddy-chat-open="${escapeAttr(c.id)}" role="button" tabindex="0">
+          <div>
+            <div class="buddy-chat-item-title">${escapeHtml(c.title || "Chat")}</div>
+            <div class="buddy-chat-item-meta">${escapeHtml([when, n ? `${n} msg` : ""].filter(Boolean).join(" · "))}</div>
+          </div>
+          <button type="button" class="buddy-chat-item-del" data-buddy-chat-del="${escapeAttr(c.id)}" title="Delete chat" aria-label="Delete chat">×</button>
+        </div>`;
+      })
+      .join("");
+  }
+
+  function setBuddyChatsOpen(open) {
+    state.buddyChatsOpen = !!open;
+    const drawer = document.getElementById("buddyChatsDrawer");
+    const toggle = document.getElementById("buddyChatsToggle");
+    if (drawer) drawer.hidden = !state.buddyChatsOpen;
+    if (toggle) toggle.setAttribute("aria-expanded", state.buddyChatsOpen ? "true" : "false");
+    if (state.buddyChatsOpen) paintBuddyChatsList();
+  }
+
+  function openBuddyChat(id) {
+    persistBuddyHistory();
+    const store = readBuddyChatStore();
+    const chat = store.chats.find((c) => c.id === id);
+    if (!chat) return;
+    store.activeId = id;
+    writeBuddyChatStore(store);
+    state.buddyChatId = id;
+    state.askHistory = Array.isArray(chat.turns) ? chat.turns.slice(-BUDDY_TURNS_MAX) : [];
+    state.buddyAttachments = [];
+    paintBuddyAttachChips();
+    setBuddyChatsOpen(false);
+    paintBuddyChat();
+    if (els.askStatus) els.askStatus.textContent = `Opened: ${chat.title || "chat"}`;
+  }
+
+  function deleteBuddyChat(id) {
+    const store = readBuddyChatStore();
+    store.chats = store.chats.filter((c) => c.id !== id);
+    if (state.buddyChatId === id) {
+      const next = store.chats[0] || null;
+      store.activeId = next ? next.id : null;
+      state.buddyChatId = next ? next.id : null;
+      state.askHistory = next && Array.isArray(next.turns) ? next.turns.slice(-BUDDY_TURNS_MAX) : [];
+      paintBuddyChat();
+    } else if (store.activeId === id) {
+      store.activeId = store.chats[0]?.id || null;
+    }
+    writeBuddyChatStore(store);
+    paintBuddyChatsList();
+  }
+
+  function startNewBuddyChat({ seedTitle } = {}) {
+    persistBuddyHistory();
+    const id = newBuddyChatId();
+    const now = new Date().toISOString();
+    const chat = {
+      id,
+      title: seedTitle || "New chat",
+      createdAt: now,
+      updatedAt: now,
+      workflow: state.buddyWorkflow || "auto",
+      turns: []
+    };
+    const store = readBuddyChatStore();
+    store.chats = [chat, ...store.chats.filter((c) => c.id !== id)];
+    store.activeId = id;
+    writeBuddyChatStore(store);
+    state.buddyChatId = id;
+    state.askHistory = [];
+    state.buddyAttachments = [];
+    paintBuddyAttachChips();
+    setBuddyChatsOpen(false);
+    paintBuddyChat();
+    if (els.askStatus) els.askStatus.textContent = "New chat";
+    if (els.askInput) els.askInput.focus();
+  }
 
   function applyBuddyPanelSize() {
     if (!els.buddyPanel || document.documentElement.classList.contains("buddy-popout-mode")) return;
@@ -1439,21 +1675,6 @@
     } catch (_) {}
   }
 
-  function persistBuddyHistory() {
-    try {
-      localStorage.setItem(BUDDY_HIST_KEY, JSON.stringify(state.askHistory.slice(-50)));
-    } catch (_) {}
-  }
-
-  function loadBuddyHistory() {
-    try {
-      const raw = localStorage.getItem(BUDDY_HIST_KEY);
-      if (!raw) return;
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length) state.askHistory = parsed;
-    } catch (_) {}
-  }
-
   function popOutBuddy() {
     const url = new URL(location.href);
     url.searchParams.set("buddyPopout", "1");
@@ -1464,10 +1685,9 @@
 
   function clearBuddyChat() {
     state.askHistory = [];
-    try {
-      localStorage.removeItem(BUDDY_HIST_KEY);
-    } catch (_) {}
+    persistBuddyHistory();
     paintBuddyChat();
+    if (els.askStatus) els.askStatus.textContent = "Current chat cleared";
   }
 
   function initBuddyChrome() {
@@ -1480,6 +1700,38 @@
     }
     if (els.buddyClear) els.buddyClear.addEventListener("click", clearBuddyChat);
     if (els.buddyPopout) els.buddyPopout.addEventListener("click", popOutBuddy);
+    const chatsToggle = document.getElementById("buddyChatsToggle");
+    if (chatsToggle) {
+      chatsToggle.addEventListener("click", () => setBuddyChatsOpen(!state.buddyChatsOpen));
+    }
+    const chatsClose = document.getElementById("buddyChatsClose");
+    if (chatsClose) chatsClose.addEventListener("click", () => setBuddyChatsOpen(false));
+    const newChatBtn = document.getElementById("buddyNewChat");
+    if (newChatBtn) newChatBtn.addEventListener("click", () => startNewBuddyChat());
+    const chatsList = document.getElementById("buddyChatsList");
+    if (chatsList) {
+      chatsList.addEventListener("click", (e) => {
+        const del = e.target.closest("[data-buddy-chat-del]");
+        if (del) {
+          e.preventDefault();
+          e.stopPropagation();
+          const id = del.getAttribute("data-buddy-chat-del");
+          if (id && window.confirm("Delete this chat?")) deleteBuddyChat(id);
+          return;
+        }
+        const open = e.target.closest("[data-buddy-chat-open]");
+        if (open) {
+          openBuddyChat(open.getAttribute("data-buddy-chat-open"));
+        }
+      });
+      chatsList.addEventListener("keydown", (e) => {
+        if (e.key !== "Enter" && e.key !== " ") return;
+        const open = e.target.closest("[data-buddy-chat-open]");
+        if (!open) return;
+        e.preventDefault();
+        openBuddyChat(open.getAttribute("data-buddy-chat-open"));
+      });
+    }
     document.querySelectorAll("[data-buddy-workflow]").forEach((btn) => {
       btn.addEventListener("click", () => setBuddyWorkflow(btn.getAttribute("data-buddy-workflow")));
     });
@@ -5607,11 +5859,8 @@
       state.hlbpBaseline = null;
       state.editingSectionId = null;
       state.lockStatus = "";
-      // Fresh Buddy thread when switching studies — avoid stale filters/claims poisoning follow-ups
-      state.askHistory = [];
-      try {
-        localStorage.removeItem("sbw.buddyAskHistory");
-      } catch (_) {}
+      // Fresh Buddy thread when switching studies — keep prior chats in the Chats list
+      startNewBuddyChat({ seedTitle: `Study ${state.study.studyId || ""}`.trim() });
       if (String(state.study.budgetType || "").toUpperCase() === "HLBP") {
         captureHlbpBaseline();
         if (state.sectionId !== "ops") state.sectionId = "hlbp";
@@ -8002,6 +8251,13 @@
         displayName,
         firstName
       };
+      // Re-bind Buddy chat list to this signed-in user (preserve anonymous thread if needed)
+      try {
+        if ((state.askHistory || []).length) persistBuddyHistory();
+        loadBuddyHistory();
+        paintBuddyChat();
+        if (state.buddyChatsOpen) paintBuddyChatsList();
+      } catch (_) {}
       if (el) {
         el.textContent = displayName;
         el.hidden = false;
