@@ -214,6 +214,57 @@ function inferMoneyIntent(question) {
   return null;
 }
 
+/**
+ * Two primary Buddy workflows (+ teach for live context).
+ * body.buddyWorkflow wins when set (budget | feasibility | teach | auto).
+ */
+function inferBuddyWorkflow(question, body = {}) {
+  const forced = String(body.buddyWorkflow || body.workflow || "")
+    .toLowerCase()
+    .trim();
+  if (forced === "budget" || forced === "feasibility" || forced === "teach") return forced;
+
+  const q = String(question || "").toLowerCase();
+  if (!q) return "auto";
+
+  if (
+    /^(remember|learn|save(?:\s+this|\s+that)?|add to (?:buddy )?context|teach buddy)\b/i.test(q) ||
+    /\b(remember this|learn this|save (?:this|that) (?:to|for) (?:buddy )?context|add to (?:the )?playbook|keep this in (?:buddy )?context)\b/i.test(
+      q
+    )
+  ) {
+    return "teach";
+  }
+
+  const feasCue =
+    isIntelligenceQuestion(question) ||
+    /\b(feasib|psm|patients?\s*per\s*site|site (?:mix|slate|selection|performance)|competing trials?|trialhub|ct\.?\s*gov|scorecard|enrollment rate|recruit(?:ment)? rate|win themes?)\b/i.test(
+      q
+    );
+
+  const budgetCue =
+    isPricingQuestion(question) ||
+    /\b(hlbp|ballpark|budget|quote|rfp|pricing|internal budget|service fees?|pass[- ]?through|line items?|drivers?|grand total|opportunity)\b/i.test(
+      q
+    ) ||
+    /\b(create|new)\s+(study|draft|opportunity|hlbp)\b/i.test(q) ||
+    /\b(set|fill|change|update|apply)\b.{0,50}\b(enrolled|screened|core sites|enrollment months|driver|field|notes)\b/i.test(
+      q
+    );
+
+  if (feasCue && !budgetCue) return "feasibility";
+  if (budgetCue && !feasCue) return "budget";
+  if (feasCue && budgetCue) {
+    if (/\b(feasib|psm|site slate|competing|trialhub|scorecard|win themes?)\b/i.test(q)) {
+      return "feasibility";
+    }
+    if (/\b(budget|hlbp|ballpark|pricing|rfp|quote|service fees?|internal budget)\b/i.test(q)) {
+      return "budget";
+    }
+  }
+  return "auto";
+}
+
 function claimMap(claims) {
   const map = {};
   if (!Array.isArray(claims)) return map;
@@ -1323,6 +1374,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       hints.clientName = null;
     }
     const moneyIntent = inferMoneyIntent(question);
+    const buddyWorkflow = inferBuddyWorkflow(question, body);
     // Ora-earned fee rankings are always portfolio-scope (even with a study open)
     if (moneyIntent === "ora_earned") {
       hints.crossStudy = true;
@@ -1333,6 +1385,8 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
     // body.portfolio=true only means "attach portfolio data" — not force focus.
     const attachmentDriven = hasOkUpload;
     const forcePortfolio =
+      buddyWorkflow !== "teach" &&
+      buddyWorkflow !== "feasibility" &&
       !attachmentDriven &&
       (body.noStudy === true ||
         Boolean(hints.crossStudy) ||
@@ -1349,15 +1403,20 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
     const editableFields = Array.isArray(body.editableFields) ? body.editableFields : null;
     const fieldsByTab = body.fieldsByTab && typeof body.fieldsByTab === "object" ? body.fieldsByTab : null;
 
-    const answerFocus = attachmentDriven
-      ? studyId || body.studySnapshot
-        ? "single_study"
-        : "attachments"
-      : forcePortfolio || crossStudy
-        ? "portfolio"
-        : studyId || body.studySnapshot
-          ? "single_study"
-          : "portfolio";
+    const answerFocus =
+      buddyWorkflow === "teach"
+        ? "teach"
+        : buddyWorkflow === "feasibility"
+          ? "feasibility"
+          : attachmentDriven
+            ? studyId || body.studySnapshot
+              ? "single_study"
+              : "attachments"
+            : forcePortfolio || crossStudy
+              ? "portfolio"
+              : studyId || body.studySnapshot
+                ? "single_study"
+                : "portfolio";
 
     // Browser working copy only for single-study questions
     const clientStudy = answerFocus === "portfolio" ? null : body.studySnapshot || null;
@@ -1441,17 +1500,20 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       // Never force a full intel Cosmos pull just because Dry Eye (etc.) is open in the UI —
       // that was timing out Buddy asks (500s) on remember/ops/field-fill questions.
       const forceIntel =
-        isIntelligenceQuestion(question) ||
-        sourceOverviewAsk ||
-        salesforceAsk ||
-        catalogAsk ||
-        wantsDocumentExport(question) ||
-        wantsHtmlVisual(question) ||
-        hasOkUpload ||
-        isPricingQuestion(question) ||
-        Boolean(nctFromQuestion(question)) ||
-        Boolean(qIndication) ||
-        Boolean(qCountry);
+        buddyWorkflow === "feasibility" ||
+        (buddyWorkflow !== "budget" &&
+          buddyWorkflow !== "teach" &&
+          (isIntelligenceQuestion(question) ||
+            sourceOverviewAsk ||
+            salesforceAsk ||
+            catalogAsk ||
+            wantsDocumentExport(question) ||
+            wantsHtmlVisual(question) ||
+            hasOkUpload ||
+            isPricingQuestion(question) ||
+            Boolean(nctFromQuestion(question)) ||
+            Boolean(qIndication) ||
+            Boolean(qCountry)));
 
       const indication = forceIntel
         ? qIndication || (sourceOverviewAsk ? null : hintIndication || snapIndication) || null
@@ -1512,17 +1574,19 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         legacyOverviewAsk ||
         (wantsHtmlVisual(question) && isLegacyAnteriorQuestion(question));
       const forceLegacy =
-        isLegacyAnteriorQuestion(question) ||
-        isLegacyTableAsk(question) ||
-        legacyOverviewAsk ||
-        Boolean(
-          legacyHint.siteName ||
-            legacyHint.studyName ||
-            legacyHint.siteId ||
-            legacyHint.studyId
-        ) ||
-        Boolean(body.legacyPack && body.legacyPack.source === "legacy_anterior_segment") ||
-        enrollmentConsent;
+        buddyWorkflow !== "budget" &&
+        buddyWorkflow !== "teach" &&
+        (isLegacyAnteriorQuestion(question) ||
+          isLegacyTableAsk(question) ||
+          legacyOverviewAsk ||
+          Boolean(
+            legacyHint.siteName ||
+              legacyHint.studyName ||
+              legacyHint.siteId ||
+              legacyHint.studyId
+          ) ||
+          Boolean(body.legacyPack && body.legacyPack.source === "legacy_anterior_segment") ||
+          enrollmentConsent);
       // Do NOT force legacy just because the open study/tab has an indication —
       // that overloaded every Buddy ask and caused timeouts/500s.
       if (body.legacyPack && body.legacyPack.source === "legacy_anterior_segment" && !body.legacyPack.error) {
@@ -1572,7 +1636,11 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
     let pricingScenarios = null;
     try {
       const rfp = extractRfpScenarioFromQuestion(question, body);
-      if (isPricingQuestion(question) || (rfp.wantsTiers && (rfp.enrolledSubjects || rfp.indication))) {
+      if (
+        buddyWorkflow !== "feasibility" &&
+        buddyWorkflow !== "teach" &&
+        (isPricingQuestion(question) || (rfp.wantsTiers && (rfp.enrolledSubjects || rfp.indication)))
+      ) {
         const studies =
           (portfolio && portfolio.source === "cosmos_portfolio" && portfolio.studies) ||
           (portfolioFull && portfolioFull.studies) ||
@@ -1618,6 +1686,15 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
     const contextPayload = {
       askedAt: new Date().toISOString(),
       source: requireCopilotKey ? "copilot_studio" : "workbench",
+      workflow: buddyWorkflow,
+      workflowNote:
+        buddyWorkflow === "budget"
+          ? "BUDGET workflow: use portfolio / workingStudy / pricing / APPLY / CREATE_STUDY / HLBP. Do NOT answer with TrialHub/PSM/site feasibility unless the user explicitly asks."
+          : buddyWorkflow === "feasibility"
+            ? "FEASIBILITY workflow: use context.intelligence / legacyAnterior / scorecard-style site & enrollment facts. Do NOT invent bid dollars or open an HLBP unless the user explicitly asks for budget/pricing."
+            : buddyWorkflow === "teach"
+              ? "TEACH workflow: capture durable SME notes. End with LEARN_CONTEXT:{...}. Do not run a budget or feasibility analysis unless asked."
+              : "AUTO workflow: pick budget vs feasibility from the question; keep those domains separate.",
       answerFocus,
       moneyIntent,
       wantsHtmlVisual: visualAsk,
@@ -1777,6 +1854,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       clientName: hints.clientName || null,
       year: hints.year || null,
       answerFocus,
+      workflow: buddyWorkflow,
       documentTitle: reportTitle,
       exports: docExports.map((e) =>
         e.contentBase64

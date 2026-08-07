@@ -81,6 +81,12 @@
         <button type="button" class="btn btn-ghost buddy-close" id="buddyClose" aria-label="Close Buddy">×</button>
       </div>
     </header>
+    <div class="buddy-workflow" role="tablist" aria-label="Buddy workflow">
+      <button type="button" class="buddy-workflow-btn" data-buddy-workflow="auto" role="tab" aria-selected="true" title="Detect budget vs feasibility from the question">Auto</button>
+      <button type="button" class="buddy-workflow-btn" data-buddy-workflow="budget" role="tab" aria-selected="false" title="HLBP, bids, drivers, portfolio dollars">Budget</button>
+      <button type="button" class="buddy-workflow-btn" data-buddy-workflow="feasibility" role="tab" aria-selected="false" title="PSM, sites, TrialHub, CT.gov, win themes">Feasibility</button>
+      <button type="button" class="buddy-workflow-btn" data-buddy-workflow="teach" role="tab" aria-selected="false" title="Save notes into Buddy live context from chat">Teach</button>
+    </div>
     <div class="chat-log buddy-chat-log" id="askLog"></div>
     <div class="ask-compose buddy-compose">
       <div class="buddy-attach-chips" id="buddyAttachChips" hidden></div>
@@ -88,6 +94,7 @@
       <div class="buddy-compose-row">
         <input type="file" id="buddyFileInput" hidden accept=".pdf,.docx,.pptx,.xlsx,.xlsm,.csv,.txt,.md,.json,.html,.htm" multiple />
         <button type="button" class="btn btn-ghost" id="btnBuddyAttach" title="Attach multiple files (Ctrl/Cmd+click or Shift+click in the picker)">Attach files</button>
+        <button type="button" class="btn btn-ghost" id="btnBuddyRemember" title="Save typed note (or last Buddy reply) to live context">Remember</button>
         <button type="button" class="btn btn-primary" id="btnAsk">Send</button>
         <span class="muted" id="askStatus"></span>
       </div>

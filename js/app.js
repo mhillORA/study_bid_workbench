@@ -12,6 +12,7 @@
     buddyOpen: false,
     buddyAttachments: [],
     buddyBusy: false,
+    buddyWorkflow: localStorage.getItem("sbw.buddyWorkflow") || "auto",
     source: "none", // none | cosmos | buddy
     versions: [],
     lineItems: [],
@@ -1472,12 +1473,18 @@
   function initBuddyChrome() {
     loadBuddyHistory();
     applyBuddyPanelSize();
+    setBuddyWorkflow(state.buddyWorkflow || "auto");
     if (new URLSearchParams(location.search).get("buddyPopout") === "1") {
       document.documentElement.classList.add("buddy-popout-mode");
       openBuddy();
     }
     if (els.buddyClear) els.buddyClear.addEventListener("click", clearBuddyChat);
     if (els.buddyPopout) els.buddyPopout.addEventListener("click", popOutBuddy);
+    document.querySelectorAll("[data-buddy-workflow]").forEach((btn) => {
+      btn.addEventListener("click", () => setBuddyWorkflow(btn.getAttribute("data-buddy-workflow")));
+    });
+    const rememberBtn = document.getElementById("btnBuddyRemember");
+    if (rememberBtn) rememberBtn.addEventListener("click", rememberFromCompose);
     if (els.buddyPanel) {
       // Native CSS resize ends without an event — poll on pointer up
       els.buddyPanel.addEventListener("mouseup", persistBuddyPanelSize);
@@ -1522,11 +1529,114 @@
         data?.llm?.deployment ||
         "";
       if (label) {
-        el.textContent = `Ask Buddy · ${label}`;
+        el.dataset.baseLabel = `Ask Buddy · ${label}`;
       } else if (data?.llm?.active) {
-        el.textContent = `Ask Buddy · online`;
+        el.dataset.baseLabel = "Ask Buddy · online";
       }
     } catch (_) {}
+    paintBuddyModelLabel();
+  }
+
+  function setBuddyWorkflow(mode) {
+    const allowed = new Set(["auto", "budget", "feasibility", "teach"]);
+    const next = allowed.has(mode) ? mode : "auto";
+    state.buddyWorkflow = next;
+    localStorage.setItem("sbw.buddyWorkflow", next);
+    document.querySelectorAll("[data-buddy-workflow]").forEach((btn) => {
+      const on = btn.getAttribute("data-buddy-workflow") === next;
+      btn.setAttribute("aria-selected", on ? "true" : "false");
+    });
+    if (els.askInput) {
+      els.askInput.placeholder =
+        next === "budget"
+          ? "Budget: HLBP, drivers, portfolio fees, field fills…"
+          : next === "feasibility"
+            ? "Feasibility: PSM, sites, TrialHub, CT.gov, win themes…"
+            : next === "teach"
+              ? "Teach: type a note to remember, or click Remember…"
+              : "Ask Buddy… attach files (protocol, slides, template…)";
+    }
+    paintBuddyModelLabel();
+  }
+
+  function paintBuddyModelLabel() {
+    const el = document.getElementById("buddyModelLabel");
+    if (!el) return;
+    const wf =
+      state.buddyWorkflow === "budget"
+        ? "Budget"
+        : state.buddyWorkflow === "feasibility"
+          ? "Feasibility"
+          : state.buddyWorkflow === "teach"
+            ? "Teach"
+            : "Auto";
+    if (!el.dataset.baseLabel) {
+      el.dataset.baseLabel = "Ask Buddy · Budget Buddy";
+    }
+    el.textContent = `${el.dataset.baseLabel} · ${wf}`;
+  }
+
+  function matchRememberOnly(question) {
+    const q = String(question || "").trim();
+    if (!q) return null;
+    const m = q.match(
+      /^(?:remember(?:\s+this|\s+that)?|learn(?:\s+this)?|save(?:\s+this|\s+that)?|add to (?:buddy )?context|teach buddy)\s*[:\-–]?\s*([\s\S]+)$/i
+    );
+    if (!m || !String(m[1] || "").trim()) return null;
+    return normalizeLearnPayload({
+      dept: state.buddyContext?.dept || "general",
+      category: state.buddyContext?.category || "other",
+      addition: String(m[1]).trim()
+    });
+  }
+
+  function rememberFromCompose() {
+    if (!state.buddyOpen) openBuddy();
+    const typed = String((els.askInput && els.askInput.value) || "").trim();
+    let addition = typed;
+    let from = "compose";
+    if (!addition) {
+      for (let i = state.askHistory.length - 1; i >= 0; i--) {
+        const t = state.askHistory[i];
+        if (t.role === "assistant" && String(t.content || "").trim()) {
+          addition = String(t.content).trim().slice(0, 4000);
+          from = "last Buddy reply";
+          break;
+        }
+      }
+    }
+    if (!addition) {
+      if (els.askStatus) els.askStatus.textContent = "Type a note first, or get a Buddy reply to save.";
+      return;
+    }
+    const learn = normalizeLearnPayload({
+      dept:
+        state.buddyWorkflow === "feasibility"
+          ? "feasibility"
+          : state.buddyWorkflow === "budget"
+            ? "pricing"
+            : state.buddyContext?.dept || "general",
+      category:
+        state.buddyWorkflow === "feasibility"
+          ? "sites"
+          : state.buddyWorkflow === "budget"
+            ? "pricing"
+            : state.buddyContext?.category || "talking-points",
+      addition
+    });
+    if (!learn) return;
+    if (els.askInput) els.askInput.value = "";
+    state.askHistory.push({
+      role: "user",
+      content: from === "compose" ? `Remember this: ${addition}` : `Remember the last Buddy reply`
+    });
+    pushLearnProposal(
+      from === "compose"
+        ? "Proposed a note for Buddy live context — click Save to store it."
+        : "Proposed saving the last Buddy reply to live context — click Save to store it.",
+      learn
+    );
+    paintBuddyChat();
   }
 
   function closeBuddy() {
@@ -2814,6 +2924,16 @@
       return;
     }
 
+    const rememberOnly = !pendingFiles.length ? matchRememberOnly(question) : null;
+    if (rememberOnly) {
+      pushLearnProposal(
+        "Proposed a note for Buddy live context — click Save to store it.",
+        rememberOnly
+      );
+      paintBuddyChat();
+      return;
+    }
+
     state.buddyBusy = true;
     paintBuddyChat();
     const catalog = buildEditableFieldCatalog().filter((f) => {
@@ -2849,6 +2969,7 @@
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           question,
+          buddyWorkflow: state.buddyWorkflow || "auto",
           studyId: wantPortfolio ? undefined : (state.study.studyId || undefined),
           studySnapshot: wantPortfolio ? undefined : leanStudySnapshot(state.study),
           portfolio: true,
@@ -2926,6 +3047,7 @@
           const modelLabel = data.displayName || data.deployment || data.model || "";
           const modelNote = modelLabel ? ` · ${modelLabel}` : "";
           const soft = data.provider === "error" || data.ok === false ? " · degraded" : "";
+          const wfNote = data.workflow && data.workflow !== "auto" ? ` · ${data.workflow}` : "";
           const intelBits = [];
           if (data.intelligenceQuery?.indication) intelBits.push(data.intelligenceQuery.indication);
           if (data.intelligenceQuery?.country) intelBits.push(data.intelligenceQuery.country);
@@ -2933,13 +3055,13 @@
             ? ` · Intel${intelBits.length ? ` ${intelBits.join(" / ")}` : ""}`
             : "";
           if (data.answerFocus === "portfolio" && data.databaseStudyCount != null) {
-            els.askStatus.textContent = `All studies · Cosmos ${data.portfolioMatched ?? "?"} / ${data.databaseStudyCount}${intelNote}${modelNote}${soft}`;
+            els.askStatus.textContent = `All studies · Cosmos ${data.portfolioMatched ?? "?"} / ${data.databaseStudyCount}${intelNote}${modelNote}${wfNote}${soft}`;
           } else if (portfolioMode) {
-            els.askStatus.textContent = `All studies mode (no study selected)${intelNote}${modelNote}${soft}`;
+            els.askStatus.textContent = `All studies mode (no study selected)${intelNote}${modelNote}${wfNote}${soft}`;
           } else {
             els.askStatus.textContent = hasOpenStudy()
-              ? `Open study · ${state.study.studyId}${intelNote}${modelNote}${soft}`
-              : `${intelNote}${modelNote}${soft}`.replace(/^ · /, "") || modelLabel;
+              ? `Open study · ${state.study.studyId}${intelNote}${modelNote}${wfNote}${soft}`
+              : `${intelNote}${modelNote}${wfNote}${soft}`.replace(/^ · /, "") || modelLabel;
           }
         }
         state.buddyBusy = false;

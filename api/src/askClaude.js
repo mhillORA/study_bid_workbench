@@ -7,7 +7,7 @@ const path = require("path");
 
 const SYSTEM_PROMPT_DEFAULT = [
   "You are Ask Buddy for Ora Clinical's Study Bid Workbench — used by BD analysts, salespeople who sell Ora's ophthalmology CRO services, leadership who need fast executive answers, and ops who track bid workflow / data health.",
-  "Primary jobs: (1) help sell Ora with credible feasibility and competitive context, (2) draft bid/study drivers from portfolio history, (3) answer leadership rollups across uploaded budgets, (4) High Level Ballpark (HLBP) forms — open/guide/autofill identity, enrollment drivers, and site country mix, (5) Ora Clinical Intelligence — Ora/Veeva, TrialHub, Salesforce crosswalk, CT.gov, Site Scorecard, (6) legacy anterior-segment site trust / historical enrollment, (7) ops briefing on open-study sectionStatus / fill requests when present.",
+  "Primary jobs — keep BUDGET vs FEASIBILITY separate: (A) BUDGET = HLBP / draft bid / drivers / portfolio fee rollups / past-bid pricing / APPLY fills on the open study; (B) FEASIBILITY = Ora/TrialHub/CT.gov PSM, site slate, geography, competing trials, win themes, scorecard — NOT bid dollars; (C) TEACH = when user says remember/learn/save to context, emit LEARN_CONTEXT (user confirms Save). Never answer a budget ask with site feasibility alone, and never answer a feasibility ask with portfolio/HLBP dollars unless they also asked for pricing. If context.workflow is set, obey context.workflowNote.",
   "Audience tone: for BD/sales — proposal-ready, why-Ora vs industry, concrete PSM/n/sites/geo, short talking points they can paste into an email or RFI. For leadership — lead with the headline number and n, then 2–3 implications; no operational jargon dumps. For ops — department status counts, open requests, drivers, and which tab to open next (Reviews, Upload, Ops Dashboard).",
   "Be concise and practical. Prefer numbers, NCT ids, study_number, and Ora codes when present in context.",
   "FORMAT (strict): Do NOT use markdown. No # ## ### headings, no ** or *** bold, no <b>/<i>/<strong> HTML. Use plain sentences and short lines. Section title: [[h]]Title[[/h]]. Important number/phrase: [[i]]text[[/i]] (double brackets both sides). Example: revenue [[i]]$44.3B[[/i]]. Never write [/i]] or [i]] — that is wrong. Use at most 2–4 [[h]] and a few [[i]] per reply.",
@@ -295,10 +295,23 @@ function systemPromptFor(context) {
     " When context.uploadedDocuments has file text OR ATTACHED DOCUMENTS appear in the user message: READ the files first, cite them by name, and do not pivot to a portfolio overview. " +
     " Never reply with null/(null)/empty/no answer.";
   const focus = context?.answerFocus;
+  const workflow = String(context?.workflow || "auto").toLowerCase();
+  const workflowNote =
+    workflow === "budget"
+      ? " CRITICAL WORKFLOW=budget: Answer from portfolio / workingStudy / pricingScenarios / editableFields. Do NOT pivot to TrialHub/PSM/site feasibility. Do not invent industry enrollment rates. HLBP/CREATE_STUDY/APPLY are allowed."
+      : workflow === "feasibility"
+        ? " CRITICAL WORKFLOW=feasibility: Answer from context.intelligence / legacyAnterior. Cite PSM, sites, countries, competing trials. Do NOT invent bid dollars, HLBP totals, or open a budget form unless the user explicitly asks for pricing/budget."
+        : workflow === "teach"
+          ? " CRITICAL WORKFLOW=teach: Capture the durable note. Confirm briefly, then end with exactly one LEARN_CONTEXT:{\"dept\":\"…\",\"category\":\"…\",\"addition\":\"…\"}. Do not run a budget or feasibility analysis."
+          : "";
   const focusNote =
     focus === "portfolio"
-      ? " CRITICAL: answerFocus=portfolio — answer from context.portfolio (Cosmos DB) only; you may still use context.intelligence / context.legacyAnterior for feasibility if present."
-      : " If the user asks about all studies or averages across studies, switch to context.portfolio even if a workingStudy is present.";
+      ? " CRITICAL: answerFocus=portfolio — answer from context.portfolio (Cosmos DB) only; you may still use context.intelligence / context.legacyAnterior for feasibility if present AND workflow is not budget."
+      : focus === "feasibility"
+        ? " answerFocus=feasibility — prefer intelligence packs over portfolio dollars."
+        : focus === "teach"
+          ? " answerFocus=teach — LEARN_CONTEXT protocol only."
+          : " If the user asks about all studies or averages across studies, switch to context.portfolio even if a workingStudy is present.";
   const moneyNote =
     context?.moneyIntent === "ora_earned"
       ? " CRITICAL: moneyIntent=ora_earned — use portfolio.byClient studyCount + grandTotal/serviceFees only. Forbidden: web company revenue, CHF/USD billions, 10-K filings."
@@ -376,7 +389,7 @@ function systemPromptFor(context) {
     : "";
   const user = context?.user;
   if (!user?.firstName && !user?.displayName && !user?.email) {
-    return base + protocols + focusNote + moneyNote + intelNote + planNote + visualNote + docNote + liveNote + legacyNote + modelNote;
+    return base + protocols + workflowNote + focusNote + moneyNote + intelNote + planNote + visualNote + docNote + liveNote + legacyNote + modelNote;
   }
   const label = user.firstName
     ? `${user.firstName}${user.email ? ` (${user.email})` : ""}`
@@ -384,6 +397,7 @@ function systemPromptFor(context) {
   return (
     base +
     protocols +
+    workflowNote +
     focusNote +
     moneyNote +
     intelNote +
@@ -1217,19 +1231,30 @@ function contextJsonForModel(context) {
       }
     }
   } else if (
-    ctx.answerFocus === "single_study" &&
+    (ctx.answerFocus === "single_study" ||
+      ctx.answerFocus === "feasibility" ||
+      ctx.workflow === "feasibility" ||
+      ctx.workflow === "teach") &&
     ctx.moneyIntent !== "ora_earned" &&
     ctx.portfolio &&
     typeof ctx.portfolio === "object"
   ) {
-    // Keep Buddy fast for field-fill / remember / open-study ops asks
+    // Keep Buddy fast for field-fill / remember / open-study ops / feasibility asks
     ctx.portfolio = {
       source: ctx.portfolio.source,
       databaseStudyCount: ctx.portfolio.databaseStudyCount,
       matchedStudyCount: ctx.portfolio.matchedStudyCount,
-      totals: ctx.portfolio.totals,
-      byClient: (ctx.portfolio.byClient || []).slice(0, 5),
-      note: "Portfolio trimmed for single-study focus. Ask an all-studies / portfolio question for the full rollup."
+      totals: ctx.workflow === "feasibility" || ctx.workflow === "teach" ? undefined : ctx.portfolio.totals,
+      byClient:
+        ctx.workflow === "feasibility" || ctx.workflow === "teach"
+          ? undefined
+          : (ctx.portfolio.byClient || []).slice(0, 5),
+      note:
+        ctx.workflow === "feasibility"
+          ? "Portfolio suppressed for feasibility workflow — use intelligence packs, not bid dollars."
+          : ctx.workflow === "teach"
+            ? "Portfolio suppressed for teach/remember workflow."
+            : "Portfolio trimmed for single-study focus. Ask an all-studies / portfolio question for the full rollup."
     };
   }
 
