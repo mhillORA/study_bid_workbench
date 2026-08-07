@@ -20,6 +20,7 @@ const SYSTEM_PROMPT_DEFAULT = [
   "When the user wants a new study / draft bid (not HLBP) and provides details, briefly confirm, then end with exactly one line: CREATE_STUDY:{\"studyId\":\"O-12345 or omit\",\"clientName\":\"...\",\"title\":\"...\",\"protocol\":\"...\",\"phase\":\"...\",\"therapeuticArea\":\"...\",\"indication\":\"...\",\"drivers\":{\"enrolledSubjects\":120,\"screenedSubjects\":180,\"coreSites\":15,\"enrollmentMonths\":12},\"notes\":\"...\",\"versionLabel\":\"draft\"}. Only include fields the user gave. studyId optional — system will assign NEW-… if missing. Do not claim the study exists until the user clicks Create in the UI.",
   "When the user asks to open, go to, or show a tab/section (Hub, HLBP, Ops Dashboard, Studies, Versions, Ora Clinical Intelligence, Data Status, Site Scorecard, Buddy Context, Overview, Recruitment, ClinOps, Monitoring, SMO, Summary, Reviews, Formulas, Upload), put exactly one line at the end of your reply: NAVIGATE:<sectionId> using one of: hub, hlbp, ops, studies, versions, intelligence, data-status, scorecard, buddy-context, overview, recruitment, clinops, monitoring, smo, summary, reviews, formulas, upload.",
   "When the user asks you to set, fill, change, or update a field on the open study, briefly confirm what you will change, then put exactly one line at the end: APPLY:[{\"path\":\"assumptions.recruitment.notes\",\"value\":\"text\",\"label\":\"Notes (Recruitment)\"}].",
+  "When the user asks Buddy to remember, learn, save for later, add to context/playbook, or keep a fact/process/talking-point: briefly confirm, then end with exactly one line LEARN_CONTEXT:{\"dept\":\"bd\",\"category\":\"talking-points\",\"addition\":\"the durable note to store\"}. dept one of: general, bd, ops, recruitment, clinops, monitoring, smo, analyst, leadership, feasibility, pricing. category one of: playbook, talking-points, ous, sites, indication, pricing, ops, other. The user must click Save to Buddy context before it is stored. Do not claim it is already saved.",
   "Section locks: context.sectionLocks lists tabs currently locked for editing (sectionId + holderName). You may READ and discuss locked tabs. Do NOT emit APPLY (or claim you changed values) for any path whose tab is in sectionLocks and held by someone else — instead say clearly e.g. 'Alex is editing Recruitment — ask them to Save and click Done before I can change that tab.' CREATE_STUDY for a new study is still allowed.",
   "APPLY paths must come from context.editableFields (path + label + tab). Prefer the activeTab when the user says a generic name like Notes. Examples: assumptions.recruitment.notes, drivers.enrolledSubjects, sites.0.country, sites.0.coreSites, clientName. Never invent paths. Do not claim the value is saved until the user clicks Apply in the UI.",
   "When context.user has a firstName (or displayName), greet them by first name when they say hi/hello or on the first reply of a chat — then skip greetings on follow-ups unless they greet you again.",
@@ -113,6 +114,7 @@ const LEGACY_ANTERIOR_RULES = [
   " Site Scorecard 'Include legacy recruitment data' is a separate UI toggle — when the user mentions they turned it on, treat enrollment as consented.",
   " LIVE CONTEXT: context.buddyLiveContext (from the Buddy Context tab) is SME-authored additions — use with the Master Context; on conflict prefer Master for rules, live context for newest SME notes.",
   " Live context is APPEND-ONLY (never replaced wholesale). Entries are organized by department then category (organized.byDepartment).",
+  " When the user says remember / learn / save that / add to playbook: propose LEARN_CONTEXT (user confirms). Do not invent that memory was saved without the protocol line.",
   " When the user asks what is in current/live Buddy context, what's already ingested, or summarize Buddy Context: answer from context.buddyLiveContext — list departments, categories, entry counts, and short previews from organized/text. If empty, say so and suggest the Buddy Context tab. Optionally end with NAVIGATE:buddy-context."
 ].join(" ");
 
@@ -277,6 +279,7 @@ function systemPromptFor(context) {
   const protocols =
     " Machine protocols: for tab navigation end with NAVIGATE:<sectionId> (hub,hlbp,ops,studies,versions,intelligence,scorecard,buddy-context,overview,recruitment,clinops,monitoring,smo,summary,reviews,formulas,upload)." +
     " For field fills end with APPLY:[{\"path\":\"drivers.enrolledSubjects\",\"value\":100,\"label\":\"Enrolled subjects\"}] using only context.editableFields paths; prefer activeTab for ambiguous names; the user must click Apply before values write." +
+    " To remember/learn a durable SME note from chat end with LEARN_CONTEXT:{\"dept\":\"bd\",\"category\":\"talking-points\",\"addition\":\"…\"}; user must click Save to Buddy context — do not claim it is stored until then." +
     " If context.sectionLocks shows another person on a tab, do not APPLY that tab — say who is editing it and that they must Save and Done first." +
     " To create a new study or HLBP from user-provided info end with CREATE_STUDY:{...json...} (set budgetType:\"HLBP\" and sites:[{country,coreSites}] for HLBP); user must click Create before it is saved." +
     " For cross-study / all-studies / average / client / year questions: set answer from context.portfolio (averages + totals + byClient); cite matchedStudyCount; do not use openStudyInUi or workingStudy for those answers." +
@@ -1213,6 +1216,21 @@ function contextJsonForModel(context) {
         };
       }
     }
+  } else if (
+    ctx.answerFocus === "single_study" &&
+    ctx.moneyIntent !== "ora_earned" &&
+    ctx.portfolio &&
+    typeof ctx.portfolio === "object"
+  ) {
+    // Keep Buddy fast for field-fill / remember / open-study ops asks
+    ctx.portfolio = {
+      source: ctx.portfolio.source,
+      databaseStudyCount: ctx.portfolio.databaseStudyCount,
+      matchedStudyCount: ctx.portfolio.matchedStudyCount,
+      totals: ctx.portfolio.totals,
+      byClient: (ctx.portfolio.byClient || []).slice(0, 5),
+      note: "Portfolio trimmed for single-study focus. Ask an all-studies / portfolio question for the full rollup."
+    };
   }
 
   // Prefer keeping indicationBenchmark if we must shrink — but NEVER drop feed overviews /
@@ -1303,7 +1321,8 @@ function contextJsonForModel(context) {
   }
 
   const raw = JSON.stringify(ctx, null, 2);
-  const max = docs?.okCount > 0 ? 80000 : 100000;
+  const max =
+    docs?.okCount > 0 ? 60000 : ctx.answerFocus === "single_study" ? 70000 : 90000;
   return raw.length > max ? `${raw.slice(0, max)}\n…[context truncated]` : raw;
 }
 
@@ -1703,7 +1722,7 @@ async function askClaude({ question, context, history }) {
 /** True when the model effectively refused or returned garbage. */
 function isEmptyOrRefusalAnswer(text) {
   const t = String(text || "")
-    .replace(/\b(NAVIGATE|APPLY|CREATE_STUDY):[^\n]*/gi, "")
+    .replace(/\b(NAVIGATE|APPLY|CREATE_STUDY|LEARN_CONTEXT):[^\n]*/gi, "")
     .replace(/\[\[[hi]\]\]|\[\[\/[hi]\]\]/gi, "")
     .trim();
   if (!t) return true;
@@ -1774,59 +1793,152 @@ function extractAzureMessageText(respBody) {
   return String(msg.refusal || "").trim();
 }
 
-/** Prefer Foundry Agent (web search); else Azure chat completions; else Claude. */
+/** Prefer Foundry Agent (web search); else Azure chat completions; else Claude.
+ * Never throws — Buddy UI must always get a speakable answer (no HTTP 500).
+ */
+function slimContextForRetry(context) {
+  const c = { ...(context || {}) };
+  if (c.portfolio && typeof c.portfolio === "object") {
+    c.portfolio = {
+      source: c.portfolio.source,
+      databaseStudyCount: c.portfolio.databaseStudyCount,
+      matchedStudyCount: c.portfolio.matchedStudyCount,
+      totals: c.portfolio.totals,
+      averages: c.portfolio.averages,
+      byClient: Array.isArray(c.portfolio.byClient) ? c.portfolio.byClient.slice(0, 8) : [],
+      note: "Trimmed after model/provider failure — ask again for full portfolio detail if needed."
+    };
+  }
+  if (c.intelligence && typeof c.intelligence === "object") {
+    c.intelligence = {
+      source: c.intelligence.source,
+      query: c.intelligence.query,
+      indicationBenchmark: c.intelligence.indicationBenchmark
+        ? {
+            summary: c.intelligence.indicationBenchmark.summary || null,
+            ora: c.intelligence.indicationBenchmark.ora
+              ? { studyCount: c.intelligence.indicationBenchmark.ora.studyCount }
+              : null
+          }
+        : null,
+      note: "Trimmed after model/provider failure."
+    };
+  }
+  if (c.legacyAnterior) {
+    c.legacyAnterior = { source: c.legacyAnterior.source, note: "trimmed for retry" };
+  }
+  if (c.salesforceData) delete c.salesforceData;
+  if (c.buddyLiveContext && c.buddyLiveContext.text) {
+    c.buddyLiveContext = {
+      ...c.buddyLiveContext,
+      text: String(c.buddyLiveContext.text).slice(0, 8000),
+      organized: undefined
+    };
+  }
+  if (Array.isArray(c.editableFields)) c.editableFields = c.editableFields.slice(0, 40);
+  if (c.uploadedDocuments?.files) {
+    c.uploadedDocuments = {
+      ...c.uploadedDocuments,
+      files: c.uploadedDocuments.files.map((f) =>
+        f && f.text ? { ...f, text: String(f.text).slice(0, 12000) } : f
+      )
+    };
+  }
+  return c;
+}
+
+function buddySoftFail(err, extras = {}) {
+  const msg = String(err?.message || err || "unknown error").slice(0, 350);
+  return {
+    answer:
+      `I could not complete that ask just now (${msg}). ` +
+      `Try again in a moment, or shorten the question. Field fills and “remember this” still work when the model is back.`,
+    provider: "error",
+    error: msg,
+    ...extras
+  };
+}
+
 async function askAi(opts) {
   const status = providerStatus();
-  let result;
-  if (status.active === "foundry_agent") {
+  const attempts = [];
+  let lastErr = null;
+
+  const tryProvider = async (label, fn) => {
     try {
-      result = await askFoundryAgent(opts);
-    } catch (agentErr) {
-      // If the agent was renamed/broken in Foundry, fall back to classic chat so Buddy still answers.
+      const result = await fn();
+      return { ...result, answer: ensureBuddyAnswer(result.answer) };
+    } catch (err) {
+      lastErr = err;
+      attempts.push(`${label}: ${String(err.message || err).slice(0, 180)}`);
+      return null;
+    }
+  };
+
+  let result = null;
+  if (status.active === "foundry_agent") {
+    result = await tryProvider("foundry_agent", () => askFoundryAgent(opts));
+    if (!result) {
       const cfg = azureConfig();
-      if (cfg.endpoint && cfg.apiKey && cfg.deployment && !isFoundryProjectEndpoint(cfg.endpoint)) {
-        try {
-          result = await askAzureOpenAI(opts);
+      if (cfg.endpoint && cfg.apiKey && cfg.deployment) {
+        result = await tryProvider("azure_openai_fallback", () => askAzureOpenAI(opts));
+        if (result) {
           result = {
             ...result,
             provider: "azure_openai_fallback",
-            agentError: String(agentErr.message || agentErr),
+            agentError: String(lastErr?.message || lastErr || ""),
             note: `Foundry agent failed; used deployment ${cfg.deployment} instead.`
           };
-        } catch (_) {
-          throw agentErr;
         }
-      } else if (cfg.endpoint && cfg.apiKey && cfg.deployment) {
-        // Project endpoint: still try chat completions path (may work on sibling openai host)
-        try {
-          result = await askAzureOpenAI(opts);
-          result = {
-            ...result,
-            provider: "azure_openai_fallback",
-            agentError: String(agentErr.message || agentErr),
-            note: `Foundry agent "${status.foundryAgentName}" failed; fell back to chat deployment "${cfg.deployment}".`
-          };
-        } catch (_) {
-          const hint =
-            ` Set SWA Application setting FOUNDRY_AGENT_NAME to the exact new agent name in Foundry ` +
-            `(health currently resolves agent as "${status.foundryAgentName}").`;
-          throw new Error(`${String(agentErr.message || agentErr)}${hint}`);
+        if (!result) {
+          const slim = { ...opts, context: slimContextForRetry(opts.context) };
+          result = await tryProvider("azure_openai_slim", () => askAzureOpenAI(slim));
+          if (result) {
+            result = {
+              ...result,
+              provider: "azure_openai_slim_fallback",
+              agentError: String(lastErr?.message || lastErr || ""),
+              note: "Retried with trimmed context after model failure."
+            };
+          }
         }
-      } else {
-        const hint =
-          ` Set SWA Application setting FOUNDRY_AGENT_NAME to the exact new agent name in Foundry ` +
-          `(health currently resolves agent as "${status.foundryAgentName}").`;
-        throw new Error(`${String(agentErr.message || agentErr)}${hint}`);
       }
     }
-  } else if (status.active === "azure_openai") result = await askAzureOpenAI(opts);
-  else if (status.active === "claude") result = await askClaude(opts);
-  else {
-    throw new Error(
-      "Ask Buddy is not configured. Set AZURE_OPENAI_ENDPOINT (Foundry project), AZURE_OPENAI_API_KEY, and FOUNDRY_AGENT_NAME=<your agent> — or classic AZURE_OPENAI_DEPLOYMENT for chat completions."
+  } else if (status.active === "azure_openai") {
+    result = await tryProvider("azure_openai", () => askAzureOpenAI(opts));
+    if (!result) {
+      const slim = { ...opts, context: slimContextForRetry(opts.context) };
+      result = await tryProvider("azure_openai_slim", () => askAzureOpenAI(slim));
+      if (result) {
+        result = {
+          ...result,
+          provider: "azure_openai_slim_fallback",
+          note: "Retried with trimmed context after model failure."
+        };
+      }
+    }
+  } else if (status.active === "claude") {
+    result = await tryProvider("claude", () => askClaude(opts));
+  }
+
+  if (!result && status.active !== "claude" && envSet("ANTHROPIC_API_KEY")) {
+    result = await tryProvider("claude_fallback", () => askClaude(opts));
+  }
+
+  if (result) return result;
+
+  if (!status.active) {
+    return buddySoftFail(
+      new Error(
+        "Ask Buddy is not configured. Set AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, and FOUNDRY_AGENT_NAME (or AZURE_OPENAI_DEPLOYMENT)."
+      ),
+      { attempts }
     );
   }
-  return { ...result, answer: ensureBuddyAnswer(result.answer) };
+
+  return buddySoftFail(lastErr || new Error(attempts.join(" | ") || "all providers failed"), {
+    attempts
+  });
 }
 
 module.exports = {

@@ -1437,9 +1437,9 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       // Cosmos-first: question text wins over whatever tab/hint is open in the browser.
       // Source dashboards (CT.gov / TrialHub / Veeva / crosswalk): ignore open-study indication
       // so Dry Eye (etc.) does not hijack a feed-wide overview ask.
-      const indication = qIndication || (sourceOverviewAsk ? null : hintIndication || snapIndication) || null;
-      const country = qCountry || (sourceOverviewAsk && !qCountry ? null : hintCountry) || null;
-
+      // Only use open-study / tab hint filters when the ask itself is intel-shaped.
+      // Never force a full intel Cosmos pull just because Dry Eye (etc.) is open in the UI —
+      // that was timing out Buddy asks (500s) on remember/ops/field-fill questions.
       const forceIntel =
         isIntelligenceQuestion(question) ||
         sourceOverviewAsk ||
@@ -1450,20 +1450,18 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         hasOkUpload ||
         isPricingQuestion(question) ||
         Boolean(nctFromQuestion(question)) ||
-        Boolean(country) ||
-        Boolean(indication) ||
         Boolean(qIndication) ||
-        // Hint country/indication alone should not force intel unless the ask is intel-shaped —
-        // sitting on the Intelligence tab must not hijack unrelated leadership/ops asks.
-        (Boolean(hintIndication || hintCountry) &&
-          (isIntelligenceQuestion(question) || sourceOverviewAsk || catalogAsk || salesforceAsk));
+        Boolean(qCountry);
 
-      // Always re-query Cosmos for intelligence — never reuse the browser's open-tab pack.
-      // UI hints only supply default indication/country when the question does not name one.
-      // With attachments (protocol/slides), still pull Cosmos so Buddy cannot invent benchmarks.
-      if (forceIntel || indication || hints.clientName || snapIndication || country || hasOkUpload) {
+      const indication = forceIntel
+        ? qIndication || (sourceOverviewAsk ? null : hintIndication || snapIndication) || null
+        : qIndication || null;
+      const country = forceIntel
+        ? qCountry || (sourceOverviewAsk && !qCountry ? null : hintCountry) || null
+        : qCountry || null;
+
+      if (forceIntel) {
         const rfpHint = extractRfpScenarioFromQuestion(question, body);
-        // Also sniff indication from attachment filenames/text when question is vague
         let indFromFiles = null;
         if (!indication && !rfpHint.indication && hasOkUpload && !sourceOverviewAsk) {
           const blob = (uploaded.files || [])
@@ -1471,20 +1469,25 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
             .join("\n");
           indFromFiles = extractIndicationFromQuestion(blob);
         }
-        intelligence = await buildIntelligenceContext(getDb, {
+        const intelTimeoutMs = Number(process.env.BUDDY_INTEL_TIMEOUT_MS || 18000);
+        const intelPromise = buildIntelligenceContext(getDb, {
           question,
           indication: rfpHint.indication || indication || indFromFiles,
           country,
           clientName: sourceOverviewAsk ? null : hints.clientName || snapClient || null,
           sponsor: sourceOverviewAsk ? null : hints.clientName || snapClient || null,
-          force:
-            forceIntel ||
-            Boolean(indication) ||
-            Boolean(country) ||
-            Boolean(rfpHint.indication) ||
-            Boolean(indFromFiles) ||
-            hasOkUpload
+          force: true
         });
+        intelligence = await Promise.race([
+          intelPromise,
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error(`intelligence pack timed out after ${intelTimeoutMs}ms`)), intelTimeoutMs)
+          )
+        ]).catch((err) => ({
+          source: "ora_clinical_intelligence_error",
+          error: String(err.message || err),
+          note: "Skipped heavy intel pack so Buddy can still answer."
+        }));
         if (intelligence && !intelligence.error) {
           intelligence.attachedFrom = "cosmos_query";
           intelligence.note =
@@ -1516,11 +1519,12 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
           legacyHint.siteName ||
             legacyHint.studyName ||
             legacyHint.siteId ||
-            legacyHint.studyId ||
-            (!legacyOverviewAsk && legacyHint.indication)
+            legacyHint.studyId
         ) ||
         Boolean(body.legacyPack && body.legacyPack.source === "legacy_anterior_segment") ||
         enrollmentConsent;
+      // Do NOT force legacy just because the open study/tab has an indication —
+      // that overloaded every Buddy ask and caused timeouts/500s.
       if (body.legacyPack && body.legacyPack.source === "legacy_anterior_segment" && !body.legacyPack.error) {
         legacyAnterior = {
           ...body.legacyPack,
@@ -1737,12 +1741,16 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       }
     };
 
+    // askAi is soft-fail: never throws for model/provider errors
     const result = await askAi({ question, context: contextPayload, history });
     let answer = result.answer;
     let docExports = [];
     let reportTitle = null;
     try {
-      if (visualAsk || docExportAsk || /HTML_REPORT_START/i.test(String(answer || ""))) {
+      if (
+        result.provider !== "error" &&
+        (visualAsk || docExportAsk || /HTML_REPORT_START/i.test(String(answer || "")))
+      ) {
         const built = await buildBuddyDocExports(answer, question);
         if (built.html) {
           answer = built.answer;
@@ -1758,10 +1766,12 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
     const llm = providerStatus();
     return json(200, {
       answer,
+      ok: result.provider !== "error",
       model: result.model,
       deployment: llm.deployment || result.model || null,
       displayName: llm.displayName || null,
       provider: result.provider,
+      agentError: result.agentError || result.error || null,
       usage: result.usage,
       studyId: answerFocus === "portfolio" ? null : studyId || clientStudy?.studyId || null,
       clientName: hints.clientName || null,
@@ -1794,9 +1804,26 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       greetedAs: user?.firstName || user?.displayName || null
     });
   } catch (err) {
+    // Buddy chat must never 500 — always return a speakable answer for the panel.
     context.error(err);
-    const msg = String(err.message || err);
-    const status = msg.includes("not configured") ? 503 : 500;
-    return json(status, { error: msg });
+    const msg = String(err.message || err).slice(0, 400);
+    const llm = (() => {
+      try {
+        return providerStatus();
+      } catch (_) {
+        return {};
+      }
+    })();
+    return json(200, {
+      ok: false,
+      answer:
+        `I hit an internal error building that reply (${msg}). ` +
+        `Try again with a shorter question, or without an open study if this was a simple remember/ops ask.`,
+      error: msg,
+      provider: "error",
+      deployment: llm.deployment || null,
+      displayName: llm.displayName || "Buddy",
+      answerFocus: "error"
+    });
   }
 }

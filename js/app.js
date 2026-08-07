@@ -1566,6 +1566,23 @@
               <ul>${rows}</ul>
               ${actions}
             </div>`;
+          } else if (t.proposal.kind === "learn_context") {
+            const p = t.proposal.payload || {};
+            const preview = escapeHtml(String(p.addition || "").slice(0, 600));
+            const meta = escapeHtml(`${p.deptLabel || p.dept || "general"} · ${p.categoryLabel || p.category || "other"}`);
+            const actions =
+              st === "pending"
+                ? `<div class="buddy-proposal-actions">
+                  <button type="button" class="btn btn-primary" data-buddy-learn="${t.proposal.id}">Save to Buddy context</button>
+                  <button type="button" class="btn btn-ghost" data-buddy-reject="${t.proposal.id}">Reject</button>
+                </div>`
+                : `<p class="muted">${st === "applied" ? "Saved to live Buddy context." : "Rejected — not saved."}</p>`;
+            proposalHtml = `<div class="buddy-proposal ${escapeAttr(st)}">
+              <div class="chat-who">Remember this</div>
+              <p class="muted" style="margin:0.25rem 0;">${meta}</p>
+              <pre class="buddy-ctx-body" style="max-height:10rem;overflow:auto;margin:0.35rem 0;">${preview}</pre>
+              ${actions}
+            </div>`;
           } else if (t.proposal.patches && t.proposal.patches.length) {
             const rows = t.proposal.patches
               .map((p) => `<li><strong>${escapeHtml(p.label || p.path)}</strong> → ${escapeHtml(formatPatchValue(p.value))}</li>`)
@@ -1614,7 +1631,7 @@
       })
       .join("");
     els.askLog.innerHTML = turns ||
-      "<p class=\"muted\">Try “create a new study for Alcon, protocol X, 120 enrolled, 15 sites”, or “set enrolled subjects to 120”.</p>";
+      "<p class=\"muted\">Try “create a new study…”, “set enrolled subjects to 120”, or “remember this: OUS sites prefer…”. Speak “remember / learn / save that” to store a note in Buddy context.</p>";
     els.askLog.scrollTop = els.askLog.scrollHeight;
     if (els.askStatus) {
       els.askStatus.textContent = state.buddyBusy ? "Thinking…" : "";
@@ -1898,38 +1915,126 @@
     return { text: cleaned.trim(), patches };
   }
 
-  function extractCreateStudy(text) {
-    const src = String(text || "");
-    const re = /\bCREATE_STUDY:\s*(\{[\s\S]*?\})\s*(?=\n(?:NAVIGATE:|APPLY:)|$)/i;
-    const m = src.match(re) || src.match(/\bCREATE_STUDY:\s*(\{[\s\S]*\})\s*$/i);
-    if (!m) return { text: src.trim(), create: null };
-    let create = null;
-    try {
-      create = JSON.parse(m[1]);
-    } catch (_) {
-      // try to find balanced JSON object after marker
-      const idx = src.toUpperCase().indexOf("CREATE_STUDY:");
-      if (idx >= 0) {
-        const brace = src.indexOf("{", idx);
-        if (brace >= 0) {
-          let depth = 0;
-          for (let i = brace; i < src.length; i++) {
-            if (src[i] === "{") depth += 1;
-            else if (src[i] === "}") {
-              depth -= 1;
-              if (depth === 0) {
-                try {
-                  create = JSON.parse(src.slice(brace, i + 1));
-                } catch (_) {}
-                break;
-              }
-            }
+  function extractBalancedJsonObject(src, marker) {
+    const upper = String(src || "").toUpperCase();
+    const needle = String(marker || "").toUpperCase();
+    const idx = upper.indexOf(needle);
+    if (idx < 0) return null;
+    const brace = src.indexOf("{", idx);
+    if (brace < 0) return null;
+    let depth = 0;
+    for (let i = brace; i < src.length; i++) {
+      if (src[i] === "{") depth += 1;
+      else if (src[i] === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          try {
+            return { value: JSON.parse(src.slice(brace, i + 1)), start: idx, end: i + 1 };
+          } catch (_) {
+            return null;
           }
         }
       }
     }
-    const cleaned = src.replace(/\bCREATE_STUDY:\s*\{[\s\S]*\}\s*/i, "\n").trim();
+    return null;
+  }
+
+  function extractCreateStudy(text) {
+    const src = String(text || "");
+    const re = /\bCREATE_STUDY:\s*(\{[\s\S]*?\})\s*(?=\n(?:NAVIGATE:|APPLY:|LEARN_CONTEXT:)|$)/i;
+    const m = src.match(re) || src.match(/\bCREATE_STUDY:\s*(\{[\s\S]*\})\s*$/i);
+    let create = null;
+    let cleaned = src;
+    if (m) {
+      try {
+        create = JSON.parse(m[1]);
+      } catch (_) {}
+    }
+    if (!create) {
+      const bal = extractBalancedJsonObject(src, "CREATE_STUDY:");
+      if (bal) create = bal.value;
+    }
+    cleaned = src.replace(/\bCREATE_STUDY:\s*\{[\s\S]*\}\s*/i, "\n").trim();
     return { text: cleaned, create };
+  }
+
+  const LEARN_DEPT_LABELS = {
+    general: "General",
+    bd: "BD",
+    ops: "Ops",
+    recruitment: "Recruitment",
+    clinops: "ClinOps",
+    monitoring: "Monitoring",
+    smo: "SMO",
+    analyst: "Analyst",
+    leadership: "Leadership",
+    feasibility: "Feasibility",
+    pricing: "Pricing"
+  };
+  const LEARN_CAT_LABELS = {
+    playbook: "Playbook / process",
+    "talking-points": "Talking points",
+    ous: "OUS / geography",
+    sites: "Sites",
+    indication: "Indication",
+    pricing: "Pricing",
+    ops: "Ops",
+    other: "Other"
+  };
+
+  function normalizeLearnPayload(raw) {
+    if (!raw || typeof raw !== "object") return null;
+    const addition = String(raw.addition || raw.append || raw.text || raw.note || "").trim();
+    if (!addition) return null;
+    let dept = String(raw.dept || raw.department || "general")
+      .toLowerCase()
+      .trim()
+      .replace(/\s+/g, "-");
+    let category = String(raw.category || "other")
+      .toLowerCase()
+      .trim()
+      .replace(/\s+/g, "-");
+    if (!LEARN_DEPT_LABELS[dept]) dept = "general";
+    if (!LEARN_CAT_LABELS[category]) category = "other";
+    return {
+      dept,
+      category,
+      addition,
+      deptLabel: LEARN_DEPT_LABELS[dept],
+      categoryLabel: LEARN_CAT_LABELS[category]
+    };
+  }
+
+  function extractLearnContext(text) {
+    const src = String(text || "");
+    let learn = null;
+    const re = /\bLEARN_CONTEXT:\s*(\{[\s\S]*?\})\s*(?=\n(?:NAVIGATE:|APPLY:|CREATE_STUDY:|LEARN_CONTEXT:)|$)/i;
+    const m = src.match(re) || src.match(/\bLEARN_CONTEXT:\s*(\{[\s\S]*\})\s*$/i);
+    if (m) {
+      try {
+        learn = normalizeLearnPayload(JSON.parse(m[1]));
+      } catch (_) {}
+    }
+    if (!learn) {
+      const bal = extractBalancedJsonObject(src, "LEARN_CONTEXT:");
+      if (bal) learn = normalizeLearnPayload(bal.value);
+    }
+    const cleaned = src.replace(/\bLEARN_CONTEXT:\s*\{[\s\S]*\}\s*/i, "\n").trim();
+    return { text: cleaned, learn };
+  }
+
+  function pushLearnProposal(content, learnPayload) {
+    const turn = {
+      role: "assistant",
+      content,
+      proposal: {
+        id: `l-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        kind: "learn_context",
+        status: "pending",
+        payload: learnPayload
+      }
+    };
+    state.askHistory.push(turn);
   }
 
   function summarizeCreatePayload(payload) {
@@ -2144,11 +2249,14 @@
     text = report.text;
     const created = extractCreateStudy(text);
     text = created.text;
+    const learned = extractLearnContext(text);
+    text = learned.text;
     const extracted = extractApplyPatches(text);
     text = extracted.text;
     if (!text) {
       if (report.html) text = "Document ready — Open or Download below.";
       else if (created.create) text = "Proposed a new study — click Create study to open it.";
+      else if (learned.learn) text = "Proposed a note for Buddy context — click Save to store it.";
       else if (extracted.patches.length) {
         text = "Proposed field updates — Apply to write them into the open study.";
       } else if (sectionId === "__buddy__") {
@@ -2172,6 +2280,8 @@
     text = text.replace(/(^|\s)\(?null\)?(?=\s|$)/gi, (m, lead) => `${lead}missing`);
     if (created.create) {
       pushCreateProposal(text, created.create);
+    } else if (learned.learn) {
+      pushLearnProposal(text, learned.learn);
     } else {
       pushAssistant(text, extracted.patches, report.html, exports);
     }
@@ -2378,11 +2488,61 @@
     return null;
   }
 
+  async function applyLearnContext(id) {
+    const proposal = findProposal(id);
+    if (!proposal || proposal.kind !== "learn_context" || proposal.status !== "pending") return;
+    const payload = proposal.payload || {};
+    const addition = String(payload.addition || "").trim();
+    if (!addition) {
+      proposal.status = "rejected";
+      pushAssistant("Nothing to save — the note was empty.");
+      paintBuddyChat();
+      return;
+    }
+    proposal.status = "applied";
+    paintBuddyChat();
+    try {
+      const res = await fetch(apiUrl("/api/buddy/context"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          append: addition,
+          dept: payload.dept || "general",
+          category: payload.category || "other",
+          user: state.entraUser || undefined
+        })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
+      if (state.buddyContext) {
+        state.buddyContext.status =
+          data.note ||
+          `Saved from chat · ${payload.deptLabel || payload.dept} / ${payload.categoryLabel || payload.category}`;
+      }
+      pushAssistant(
+        `Saved to Buddy live context under ${payload.deptLabel || payload.dept || "general"} → ${
+          payload.categoryLabel || payload.category || "other"
+        }. Ask “what’s in live context?” anytime, or open the Buddy Context tab.`
+      );
+      if (state.sectionId === "buddy-context") {
+        loadBuddyContext().catch(() => {});
+      }
+    } catch (err) {
+      proposal.status = "pending";
+      pushAssistant(`Could not save to Buddy context: ${err.message || err}`);
+    }
+    paintBuddyChat();
+  }
+
   function applyProposal(id) {
     const proposal = findProposal(id);
     if (!proposal || proposal.status !== "pending") return;
     if (proposal.kind === "create_study") {
       applyCreateStudy(id);
+      return;
+    }
+    if (proposal.kind === "learn_context") {
+      applyLearnContext(id);
       return;
     }
     const blocked = [];
@@ -2448,7 +2608,9 @@
     pushAssistant(
       proposal.kind === "create_study"
         ? "Okay — did not create that study."
-        : "Okay — left those fields unchanged."
+        : proposal.kind === "learn_context"
+          ? "Okay — did not save that to Buddy context."
+          : "Okay — left those fields unchanged."
     );
     paintBuddyChat();
   }
@@ -2549,6 +2711,38 @@
     };
   }
 
+  function leanStudySnapshot(study) {
+    if (!study || typeof study !== "object") return undefined;
+    return {
+      studyId: study.studyId,
+      clientName: study.clientName,
+      title: study.title,
+      protocol: study.protocol,
+      phase: study.phase,
+      therapeuticArea: study.therapeuticArea,
+      indication: study.indication,
+      enrollmentType: study.enrollmentType,
+      budgetType: study.budgetType,
+      category: study.category,
+      versionLabel: study.versionLabel,
+      drivers: study.drivers || {},
+      sites: Array.isArray(study.sites) ? study.sites.slice(0, 40) : [],
+      totals: study.totals || null,
+      sectionStatus: study.sectionStatus || null,
+      assumptions: study.assumptions || null,
+      header: study.header
+        ? {
+            clientName: study.header.clientName,
+            title: study.header.title,
+            protocol: study.header.protocol,
+            phase: study.header.phase,
+            indication: study.header.indication,
+            opportunityId: study.header.opportunityId
+          }
+        : null
+    };
+  }
+
   async function sendAsk() {
     const input = els.askInput;
     const question = (input && input.value || "").trim();
@@ -2643,23 +2837,28 @@
         /\b(clients?|sponsors?|studies?|portfolio)\b/.test(qLower));
     const wantPortfolio = portfolioMode || askAcross;
     try {
+      const historyPayload = state.askHistory
+        .slice(0, -1)
+        .slice(-8)
+        .map((t) => ({
+          role: t.role,
+          content: String(t.content || "").slice(0, 4000)
+        }));
       const res = await fetch(apiUrl("/api/ask"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           question,
           studyId: wantPortfolio ? undefined : (state.study.studyId || undefined),
-          studySnapshot: wantPortfolio ? undefined : state.study,
-          // Always ask API to include Cosmos portfolio; noStudy = zero selection / no open-study bias
+          studySnapshot: wantPortfolio ? undefined : leanStudySnapshot(state.study),
           portfolio: true,
           noStudy: portfolioMode || undefined,
           activeTab: state.sectionId,
           activeTabLabel: (SBW.sections.find((s) => s.id === state.sectionId) || {}).label || state.sectionId,
           sectionLocks: wantPortfolio ? [] : state.locks || [],
-          editableFields: wantPortfolio ? [] : catalog,
-          fieldsByTab: wantPortfolio ? undefined : catalogByTab(catalog),
+          editableFields: wantPortfolio ? [] : catalog.slice(0, 120),
+          fieldsByTab: wantPortfolio ? undefined : catalogByTab(catalog.slice(0, 120)),
           user: state.entraUser || undefined,
-          // Same indication/region as Ora Clinical Intelligence tab (and pack already on screen)
           intelligenceHint: {
             indication: String(
               state.intelligence.indication ||
@@ -2693,23 +2892,28 @@
             ).trim() || undefined
           },
           includeLegacyEnrollment: Boolean(state.scorecard.includeLegacy) || undefined,
-          intelligencePack:
-            state.intelligence.pack &&
-            state.intelligence.pack.source === "ora_clinical_intelligence" &&
-            !state.intelligence.pack.error
-              ? state.intelligence.pack
-              : undefined,
-          history: state.askHistory.slice(0, -1).map((t) => ({
-            role: t.role,
-            content: t.content
-          })),
+          history: historyPayload,
           attachments: attachmentsPayload
         })
       });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        pushAssistant(data.error || `Request failed (${res.status})`);
-      } else {
+      const rawText = await res.text();
+      let data = {};
+      try {
+        data = rawText ? JSON.parse(rawText) : {};
+      } catch (_) {
+        data = {};
+      }
+      if (/sign in to your account|login\.microsoftonline|AADSTS/i.test(rawText)) {
+        pushAssistant(
+          "Your session expired — sign in again (refresh the page), then retry. Buddy cannot answer while Azure AD is asking for login."
+        );
+      } else if (!res.ok) {
+        pushAssistant(
+          data.answer ||
+            data.error ||
+            `Buddy request failed (${res.status}). Try again — if this keeps happening, refresh and sign in.`
+        );
+      } else if (data.answer) {
         applyBuddyAnswer(data.answer, data.exports);
         if (Array.isArray(data.attachments) && data.attachments.some((a) => a && a.ok === false)) {
           const fails = data.attachments
@@ -2721,6 +2925,7 @@
         if (els.askStatus) {
           const modelLabel = data.displayName || data.deployment || data.model || "";
           const modelNote = modelLabel ? ` · ${modelLabel}` : "";
+          const soft = data.provider === "error" || data.ok === false ? " · degraded" : "";
           const intelBits = [];
           if (data.intelligenceQuery?.indication) intelBits.push(data.intelligenceQuery.indication);
           if (data.intelligenceQuery?.country) intelBits.push(data.intelligenceQuery.country);
@@ -2728,21 +2933,26 @@
             ? ` · Intel${intelBits.length ? ` ${intelBits.join(" / ")}` : ""}`
             : "";
           if (data.answerFocus === "portfolio" && data.databaseStudyCount != null) {
-            els.askStatus.textContent = `All studies · Cosmos ${data.portfolioMatched ?? "?"} / ${data.databaseStudyCount}${intelNote}${modelNote}`;
+            els.askStatus.textContent = `All studies · Cosmos ${data.portfolioMatched ?? "?"} / ${data.databaseStudyCount}${intelNote}${modelNote}${soft}`;
           } else if (portfolioMode) {
-            els.askStatus.textContent = `All studies mode (no study selected)${intelNote}${modelNote}`;
+            els.askStatus.textContent = `All studies mode (no study selected)${intelNote}${modelNote}${soft}`;
           } else {
             els.askStatus.textContent = hasOpenStudy()
-              ? `Open study · ${state.study.studyId}${intelNote}${modelNote}`
-              : `${intelNote}${modelNote}`.replace(/^ · /, "") || modelLabel;
+              ? `Open study · ${state.study.studyId}${intelNote}${modelNote}${soft}`
+              : `${intelNote}${modelNote}${soft}`.replace(/^ · /, "") || modelLabel;
           }
         }
         state.buddyBusy = false;
         paintBuddyChat();
         return;
+      } else {
+        pushAssistant(
+          data.error ||
+            "Buddy returned an empty answer. Try rephrasing, or refresh if your session expired."
+        );
       }
     } catch (err) {
-      pushAssistant(`Could not reach /api/ask. ${String(err)}`);
+      pushAssistant(`Could not reach Buddy. ${String(err.message || err)}`);
     }
     state.buddyBusy = false;
     paintBuddyChat();
@@ -3992,11 +4202,11 @@
         : (cats.find((c) => c.id === viewCategory) || {}).name || viewCategory;
     const appendDeptLabel = (depts.find((d) => d.id === appendDept) || {}).name || appendDept;
     const appendCatLabel = (cats.find((c) => c.id === appendCategory) || {}).name || appendCategory;
-    const needsSpecific = viewDept === "*" || viewCategory === "*";
+    const viewingAll = viewDept === "*" || viewCategory === "*";
     return `
       <div class="card wide">
         <h3>Buddy live context</h3>
-        <p class="muted">Append SME notes, OUS playbook updates, or excerpts here. Saved to Cosmos and attached on every Buddy ask — <strong>no redeploy</strong>. Append-only: you cannot replace the whole context. Ask Buddy “what’s in live context?” anytime for a summary.</p>
+        <p class="muted">Append SME notes, OUS playbook updates, or excerpts here. Saved to Cosmos and attached on every Buddy ask — <strong>no redeploy</strong>. Append-only: you cannot replace the whole context. In chat, say “remember this…” and confirm Save. Ask Buddy “what’s in live context?” anytime for a summary.</p>
         <p class="muted" style="margin-top:0.35rem;">${escapeHtml(bc.status || "")}${
           bc.updatedAt ? ` · last update ${escapeHtml(bc.updatedAt)}${bc.updatedBy ? ` by ${escapeHtml(bc.updatedBy)}` : ""}` : ""
         }</p>
@@ -4011,17 +4221,15 @@
           </label>
         </div>
         <label class="field" style="margin-top:0.75rem;">
-          <span>Append new material${
-            needsSpecific
-              ? ` <span class="muted">(pick a specific dept + category first)</span>`
-              : ` <span class="muted">→ ${escapeHtml(appendDeptLabel)} / ${escapeHtml(appendCatLabel)}</span>`
-          }</span>
-          <textarea id="buddyCtxAppend" class="input" rows="8" placeholder="Paste notes to add under the selected department + category…"${
-            needsSpecific ? " disabled" : ""
-          }>${escapeHtml(bc.append || "")}</textarea>
+          <span>Append new material <span class="muted">→ ${escapeHtml(appendDeptLabel)} / ${escapeHtml(
+            appendCatLabel
+          )}${viewingAll ? " (defaults while browsing All)" : ""}</span></span>
+          <textarea id="buddyCtxAppend" class="input" rows="8" placeholder="Paste notes to add under the selected department + category…">${escapeHtml(
+            bc.append || ""
+          )}</textarea>
         </label>
         <div style="display:flex;gap:0.6rem;flex-wrap:wrap;margin-top:0.65rem;">
-          <button type="button" class="btn btn-primary" id="btnBuddyCtxAppend" ${bc.saving || needsSpecific ? "disabled" : ""}>${
+          <button type="button" class="btn btn-primary" id="btnBuddyCtxAppend" ${bc.saving ? "disabled" : ""}>${
             bc.saving ? "Saving…" : "Append to Buddy context"
           }</button>
           <button type="button" class="btn btn-secondary" id="btnBuddyCtxRefresh" ${bc.loading ? "disabled" : ""}>Refresh</button>
@@ -7530,6 +7738,11 @@
         const createBtn = e.target.closest("[data-buddy-create]");
         if (createBtn) {
           applyCreateStudy(createBtn.getAttribute("data-buddy-create"));
+          return;
+        }
+        const learnBtn = e.target.closest("[data-buddy-learn]");
+        if (learnBtn) {
+          applyLearnContext(learnBtn.getAttribute("data-buddy-learn"));
           return;
         }
         const rejectBtn = e.target.closest("[data-buddy-reject]");
