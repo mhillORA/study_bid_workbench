@@ -181,110 +181,156 @@ function phraseIncludes(haystack, needle) {
   return ` ${h} `.includes(` ${n} `);
 }
 
-/** Bare tokens that must never expand across indication families. */
+/**
+ * Shared words that belong to many indications — never use alone to pick a family.
+ * Exclusive matching: one request → one INDICATION_GROUPS row only.
+ */
 const AMBIGUOUS_INDICATION_TOKENS = new Set([
   "dry",
   "amd",
   "eye",
+  "ocular",
   "macular",
+  "retinal",
+  "optic",
+  "vein",
+  "edema",
+  "disease",
+  "syndrome",
+  "disorder",
   "age",
   "related",
-  "degeneration"
+  "degeneration",
+  "neuropathy",
+  "neuritis",
+  "surface",
+  "cornea",
+  "corneal",
+  "primary",
+  "open",
+  "angle",
+  "vascular",
+  "inherited",
+  "congenital"
 ]);
 
+function familyIdForGroup(groupIndex) {
+  const group = INDICATION_GROUPS[groupIndex];
+  if (!group || !group.length) return null;
+  return `g${groupIndex}:${normText(group[0]).slice(0, 40)}`;
+}
+
 /**
- * Stable family key — Dry Eye and Dry AMD (GA) are NEVER the same family.
- * Prevents CONTAINS/alias mash-ups on the shared word "dry".
+ * Resolve to exactly ONE indication group (exclusive).
+ * Match rules (no reverse substring — that caused Glaucoma → Glaucoma Neuroprotection):
+ *  1) exact norm equality with a group label
+ *  2) short code (≤3 chars) only when the whole query IS that code
+ *  3) query contains the full label as a token phrase (longest label wins)
+ * Never assign two groups. Never expand across groups.
  */
-function indicationFamily(raw) {
-  const n = normText(raw);
+function resolveIndicationGroup(raw) {
+  const requested = String(raw || "").trim();
+  if (!requested) return null;
+  const n = normText(requested);
   if (!n) return null;
-  if (
-    n.includes("dry eye") ||
-    n.includes("keratoconjunctivitis") ||
-    n === "ded" ||
-    n.includes("meibomian") ||
-    /\bdevices\b.*\bdry eye\b/.test(n) ||
-    /\bdry eye\b.*\bdevices\b/.test(n)
-  ) {
-    return "dry_eye";
-  }
-  if (
-    n.includes("geographic atrophy") ||
-    n.includes("dry amd") ||
-    (n.includes("geographic") && n.includes("atrophy")) ||
-    n === "ga"
-  ) {
-    return "dry_amd";
-  }
-  if (
-    n.includes("wet amd") ||
-    n === "namd" ||
-    (n.includes("neovascular") && n.includes("macular")) ||
-    n.includes("wet age related macular")
-  ) {
-    return "wet_amd";
-  }
+  if (AMBIGUOUS_INDICATION_TOKENS.has(n)) return null;
+
+  let best = null; // { index, score, matchedLabel }
+
   for (let i = 0; i < INDICATION_GROUPS.length; i++) {
     const group = INDICATION_GROUPS[i];
-    if (group.some((g) => normText(g) === n || phraseIncludes(n, g) || phraseIncludes(g, n))) {
-      return `g${i}:${normText(group[0]).slice(0, 28)}`;
+    for (const label of group) {
+      const ng = normText(label);
+      if (!ng) continue;
+      let score = 0;
+      if (ng === n) {
+        score = 10000 + ng.length;
+      } else if (ng.length <= 3) {
+        // Short codes only when the query is exactly that code (DED, GA, RP, …)
+        if (n === ng) score = 9000 + ng.length;
+      } else if (phraseIncludes(n, ng)) {
+        // Query contains the label phrase — prefer longer labels
+        score = 8000 + ng.length;
+      } else {
+        continue;
+      }
+      if (!best || score > best.score) {
+        best = { index: i, score, matchedLabel: label };
+      }
     }
   }
-  return `other:${n.slice(0, 40)}`;
+
+  if (!best) return null;
+  const group = INDICATION_GROUPS[best.index];
+  return {
+    index: best.index,
+    family: familyIdForGroup(best.index),
+    matchedLabel: best.matchedLabel,
+    preferred: preferredIndicationLabel(best.matchedLabel) || best.matchedLabel,
+    labels: [...group]
+  };
+}
+
+function indicationFamily(raw) {
+  const resolved = resolveIndicationGroup(raw);
+  if (resolved) return resolved.family;
+  const n = normText(raw);
+  return n ? `other:${n.slice(0, 40)}` : null;
 }
 
 function indicationAliases(raw) {
   if (!raw) return [];
-  const n = normText(raw);
-  const tokens = new Set(n.split(/\s+/).filter(Boolean));
   const requested = String(raw).trim();
-  const out = new Set([requested]);
-  // Bare "dry" / "amd" etc. — keep as-is, do not expand into Dry Eye AND Dry AMD
-  if (AMBIGUOUS_INDICATION_TOKENS.has(n)) {
-    return [...out];
+  const resolved = resolveIndicationGroup(requested);
+  if (!resolved) {
+    // Unknown free-text — do not invent sister indications
+    return requested ? [requested] : [];
   }
-  const family = indicationFamily(raw);
-  for (const group of INDICATION_GROUPS) {
-    const hit = group.some((g) => {
-      const ng = normText(g);
-      if (!ng) return false;
-      if (ng === n) return true;
-      // Short codes (DR, GA, RP, DED, …): exact token only — never substring
-      if (ng.length <= 3) return tokens.has(ng);
-      // Require token-bounded phrase. Reject short prefixes ("dry" ⊂ "dry eye").
-      if (n.length < 5 && n !== ng) return false;
-      return phraseIncludes(n, ng) || phraseIncludes(ng, n);
-    });
-    if (!hit) continue;
-    for (const g of group) {
-      const gf = indicationFamily(g);
-      if (!family || !gf || gf === family) out.add(g);
-    }
-  }
-  return [...out].filter((a) => {
-    if (a === requested) return true;
-    const af = indicationFamily(a);
-    return !family || !af || af === family;
-  });
+  // Exclusive: synonyms from THIS group only
+  const out = new Set([requested, ...resolved.labels]);
+  return [...out];
 }
 
-/** True when a Cosmos/Veeva indication string belongs with the requested indication. */
+/** True when a Cosmos/Veeva indication string belongs with the requested indication family only. */
 function indicationCompatible(rowIndication, requestedIndication, aliases = []) {
   const ri = String(rowIndication || "").trim();
   const req = String(requestedIndication || "").trim();
   if (!ri || !req) return false;
-  const aliasList = (aliases && aliases.length ? aliases : indicationAliases(req)).map(String);
-  const riN = normText(ri);
-  if (aliasList.some((a) => normText(a) === riN)) return true;
-  if (aliasList.some((a) => phraseIncludes(ri, a) || phraseIncludes(a, ri))) {
-    const fam = indicationFamily(req);
-    const rf = indicationFamily(ri);
-    return !fam || !rf || fam === rf;
+  const reqResolved = resolveIndicationGroup(req);
+  const rowResolved = resolveIndicationGroup(ri);
+
+  // Both known: must be the same exclusive group
+  if (reqResolved && rowResolved) {
+    return reqResolved.index === rowResolved.index;
   }
-  const fam = indicationFamily(req);
-  const rf = indicationFamily(ri);
-  return Boolean(fam && rf && fam === rf);
+
+  // Requested known, row free-text: accept only if row phrase-matches a synonym from that one group
+  if (reqResolved && !rowResolved) {
+    return reqResolved.labels.some(
+      (a) => normText(a) === normText(ri) || phraseIncludes(ri, a)
+    );
+  }
+
+  // Fallback: exact / phrase against provided aliases, but never if aliases span multiple groups
+  const aliasList = (aliases && aliases.length ? aliases : indicationAliases(req)).map(String);
+  const fams = new Set(
+    aliasList.map((a) => resolveIndicationGroup(a)?.index).filter((x) => x != null)
+  );
+  if (fams.size > 1) return false;
+  const riN = normText(ri);
+  return aliasList.some((a) => {
+    const na = normText(a);
+    if (!na || na.length < 4) return na && na === riN;
+    return na === riN || phraseIncludes(ri, a);
+  });
+}
+
+/**
+ * Related labels for narrative only — NEVER merge into primary Cosmos queries.
+ * Exclusive indication matching forbids cross-group coverage.
+ */
+function relatedIndicationLabels(_indication) {
+  return [];
 }
 
 function isCtgovQuestion(question) {
@@ -776,20 +822,23 @@ function extractIndicationFromQuestion(question) {
   // Bare "dry" / "amd" alone is ambiguous — do not guess Dry Eye vs Dry AMD
   if (AMBIGUOUS_INDICATION_TOKENS.has(qNorm)) return null;
   // Prefer known labels (longest first); compactNorm so "neuro protection" ≈ Neuroprotection
-  const labeled = INDICATION_GROUPS.flatMap((group) =>
-    group.map((label) => ({ label, len: compactNorm(label).length }))
+  // Exclusive: first / longest phrase win — never return a label that would resolve to a different group than intended
+  const labeled = INDICATION_GROUPS.flatMap((group, groupIndex) =>
+    group.map((label) => ({ label, groupIndex, len: compactNorm(label).length }))
   ).sort((a, b) => b.len - a.len);
-  for (const { label } of labeled) {
+  for (const { label, groupIndex } of labeled) {
     const ln = normText(label);
     const lc = compactNorm(label);
     if (!lc || lc.length < 3) continue;
-    // Short codes: word-boundary only
+    // Short codes: whole-query only (handled above via resolve) / word boundary when query is exactly that
     if (ln.length <= 3) {
-      if (new RegExp(`\\b${ln}\\b`, "i").test(q)) return label;
+      if (qNorm === ln) return label;
       continue;
     }
-    // Token-bounded phrase (not raw substring — "dry" must not hit Dry Eye / Dry AMD)
     if (phraseIncludes(qNorm, ln) || (lc.length >= 6 && qCompact.includes(lc))) {
+      // Guard: resolved group must be this group (no two-group coverage)
+      const resolved = resolveIndicationGroup(label);
+      if (resolved && resolved.index !== groupIndex) continue;
       return label;
     }
   }
@@ -809,62 +858,6 @@ function extractIndicationFromQuestion(question) {
     return null;
   }
   return preferred || raw;
-}
-
-/** Related Veeva/TrialHub labels when the asked indication is thin in Cosmos. */
-function relatedIndicationLabels(indication) {
-  const preferred = preferredIndicationLabel(indication) || String(indication || "").trim();
-  const n = normText(preferred);
-  if (n.includes("neuroprotect")) {
-    return ["Glaucoma / Ocular Hypertension", "Optic Neuropathy", "Optic neuropathies POAG and NAION"];
-  }
-  if (n.includes("optic neuropath")) {
-    return ["Glaucoma / Ocular Hypertension", "Neuroprotection"];
-  }
-  if (n.includes("dry eye")) {
-    return ["Meibomian Gland Dysfunction", "Devices-Dry Eye"];
-  }
-  if (n.includes("meibomian")) {
-    return ["Dry Eye", "Devices-Dry Eye"];
-  }
-  // Wet AMD ↔ Dry AMD are different diseases — do NOT auto-merge (Buddy was mashing them)
-  if (n.includes("wet amd") || n === "namd") {
-    return [];
-  }
-  if (n.includes("geographic atrophy") || n.includes("dry amd")) {
-    return [];
-  }
-  if (n.includes("glaucoma") || n.includes("ocular hypertension")) {
-    return ["Optic Neuropathy", "Optic neuropathies POAG and NAION", "Devices - Glaucoma"];
-  }
-  if (n.includes("stargardt")) {
-    return ["Inherited Retinal Disease", "Retinitis Pigmentosa", "Leber Congenital Amaurosis"];
-  }
-  if (n.includes("inherited retinal") || n === "ird") {
-    return [
-      "Stargardt's Disease",
-      "Retinitis Pigmentosa",
-      "Leber Congenital Amaurosis",
-      "Choroideremia",
-      "Achromatopsia"
-    ];
-  }
-  if (n.includes("leber congenital") || n === "lca") {
-    return ["Inherited Retinal Disease", "Stargardt's Disease", "Retinitis Pigmentosa"];
-  }
-  if (n.includes("choroideremia") || n.includes("achromatopsia") || n.includes("retinoschisis") || n.includes("best disease")) {
-    return ["Inherited Retinal Disease", "Retinitis Pigmentosa", "Stargardt's Disease"];
-  }
-  if (n === "naion" || n === "lhon" || n.includes("optic neuritis")) {
-    return ["Optic Neuropathy", "Neuroprotection"];
-  }
-  if (n.includes("crvo") || n.includes("central retinal vein")) {
-    return ["Retinal Vein Occlusion", "Branch Retinal Vein Occlusion"];
-  }
-  if (n.includes("brvo") || n.includes("branch retinal vein")) {
-    return ["Retinal Vein Occlusion", "Central Retinal Vein Occlusion"];
-  }
-  return [];
 }
 
 function parseCountryList(raw) {
@@ -956,97 +949,29 @@ function wantsOusOnly(question) {
   );
 }
 
-/** Substring needles for fuzzy Cosmos matches when exact indication equality is empty. */
+/** Substring needles for fuzzy Cosmos — ONLY phrases from the resolved exclusive group. */
 function indicationContainsNeedles(indication) {
-  const preferred = preferredIndicationLabel(indication) || String(indication || "").trim();
-  const n = normText(preferred);
+  const resolved = resolveIndicationGroup(indication);
+  const preferred =
+    (resolved && resolved.preferred) ||
+    preferredIndicationLabel(indication) ||
+    String(indication || "").trim();
   const needles = new Set();
-  if (n.includes("neuroprotect")) {
-    needles.add("neuroprotect");
-    needles.add("neuro protection");
-    // Veeva often files neuroprotection under optic neuropathy / glaucoma labels
-    needles.add("optic neuropath");
-    needles.add("naion");
+  const labels = resolved ? resolved.labels : preferred ? [preferred] : [];
+  for (const label of labels) {
+    const ln = normText(label);
+    if (!ln || ln.length < 4) continue;
+    if (AMBIGUOUS_INDICATION_TOKENS.has(ln)) continue;
+    needles.add(ln);
   }
-  if (n.includes("optic neuropath") || n === "optic neuropathy") {
-    needles.add("optic neuropath");
-    needles.add("naion");
-    needles.add("lhon");
-  }
-  if (n.includes("uveitis")) needles.add("uveitis");
-  if (n.includes("retinal vein") || n === "rvo") {
-    needles.add("retinal vein");
-    needles.add("crvo");
-    needles.add("brvo");
-  }
-  if (n.includes("meibomian") || n === "mgd") needles.add("meibomian");
-  if (n.includes("stargardt")) {
-    needles.add("stargardt");
-    needles.add("stgd");
-  }
-  if (n.includes("inherited retinal") || n === "ird") {
-    needles.add("inherited retinal");
-  }
-  if (n.includes("leber congenital") || n === "lca") {
-    needles.add("leber congenital");
-    needles.add("lca");
-  }
-  if (n.includes("choroideremia")) needles.add("choroideremia");
-  if (n.includes("achromatopsia")) needles.add("achromatopsia");
-  if (n.includes("retinoschisis")) needles.add("retinoschisis");
-  if (n.includes("naion")) needles.add("naion");
-  if (n === "lhon" || n.includes("leber hereditary optic")) {
-    needles.add("lhon");
-    needles.add("leber hereditary");
-  }
-  if (n.includes("optic neuritis")) needles.add("optic neuritis");
-  if (n.includes("crvo") || n.includes("central retinal vein")) {
-    needles.add("central retinal vein");
-    needles.add("crvo");
-  }
-  if (n.includes("brvo") || n.includes("branch retinal vein")) {
-    needles.add("branch retinal vein");
-    needles.add("brvo");
-  }
-  if (n.includes("wet amd") || n === "namd" || (n.includes("neovascular") && n.includes("macular"))) {
-    needles.add("wet amd");
-    needles.add("neovascular");
-    needles.add("namd");
-  }
-  if (n.includes("geographic atrophy") || n.includes("dry amd")) {
-    needles.add("geographic atrophy");
-    needles.add("dry amd");
-    // Never bare "dry" or broad "macular degeneration" (pulls Wet AMD + Dry Eye noise)
-  }
-  if (n.includes("glaucoma") || n.includes("ocular hypertension")) {
-    needles.add("glaucoma");
-    needles.add("ocular hypertension");
-    needles.add("poag");
-  }
-  if (n.includes("dry eye") || n.includes("meibomian") || n === "ded") {
-    needles.add("dry eye");
-    needles.add("keratoconjunctivitis");
-    if (n.includes("meibomian") || n === "mgd") needles.add("meibomian");
-    // Never bare "dry" — that CONTAINS-matches Dry AMD
-  }
-  if (n.includes("retinal vein") || n === "rvo") {
-    needles.add("retinal vein");
-    needles.add("vein occlusion");
-    needles.add("retinal vascular");
-  }
-  if (n.includes("diabetic retinopathy")) {
-    needles.add("diabetic retinopathy");
-    needles.add("proliferative diabetic");
-  }
-  // Always include a compact form of the preferred label (min length 5) — never ambiguous bare tokens
-  const preferredCompact = preferred.replace(/[^a-zA-Z0-9]/g, "");
-  if (preferredCompact.length >= 5 && !AMBIGUOUS_INDICATION_TOKENS.has(n)) {
-    needles.add(preferred.slice(0, 40));
-  }
-  return [...needles].filter((x) => {
-    const t = normText(x);
-    return t.length >= 4 && !AMBIGUOUS_INDICATION_TOKENS.has(t);
-  });
+  const pn = normText(preferred);
+  if (pn.length >= 4 && !AMBIGUOUS_INDICATION_TOKENS.has(pn)) needles.add(pn);
+  return [...needles]
+    .filter((x) => {
+      const t = normText(x);
+      return t.length >= 4 && !AMBIGUOUS_INDICATION_TOKENS.has(t);
+    })
+    .slice(0, 8);
 }
 
 function countriesMatch(rawCountries, countryNorm) {
@@ -2573,6 +2498,7 @@ module.exports = {
   indicationAliases,
   indicationFamily,
   indicationCompatible,
+  resolveIndicationGroup,
   phraseIncludes,
   extractIndicationFromQuestion,
   extractCountryFromQuestion,

@@ -4,7 +4,7 @@
  * scaled to requested patients / sites.
  */
 
-const { indicationAliases, INDICATION_GROUPS } = require("./intelligence");
+const { indicationAliases } = require("./intelligence");
 
 function isPricingQuestion(question) {
   const q = String(question || "").toLowerCase();
@@ -55,13 +55,9 @@ function extractRfpScenarioFromQuestion(question, body = {}) {
   }
 
   if (!indication) {
-    // Prefer known ophthalmology labels in the question
-    for (const group of INDICATION_GROUPS) {
-      if (group.some((g) => lower.includes(String(g).toLowerCase()))) {
-        indication = group[0];
-        break;
-      }
-    }
+    // Exclusive longest-phrase pick — never first-group-wins on shared substrings
+    const { extractIndicationFromQuestion } = require("./intelligence");
+    indication = extractIndicationFromQuestion(q) || null;
   }
 
   const wantsTiers =

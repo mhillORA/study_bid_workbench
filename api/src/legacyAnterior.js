@@ -681,25 +681,23 @@ function normIndication(s) {
 }
 
 function indicationMatches(value, aliases = []) {
-  const v = normIndication(value);
-  if (!v || !aliases.length) return false;
-  const isDryEye = (s) =>
-    /\bdry eye\b/.test(s) || /\bkeratoconjunctivitis\b/.test(s) || /\bmeibomian\b/.test(s) || s === "ded";
-  const isDryAmd = (s) =>
-    /\bdry amd\b/.test(s) || /\bgeographic atrophy\b/.test(s) || s === "ga";
-  for (const a of aliases) {
-    const na = normIndication(a);
-    if (!na) continue;
-    // Dry Eye ≠ Dry AMD even though both contain "dry"
-    if ((isDryEye(v) && isDryAmd(na)) || (isDryAmd(v) && isDryEye(na))) continue;
-    if (v === na) return true;
-    // Token-bounded phrase only — "dry" must not match either family
-    if (na.length < 5) continue;
-    const hv = ` ${v} `;
-    const hn = ` ${na} `;
-    if (hv.includes(hn) || hn.includes(hv)) return true;
+  if (!value || !aliases.length) return false;
+  try {
+    const { indicationCompatible } = require("./intelligence");
+    // Exclusive: one indication family only — never cover two groups via shared words
+    const requested = aliases[0];
+    return indicationCompatible(value, requested, aliases);
+  } catch {
+    const v = normIndication(value);
+    if (!v) return false;
+    for (const a of aliases) {
+      const na = normIndication(a);
+      if (!na || na.length < 4) continue;
+      if (v === na) return true;
+      if (` ${v} `.includes(` ${na} `)) return true;
+    }
+    return false;
   }
-  return false;
 }
 
 /**
