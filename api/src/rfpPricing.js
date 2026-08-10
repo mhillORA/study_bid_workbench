@@ -95,9 +95,14 @@ function roundMoney(n) {
 }
 
 function studyMatchesIndication(row, aliasesNorm) {
-  const blob = normText(`${row.indication || ""} ${row.therapeuticArea || ""} ${row.title || ""}`);
+  const blob = normText(`${row.indication || ""} ${row.therapeuticArea || ""}`);
   if (!blob) return false;
-  return aliasesNorm.some((a) => a && (blob.includes(a) || a.includes(blob)));
+  return aliasesNorm.some((a) => {
+    if (!a || a.length < 4) return false;
+    if (blob === a) return true;
+    // Token-bounded — avoid "dry" ⊂ "dry eye"/"dry amd"
+    return ` ${blob} `.includes(` ${a} `);
+  });
 }
 
 function normText(s) {

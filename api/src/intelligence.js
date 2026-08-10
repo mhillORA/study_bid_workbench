@@ -165,24 +165,126 @@ function normText(s) {
     .trim();
 }
 
+function compactNorm(s) {
+  return normText(s).replace(/\s+/g, "");
+}
+
+/**
+ * Token-bounded phrase match (after normText).
+ * "dry eye" matches "severe dry eye disease"; "dry" does NOT match "dry eye" or "dry amd".
+ */
+function phraseIncludes(haystack, needle) {
+  const h = normText(haystack);
+  const n = normText(needle);
+  if (!h || !n) return false;
+  if (h === n) return true;
+  return ` ${h} `.includes(` ${n} `);
+}
+
+/** Bare tokens that must never expand across indication families. */
+const AMBIGUOUS_INDICATION_TOKENS = new Set([
+  "dry",
+  "amd",
+  "eye",
+  "macular",
+  "age",
+  "related",
+  "degeneration"
+]);
+
+/**
+ * Stable family key — Dry Eye and Dry AMD (GA) are NEVER the same family.
+ * Prevents CONTAINS/alias mash-ups on the shared word "dry".
+ */
+function indicationFamily(raw) {
+  const n = normText(raw);
+  if (!n) return null;
+  if (
+    n.includes("dry eye") ||
+    n.includes("keratoconjunctivitis") ||
+    n === "ded" ||
+    n.includes("meibomian") ||
+    /\bdevices\b.*\bdry eye\b/.test(n) ||
+    /\bdry eye\b.*\bdevices\b/.test(n)
+  ) {
+    return "dry_eye";
+  }
+  if (
+    n.includes("geographic atrophy") ||
+    n.includes("dry amd") ||
+    (n.includes("geographic") && n.includes("atrophy")) ||
+    n === "ga"
+  ) {
+    return "dry_amd";
+  }
+  if (
+    n.includes("wet amd") ||
+    n === "namd" ||
+    (n.includes("neovascular") && n.includes("macular")) ||
+    n.includes("wet age related macular")
+  ) {
+    return "wet_amd";
+  }
+  for (let i = 0; i < INDICATION_GROUPS.length; i++) {
+    const group = INDICATION_GROUPS[i];
+    if (group.some((g) => normText(g) === n || phraseIncludes(n, g) || phraseIncludes(g, n))) {
+      return `g${i}:${normText(group[0]).slice(0, 28)}`;
+    }
+  }
+  return `other:${n.slice(0, 40)}`;
+}
+
 function indicationAliases(raw) {
   if (!raw) return [];
   const n = normText(raw);
   const tokens = new Set(n.split(/\s+/).filter(Boolean));
-  const out = new Set([String(raw).trim()]);
+  const requested = String(raw).trim();
+  const out = new Set([requested]);
+  // Bare "dry" / "amd" etc. — keep as-is, do not expand into Dry Eye AND Dry AMD
+  if (AMBIGUOUS_INDICATION_TOKENS.has(n)) {
+    return [...out];
+  }
+  const family = indicationFamily(raw);
   for (const group of INDICATION_GROUPS) {
     const hit = group.some((g) => {
       const ng = normText(g);
       if (!ng) return false;
       if (ng === n) return true;
-      // Short codes (DR, GA, RP, …): exact token only — never substring
+      // Short codes (DR, GA, RP, DED, …): exact token only — never substring
       if (ng.length <= 3) return tokens.has(ng);
-      // Longer labels: either side may contain the other as a phrase
-      return n.includes(ng) || ng.includes(n);
+      // Require token-bounded phrase. Reject short prefixes ("dry" ⊂ "dry eye").
+      if (n.length < 5 && n !== ng) return false;
+      return phraseIncludes(n, ng) || phraseIncludes(ng, n);
     });
-    if (hit) for (const g of group) out.add(g);
+    if (!hit) continue;
+    for (const g of group) {
+      const gf = indicationFamily(g);
+      if (!family || !gf || gf === family) out.add(g);
+    }
   }
-  return [...out];
+  return [...out].filter((a) => {
+    if (a === requested) return true;
+    const af = indicationFamily(a);
+    return !family || !af || af === family;
+  });
+}
+
+/** True when a Cosmos/Veeva indication string belongs with the requested indication. */
+function indicationCompatible(rowIndication, requestedIndication, aliases = []) {
+  const ri = String(rowIndication || "").trim();
+  const req = String(requestedIndication || "").trim();
+  if (!ri || !req) return false;
+  const aliasList = (aliases && aliases.length ? aliases : indicationAliases(req)).map(String);
+  const riN = normText(ri);
+  if (aliasList.some((a) => normText(a) === riN)) return true;
+  if (aliasList.some((a) => phraseIncludes(ri, a) || phraseIncludes(a, ri))) {
+    const fam = indicationFamily(req);
+    const rf = indicationFamily(ri);
+    return !fam || !rf || fam === rf;
+  }
+  const fam = indicationFamily(req);
+  const rf = indicationFamily(ri);
+  return Boolean(fam && rf && fam === rf);
 }
 
 function isCtgovQuestion(question) {
@@ -667,14 +769,12 @@ function preferredIndicationLabel(matchedAlias) {
   return raw;
 }
 
-function compactNorm(s) {
-  return normText(s).replace(/\s+/g, "");
-}
-
 function extractIndicationFromQuestion(question) {
   const q = String(question || "");
   const qNorm = normText(q);
   const qCompact = compactNorm(q);
+  // Bare "dry" / "amd" alone is ambiguous — do not guess Dry Eye vs Dry AMD
+  if (AMBIGUOUS_INDICATION_TOKENS.has(qNorm)) return null;
   // Prefer known labels (longest first); compactNorm so "neuro protection" ≈ Neuroprotection
   const labeled = INDICATION_GROUPS.flatMap((group) =>
     group.map((label) => ({ label, len: compactNorm(label).length }))
@@ -683,12 +783,13 @@ function extractIndicationFromQuestion(question) {
     const ln = normText(label);
     const lc = compactNorm(label);
     if (!lc || lc.length < 3) continue;
-    if (
-      qCompact.includes(lc) ||
-      qNorm.includes(ln) ||
-      q.toLowerCase().includes(label.toLowerCase())
-    ) {
-      // Keep the matched indication — do not collapse to an umbrella group label
+    // Short codes: word-boundary only
+    if (ln.length <= 3) {
+      if (new RegExp(`\\b${ln}\\b`, "i").test(q)) return label;
+      continue;
+    }
+    // Token-bounded phrase (not raw substring — "dry" must not hit Dry Eye / Dry AMD)
+    if (phraseIncludes(qNorm, ln) || (lc.length >= 6 && qCompact.includes(lc))) {
       return label;
     }
   }
@@ -696,6 +797,7 @@ function extractIndicationFromQuestion(question) {
   const m = q.match(/\bindication\s*[:=]?\s+([A-Za-z][A-Za-z0-9 /()-]{2,60})/i);
   if (!m) return null;
   const raw = m[1].trim().replace(/[?.!,;]+$/, "");
+  if (AMBIGUOUS_INDICATION_TOKENS.has(normText(raw))) return null;
   const preferred = preferredIndicationLabel(raw);
   // Prefer known labels; refuse free-text that looks like filler/geo/source names
   if (preferred && preferred !== raw) return preferred;
@@ -725,11 +827,12 @@ function relatedIndicationLabels(indication) {
   if (n.includes("meibomian")) {
     return ["Dry Eye", "Devices-Dry Eye"];
   }
+  // Wet AMD ↔ Dry AMD are different diseases — do NOT auto-merge (Buddy was mashing them)
   if (n.includes("wet amd") || n === "namd") {
-    return ["Geographic Atrophy / Dry AMD"];
+    return [];
   }
   if (n.includes("geographic atrophy") || n.includes("dry amd")) {
-    return ["Wet AMD"];
+    return [];
   }
   if (n.includes("glaucoma") || n.includes("ocular hypertension")) {
     return ["Optic Neuropathy", "Optic neuropathies POAG and NAION", "Devices - Glaucoma"];
@@ -905,21 +1008,26 @@ function indicationContainsNeedles(indication) {
     needles.add("branch retinal vein");
     needles.add("brvo");
   }
-  if (n.includes("wet amd") || n === "namd" || n.includes("geographic atrophy") || n.includes("dry amd")) {
-    needles.add("macular degeneration");
-    needles.add("geographic atrophy");
-    needles.add("neovascular");
+  if (n.includes("wet amd") || n === "namd" || (n.includes("neovascular") && n.includes("macular"))) {
     needles.add("wet amd");
+    needles.add("neovascular");
+    needles.add("namd");
+  }
+  if (n.includes("geographic atrophy") || n.includes("dry amd")) {
+    needles.add("geographic atrophy");
     needles.add("dry amd");
+    // Never bare "dry" or broad "macular degeneration" (pulls Wet AMD + Dry Eye noise)
   }
   if (n.includes("glaucoma") || n.includes("ocular hypertension")) {
     needles.add("glaucoma");
     needles.add("ocular hypertension");
     needles.add("poag");
   }
-  if (n.includes("dry eye") || n.includes("meibomian")) {
+  if (n.includes("dry eye") || n.includes("meibomian") || n === "ded") {
     needles.add("dry eye");
-    needles.add("meibomian");
+    needles.add("keratoconjunctivitis");
+    if (n.includes("meibomian") || n === "mgd") needles.add("meibomian");
+    // Never bare "dry" — that CONTAINS-matches Dry AMD
   }
   if (n.includes("retinal vein") || n === "rvo") {
     needles.add("retinal vein");
@@ -930,11 +1038,15 @@ function indicationContainsNeedles(indication) {
     needles.add("diabetic retinopathy");
     needles.add("proliferative diabetic");
   }
-  // Always include a compact form of the preferred label (min length 5)
-  if (preferred.replace(/[^a-zA-Z0-9]/g, "").length >= 5) {
+  // Always include a compact form of the preferred label (min length 5) — never ambiguous bare tokens
+  const preferredCompact = preferred.replace(/[^a-zA-Z0-9]/g, "");
+  if (preferredCompact.length >= 5 && !AMBIGUOUS_INDICATION_TOKENS.has(n)) {
     needles.add(preferred.slice(0, 40));
   }
-  return [...needles];
+  return [...needles].filter((x) => {
+    const t = normText(x);
+    return t.length >= 4 && !AMBIGUOUS_INDICATION_TOKENS.has(t);
+  });
 }
 
 function countriesMatch(rawCountries, countryNorm) {
@@ -1264,6 +1376,7 @@ async function benchmarkIndication(database, indication, country = null, opts = 
         );
         for (const r of rows) {
           if (!passesGeo(r.countries, null)) continue;
+          if (!indicationCompatible(r.indication, preferred, aliases)) continue;
           mergeRow(oraStudies, r, (x) => x.study_number);
         }
       }
@@ -1285,6 +1398,7 @@ async function benchmarkIndication(database, indication, country = null, opts = 
         );
         for (const r of rows) {
           if (countries && !countriesMatch(r.countries, countries)) continue;
+          if (!indicationCompatible(r.indication, preferred, aliases)) continue;
           mergeRow(thTrials, r, (x) => x.nct);
         }
       }
@@ -1300,7 +1414,10 @@ async function benchmarkIndication(database, indication, country = null, opts = 
         const geo = countrySqlClause("c.country", countries, "geo");
         q += geo.sql;
         params.push(...geo.params);
-        pushSites(await queryAll(siteContainer, q, params), { requirePsm: false });
+        const siteFuzzy = (await queryAll(siteContainer, q, params)).filter((r) =>
+          indicationCompatible(r.indication, preferred, aliases)
+        );
+        pushSites(siteFuzzy, { requirePsm: false });
       }
     }
   }
@@ -1841,7 +1958,11 @@ async function ctgovByIndication(database, indication, country = null) {
         q += geo.sql;
         params.push(...geo.params);
         const rows = await queryAll(database.container("ora_ctgov_trials"), q, params);
-        for (const r of rows) merge(r);
+        for (const r of rows) {
+          const label = r.oraIndication || (Array.isArray(r.conditions) ? r.conditions.join(" ") : "");
+          if (!indicationCompatible(label, preferred, aliases)) continue;
+          merge(r);
+        }
       }
     }
     const recruiting = trials.filter((t) => /recruit/i.test(String(t.status || "")));
@@ -2117,6 +2238,9 @@ async function buildSiteScorecard(getDb, opts = {}) {
   const siteRows = [];
   const mergeSite = (r) => {
     if (!r) return;
+    if (preferred && r.indication && !indicationCompatible(r.indication, preferred, aliases)) {
+      return;
+    }
     const org = r.org_clean || r.organization;
     if (!org) return;
     const key = `${org}||${r.country || "_unknown"}||${r.study_name || ""}||${r.site_psm || ""}`;
@@ -2447,6 +2571,9 @@ module.exports = {
   isSalesforceDataQuestion,
   isSourceOverviewQuestion,
   indicationAliases,
+  indicationFamily,
+  indicationCompatible,
+  phraseIncludes,
   extractIndicationFromQuestion,
   extractCountryFromQuestion,
   normalizeCountryName,
