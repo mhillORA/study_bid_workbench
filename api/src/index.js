@@ -10,6 +10,9 @@ const {
   getIntelligenceHealth,
   isIntelligenceQuestion,
   isSourceOverviewQuestion,
+  isTrialhubQuestion,
+  isCtgovQuestion,
+  isVeevaQuestion,
   isSalesforceDataQuestion,
   extractIndicationFromQuestion,
   extractCountryFromQuestion
@@ -1352,18 +1355,51 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
     }
     if (!question) return json(400, { error: "question is required (or attach a file)" });
 
-    // ALWAYS query Cosmos for the full portfolio — Buddy must not be limited to the open UI study.
+    const externalFeedAsk =
+      isSourceOverviewQuestion(question) ||
+      isTrialhubQuestion(question) ||
+      isCtgovQuestion(question) ||
+      isVeevaQuestion(question);
+    const catalogAskEarly =
+      /\b(what(?:'s| is) in (?:the )?(?:db|database|cosmos)|data\s+catalog|container\s+counts?|ingest(?:ion)?\s+freshness|how many (?:trials|studies|sites) (?:in|does) (?:cosmos|the db|the database))\b/i.test(
+        question
+      );
+    const buddyWorkflowEarly = inferBuddyWorkflow(question, body);
+    const moneyIntentEarly = inferMoneyIntent(question);
+    const skipHeavyPortfolio =
+      buddyWorkflowEarly === "teach" ||
+      ((externalFeedAsk || catalogAskEarly) &&
+        buddyWorkflowEarly !== "budget" &&
+        !isPricingQuestion(question) &&
+        moneyIntentEarly !== "ora_earned" &&
+        !/\b(portfolio|budget|fee|revenue|hlbp|ballpark|bid|pricing)\b/i.test(question));
+
+    // ALWAYS query Cosmos for the full portfolio — unless feed/catalog/teach (avoids SWA ~45s timeout).
     let portfolioFull = null;
     let clientDirectory = [];
-    try {
-      portfolioFull = await buildPortfolioContext({ limit: 500 });
-      clientDirectory = portfolioFull.clientNamesInDatabase || [];
-    } catch (err) {
-      portfolioFull = { source: "cosmos_portfolio_error", error: String(err.message || err) };
-      clientDirectory = [];
+    if (skipHeavyPortfolio) {
+      portfolioFull = {
+        source: "cosmos_portfolio_skipped",
+        skipped: true,
+        note:
+          "Portfolio rollup skipped — this ask targets TrialHub / CT.gov / Veeva / catalog data. Use context.intelligence (not portfolio.matchedStudyCount) for feed counts."
+      };
+    } else {
+      try {
+        portfolioFull = await buildPortfolioContext({ limit: 500 });
+        clientDirectory = portfolioFull.clientNamesInDatabase || [];
+      } catch (err) {
+        portfolioFull = { source: "cosmos_portfolio_error", error: String(err.message || err) };
+        clientDirectory = [];
+      }
     }
 
     const hints = inferAskHints(question, body, clientDirectory);
+    // Year in a TrialHub/CT.gov/Veeva ask filters feed stats — not budget portfolio rows.
+    if (externalFeedAsk && hints.year) {
+      hints.portfolioYear = hints.year;
+      hints.year = null;
+    }
     // Belt-and-suspenders: never keep a 1–3 char client filter without an explicit cue
     if (
       hints.clientName &&
@@ -1722,6 +1758,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         studyId: studyId || null,
         clientName: hints.clientName || null,
         year: hints.year || null,
+        feedYear: hints.portfolioYear || null,
         crossStudy,
         intelligence: Boolean(intelligence && !intelligence.error),
         legacyAnterior: Boolean(legacyAnterior && !legacyAnterior.error),

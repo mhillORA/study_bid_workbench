@@ -56,7 +56,7 @@ const INTELLIGENCE_RULES = [
   " INTELLIGENCE DATA CATALOG (Cosmos bd-budgets — reference tables, NOT budget line items):",
   "1) ora_fact_study (~249 Ora studies from Veeva CTM): study-level enrollment / PSM for Ora's own history. Key fields: study_number, sponsor, indication, phase, psm, study_rate_pt_mo, total_enrolled, n_contributing_sites, enroll_months, screen_fail_rate_recomputed, lifecycle_state, countries.",
   "2) ora_fact_site (~3613 site×study rows from Veeva): site performance. Key fields: study_name (joins to study_number), org_clean (canonical site), country, indication, site_psm, total_enrolled, site_enroll_months, fsi_trust (prefer \"high\"), screen_fail_rate.",
-  "3) ora_trialhub_trials (live TrialHub uploads, upsert by NCT): competitive landscape / industry PSM. Key fields: nct, title, sponsor, indication, phase, status, patients, planned_sites, actual_sites, psm_common, th_actual_psm, recruit_days, countries, in_ora_indication, lead_sponsor_type.",
+  "3) ora_trialhub_trials (live TrialHub uploads, upsert by NCT): competitive landscape / industry PSM. Key fields: nct, title, sponsor, indication, phase, status, patients, planned_sites, actual_sites, psm_common, th_actual_psm, recruit_days, countries, actual_start (Actual Start Date), in_ora_indication, lead_sponsor_type.",
   "4) ora_sponsor_crosswalk (~642): TrialHub/Veeva sponsor name → Salesforce. Key fields: trialhub_veeva_sponsor, sf_account_name, sf_account_id, sf_owner, tier, ora_grouping (Ora Grouping from SF Ora_Grouping__c), crosswalk_status (confirmed_new | previously_confirmed | no_sf_match | in_sf_inactive). no_sf_match = prospecting targets.",
   "5) ora_site_alias_table (~46): variant site names → canonical_name (already applied into org_clean where possible).",
   "6) ora_ctgov_trials (ClinicalTrials.gov ophthalmology feed, daily delta ~5AM Eastern): public registry landscape. Key fields: nct, title, status, phase, conditions, oraIndication, sponsor, sponsorClass, enrollment, countries, startDate, lastUpdatePostDate, hasResults. Use when context.intelligence.ctgov is present or user asks about CT.gov / registry / recruiting ophthalmology trials.",
@@ -64,6 +64,8 @@ const INTELLIGENCE_RULES = [
   "• Indication picking is EXCLUSIVE: one ask → one indication family only. Dry Eye ≠ Dry AMD ≠ Wet AMD; Glaucoma ≠ Neuroprotection; CRVO ≠ BRVO ≠ RVO umbrella unless that exact label was asked. Never mash shared words (dry, macular, optic, retinal, glaucoma…). Use context.intelligence.query.indication / aliasesUsed; if ambiguous, ask which indication.",
   "• Feasibility / \"how fast do we enroll\" / typical PSM for an indication → context.intelligence.indicationBenchmark (Ora median PSM + TrialHub median psm_common + site medians). Prefer medians; cite studiesWithPsm / trialsWithPsm counts.",
   "• Competing / recruiting industry trials → intelligence.indicationBenchmark.trialhub.recruitingSample / sampleTrials OR trialhubOverview.recruitingSample (NCT + sponsor + status).",
+  "• TrialHub trials started in a calendar year → intelligence.trialhubStartedTrials (startedCount + trials[] from actual_start). For \"all/list\" asks, enumerate trials[] (NCT, sponsor, indication, actual_start). NEVER use portfolio.matchedStudyCount for TrialHub.",
+  "• TrialHub retina / posterior-segment asks → trialhubStartedTrials with therapeuticFilter=retina (matches indication/title text). \"trialhuh\" = TrialHub typo — still use TrialHub feed.",
   "• Site selection / which sites perform → LIST real site names from context.intelligence.indicationBenchmark.sites.topSitesByPsm (org_clean + country + site_psm + fsi_trust). Also use countrySites.topSites when present. Optional: NAVIGATE:scorecard for the full scorecard UI — never as a substitute for naming sites.",
   "• Region / country feasibility (US, UK, Germany, Japan, …) → use countryFilter on sites + ctgov + TrialHub countries; cite geography explicitly.",
   "• Site Scorecard (Ora vs industry) → oraScore vs industryScore/Δ; Deeper dive = recommended site slate for enrollment goals. Prefer medians; null ≠ 0.",
@@ -1323,6 +1325,12 @@ function contextJsonForModel(context) {
       trialhubOverview: trimOverview(intel.trialhubOverview),
       veevaOverview: trimOverview(intel.veevaOverview, "sampleStudies"),
       crosswalkOverview: trimOverview(intel.crosswalkOverview),
+      trialhubStartedTrials: intel.trialhubStartedTrials
+        ? {
+            ...intel.trialhubStartedTrials,
+            trials: (intel.trialhubStartedTrials.trials || []).slice(0, 150)
+          }
+        : undefined,
       countrySites: intel.countrySites
         ? {
             ...intel.countrySites,

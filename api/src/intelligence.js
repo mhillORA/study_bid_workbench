@@ -351,12 +351,15 @@ function isTrialhubQuestion(question) {
   return (
     /\btrial\s*hub\b/.test(q) ||
     /\btrialhub\b/.test(q) ||
+    /\btrialhuh\b/.test(q) ||
+    /\btrial\s*hu[h\b]\b/.test(q) ||
     /\btrial[-_]?hub\b/.test(q) ||
     /\btrialhub\.com\b/.test(q) ||
     /\bwww\.trialhub\b/.test(q) ||
+    /\bfrom\s+trial\s*hu/i.test(q) ||
     /\bindustry\s+(benchmark|trial|psm|landscape|dashboard|data|feed)\b/.test(q) ||
     /\b(competitive|industry)\s+(database|landscape|feed)\b/.test(q) ||
-    /\b(dashboard|overview|landscape|data|feed)\b.{0,40}\b(trial\s*hub|trialhub|industry)\b/.test(q)
+    /\b(dashboard|overview|landscape|data|feed)\b.{0,40}\b(trial\s*hub|trialhub|trialhuh|industry)\b/.test(q)
   );
 }
 
@@ -395,6 +398,149 @@ function isSourceOverviewQuestion(question) {
   );
 }
 
+/** Year cue for TrialHub actual_start / CT.gov startDate — not portfolio budget year alone. */
+function extractYearFromQuestion(question) {
+  const q = String(question || "");
+  if (/\blast\s+year\b/i.test(q)) return new Date().getFullYear() - 1;
+  if (/\bthis\s+year\b/i.test(q)) return new Date().getFullYear();
+  const ym = q.match(
+    /\b(?:in|for|during|year|fy|calendar\s+year|cy|started(?:\s+in)?)\s*(20\d{2})\b|\b(20\d{2})\s+(?:studies|trials|bids?|budgets?|portfolio|ingest|uploads?|started)\b|\byear\s*[=:]\s*(20\d{2})\b|\bstarted\s+(?:in\s+)?(20\d{2})\b/i
+  );
+  if (ym) return Number(ym[1] || ym[2] || ym[3] || ym[4]);
+  return null;
+}
+
+function yearFromActualStart(raw) {
+  const s = String(raw || "").trim();
+  if (!s) return null;
+  let m = s.match(/^(\d{4})-/);
+  if (m) return Number(m[1]);
+  m = s.match(/\/(\d{4})$/);
+  if (m) return Number(m[1]);
+  m = s.match(/\b(20\d{2})\b/);
+  return m ? Number(m[1]) : null;
+}
+
+/** Service-line filters for TrialHub (broader than exclusive indication groups). */
+const TRIALHUB_THERAPEUTIC_FILTERS = {
+  retina: {
+    label: "Retina / posterior segment",
+    phrases: [
+      "retina",
+      "retinal",
+      "macular",
+      "amd",
+      "geographic atrophy",
+      "dme",
+      "diabetic macular",
+      "diabetic retinopathy",
+      "vein occlusion",
+      "crvo",
+      "brvo",
+      "rvo",
+      "stargardt",
+      "inherited retinal",
+      "leber congenital",
+      "choroideremia",
+      "achromatopsia",
+      "retinoschisis",
+      "retinitis pigmentosa",
+      "uveitis",
+      "macular hole",
+      "epiretinal",
+      "central serous",
+      "myopic cnv",
+      "uveal melanoma",
+      "vitelliform",
+      "cscr"
+    ]
+  }
+};
+
+function extractTherapeuticFilterFromQuestion(question) {
+  const q = normText(question);
+  if (!q) return null;
+  if (/\bretina\b|\bretinal\b|\bposterior segment\b/.test(q)) return "retina";
+  return null;
+}
+
+function trialhubMatchesTherapeuticFilter(trial, filterKey) {
+  const filter = TRIALHUB_THERAPEUTIC_FILTERS[filterKey];
+  if (!filter) return true;
+  const blob = normText(
+    `${trial.indication || ""} ${trial.indications || ""} ${trial.primary_raw || ""} ${trial.title || ""}`
+  );
+  if (!blob) return false;
+  return filter.phrases.some((p) => {
+    const np = normText(p);
+    if (!np) return false;
+    if (np.length <= 3) return ` ${blob} `.includes(` ${np} `);
+    return phraseIncludes(blob, np);
+  });
+}
+
+/** Count TrialHub trials whose actual_start falls in calendar year (Actual Start Date column). */
+async function trialhubStartedTrialsQuery(database, opts = {}) {
+  const year = opts.year != null ? Number(opts.year) : null;
+  const therapeuticFilter = opts.therapeuticFilter || null;
+  const maxTrials = Math.min(Number(opts.maxTrials) || 150, 200);
+  if (year != null && (year < 2000 || year > 2100)) return null;
+  try {
+    const container = database.container("ora_trialhub_trials");
+    const rows = await queryAll(
+      container,
+      `SELECT c.nct, c.title, c.sponsor, c.indication, c.indications, c.primary_raw, c.status,
+              c.phase, c.patients, c.actual_start
+       FROM c WHERE c.docType = @t AND IS_DEFINED(c.actual_start) AND c.actual_start != null`,
+      [{ name: "@t", value: "ora_trialhub_trials" }]
+    );
+    const trials = [];
+    for (const r of rows) {
+      if (year != null && yearFromActualStart(r.actual_start) !== year) continue;
+      if (therapeuticFilter && !trialhubMatchesTherapeuticFilter(r, therapeuticFilter)) continue;
+      trials.push({
+        nct: r.nct,
+        title: r.title,
+        sponsor: r.sponsor,
+        indication: r.indication,
+        status: r.status,
+        phase: r.phase,
+        patients: r.patients,
+        actual_start: r.actual_start
+      });
+    }
+    trials.sort((a, b) => String(a.actual_start || "").localeCompare(String(b.actual_start || "")));
+    const filterLabel = therapeuticFilter
+      ? TRIALHUB_THERAPEUTIC_FILTERS[therapeuticFilter]?.label || therapeuticFilter
+      : null;
+    return {
+      year,
+      therapeuticFilter,
+      therapeuticFilterLabel: filterLabel,
+      startedCount: trials.length,
+      trialsWithActualStart: rows.length,
+      trials: trials.slice(0, maxTrials),
+      truncated: trials.length > maxTrials,
+      field: "actual_start",
+      note:
+        "TrialHub ora_trialhub_trials.actual_start (Actual Start Date). Blank actual_start excluded. therapeuticFilter matches indication/title text — broader than exclusive indication groups."
+    };
+  } catch (err) {
+    return {
+      year,
+      therapeuticFilter,
+      error: String(err.message || err),
+      startedCount: null,
+      trials: []
+    };
+  }
+}
+
+/** @deprecated use trialhubStartedTrialsQuery */
+async function trialhubStartsInYearStats(database, year) {
+  return trialhubStartedTrialsQuery(database, { year, maxTrials: 25 });
+}
+
 function isSalesforceDataQuestion(question) {
   try {
     const { isSalesforceDataQuestion: fn } = require("./salesforceTables");
@@ -428,7 +574,11 @@ function isIntelligenceQuestion(question) {
     ) ||
     /\b(rfp|rfi|pricing|ballpark|goal bid|cost per patient)\b/.test(q) ||
     /\b\d+\s*(patients?|sites?|months?)\b/.test(q) ||
-    /\b(protocol|punctal|dry\s*eye|device\s+study)\b/.test(q)
+    /\b(protocol|punctal|dry\s*eye|device\s+study)\b/.test(q) ||
+    (/\b(studies|trials)\b/.test(q) &&
+      /\b(started|starting|began|start date)\b/.test(q) &&
+      Boolean(extractYearFromQuestion(q))) ||
+    (/\b(trialhub|trialhuh|trial\s*hu)\b/.test(q) && /\b(studies|trials)\b/.test(q))
   );
 }
 
@@ -1947,6 +2097,9 @@ async function buildIntelligenceContext(getDb, opts = {}) {
   const qIndication = extractIndicationFromQuestion(question);
   const ousOnly = wantsOusOnly(question);
   const enrollmentPlan = extractEnrollmentPlan(question);
+  const startYear = extractYearFromQuestion(question);
+  const therapeuticFilter = extractTherapeuticFilterFromQuestion(question);
+  const wantsStartedList = /\b(all|every|list|tell me|show me|give me)\b/i.test(question);
   const resolvedCountries = global
     ? null
     : parseCountryFilter(countries != null ? countries : country) ||
@@ -1964,7 +2117,9 @@ async function buildIntelligenceContext(getDb, opts = {}) {
     !clientName &&
     !sponsor &&
     !resolvedCountries &&
-    !wantsSalesforce
+    !wantsSalesforce &&
+    !startYear &&
+    !therapeuticFilter
   ) {
     return null;
   }
@@ -2003,6 +2158,8 @@ async function buildIntelligenceContext(getDb, opts = {}) {
       veevaIntent: wantsVeeva,
       crosswalkIntent: wantsCrosswalk,
       salesforceIntent: wantsSalesforce,
+      startYear: startYear || null,
+      therapeuticFilter: therapeuticFilter || null,
       enrollmentPlan
     }
   };
@@ -2092,8 +2249,15 @@ async function buildIntelligenceContext(getDb, opts = {}) {
       if (needFeedOverview || wantsCtgov) {
         out.ctgovOverview = await ctgovOverview(database, resolvedCountries);
       }
-      if (needFeedOverview || wantsTrialhub) {
+      if (needFeedOverview || wantsTrialhub || startYear || therapeuticFilter) {
         out.trialhubOverview = await trialhubOverview(database, resolvedCountries);
+        if (startYear || therapeuticFilter) {
+          out.trialhubStartedTrials = await trialhubStartedTrialsQuery(database, {
+            year: startYear,
+            therapeuticFilter,
+            maxTrials: wantsStartedList ? 150 : 40
+          });
+        }
       }
       if (needFeedOverview || wantsVeeva) {
         out.veevaOverview = await veevaOverview(database);
@@ -2495,6 +2659,10 @@ module.exports = {
   isCrosswalkQuestion,
   isSalesforceDataQuestion,
   isSourceOverviewQuestion,
+  extractYearFromQuestion,
+  extractTherapeuticFilterFromQuestion,
+  trialhubStartedTrialsQuery,
+  trialhubStartsInYearStats,
   indicationAliases,
   indicationFamily,
   indicationCompatible,
