@@ -2,7 +2,7 @@ const { app } = require("@azure/functions");
 const AdmZip = require("adm-zip");
 const { parseWorkbookBuffer } = require("./parseWorkbook");
 const { upsertCanonical, createManualStudy, saveStudyVersion, saveSectionPatch, listStudies, getStudy, listVersions, getVersion, listLineItems, compareVersions, compareStudies, listQuarantine, getParseLearningsSummary, loadLearnings, getDb, buildPortfolioContext, listSectionLocks, claimSectionLock, heartbeatSectionLock, requestSectionTakeover, releaseSectionLock } = require("./cosmosLoad");
-const { askAi, getStudyContext, providerStatus } = require("./askClaude");
+const { askAi, getStudyContext, providerStatus, inferModelTier } = require("./askClaude");
 const {
   buildIntelligenceContext,
   buildSiteScorecard,
@@ -1719,9 +1719,11 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         /\b(create|make|produce|build|generate|draft|export|write)\b/i.test(question));
     const docExportAsk = wantsDocumentExport(question) || Boolean(visualAsk && hasOkUpload);
     const openStudyId = body.studyId ? String(body.studyId).trim() : null;
+    const modelTier = inferModelTier(question, body, buddyWorkflow);
     const contextPayload = {
       askedAt: new Date().toISOString(),
       source: requireCopilotKey ? "copilot_studio" : "workbench",
+      modelTier,
       workflow: buddyWorkflow,
       workflowNote:
         buddyWorkflow === "budget"
@@ -1856,7 +1858,13 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
     };
 
     // askAi is soft-fail: never throws for model/provider errors
-    const result = await askAi({ question, context: contextPayload, history });
+    const result = await askAi({
+      question,
+      context: contextPayload,
+      history,
+      tier: modelTier,
+      body
+    });
     let answer = result.answer;
     let docExports = [];
     let reportTitle = null;
@@ -1892,6 +1900,9 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       year: hints.year || null,
       answerFocus,
       workflow: buddyWorkflow,
+      modelTier: result.modelTier || modelTier,
+      escalated: Boolean(result.escalated),
+      agent: result.agent || null,
       documentTitle: reportTitle,
       exports: docExports.map((e) =>
         e.contentBase64

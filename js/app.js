@@ -3300,6 +3300,10 @@
           const modelNote = modelLabel ? ` · ${modelLabel}` : "";
           const soft = data.provider === "error" || data.ok === false ? " · degraded" : "";
           const wfNote = data.workflow && data.workflow !== "auto" ? ` · ${data.workflow}` : "";
+          const tierNote = data.modelTier
+            ? ` · ${data.modelTier}${data.escalated ? "↑" : ""}`
+            : "";
+          const agentNote = data.agent ? ` · ${data.agent}` : "";
           const intelBits = [];
           if (data.intelligenceQuery?.indication) intelBits.push(data.intelligenceQuery.indication);
           if (data.intelligenceQuery?.country) intelBits.push(data.intelligenceQuery.country);
@@ -3307,13 +3311,13 @@
             ? ` · Intel${intelBits.length ? ` ${intelBits.join(" / ")}` : ""}`
             : "";
           if (data.answerFocus === "portfolio" && data.databaseStudyCount != null) {
-            els.askStatus.textContent = `All studies · Cosmos ${data.portfolioMatched ?? "?"} / ${data.databaseStudyCount}${intelNote}${modelNote}${wfNote}${soft}`;
+            els.askStatus.textContent = `All studies · Cosmos ${data.portfolioMatched ?? "?"} / ${data.databaseStudyCount}${intelNote}${tierNote}${agentNote}${modelNote}${wfNote}${soft}`;
           } else if (portfolioMode) {
-            els.askStatus.textContent = `All studies mode (no study selected)${intelNote}${modelNote}${wfNote}${soft}`;
+            els.askStatus.textContent = `All studies mode (no study selected)${intelNote}${tierNote}${agentNote}${modelNote}${wfNote}${soft}`;
           } else {
             els.askStatus.textContent = hasOpenStudy()
-              ? `Open study · ${state.study.studyId}${intelNote}${modelNote}${wfNote}${soft}`
-              : `${intelNote}${modelNote}${wfNote}${soft}`.replace(/^ · /, "") || modelLabel;
+              ? `Open study · ${state.study.studyId}${intelNote}${tierNote}${agentNote}${modelNote}${wfNote}${soft}`
+              : `${intelNote}${tierNote}${agentNote}${modelNote}${wfNote}${soft}`.replace(/^ · /, "") || modelLabel;
           }
         }
         state.buddyBusy = false;

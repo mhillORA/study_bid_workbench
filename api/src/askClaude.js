@@ -456,14 +456,27 @@ const AZURE_DEPLOYMENT_ALIASES = [
 ];
 
 const FOUNDRY_AGENT_NAME_ALIASES = ["FOUNDRY_AGENT_NAME", "AZURE_AI_AGENT_NAME", "BUDDY_AGENT_NAME"];
+const FOUNDRY_AGENT_NAME_FAST_ALIASES = ["FOUNDRY_AGENT_NAME_FAST", "BUDDY_AGENT_NAME_FAST"];
+const FOUNDRY_AGENT_NAME_DEEP_ALIASES = ["FOUNDRY_AGENT_NAME_DEEP", "BUDDY_AGENT_NAME_DEEP"];
 const FOUNDRY_AGENT_ENDPOINT_ALIASES = [
   "FOUNDRY_AGENT_ENDPOINT",
   "AZURE_AI_AGENT_ENDPOINT",
   "BUDDY_AGENT_ENDPOINT"
 ];
+const FOUNDRY_AGENT_ENDPOINT_FAST_ALIASES = [
+  "FOUNDRY_AGENT_ENDPOINT_FAST",
+  "BUDDY_AGENT_ENDPOINT_FAST"
+];
+const FOUNDRY_AGENT_ENDPOINT_DEEP_ALIASES = [
+  "FOUNDRY_AGENT_ENDPOINT_DEEP",
+  "BUDDY_AGENT_ENDPOINT_DEEP"
+];
 
-/** Default agent when project endpoint is present (user's BudgetBuddy2 + web search). */
-const DEFAULT_FOUNDRY_AGENT_NAME = "BudgetBuddy2";
+/** Fast = BudgetBuddy on gpt-5.4-mini. Deep = BudgetBuddy2 on gpt-5.6-terra. */
+const DEFAULT_FOUNDRY_AGENT_NAME_FAST = "BudgetBuddy";
+const DEFAULT_FOUNDRY_AGENT_NAME_DEEP = "BudgetBuddy2";
+/** @deprecated use tier-specific names; kept for providerStatus fallback */
+const DEFAULT_FOUNDRY_AGENT_NAME = DEFAULT_FOUNDRY_AGENT_NAME_DEEP;
 
 /** Friendly label for UI / self-intro — not the Foundry resource id. */
 function buddyDisplayName(technicalName) {
@@ -498,36 +511,74 @@ function azureConfig() {
 }
 
 /**
- * Resolve Foundry Agent Responses URL.
- * Prefers FOUNDRY_AGENT_ENDPOINT; else builds from project endpoint + agent name.
+ * Resolve Foundry Agent Responses URL for fast (mini) or deep (terra) tier.
+ * tier: "fast" | "deep" | null (legacy single-agent via FOUNDRY_AGENT_NAME)
  */
-function foundryAgentConfig() {
+function foundryAgentConfig(tier = null) {
   const cfg = azureConfig();
-  const explicit = envSetAny(FOUNDRY_AGENT_ENDPOINT_ALIASES);
-  const named = envSetAny(FOUNDRY_AGENT_NAME_ALIASES);
   const disabled = String(process.env.FOUNDRY_AGENT_ENABLED || "")
     .trim()
     .toLowerCase();
   if (disabled === "0" || disabled === "false" || disabled === "off") {
-    return { enabled: false, url: null, name: null, apiKey: cfg.apiKey, reason: "disabled" };
+    return {
+      enabled: false,
+      url: null,
+      name: null,
+      tier: tier || "legacy",
+      apiKey: cfg.apiKey,
+      reason: "disabled"
+    };
   }
 
-  let name = named.value || "";
-  let url = (explicit.value || "").replace(/\/$/, "");
+  const normalizedTier =
+    tier === "fast" || tier === "deep"
+      ? tier
+      : String(process.env.BUDDY_MODEL_TIER_DEFAULT || "").toLowerCase() === "fast"
+        ? "fast"
+        : null;
+
+  let name = "";
+  let url = "";
+  let nameFrom = null;
+  let endpointFrom = null;
+
+  if (normalizedTier === "fast") {
+    const named = envSetAny(FOUNDRY_AGENT_NAME_FAST_ALIASES);
+    const explicit = envSetAny(FOUNDRY_AGENT_ENDPOINT_FAST_ALIASES);
+    name = named.value || DEFAULT_FOUNDRY_AGENT_NAME_FAST;
+    url = (explicit.value || "").replace(/\/$/, "");
+    nameFrom = named.from || (named.value ? null : "default_fast");
+    endpointFrom = explicit.from;
+  } else if (normalizedTier === "deep") {
+    const named = envSetAny(FOUNDRY_AGENT_NAME_DEEP_ALIASES);
+    const explicit = envSetAny(FOUNDRY_AGENT_ENDPOINT_DEEP_ALIASES);
+    name = named.value || DEFAULT_FOUNDRY_AGENT_NAME_DEEP;
+    url = (explicit.value || "").replace(/\/$/, "");
+    nameFrom = named.from || (named.value ? null : "default_deep");
+    endpointFrom = explicit.from;
+  } else {
+    const explicit = envSetAny(FOUNDRY_AGENT_ENDPOINT_ALIASES);
+    const named = envSetAny(FOUNDRY_AGENT_NAME_ALIASES);
+    name = named.value || DEFAULT_FOUNDRY_AGENT_NAME_DEEP;
+    url = (explicit.value || "").replace(/\/$/, "");
+    nameFrom = named.from || (named.value ? null : "default_deep");
+    endpointFrom = explicit.from;
+  }
 
   if (url && /\/agents\/([^/]+)\//i.test(url) && !name) {
     name = url.match(/\/agents\/([^/]+)\//i)[1];
   }
-  if (!name) name = DEFAULT_FOUNDRY_AGENT_NAME;
 
   if (!url && cfg.endpoint) {
     const base = String(cfg.endpoint).replace(/\/$/, "");
-    // Already the agent responses URL
     if (/\/agents\/[^/]+\/endpoint\/protocols\/openai\/responses/i.test(base)) {
       url = base;
+      if (!name && /\/agents\/([^/]+)\//i.test(base)) {
+        name = base.match(/\/agents\/([^/]+)\//i)[1];
+      }
     } else {
       const m = base.match(/^(https:\/\/[^/]+\.services\.ai\.azure\.com\/api\/projects\/[^/]+)/i);
-      if (m) {
+      if (m && name) {
         url = `${m[1]}/agents/${encodeURIComponent(name)}/endpoint/protocols/openai/responses`;
       }
     }
@@ -538,28 +589,111 @@ function foundryAgentConfig() {
     enabled,
     url,
     name,
+    tier: normalizedTier || "legacy",
     apiKey: cfg.apiKey,
     sources: {
-      endpoint: explicit.from || cfg.sources.endpoint,
-      name: named.from || (named.value ? null : "default"),
+      endpoint: endpointFrom || cfg.sources.endpoint,
+      name: nameFrom,
       apiKey: cfg.sources.apiKey
     },
     reason: enabled ? "ok" : !cfg.apiKey ? "missing_api_key" : !url ? "missing_agent_url" : "unknown"
   };
 }
 
+/** Pick fast (BudgetBuddy / mini) vs deep (BudgetBuddy2 / terra). */
+function inferModelTier(question, body = {}, workflow = "auto") {
+  const forced = String(body.buddyTier || body.modelTier || "")
+    .toLowerCase()
+    .trim();
+  if (forced === "fast" || forced === "quick") return "fast";
+  if (forced === "deep" || forced === "think") return "deep";
+
+  const q = String(question || "").toLowerCase();
+  if (!q) return "fast";
+
+  if (
+    /^(remember|learn|save)\b/i.test(q) ||
+    /\b(remember this|learn this|save (?:this|that) (?:to|for) (?:buddy )?context)\b/i.test(q)
+  ) {
+    return "fast";
+  }
+  if (/\b(APPLY:|set |fill in|update field|change enrolled)\b/i.test(q)) return "fast";
+  if (/\b(go deeper|think harder|use trialhub|list them all|deep dive)\b/i.test(q)) return "deep";
+
+  if (workflow === "teach") return "fast";
+  if (workflow === "feasibility") return "deep";
+
+  try {
+    const {
+      isTrialhubQuestion,
+      isSourceOverviewQuestion,
+      isIntelligenceQuestion,
+      extractYearFromQuestion
+    } = require("./intelligence");
+    const { isPricingQuestion } = require("./rfpPricing");
+    const { wantsDocumentExport } = require("./buddyDocExport");
+    let wantsHtml = false;
+    try {
+      wantsHtml = require("./legacyAnterior").wantsHtmlVisual(q);
+    } catch (_) {
+      wantsHtml = false;
+    }
+
+    if (isTrialhubQuestion(q) || isSourceOverviewQuestion(q)) return "deep";
+    if (isPricingQuestion(q)) return "deep";
+    if (wantsDocumentExport(q) || wantsHtml) return "deep";
+    if (isIntelligenceQuestion(q)) return "deep";
+    if (/\b(all|every|list|compare|recommend|why ora|win themes?)\b/i.test(q)) return "deep";
+    if (
+      /\b(studies|trials)\b/.test(q) &&
+      /\b(started|starting)\b/.test(q) &&
+      extractYearFromQuestion(q)
+    ) {
+      return "deep";
+    }
+  } catch (_) {
+    if (/\b(trialhub|trialhuh|ct\.?\s*gov|veeva|feasib|psm|scorecard)\b/i.test(q)) return "deep";
+  }
+
+  if (body.attachments?.length || body.includeLegacyEnrollment) return "deep";
+  return "fast";
+}
+
+function shouldEscalateToDeep(result, question, context) {
+  if (!result) return true;
+  if (result.provider === "error") return true;
+  const a = String(result.answer || "").toLowerCase();
+  if (
+    /could not complete|internal error|try again|not configured|hit an internal error/.test(a)
+  ) {
+    return true;
+  }
+  if (/don't have|do not have|cannot find|not in cosmos|missing from cosmos/.test(a)) {
+    const q = String(question || "").toLowerCase();
+    if (/\b(trialhub|trialhuh|ct\.?\s*gov|veeva|all|list|started in 20)\b/i.test(q)) return true;
+  }
+  if (/\b(all|every|list)\b/i.test(question || "") && a.length < 500) return true;
+  if (context?.intelligence?.trialhubStartedTrials?.startedCount > 0 && !/\bnct\d/i.test(a)) {
+    return true;
+  }
+  return false;
+}
+
 function providerStatus() {
   const cfg = azureConfig();
-  const agent = foundryAgentConfig();
+  const agentFast = foundryAgentConfig("fast");
+  const agentDeep = foundryAgentConfig("deep");
+  const agent = agentDeep.enabled ? agentDeep : agentFast;
   const azure = Boolean(cfg.endpoint) && Boolean(cfg.apiKey) && Boolean(cfg.deployment);
   const claude = Boolean(envSet("ANTHROPIC_API_KEY"));
-  const active = agent.enabled
-    ? "foundry_agent"
-    : azure
-      ? "azure_openai"
-      : claude
-        ? "claude"
-        : null;
+  const active =
+    agentFast.enabled || agentDeep.enabled
+      ? "foundry_agent"
+      : azure
+        ? "azure_openai"
+        : claude
+          ? "claude"
+          : null;
 
   // Presence only — never return secret values
   const raw = (name) => {
@@ -584,8 +718,10 @@ function providerStatus() {
 
   return {
     azureOpenAI: azure,
-    foundryAgent: agent.enabled,
+    foundryAgent: agentFast.enabled || agentDeep.enabled,
     foundryAgentName: agent.name || null,
+    foundryAgentFast: agentFast.enabled ? agentFast.name : null,
+    foundryAgentDeep: agentDeep.enabled ? agentDeep.name : null,
     displayName: buddyDisplayName(agent.enabled ? agent.name : cfg.deployment),
     claude,
     active,
@@ -607,6 +743,8 @@ function providerStatus() {
       AZURE_OPENAI_API_KEY: raw("AZURE_OPENAI_API_KEY"),
       AZURE_OPENAI_DEPLOYMENT: raw("AZURE_OPENAI_DEPLOYMENT"),
       FOUNDRY_AGENT_NAME: raw("FOUNDRY_AGENT_NAME"),
+      FOUNDRY_AGENT_NAME_FAST: raw("FOUNDRY_AGENT_NAME_FAST"),
+      FOUNDRY_AGENT_NAME_DEEP: raw("FOUNDRY_AGENT_NAME_DEEP"),
       FOUNDRY_AGENT_ENDPOINT: raw("FOUNDRY_AGENT_ENDPOINT"),
       BUDDY_SYSTEM_PROMPT: raw("BUDDY_SYSTEM_PROMPT"),
       FOUNDRY_AGENT_INSTRUCTIONS: raw("FOUNDRY_AGENT_INSTRUCTIONS"),
@@ -1607,11 +1745,11 @@ function withApiVersion(url, apiVersion) {
  * URL shape:
  *   {project}/agents/{name}/endpoint/protocols/openai/responses?api-version=...
  */
-async function askFoundryAgent({ question, context, history }) {
-  const agent = foundryAgentConfig();
+async function askFoundryAgent({ question, context, history, tier = "deep", agent: agentOverride = null }) {
+  const agent = agentOverride || foundryAgentConfig(tier);
   if (!agent.enabled) {
     throw new Error(
-      `Foundry agent not configured (${agent.reason}). Set AZURE_OPENAI_ENDPOINT to the project URL, AZURE_OPENAI_API_KEY, and FOUNDRY_AGENT_NAME=BudgetBuddy2 (or FOUNDRY_AGENT_ENDPOINT to the full responses URL).`
+      `Foundry agent not configured (${agent.reason}, tier=${tier}). Set AZURE_OPENAI_ENDPOINT to the project URL, AZURE_OPENAI_API_KEY, and FOUNDRY_AGENT_NAME_FAST=BudgetBuddy / FOUNDRY_AGENT_NAME_DEEP=BudgetBuddy2.`
     );
   }
 
@@ -1897,6 +2035,11 @@ async function askAi(opts) {
   const status = providerStatus();
   const attempts = [];
   let lastErr = null;
+  const workflow = opts.context?.workflow || "auto";
+  let tier =
+    opts.tier ||
+    inferModelTier(opts.question, opts.body || {}, workflow);
+  if (tier !== "fast" && tier !== "deep") tier = "fast";
 
   const tryProvider = async (label, fn) => {
     try {
@@ -1909,9 +2052,51 @@ async function askAi(opts) {
     }
   };
 
+  const callFoundry = (t, ctx) =>
+    askFoundryAgent({
+      question: opts.question,
+      context: ctx,
+      history: opts.history,
+      tier: t,
+      agent: foundryAgentConfig(t)
+    });
+
   let result = null;
   if (status.active === "foundry_agent") {
-    result = await tryProvider("foundry_agent", () => askFoundryAgent(opts));
+    result = await tryProvider(`foundry_agent_${tier}`, () => callFoundry(tier, opts.context));
+    // Fast miss or weak answer → BudgetBuddy2 (terra)
+    if (
+      tier === "fast" &&
+      foundryAgentConfig("deep").enabled &&
+      (!result || shouldEscalateToDeep(result, opts.question, opts.context))
+    ) {
+      const deepCtx = {
+        ...(opts.context || {}),
+        priorAttempt: result
+          ? {
+              tier: "fast",
+              agent: result.agent || foundryAgentConfig("fast").name,
+              answer: String(result.answer || "").slice(0, 2500),
+              note: "Fast tier answer was incomplete — deep tier should finish using full intelligence."
+            }
+          : {
+              tier: "fast",
+              error: String(lastErr?.message || lastErr || "fast agent failed"),
+              note: "Fast agent failed — deep tier should answer."
+            }
+      };
+      const escalated = await tryProvider("foundry_agent_deep_escalation", () =>
+        callFoundry("deep", deepCtx)
+      );
+      if (escalated) {
+        result = {
+          ...escalated,
+          escalated: true,
+          escalationReason: result ? "fast_tier_incomplete" : "fast_tier_failed",
+          priorTier: "fast"
+        };
+      }
+    }
     if (!result) {
       const cfg = azureConfig();
       if (cfg.endpoint && cfg.apiKey && cfg.deployment) {
@@ -1959,7 +2144,13 @@ async function askAi(opts) {
     result = await tryProvider("claude_fallback", () => askClaude(opts));
   }
 
-  if (result) return result;
+  if (result) {
+    return {
+      ...result,
+      tier: result.escalated ? "deep" : tier,
+      modelTier: result.escalated ? "deep" : tier
+    };
+  }
 
   if (!status.active) {
     return buddySoftFail(
@@ -1983,6 +2174,8 @@ module.exports = {
   getStudyContext,
   providerStatus,
   ensureBuddyAnswer,
+  inferModelTier,
+  shouldEscalateToDeep,
   foundryAgentConfig,
   buddyDisplayName
 };
