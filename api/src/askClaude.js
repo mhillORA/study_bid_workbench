@@ -64,7 +64,7 @@ const INTELLIGENCE_RULES = [
   "• Indication picking is EXCLUSIVE: one ask → one indication family only. Dry Eye ≠ Dry AMD ≠ Wet AMD; Glaucoma ≠ Neuroprotection; CRVO ≠ BRVO ≠ RVO umbrella unless that exact label was asked. Never mash shared words (dry, macular, optic, retinal, glaucoma…). Use context.intelligence.query.indication / aliasesUsed; if ambiguous, ask which indication.",
   "• Feasibility / \"how fast do we enroll\" / typical PSM for an indication → context.intelligence.indicationBenchmark (Ora median PSM + TrialHub median psm_common + site medians). Prefer medians; cite studiesWithPsm / trialsWithPsm counts.",
   "• Competing / recruiting industry trials → intelligence.indicationBenchmark.trialhub.recruitingSample / sampleTrials OR trialhubOverview.recruitingSample (NCT + sponsor + status).",
-  "• TrialHub trials started in a calendar year → intelligence.trialhubStartedTrials (startedCount + trials[] from actual_start). For \"all/list\" asks, enumerate trials[] (NCT, sponsor, indication, actual_start). NEVER use portfolio.matchedStudyCount for TrialHub.",
+  "• TrialHub trials started in a calendar year → intelligence.trialhubStartedTrials AND the ORA COSMOS FACTS block \"TRIALHUB STARTED YYYY\". Use startedCount as the true total; enumerate every listed trial (NCT + actual_start). NEVER say the year result set was cut off/unread if that block is present. NEVER use portfolio.matchedStudyCount for TrialHub.",
   "• TrialHub retina / posterior-segment asks → trialhubStartedTrials with therapeuticFilter=retina (matches indication/title text). \"trialhuh\" = TrialHub typo — still use TrialHub feed.",
   "• Site selection / which sites perform → LIST real site names from context.intelligence.indicationBenchmark.sites.topSitesByPsm (org_clean + country + site_psm + fsi_trust). Also use countrySites.topSites when present. Optional: NAVIGATE:scorecard for the full scorecard UI — never as a substitute for naming sites.",
   "• Region / country feasibility (US, UK, Germany, Japan, …) → use countryFilter on sites + ctgov + TrialHub countries; cite geography explicitly.",
@@ -1158,6 +1158,43 @@ function formatCosmosFactsBlock(context) {
     );
   }
 
+  const started = intel.trialhubStartedTrials;
+  if (started && !started.error) {
+    const y = started.year != null ? started.year : "—";
+    const filter = started.therapeuticFilterLabel || started.therapeuticFilter || "all indications";
+    lines.push(
+      `TRIALHUB STARTED ${y} (actual_start / Actual Start Date) | filter=${filter} | ` +
+        `startedCount=${started.startedCount ?? "—"} | listedCount=${started.listedCount ?? (started.trials || []).length}`
+    );
+    if (started.note) lines.push(`RULE: ${started.note}`);
+    lines.push(
+      "FULL LIST — enumerate every line below (NCT | start | sponsor | indication | status). " +
+        "Do NOT say the calendar-year result set was cut off, unread, truncated, or incomplete unless startedCount is null/error."
+    );
+    const rows = Array.isArray(started.trials) ? started.trials : [];
+    for (const t of rows) {
+      lines.push(
+        `  - ${t.nct || "?"} | ${t.actual_start || "?"} | ${t.sponsor || "?"} | ${t.indication || "?"} | ${
+          t.status || "?"
+        }`.slice(0, 200)
+      );
+    }
+    if (started.truncated && started.startedCount != null) {
+      lines.push(
+        `Showing ${rows.length} of ${started.startedCount} — count is complete; list is the first ${rows.length} by start date.`
+      );
+    }
+  } else if (started?.error) {
+    lines.push(`TRIALHUB STARTED-YEAR query failed: ${started.error}`);
+  } else if (
+    intel.query?.startYear ||
+    (intel.query?.trialhubIntent && /\b20\d{2}\b/.test(String(context?.queryHints?.feedYear || "")))
+  ) {
+    lines.push(
+      "TRIALHUB STARTED-YEAR pack missing — do not invent NCTs. Say the year filter did not return rows or intel timed out."
+    );
+  }
+
   const vo = intel.veevaOverview;
   if (vo && !vo.error) {
     lines.push(
@@ -1409,8 +1446,8 @@ function contextJsonForModel(context) {
   }
 
   // Prefer keeping indicationBenchmark if we must shrink — but NEVER drop feed overviews /
-  // inventory / NCT / countrySites (those are how dashboard asks stay grounded).
-  if (ctx.intelligence?.indicationBenchmark) {
+  // inventory / NCT / countrySites / trialhubStartedTrials (year lists).
+  if (ctx.intelligence?.indicationBenchmark || ctx.intelligence?.trialhubStartedTrials) {
     const intel = ctx.intelligence;
     const bm = intel.indicationBenchmark;
     const trimOverview = (o, sampleKey = "recentSample") => {
@@ -1427,39 +1464,55 @@ function contextJsonForModel(context) {
       }
       return copy;
     };
+    const started = intel.trialhubStartedTrials;
     ctx.intelligence = {
       source: intel.source,
       attachedFrom: intel.attachedFrom,
       query: intel.query,
       note: intel.note,
       rules: intel.rules,
-      indicationBenchmark: {
-        indicationRequested: bm.indicationRequested,
-        countryFilterLabel: bm.countryFilterLabel,
-        aliasesUsed: bm.aliasesUsed,
-        ora: bm.ora,
-        trialhub: {
-          trialCount: bm.trialhub?.trialCount,
-          trialsWithPsm: bm.trialhub?.trialsWithPsm,
-          psmMedian: bm.trialhub?.psmMedian,
-          psmP25: bm.trialhub?.psmP25,
-          psmP75: bm.trialhub?.psmP75,
-          recruitingCount: bm.trialhub?.recruitingCount,
-          note: bm.trialhub?.note,
-          sampleTrials: (bm.trialhub?.sampleTrials || []).slice(0, 6),
-          recruitingSample: (bm.trialhub?.recruitingSample || []).slice(0, 4),
-          countryRank: bm.trialhub?.countryRank
-            ? { ranked: (bm.trialhub.countryRank.ranked || []).slice(0, 8) }
-            : undefined,
-          countryRankOus: bm.trialhub?.countryRankOus
-            ? { ranked: (bm.trialhub.countryRankOus.ranked || []).slice(0, 8) }
-            : undefined
-        },
-        sites: {
-          topSitesByPsm: (bm.sites?.topSitesByPsm || bm.sites?.topSites || []).slice(0, 12),
-          topOusSites: (bm.sites?.topOusSites || []).slice(0, 12)
-        }
-      },
+      // Full year list lives in ORA COSMOS FACTS above — keep compact JSON copy too
+      trialhubStartedTrials: started
+        ? {
+            year: started.year,
+            therapeuticFilter: started.therapeuticFilter,
+            therapeuticFilterLabel: started.therapeuticFilterLabel,
+            startedCount: started.startedCount,
+            listedCount: started.listedCount,
+            truncated: started.truncated,
+            note: started.note,
+            trials: (started.trials || []).slice(0, 500)
+          }
+        : undefined,
+      indicationBenchmark: bm
+        ? {
+            indicationRequested: bm.indicationRequested,
+            countryFilterLabel: bm.countryFilterLabel,
+            aliasesUsed: bm.aliasesUsed,
+            ora: bm.ora,
+            trialhub: {
+              trialCount: bm.trialhub?.trialCount,
+              trialsWithPsm: bm.trialhub?.trialsWithPsm,
+              psmMedian: bm.trialhub?.psmMedian,
+              psmP25: bm.trialhub?.psmP25,
+              psmP75: bm.trialhub?.psmP75,
+              recruitingCount: bm.trialhub?.recruitingCount,
+              note: bm.trialhub?.note,
+              sampleTrials: (bm.trialhub?.sampleTrials || []).slice(0, 6),
+              recruitingSample: (bm.trialhub?.recruitingSample || []).slice(0, 4),
+              countryRank: bm.trialhub?.countryRank
+                ? { ranked: (bm.trialhub.countryRank.ranked || []).slice(0, 8) }
+                : undefined,
+              countryRankOus: bm.trialhub?.countryRankOus
+                ? { ranked: (bm.trialhub.countryRankOus.ranked || []).slice(0, 8) }
+                : undefined
+            },
+            sites: {
+              topSitesByPsm: (bm.sites?.topSitesByPsm || bm.sites?.topSites || []).slice(0, 12),
+              topOusSites: (bm.sites?.topOusSites || []).slice(0, 12)
+            }
+          }
+        : undefined,
       enrollmentPlan: intel.enrollmentPlan || ctx.enrollmentPlan || undefined,
       ctgov: intel.ctgov
         ? {
@@ -1468,16 +1521,15 @@ function contextJsonForModel(context) {
             recruitingSample: (intel.ctgov.recruitingSample || []).slice(0, 6)
           }
         : undefined,
-      ctgovOverview: trimOverview(intel.ctgovOverview),
-      trialhubOverview: trimOverview(intel.trialhubOverview),
-      veevaOverview: trimOverview(intel.veevaOverview, "sampleStudies"),
-      crosswalkOverview: trimOverview(intel.crosswalkOverview),
-      trialhubStartedTrials: intel.trialhubStartedTrials
+      ctgovOverview: started ? undefined : trimOverview(intel.ctgovOverview),
+      trialhubOverview: started
         ? {
-            ...intel.trialhubStartedTrials,
-            trials: (intel.trialhubStartedTrials.trials || []).slice(0, 150)
+            totalCount: intel.trialhubOverview?.totalCount,
+            note: "Year-filtered list is in trialhubStartedTrials / ORA COSMOS FACTS — not this overview sample."
           }
-        : undefined,
+        : trimOverview(intel.trialhubOverview),
+      veevaOverview: started ? undefined : trimOverview(intel.veevaOverview, "sampleStudies"),
+      crosswalkOverview: started ? undefined : trimOverview(intel.crosswalkOverview),
       countrySites: intel.countrySites
         ? {
             ...intel.countrySites,
@@ -1488,23 +1540,46 @@ function contextJsonForModel(context) {
       nctLookup: intel.nctLookup,
       ctgovNct: intel.ctgovNct,
       sponsorCrosswalk: intel.sponsorCrosswalk,
-      salesforceData: intel.salesforceData
-        ? {
-            ...intel.salesforceData,
-            accounts: (intel.salesforceData.accounts || []).slice(0, 10),
-            opportunities: (intel.salesforceData.opportunities || []).slice(0, 12),
-            activityRequests: (intel.salesforceData.activityRequests || []).slice(0, 10),
-            opportunityLines: (intel.salesforceData.opportunityLines || []).slice(0, 15),
-            services: (intel.salesforceData.services || []).slice(0, 12)
-          }
-        : undefined
+      salesforceData: started
+        ? undefined
+        : intel.salesforceData
+          ? {
+              ...intel.salesforceData,
+              accounts: (intel.salesforceData.accounts || []).slice(0, 10),
+              opportunities: (intel.salesforceData.opportunities || []).slice(0, 12),
+              activityRequests: (intel.salesforceData.activityRequests || []).slice(0, 10),
+              opportunityLines: (intel.salesforceData.opportunityLines || []).slice(0, 15),
+              services: (intel.salesforceData.services || []).slice(0, 12)
+            }
+          : undefined
     };
   }
 
   const raw = JSON.stringify(ctx, null, 2);
   const max =
-    docs?.okCount > 0 ? 60000 : ctx.answerFocus === "single_study" ? 70000 : 90000;
-  return raw.length > max ? `${raw.slice(0, max)}\n…[context truncated]` : raw;
+    ctx.intelligence?.trialhubStartedTrials
+      ? 140000
+      : docs?.okCount > 0
+        ? 60000
+        : ctx.answerFocus === "single_study"
+          ? 70000
+          : 90000;
+  if (raw.length <= max) return raw;
+  // Prefer not to mid-cut a TrialHub year list — drop bulky extras first
+  if (ctx.intelligence?.trialhubStartedTrials) {
+    const slim = {
+      ...ctx,
+      portfolio: ctx.portfolio
+        ? { source: ctx.portfolio.source, note: "trimmed; TrialHub year list is priority" }
+        : undefined,
+      legacyAnterior: undefined,
+      editableFields: Array.isArray(ctx.editableFields) ? ctx.editableFields.slice(0, 20) : undefined,
+      fieldsByTab: undefined
+    };
+    const raw2 = JSON.stringify(slim, null, 2);
+    if (raw2.length <= max) return raw2;
+  }
+  return `${raw.slice(0, max)}\n…[context truncated]`;
 }
 
 function userBlock(question, context) {

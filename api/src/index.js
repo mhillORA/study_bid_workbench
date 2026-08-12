@@ -15,7 +15,9 @@ const {
   isVeevaQuestion,
   isSalesforceDataQuestion,
   extractIndicationFromQuestion,
-  extractCountryFromQuestion
+  extractCountryFromQuestion,
+  extractYearFromQuestion: extractIntelYearFromQuestion,
+  extractTherapeuticFilterFromQuestion
 } = require("./intelligence");
 const {
   isLegacyAnteriorQuestion,
@@ -1564,7 +1566,9 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
             isPricingQuestion(question) ||
             Boolean(nctFromQuestion(question)) ||
             Boolean(qIndication) ||
-            Boolean(qCountry)));
+            Boolean(qCountry) ||
+            Boolean(extractIntelYearFromQuestion(question)) ||
+            Boolean(extractTherapeuticFilterFromQuestion(question))));
 
       const indication = forceIntel
         ? qIndication || (sourceOverviewAsk ? null : hintIndication || snapIndication) || null
@@ -1582,8 +1586,13 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
             .join("\n");
           indFromFiles = extractIndicationFromQuestion(blob);
         }
+        const needsYearList =
+          Boolean(extractIntelYearFromQuestion(question)) ||
+          Boolean(extractTherapeuticFilterFromQuestion(question)) ||
+          isTrialhubQuestion(question);
         const intelTimeoutMs = Number(
-          process.env.BUDDY_INTEL_TIMEOUT_MS || (modelTierEarly === "fast" ? 12000 : 18000)
+          process.env.BUDDY_INTEL_TIMEOUT_MS ||
+            (needsYearList ? 28000 : modelTierEarly === "fast" ? 12000 : 18000)
         );
         const intelPromise = buildIntelligenceContext(getDb, {
           question,

@@ -411,12 +411,21 @@ function extractYearFromQuestion(question) {
 }
 
 function yearFromActualStart(raw) {
-  const s = String(raw || "").trim();
+  if (raw == null || raw === "") return null;
+  // Excel serial date (days since 1899-12-30)
+  if (typeof raw === "number" && Number.isFinite(raw) && raw > 20000 && raw < 80000) {
+    const d = new Date(Math.round((raw - 25569) * 86400 * 1000));
+    const y = d.getUTCFullYear();
+    return y >= 1990 && y <= 2100 ? y : null;
+  }
+  const s = String(raw).trim();
   if (!s) return null;
-  let m = s.match(/^(\d{4})-/);
+  let m = s.match(/^(\d{4})[-/]/);
   if (m) return Number(m[1]);
-  m = s.match(/\/(\d{4})$/);
-  if (m) return Number(m[1]);
+  m = s.match(/(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})/);
+  if (m) return Number(m[3]);
+  m = s.match(/(\d{4})$/);
+  if (m && m[1].startsWith("20")) return Number(m[1]);
   m = s.match(/\b(20\d{2})\b/);
   return m ? Number(m[1]) : null;
 }
@@ -483,24 +492,49 @@ function trialhubMatchesTherapeuticFilter(trial, filterKey) {
 async function trialhubStartedTrialsQuery(database, opts = {}) {
   const year = opts.year != null ? Number(opts.year) : null;
   const therapeuticFilter = opts.therapeuticFilter || null;
-  const maxTrials = Math.min(Number(opts.maxTrials) || 150, 200);
+  // List asks need room — compact rows; hard cap 500 to keep prompts usable
+  const maxTrials = Math.min(Math.max(Number(opts.maxTrials) || 150, 1), 500);
   if (year != null && (year < 2000 || year > 2100)) return null;
   try {
     const container = database.container("ora_trialhub_trials");
-    const rows = await queryAll(
-      container,
-      `SELECT c.nct, c.title, c.sponsor, c.indication, c.indications, c.primary_raw, c.status,
-              c.phase, c.patients, c.actual_start
-       FROM c WHERE c.docType = @t AND IS_DEFINED(c.actual_start) AND c.actual_start != null`,
-      [{ name: "@t", value: "ora_trialhub_trials" }]
-    );
+    // Prefer year-prefixed ISO dates in Cosmos (fast path); fall back to full scan for other formats
+    let rows = [];
+    if (year) {
+      const y = String(year);
+      rows = await queryAll(
+        container,
+        `SELECT c.nct, c.title, c.sponsor, c.indication, c.indications, c.primary_raw, c.status,
+                c.phase, c.patients, c.actual_start
+         FROM c WHERE c.docType = @t AND IS_DEFINED(c.actual_start) AND c.actual_start != null
+           AND (
+             STARTSWITH(c.actual_start, @y)
+             OR CONTAINS(c.actual_start, @ySlash, true)
+             OR CONTAINS(c.actual_start, @yDash, true)
+           )`,
+        [
+          { name: "@t", value: "ora_trialhub_trials" },
+          { name: "@y", value: y },
+          { name: "@ySlash", value: `/${y}` },
+          { name: "@yDash", value: `-${y}` }
+        ]
+      );
+    }
+    if (!rows.length) {
+      rows = await queryAll(
+        container,
+        `SELECT c.nct, c.title, c.sponsor, c.indication, c.indications, c.primary_raw, c.status,
+                c.phase, c.patients, c.actual_start
+         FROM c WHERE c.docType = @t AND IS_DEFINED(c.actual_start) AND c.actual_start != null`,
+        [{ name: "@t", value: "ora_trialhub_trials" }]
+      );
+    }
     const trials = [];
     for (const r of rows) {
       if (year != null && yearFromActualStart(r.actual_start) !== year) continue;
       if (therapeuticFilter && !trialhubMatchesTherapeuticFilter(r, therapeuticFilter)) continue;
       trials.push({
         nct: r.nct,
-        title: r.title,
+        title: String(r.title || "").slice(0, 90) || null,
         sponsor: r.sponsor,
         indication: r.indication,
         status: r.status,
@@ -513,17 +547,21 @@ async function trialhubStartedTrialsQuery(database, opts = {}) {
     const filterLabel = therapeuticFilter
       ? TRIALHUB_THERAPEUTIC_FILTERS[therapeuticFilter]?.label || therapeuticFilter
       : null;
+    const listed = trials.slice(0, maxTrials);
     return {
       year,
       therapeuticFilter,
       therapeuticFilterLabel: filterLabel,
       startedCount: trials.length,
+      listedCount: listed.length,
       trialsWithActualStart: rows.length,
-      trials: trials.slice(0, maxTrials),
+      trials: listed,
       truncated: trials.length > maxTrials,
       field: "actual_start",
       note:
-        "TrialHub ora_trialhub_trials.actual_start (Actual Start Date). Blank actual_start excluded. therapeuticFilter matches indication/title text — broader than exclusive indication groups."
+        trials.length > maxTrials
+          ? `COMPLETE COUNT = startedCount (${trials.length}). Listed ${listed.length} of ${trials.length} in trials[]. Say "showing ${listed.length} of ${trials.length}" — NEVER say data was cut off, unread, or incomplete in Cosmos.`
+          : `COMPLETE LIST for this filter — startedCount ${trials.length} = listedCount. Enumerate every row. NEVER say records were cut off or unread.`
     };
   } catch (err) {
     return {
@@ -2250,13 +2288,26 @@ async function buildIntelligenceContext(getDb, opts = {}) {
         out.ctgovOverview = await ctgovOverview(database, resolvedCountries);
       }
       if (needFeedOverview || wantsTrialhub || startYear || therapeuticFilter) {
-        out.trialhubOverview = await trialhubOverview(database, resolvedCountries);
+        // Year/TA list asks: skip bulky overview sample — startedTrials is the deliverable
+        if (!(startYear || therapeuticFilter) || needFeedOverview || wantsTrialhub) {
+          if (!startYear && !therapeuticFilter) {
+            out.trialhubOverview = await trialhubOverview(database, resolvedCountries);
+          } else if (needFeedOverview || (wantsTrialhub && !startYear)) {
+            out.trialhubOverview = await trialhubOverview(database, resolvedCountries);
+          }
+        }
         if (startYear || therapeuticFilter) {
           out.trialhubStartedTrials = await trialhubStartedTrialsQuery(database, {
             year: startYear,
             therapeuticFilter,
-            maxTrials: wantsStartedList ? 150 : 40
+            maxTrials: wantsStartedList || therapeuticFilter ? 500 : 120
           });
+          if (!out.trialhubOverview) {
+            out.trialhubOverview = {
+              totalCount: null,
+              note: "Overview sample skipped — use trialhubStartedTrials for this year/TA ask."
+            };
+          }
         }
       }
       if (needFeedOverview || wantsVeeva) {
