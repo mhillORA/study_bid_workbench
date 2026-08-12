@@ -600,7 +600,11 @@ function foundryAgentConfig(tier = null) {
   };
 }
 
-/** Pick fast (BudgetBuddy / mini) vs deep (BudgetBuddy2 / terra). */
+/**
+ * Fast-first routing: BudgetBuddy (mini) by default.
+ * Deep (BudgetBuddy2 / terra) only when forced, or after escalate judgment.
+ * Simple PSM / site / TA / open-study / remember stay on fast.
+ */
 function inferModelTier(question, body = {}, workflow = "auto") {
   const forced = String(body.buddyTier || body.modelTier || "")
     .toLowerCase()
@@ -611,70 +615,75 @@ function inferModelTier(question, body = {}, workflow = "auto") {
   const q = String(question || "").toLowerCase();
   if (!q) return "fast";
 
+  // Explicit deep-only cues (same turn)
   if (
-    /^(remember|learn|save)\b/i.test(q) ||
-    /\b(remember this|learn this|save (?:this|that) (?:to|for) (?:buddy )?context)\b/i.test(q)
+    /\b(go deeper|think harder|deep dive|use deep|switch to deep)\b/i.test(q) ||
+    /\b(list them all|tell me every|full list|enumerate)\b/i.test(q) ||
+    /\b(html report|full report|sponsor[- ]facing report|create a (?:pdf|deck|powerpoint))\b/i.test(q)
   ) {
-    return "fast";
+    return "deep";
   }
-  if (/\b(APPLY:|set |fill in|update field|change enrolled)\b/i.test(q)) return "fast";
-  if (/\b(go deeper|think harder|use trialhub|list them all|deep dive)\b/i.test(q)) return "deep";
 
+  // Everything else starts fast — escalate judges after the mini answer
   if (workflow === "teach") return "fast";
-  if (workflow === "feasibility") return "deep";
-
-  try {
-    const {
-      isTrialhubQuestion,
-      isSourceOverviewQuestion,
-      isIntelligenceQuestion,
-      extractYearFromQuestion
-    } = require("./intelligence");
-    const { isPricingQuestion } = require("./rfpPricing");
-    const { wantsDocumentExport } = require("./buddyDocExport");
-    let wantsHtml = false;
-    try {
-      wantsHtml = require("./legacyAnterior").wantsHtmlVisual(q);
-    } catch (_) {
-      wantsHtml = false;
-    }
-
-    if (isTrialhubQuestion(q) || isSourceOverviewQuestion(q)) return "deep";
-    if (isPricingQuestion(q)) return "deep";
-    if (wantsDocumentExport(q) || wantsHtml) return "deep";
-    if (isIntelligenceQuestion(q)) return "deep";
-    if (/\b(all|every|list|compare|recommend|why ora|win themes?)\b/i.test(q)) return "deep";
-    if (
-      /\b(studies|trials)\b/.test(q) &&
-      /\b(started|starting)\b/.test(q) &&
-      extractYearFromQuestion(q)
-    ) {
-      return "deep";
-    }
-  } catch (_) {
-    if (/\b(trialhub|trialhuh|ct\.?\s*gov|veeva|feasib|psm|scorecard)\b/i.test(q)) return "deep";
-  }
-
-  if (body.attachments?.length || body.includeLegacyEnrollment) return "deep";
   return "fast";
 }
 
+/** After a fast answer: escalate to terra when the ask needs more firepower. */
 function shouldEscalateToDeep(result, question, context) {
-  if (!result) return true;
-  if (result.provider === "error") return true;
-  const a = String(result.answer || "").toLowerCase();
+  const q = String(question || "").toLowerCase();
+
+  // Question shape needs deep even if mini tried
   if (
-    /could not complete|internal error|try again|not configured|hit an internal error/.test(a)
+    /\b(go deeper|think harder|deep dive|list them all|tell me every|full list)\b/i.test(q)
   ) {
     return true;
   }
-  if (/don't have|do not have|cannot find|not in cosmos|missing from cosmos/.test(a)) {
-    const q = String(question || "").toLowerCase();
-    if (/\b(trialhub|trialhuh|ct\.?\s*gov|veeva|all|list|started in 20)\b/i.test(q)) return true;
-  }
-  if (/\b(all|every|list)\b/i.test(question || "") && a.length < 500) return true;
-  if (context?.intelligence?.trialhubStartedTrials?.startedCount > 0 && !/\bnct\d/i.test(a)) {
+  if (
+    /\b(all|every|list)\b/i.test(q) &&
+    /\b(studies|trials|ncts?|sponsors?|sites?)\b/i.test(q)
+  ) {
     return true;
+  }
+  if (
+    /\b(trialhub|trialhuh|trial\s*hu)\b/i.test(q) &&
+    /\b(all|every|list|started|202\d|retina)\b/i.test(q)
+  ) {
+    return true;
+  }
+  if (/\b(biggest|highest revenue|market size|10-?k|sec filing|wall street)\b/i.test(q)) {
+    return true;
+  }
+  if (/\b(html report|full report|create a (?:pdf|deck))\b/i.test(q)) return true;
+  if (Array.isArray(context?.uploadedDocuments?.files) && context.uploadedDocuments.files.length > 1) {
+    if (/\b(create|build|generate|report|feasibility)\b/i.test(q)) return true;
+  }
+
+  if (!result) return true;
+  if (result.provider === "error") return true;
+
+  const a = String(result.answer || "").toLowerCase();
+  if (
+    /could not complete|internal error|try again|not configured|hit an internal error|timed out|timeout/.test(
+      a
+    )
+  ) {
+    return true;
+  }
+  if (/cut off|truncated|remaining records|could not (?:be )?read|incomplete list/.test(a)) {
+    return true;
+  }
+  if (/don't have|do not have|cannot find|not in cosmos|missing from cosmos|need more data/.test(a)) {
+    return true;
+  }
+  if (/\b(all|every|list)\b/i.test(q) && a.length < 600) return true;
+
+  const started = context?.intelligence?.trialhubStartedTrials;
+  if (started?.startedCount > 0) {
+    const listed = (a.match(/\bnct\d{8}\b/gi) || []).length;
+    if (listed === 0 || (started.truncated && listed < Math.min(started.startedCount, 20))) {
+      return true;
+    }
   }
   return false;
 }

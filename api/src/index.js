@@ -1345,7 +1345,20 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       }
     }
 
-    const body = await request.json();
+    let body;
+    try {
+      body = await request.json();
+    } catch (parseErr) {
+      return json(200, {
+        ok: false,
+        answer:
+          "I could not read that request body. Try sending again without a huge attachment, or refresh and sign in.",
+        error: String(parseErr.message || parseErr).slice(0, 200),
+        provider: "error",
+        modelTier: "fast",
+        answerFocus: "error"
+      });
+    }
     const uploaded = await normalizeBuddyAttachments(body.attachments);
     const hasOkUpload = (uploaded.files || []).some((f) => f.ok && f.text);
     let question = String(body.question || "").trim();
@@ -1366,23 +1379,25 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       );
     const buddyWorkflowEarly = inferBuddyWorkflow(question, body);
     const moneyIntentEarly = inferMoneyIntent(question);
+    const modelTierEarly = inferModelTier(question, body, buddyWorkflowEarly);
     const skipHeavyPortfolio =
       buddyWorkflowEarly === "teach" ||
+      modelTierEarly === "fast" ||
       ((externalFeedAsk || catalogAskEarly) &&
         buddyWorkflowEarly !== "budget" &&
         !isPricingQuestion(question) &&
         moneyIntentEarly !== "ora_earned" &&
         !/\b(portfolio|budget|fee|revenue|hlbp|ballpark|bid|pricing)\b/i.test(question));
 
-    // ALWAYS query Cosmos for the full portfolio — unless feed/catalog/teach (avoids SWA ~45s timeout).
+    // Skip full portfolio on fast tier / feed asks — SWA gateway ~45s; 500s are usually timeouts.
     let portfolioFull = null;
     let clientDirectory = [];
-    if (skipHeavyPortfolio) {
+    if (skipHeavyPortfolio && moneyIntentEarly !== "ora_earned" && buddyWorkflowEarly !== "budget") {
       portfolioFull = {
         source: "cosmos_portfolio_skipped",
         skipped: true,
         note:
-          "Portfolio rollup skipped — this ask targets TrialHub / CT.gov / Veeva / catalog data. Use context.intelligence (not portfolio.matchedStudyCount) for feed counts."
+          "Portfolio rollup skipped for speed (fast tier / feed ask). Use context.intelligence or open study for numbers."
       };
     } else {
       try {
@@ -1567,7 +1582,9 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
             .join("\n");
           indFromFiles = extractIndicationFromQuestion(blob);
         }
-        const intelTimeoutMs = Number(process.env.BUDDY_INTEL_TIMEOUT_MS || 18000);
+        const intelTimeoutMs = Number(
+          process.env.BUDDY_INTEL_TIMEOUT_MS || (modelTierEarly === "fast" ? 12000 : 18000)
+        );
         const intelPromise = buildIntelligenceContext(getDb, {
           question,
           indication: rfpHint.indication || indication || indFromFiles,
@@ -1949,6 +1966,8 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       provider: "error",
       deployment: llm.deployment || null,
       displayName: llm.displayName || "Buddy",
+      modelTier: "fast",
+      escalated: false,
       answerFocus: "error"
     });
   }
