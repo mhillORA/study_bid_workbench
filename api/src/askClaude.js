@@ -624,6 +624,20 @@ function inferModelTier(question, body = {}, workflow = "auto") {
     return "deep";
   }
 
+  // Heavy TrialHub year / TA dumps — go Deep once (skip Fast hop) so intel has room under SWA ~45s
+  try {
+    const { isTrialhubQuestion, extractYearFromQuestion, extractTherapeuticFilterFromQuestion } =
+      require("./intelligence");
+    if (
+      (isTrialhubQuestion(q) || extractTherapeuticFilterFromQuestion(q)) &&
+      (extractYearFromQuestion(q) || /\b(all|every|list)\b/i.test(q))
+    ) {
+      return "deep";
+    }
+  } catch (_) {
+    /* keep fast */
+  }
+
   // Everything else starts fast — escalate judges after the mini answer
   if (workflow === "teach") return "fast";
   return "fast";

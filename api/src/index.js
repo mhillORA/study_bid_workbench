@@ -1590,9 +1590,10 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
           Boolean(extractIntelYearFromQuestion(question)) ||
           Boolean(extractTherapeuticFilterFromQuestion(question)) ||
           isTrialhubQuestion(question);
+        // Year/TA TrialHub lists are heavy — allow longer (SWA gateway still ~45s total for the whole ask).
         const intelTimeoutMs = Number(
           process.env.BUDDY_INTEL_TIMEOUT_MS ||
-            (needsYearList ? 28000 : modelTierEarly === "fast" ? 12000 : 18000)
+            (needsYearList ? 38000 : modelTierEarly === "fast" ? 15000 : 25000)
         );
         const intelPromise = buildIntelligenceContext(getDb, {
           question,
