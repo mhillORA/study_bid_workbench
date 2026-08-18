@@ -5,12 +5,37 @@
 
 const MAX_EXPORT_CHARS = 200000;
 
+/** Chat [[h]]/[[i]] must become real HTML in reports (navy headers, red emphasis). */
+function normalizeBuddyMarkup(raw) {
+  let s = String(raw || "");
+  s = s.replace(/\[{1,3}\s*\/\s*([hi])\s*\]{1,3}/gi, (_, t) => `[[/${t.toLowerCase()}]]`);
+  s = s.replace(/\[{1,3}\s*([hi])\s*\]{1,3}/gi, (_, t) => `[[${t.toLowerCase()}]]`);
+  return s;
+}
+
+function convertBuddyMarkupInHtml(html) {
+  let s = normalizeBuddyMarkup(html);
+  if (!/\[\[\/?[hi]\]\]/i.test(s)) return s;
+  s = s.replace(
+    /\[\[h\]\]([\s\S]*?)\[\[\/h\]\]/gi,
+    (_, inner) =>
+      `<div style="color:#1B2A4A;font-weight:700;font-size:1.08rem;margin:0.9rem 0 0.4rem;">${inner}</div>`
+  );
+  s = s.replace(
+    /\[\[i\]\]([\s\S]*?)\[\[\/i\]\]/gi,
+    (_, inner) => `<span style="color:#C0392B;font-weight:700;">${inner}</span>`
+  );
+  // Leftover unpaired tokens
+  s = s.replace(/\[\[\/?[hi]\]\]/gi, "");
+  return s;
+}
+
 function extractHtmlReport(text) {
   const src = String(text || "");
   const re = /HTML_REPORT_START\s*([\s\S]*?)\s*HTML_REPORT_END/i;
   const m = src.match(re);
   if (!m) return { answer: src.trim(), html: null };
-  const html = String(m[1] || "").trim();
+  const html = convertBuddyMarkupInHtml(String(m[1] || "").trim());
   const answer = src.replace(re, "\n").trim();
   return { answer, html: html || null };
 }
@@ -131,6 +156,7 @@ async function buildBuddyDocExports(answerText, question) {
 
 module.exports = {
   extractHtmlReport,
+  convertBuddyMarkupInHtml,
   wantsDocumentExport,
   requestedFormats,
   buildBuddyDocExports

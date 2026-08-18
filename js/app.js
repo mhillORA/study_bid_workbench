@@ -2265,8 +2265,240 @@
     }]);
   }
 
+  function assistantAskedToFill(text) {
+    const t = String(text || "").toLowerCase();
+    if (!t) return false;
+    if (/\bportfolio rollup\b/.test(t) && /\bfeasibility\b/.test(t)) return false;
+    return (
+      /\bwhat i need\b/.test(t) ||
+      /\bi will autofill\b/.test(t) ||
+      /\bi will fill\b/.test(t) ||
+      /\bi(?:'|’)?ll fill\b/.test(t) ||
+      /\b(give me|send me|tell me|share)\b.{0,80}\b(client|sponsor|phase|enrolled|details|info|those|that|fields)\b/.test(t) ||
+      /\bstill needed\b/.test(t) ||
+      /\bstill need\b/.test(t) ||
+      /\bneed (?:the )?(?:following|these|client|indication|phase|enrolled)\b/.test(t) ||
+      /\bto fill (?:this|it|the (?:form|study|hlbp))\b/.test(t) ||
+      /\bthen i (?:can |will )?fill\b/.test(t) ||
+      /\bpropose apply fills\b/.test(t)
+    );
+  }
+
+  function assistantAskedForHtmlFill(text) {
+    const t = String(text || "").toLowerCase();
+    return /\b(html_report|feasibility report|leave-behind|template|deck|pdf|word doc|filled report)\b/.test(t);
+  }
+
+  function lastAssistantTurn() {
+    for (let i = state.askHistory.length - 1; i >= 0; i--) {
+      if (state.askHistory[i]?.role === "assistant") return state.askHistory[i];
+    }
+    return null;
+  }
+
+  function parseSiteMixFromText(text) {
+    const rows = [];
+    const seen = new Set();
+    const skipIso = new Set(["in", "or", "no", "to", "at", "be", "is", "as", "it"]);
+    const aliases = [];
+    for (const c of SBW.intelCountries || []) {
+      aliases.push({ name: c.name, needle: c.name });
+      for (const a of c.aliases || []) aliases.push({ name: c.name, needle: a });
+    }
+    aliases.sort((a, b) => b.needle.length - a.needle.length);
+    for (const { name, needle } of aliases) {
+      if (needle.length <= 2 && skipIso.has(needle.toLowerCase())) continue;
+      const n = String(needle).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const re = new RegExp(
+        `(\\d{1,3})\\s+(?:core\\s+)?(?:sites?\\s+(?:in\\s+)?)?${n}\\b|\\b${n}\\s*[:\\-–]?\\s*(\\d{1,3})\\s*(?:core\\s+)?(?:sites?)?`,
+        "gi"
+      );
+      let m;
+      while ((m = re.exec(String(text || "")))) {
+        const nSites = Number(m[1] || m[2]);
+        if (!nSites || seen.has(name)) continue;
+        seen.add(name);
+        rows.push({ country: name, coreSites: nSites });
+      }
+    }
+    return rows;
+  }
+
+  function synthesizeFillPatches(userText, assistantText) {
+    const q = String(userText || "").trim();
+    if (!q) return [];
+    const raw = [];
+    const add = (path, value, label, tab) => {
+      if (value == null || String(value).trim() === "") return;
+      if (raw.some((p) => p.path === path)) return;
+      raw.push({ path, value, label, tab });
+    };
+
+    for (const line of q.split(/\n|;/)) {
+      const m = line.trim().match(/^(?:\d+[.)]\s*)?(.{2,40}?)\s*[:\-–]\s*(.+)$/);
+      if (!m) continue;
+      const key = m[1].trim();
+      const val = m[2].trim();
+      if (/site|country mix|countries/i.test(key)) continue;
+      const resolved = resolveFieldPath(key);
+      if (resolved) add(resolved.path, coercePatchValue(val), resolved.label, resolved.tab);
+    }
+
+    const asked = [];
+    for (const line of String(assistantText || "").split(/\n/)) {
+      const m = line.match(/^\s*(?:\d+[.)]|[-•*])\s*(.+)$/);
+      if (!m) continue;
+      const token = m[1].replace(/\s*\(.*$/, "").replace(/[:?.]+$/, "").trim();
+      if (/site|country mix|countries/i.test(token)) {
+        asked.push({ kind: "sites" });
+        continue;
+      }
+      const resolved = resolveFieldPath(token);
+      if (resolved) asked.push({ kind: "field", resolved });
+    }
+    const numbered = [];
+    for (const line of q.split(/\n/)) {
+      const m = line.match(/^\s*\d+[.)]\s*(.+)$/);
+      if (m) numbered.push(m[1].trim());
+    }
+    if (asked.length && numbered.length) {
+      asked.forEach((item, i) => {
+        if (!numbered[i]) return;
+        if (item.kind === "sites") {
+          parseSiteMixFromText(numbered[i]).forEach((row, idx) => {
+            add(`sites.${idx}.country`, row.country, `Country (${idx + 1})`, "hlbp");
+            add(`sites.${idx}.coreSites`, row.coreSites, `Core sites (${idx + 1})`, "hlbp");
+          });
+        } else {
+          add(item.resolved.path, coercePatchValue(numbered[i]), item.resolved.label, item.resolved.tab);
+        }
+      });
+    }
+
+    const client =
+      q.match(/\b(?:client|sponsor)\s*(?:name\s*)?(?:is|=|:)\s*([^\n,;]+)/i) ||
+      q.match(/\b(?:client|sponsor)\s*[:\-–]\s*([^\n,;]+)/i);
+    if (client) add("clientName", client[1].trim(), "Client", "overview");
+
+    const indication = q.match(/\bindication\s*(?:is|=|:|-–)?\s*([^\n,;]+)/i);
+    if (indication && !/^phase\b/i.test(indication[1])) {
+      add("indication", indication[1].trim(), "Indication", "overview");
+    }
+
+    const phase = q.match(/\bphase\s*(?:is|=|:)?\s*(i{1,3}|iv|1|2|3|4|iia|iib)\b/i);
+    if (phase) add("phase", phase[1].toUpperCase(), "Phase", "overview");
+
+    const enrolled = q.match(
+      /\b(?:enrolled(?:\s+subjects?)?|subjects?|patients?)\s*(?:is|=|:)?\s*(\d{1,5})\b|\b(\d{1,5})\s+(?:enrolled(?:\s+subjects?)?|subjects?|patients?)\b/i
+    );
+    if (enrolled) {
+      add("drivers.enrolledSubjects", Number(enrolled[1] || enrolled[2]), "Enrolled subjects", "overview");
+    }
+
+    const months = q.match(
+      /\b(?:enrollment\s+months?|enroll(?:ment)?)\s*(?:is|=|:|over|for)?\s*(\d{1,3})\b|\b(\d{1,3})\s+(?:enrollment\s+)?months?\b/i
+    );
+    if (months) {
+      add("drivers.enrollmentMonths", Number(months[1] || months[2]), "Enrollment months", "overview");
+    }
+
+    parseSiteMixFromText(q).forEach((row, idx) => {
+      add(`sites.${idx}.country`, row.country, `Country (${idx + 1})`, "hlbp");
+      add(`sites.${idx}.coreSites`, row.coreSites, `Core sites (${idx + 1})`, "hlbp");
+    });
+
+    const looksLikeSpecs =
+      raw.length > 0 ||
+      (/^[^?]{2,180}$/.test(q) &&
+        /[,;]/.test(q) &&
+        !/\b(tell me|what|how|why|please|can you|could you|would you)\b/i.test(q));
+    if (looksLikeSpecs && !/\?/.test(q)) {
+      let rest = q
+        .replace(/\bphase\s*(?:is|=|:)?\s*(i{1,3}|iv|1|2|3|4|iia|iib)\b/gi, " ")
+        .replace(/\b(?:enrolled(?:\s+subjects?)?|subjects?|patients?)\s*(?:is|=|:)?\s*\d{1,5}\b/gi, " ")
+        .replace(/\b\d{1,5}\s+(?:enrolled(?:\s+subjects?)?|subjects?|patients?)\b/gi, " ")
+        .replace(/\b(?:enrollment\s+months?|enroll(?:ment)?)\s*(?:is|=|:|over|for)?\s*\d{1,3}\b/gi, " ")
+        .replace(/\b\d{1,3}\s+(?:enrollment\s+)?months?\b/gi, " ")
+        .replace(/\b(?:client|sponsor|indication)\s*(?:name\s*)?(?:is|=|:|-–)?\s*/gi, " ");
+      for (const row of parseSiteMixFromText(q)) {
+        rest = rest.replace(new RegExp(String(row.country).replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi"), " ");
+        rest = rest.replace(new RegExp(String(row.coreSites), "g"), " ");
+      }
+      const parts = rest
+        .split(/[,;\n]/)
+        .map((s) => s.replace(/\b\d+\b/g, " ").replace(/\s+/g, " ").trim())
+        .filter((s) => s.length >= 2 && !/^(and|with|for|the)$/i.test(s));
+      if (!raw.some((p) => p.path === "clientName") && parts[0]) {
+        add("clientName", parts[0], "Client", "overview");
+      }
+      if (!raw.some((p) => p.path === "indication") && parts[1]) {
+        add("indication", parts[1], "Indication", "overview");
+      }
+    }
+
+    if (!raw.length && String(state.study?.budgetType || "").toUpperCase() === "HLBP") {
+      const missing = hlbpMissingFields();
+      const one = q.replace(/[?.!]+$/g, "").trim();
+      if (
+        missing[0] === "Client / sponsor" &&
+        one &&
+        !/[,;\n]/.test(one) &&
+        one.length < 80 &&
+        !/\d{2,}/.test(one) &&
+        !/\b(what|how|why|please|tell)\b/i.test(one)
+      ) {
+        add("clientName", one, "Client", "overview");
+      }
+    }
+
+    return normalizePatches(raw);
+  }
+
+  function lockTabForPatch(patch) {
+    const budget = String(state.study?.budgetType || "").toUpperCase();
+    const p = String(patch?.path || "");
+    if (
+      budget === "HLBP" &&
+      (STUDY_HEADER_FIELDS.some((f) => f.key === p) ||
+        p.startsWith("drivers.") ||
+        p.startsWith("sites.") ||
+        p.startsWith("totals."))
+    ) {
+      return "hlbp";
+    }
+    return (
+      patch?.tab ||
+      (SBW.sectionForFieldPath ? SBW.sectionForFieldPath(p) : "overview")
+    );
+  }
+
+  function extractBalancedJsonArray(src, marker) {
+    const upper = String(src || "").toUpperCase();
+    const needle = String(marker || "").toUpperCase();
+    const idx = upper.indexOf(needle);
+    if (idx < 0) return null;
+    const brack = src.indexOf("[", idx);
+    if (brack < 0) return null;
+    let depth = 0;
+    for (let i = brack; i < src.length; i++) {
+      if (src[i] === "[") depth += 1;
+      else if (src[i] === "]") {
+        depth -= 1;
+        if (depth === 0) {
+          try {
+            return { value: JSON.parse(src.slice(brack, i + 1)), start: idx, end: i + 1 };
+          } catch (_) {
+            return null;
+          }
+        }
+      }
+    }
+    return null;
+  }
+
   function extractApplyPatches(text) {
-    const src = String(text || "");
+    let src = String(text || "");
+    src = src.replace(/```(?:json)?\s*(APPLY:[\s\S]*?)```/gi, "$1");
     const re = /\bAPPLY:\s*(\[[\s\S]*?\])/gi;
     let match;
     let cleaned = src;
@@ -2277,6 +2509,21 @@
         patches.push(...normalizePatches(parsed));
       } catch (_) {}
       cleaned = cleaned.replace(match[0], "\n");
+    }
+    if (!patches.length) {
+      const bal = extractBalancedJsonArray(src, "APPLY:");
+      if (bal && Array.isArray(bal.value)) {
+        patches.push(...normalizePatches(bal.value));
+        cleaned = (src.slice(0, bal.start) + "\n" + src.slice(bal.end)).trim();
+      }
+    }
+    if (!patches.length) {
+      const obj = extractBalancedJsonObject(src, "APPLY:");
+      if (obj && obj.value && typeof obj.value === "object") {
+        const list = Array.isArray(obj.value) ? obj.value : [obj.value];
+        patches.push(...normalizePatches(list));
+        cleaned = (src.slice(0, obj.start) + "\n" + src.slice(obj.end)).trim();
+      }
     }
     return { text: cleaned.trim(), patches };
   }
@@ -2502,7 +2749,8 @@
   }
 
   function ensureBuddyReportHtml(html) {
-    const raw = String(html || "").trim();
+    const converted = convertBuddyMarkupInHtml(String(html || "").trim());
+    const raw = converted.trim();
     if (!raw) return "";
     if (/^<!DOCTYPE\s+html/i.test(raw) || /^<html[\s>]/i.test(raw)) return raw;
     return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Ora report</title>
@@ -2573,12 +2821,29 @@
     state.askHistory.push(turn);
   }
 
+  function convertBuddyMarkupInHtml(html) {
+    let s = String(html || "");
+    s = s.replace(/\[{1,3}\s*\/\s*([hi])\s*\]{1,3}/gi, (_, t) => `[[/${t.toLowerCase()}]]`);
+    s = s.replace(/\[{1,3}\s*([hi])\s*\]{1,3}/gi, (_, t) => `[[${t.toLowerCase()}]]`);
+    if (!/\[\[\/?[hi]\]\]/i.test(s)) return s;
+    s = s.replace(
+      /\[\[h\]\]([\s\S]*?)\[\[\/h\]\]/gi,
+      (_, inner) =>
+        `<div style="color:#1B2A4A;font-weight:700;font-size:1.08rem;margin:0.9rem 0 0.4rem;">${inner}</div>`
+    );
+    s = s.replace(
+      /\[\[i\]\]([\s\S]*?)\[\[\/i\]\]/gi,
+      (_, inner) => `<span style="color:#C0392B;font-weight:700;">${inner}</span>`
+    );
+    return s.replace(/\[\[\/?[hi]\]\]/gi, "");
+  }
+
   function extractHtmlReport(text) {
     const src = String(text || "");
     const re = /HTML_REPORT_START\s*([\s\S]*?)\s*HTML_REPORT_END/i;
     const m = src.match(re);
     if (!m) return { text: src.trim(), html: null };
-    const html = String(m[1] || "").trim();
+    const html = convertBuddyMarkupInHtml(String(m[1] || "").trim());
     const cleaned = src.replace(re, "\n").trim();
     return { text: cleaned, html: html || null };
   }
@@ -2624,7 +2889,7 @@
       else if (created.create) text = "Proposed a new study — click Create study to open it.";
       else if (learned.learn) text = "Proposed a note for Buddy context — click Save to store it.";
       else if (extracted.patches.length) {
-        text = "Proposed field updates — Apply to write them into the open study.";
+        text = "Filling those fields on the open study.";
       } else if (sectionId === "__buddy__") {
         text = "Buddy is already open.";
       } else if (sectionId) {
@@ -2644,12 +2909,33 @@
         "I need a bit more to help. Tell me the indication (e.g. Dry Eye), geography if it matters, and whether you want a portfolio rollup, a pitch/feasibility read, or help on the open study.";
     }
     text = text.replace(/(^|\s)\(?null\)?(?=\s|$)/gi, (m, lead) => `${lead}missing`);
+    const fillFollowUp = assistantAskedToFill(lastAssistantTurn()?.content);
     if (created.create) {
       pushCreateProposal(text, created.create);
+      const last = state.askHistory[state.askHistory.length - 1];
+      if (fillFollowUp && last?.proposal?.id) {
+        applyCreateStudy(last.proposal.id);
+        return;
+      }
     } else if (learned.learn) {
       pushLearnProposal(text, learned.learn);
     } else {
-      pushAssistant(text, extracted.patches, report.html, exports);
+      let patches = extracted.patches;
+      if (!patches.length && !report.html && fillFollowUp && !assistantAskedForHtmlFill(lastAssistantTurn()?.content)) {
+        const userTurn = [...state.askHistory].reverse().find((t) => t.role === "user");
+        patches = synthesizeFillPatches(userTurn?.content, lastAssistantTurn()?.content);
+        if (patches.length && !text) text = "Filling those fields on the open study.";
+      }
+      pushAssistant(text, patches, report.html, exports);
+      const last = state.askHistory[state.askHistory.length - 1];
+      if (
+        hasOpenStudy() &&
+        last?.proposal?.patches?.length &&
+        last.proposal.status === "pending"
+      ) {
+        applyProposal(last.proposal.id);
+        return;
+      }
     }
     if (sectionId === "__buddy__") openBuddy();
     else if (sectionId) {
@@ -2840,7 +3126,7 @@
         ? String(workspace.budgetType || "").toUpperCase() === "HLBP"
           ? `Created HLBP ${workspace.studyId} in Cosmos and opened the form.${
               missing.length ? ` Still needed: ${missing.slice(0, 5).join(", ")}.` : " Core fields look filled."
-            } Tell me the next values and I will propose Apply fills.`
+            } Tell me the next values and I will fill them.`
           : `Created ${workspace.studyId} in Cosmos and opened Overview. Fill remaining tabs or upload a budget workbook when you have one.`
         : `Opened draft ${workspace.studyId} locally${cosmosError ? ` (Cosmos create failed: ${cosmosError})` : ""}. Click Save to retry Cosmos.`
     );
@@ -2900,7 +3186,7 @@
     paintBuddyChat();
   }
 
-  function applyProposal(id) {
+  function applyProposal(id, opts = {}) {
     const proposal = findProposal(id);
     if (!proposal || proposal.status !== "pending") return;
     if (proposal.kind === "create_study") {
@@ -2914,9 +3200,7 @@
     const blocked = [];
     const allowed = [];
     for (const patch of proposal.patches || []) {
-      const tab =
-        patch.tab ||
-        (SBW.sectionForFieldPath ? SBW.sectionForFieldPath(patch.path) : "overview");
+      const tab = lockTabForPatch(patch);
       const lock = lockForSection(tab);
       if (lock && !isMeLock(lock) && isLockableSection(tab)) {
         blocked.push({
@@ -2941,14 +3225,21 @@
     for (const patch of allowed) {
       if (writeFieldValue(patch)) {
         applied += 1;
-        if (!jumpTab && patch.tab) jumpTab = patch.tab;
+        const tab = lockTabForPatch(patch);
+        if (!jumpTab && tab) jumpTab = tab;
       }
     }
     proposal.status = allowed.length ? "applied" : "pending";
     if (applied) {
       markDirty();
       recalc();
-      if (jumpTab && jumpTab !== state.sectionId && SBW.sections.some((s) => s.id === jumpTab)) {
+      const stayHlbp = String(state.study?.budgetType || "").toUpperCase() === "HLBP";
+      if (
+        !stayHlbp &&
+        jumpTab &&
+        jumpTab !== state.sectionId &&
+        SBW.sections.some((s) => s.id === jumpTab)
+      ) {
         state.sectionId = jumpTab;
       }
       render();
@@ -2963,7 +3254,9 @@
       } editing.`;
       proposal.status = "applied";
     }
-    pushAssistant(msg);
+    if (!opts.quiet || blocked.length || !applied) {
+      pushAssistant(msg);
+    }
     paintBuddyChat();
   }
 
@@ -3159,7 +3452,7 @@
       openBuddy();
       pushAssistant(
         "Opened a High Level Ballpark (HLBP) form. [[h]]What I need[[/h]]\n" +
-          "Tell me client/sponsor, indication, phase, enrolled subjects, enrollment months, and site country mix (e.g. 12 United States, 4 United Kingdom). I will autofill the form for you to Apply/Save."
+          "Tell me client/sponsor, indication, phase, enrolled subjects, enrollment months, and site country mix (e.g. 12 United States, 4 United Kingdom). Send those details and I will fill the form."
       );
       paintBuddyChat();
       return;
@@ -3172,12 +3465,46 @@
         paintBuddyChat();
         return;
       }
-      pushAssistant(
-        "Proposed field update — click Apply to write it into the open study.",
-        fillOnly
-      );
-      paintBuddyChat();
+      const label = fillOnly[0]?.label || "that field";
+      pushAssistant(`Filled ${label}. Save when you’re ready to keep it.`, fillOnly);
+      const last = state.askHistory[state.askHistory.length - 1];
+      if (last?.proposal?.id) applyProposal(last.proposal.id, { quiet: true });
+      else paintBuddyChat();
       return;
+    }
+
+    const lastAsst = [...state.askHistory.slice(0, -1)].reverse().find((t) => t.role === "assistant");
+    const fillFollowUp = assistantAskedToFill(lastAsst?.content);
+    if (fillFollowUp && !pendingFiles.length && !assistantAskedForHtmlFill(lastAsst?.content)) {
+      const syn = synthesizeFillPatches(question, lastAsst?.content);
+      if (syn.length) {
+        if (!hasOpenStudy()) {
+          const asst = String(lastAsst?.content || "").toLowerCase();
+          if (/\bhlbp|ballpark\b/.test(asst)) {
+            await startBlankHlbp();
+          } else {
+            pushAssistant(
+              "No study is open — say you need an HLBP or open a study, then send those details again."
+            );
+            paintBuddyChat();
+            return;
+          }
+        }
+        const labels = syn.map((p) => p.label || p.path).slice(0, 8).join(", ");
+        pushAssistant(
+          `Filled ${syn.length} field${syn.length === 1 ? "" : "s"}: ${labels}. Save when you’re ready to keep them.`,
+          syn
+        );
+        const last = state.askHistory[state.askHistory.length - 1];
+        applyProposal(last.proposal.id, { quiet: true });
+        const still =
+          String(state.study?.budgetType || "").toUpperCase() === "HLBP" ? hlbpMissingFields() : [];
+        if (still.length) {
+          pushAssistant(`Still need: ${still.join(", ")}.`);
+          paintBuddyChat();
+        }
+        return;
+      }
     }
 
     const rememberOnly = !pendingFiles.length ? matchRememberOnly(question) : null;
@@ -3202,9 +3529,31 @@
       return !lock || isMeLock(lock);
     });
     const qLower = question.toLowerCase();
-    const portfolioMode = !hasOpenStudy();
+    const fromQ = [...String(question).matchAll(/\b(O-\d{3,})\b/gi)].map((m) => m[1]);
+    const uniqQ = [...new Set(fromQ.map((id) => id.toUpperCase()))];
+    const selected = (state.studyCompare?.selected || []).filter(Boolean);
+    const overlay = [state.studyCompare?.leftId, state.studyCompare?.rightId].filter(Boolean);
+    const openId = hasOpenStudy() ? String(state.study.studyId || "").trim() : "";
+    const compareAsk =
+      /\b(these two studies|two studies|both studies)\b/.test(qLower) ||
+      (/\bthese two\b/.test(qLower) && /\b(stud|different|compar|differ)\b/.test(qLower)) ||
+      (/\bwhat(?:'s|s| is) different\b/.test(qLower) &&
+        (/\bstud/.test(qLower) || selected.length >= 2 || overlay.length >= 2 || uniqQ.length >= 2)) ||
+      /\b(differences? between|differ from|how (?:do they|does this) differ)\b/.test(qLower) ||
+      /\bcompare\b.{0,60}\bstud(y|ies)\b/.test(qLower) ||
+      /\bthis (?:study|one)\b.{0,50}\b(vs\.?|versus|compared to|different from)\b/.test(qLower) ||
+      (uniqQ.length >= 2 && /\b(compar|differ|vs\.?|versus|delta|different)\b/.test(qLower));
+    let compareStudyIds = [];
+    if (uniqQ.length >= 2) compareStudyIds = uniqQ.slice(0, 2);
+    else if (compareAsk && selected.length >= 2) compareStudyIds = selected.slice(0, 2);
+    else if (compareAsk && overlay.length >= 2) compareStudyIds = overlay.slice(0, 2);
+    else if (uniqQ.length === 1 && openId && uniqQ[0].toUpperCase() !== openId.toUpperCase()) {
+      compareStudyIds = [openId, uniqQ[0]];
+    }
+    const portfolioMode = !hasOpenStudy() && !(compareAsk || compareStudyIds.length >= 2);
     const askAcross =
-      /\b(all studies|across (all )?studies|every study|portfolio|average|avg|mean)\b/.test(qLower) ||
+      !compareAsk &&
+      (/\b(all studies|across (all )?studies|every study|portfolio|average|avg|mean)\b/.test(qLower) ||
       /\b(how many studies|which study|largest study|biggest study|most expensive|highest budget)\b/.test(
         qLower
       ) ||
@@ -3213,7 +3562,7 @@
       /\b(rank|ranking)\b.{0,40}\b(client|sponsor|fees?|revenue)\b/.test(qLower) ||
       /\b(who\s+pays\s+us|pays?\s+us\s+the\s+most|by\s+year|ingest(?:ion)?\s+freshness)\b/.test(qLower) ||
       (/\b(revenue|fees|billings|dollars)\b/.test(qLower) &&
-        /\b(clients?|sponsors?|studies?|portfolio)\b/.test(qLower));
+        /\b(clients?|sponsors?|studies?|portfolio)\b/.test(qLower)));
     const wantPortfolio = portfolioMode || askAcross;
     try {
       const historyPayload = state.askHistory
@@ -3241,11 +3590,14 @@
             studySnapshot: wantPortfolio ? undefined : leanStudySnapshot(state.study),
             portfolio: true,
             noStudy: portfolioMode || undefined,
+            compareMode: Boolean(compareAsk || compareStudyIds.length >= 2) || undefined,
+            compareStudyIds: compareStudyIds.length >= 2 ? compareStudyIds : undefined,
             activeTab: state.sectionId,
             activeTabLabel: (SBW.sections.find((s) => s.id === state.sectionId) || {}).label || state.sectionId,
             sectionLocks: wantPortfolio ? [] : state.locks || [],
             editableFields: wantPortfolio ? [] : catalog.slice(0, 120),
             fieldsByTab: wantPortfolio ? undefined : catalogByTab(catalog.slice(0, 120)),
+            fillFollowUp: Boolean(fillFollowUp),
             user: state.entraUser || undefined,
             intelligenceHint: {
               indication: String(
@@ -8158,7 +8510,9 @@
           const id = openReport.getAttribute("data-buddy-report-open");
           const turn = state.askHistory.find((t) => t.htmlReport && t.htmlReport.id === id);
           if (turn?.htmlReport?.html) {
-            const blob = new Blob([turn.htmlReport.html], { type: "text/html;charset=utf-8" });
+            const blob = new Blob([ensureBuddyReportHtml(turn.htmlReport.html)], {
+              type: "text/html;charset=utf-8"
+            });
             const url = URL.createObjectURL(blob);
             window.open(url, "_blank", "noopener");
             setTimeout(() => URL.revokeObjectURL(url), 60_000);
@@ -8178,7 +8532,9 @@
           const id = dlReport.getAttribute("data-buddy-report-dl");
           const turn = state.askHistory.find((t) => t.htmlReport && t.htmlReport.id === id);
           if (turn?.htmlReport?.html) {
-            const blob = new Blob([turn.htmlReport.html], { type: "text/html;charset=utf-8" });
+            const blob = new Blob([ensureBuddyReportHtml(turn.htmlReport.html)], {
+              type: "text/html;charset=utf-8"
+            });
             const url = URL.createObjectURL(blob);
             const a = document.createElement("a");
             a.href = url;

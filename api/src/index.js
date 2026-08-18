@@ -79,10 +79,198 @@ function headerGet(request, name) {
   );
 }
 
+function extractStudyIdsFromText(text) {
+  const ids = [];
+  const re = /\b(O-\d{3,}|FILE-[A-Za-z0-9._-]{4,}|HLBP-\d{8,}|NEW-\d{8,})\b/gi;
+  let m;
+  while ((m = re.exec(String(text || "")))) {
+    const id = String(m[1] || "").trim();
+    if (id && !ids.some((x) => x.toUpperCase() === id.toUpperCase())) ids.push(id);
+  }
+  return ids;
+}
+
+function normalizeAskedStudyId(id) {
+  const s = String(id || "").trim();
+  if (!s) return null;
+  if (/^\d{4,6}$/.test(s)) return `O-${s.padStart(5, "0")}`;
+  if (/^O\d{4,6}$/i.test(s)) return `O-${s.slice(1).padStart(5, "0")}`;
+  return s;
+}
+
+/** Two named/selected bids — not portfolio rollup, not Ora-vs-industry. */
+function isCompareTwoStudiesQuestion(question, body = {}) {
+  if (Array.isArray(body.compareStudyIds) && body.compareStudyIds.filter(Boolean).length >= 2) {
+    return true;
+  }
+  if (body.compareMode === true) return true;
+  const q = String(question || "").toLowerCase();
+  if (!q) return false;
+  if (/\b(ora\s+vs\.?\s+industry|vs\.?\s+industry|industry\s+psm)\b/.test(q)) return false;
+  const twoIds = extractStudyIdsFromText(question).length >= 2;
+  return (
+    /\b(these two studies|two studies|both studies)\b/.test(q) ||
+    (/\bwhat(?:'s|s| is) different\b/.test(q) && (/\bstud/.test(q) || twoIds)) ||
+    /\b(differences? between|differ from|how (?:do they|does this) differ)\b/.test(q) ||
+    /\bcompare\b.{0,60}\bstud(y|ies)\b/.test(q) ||
+    /\bthis (?:study|one)\b.{0,50}\b(vs\.?|versus|compared to|different from)\b/.test(q) ||
+    (twoIds && /\b(compar|differ|vs\.?|versus|delta)\b/.test(q))
+  );
+}
+
+function resolveComparePair(question, body, portfolio) {
+  const fromBody = (Array.isArray(body.compareStudyIds) ? body.compareStudyIds : [])
+    .map(normalizeAskedStudyId)
+    .filter(Boolean);
+  const fromQ = extractStudyIdsFromText(question).map(normalizeAskedStudyId).filter(Boolean);
+  const open = body.studyId ? normalizeAskedStudyId(body.studyId) : null;
+  const same = (a, b) => String(a || "").toUpperCase() === String(b || "").toUpperCase();
+
+  let left = null;
+  let right = null;
+  if (fromBody.length >= 2) {
+    left = fromBody[0];
+    right = fromBody[1];
+  } else if (fromQ.length >= 2) {
+    left = fromQ[0];
+    right = fromQ[1];
+  } else if (fromQ.length === 1 && open && !same(fromQ[0], open)) {
+    left = open;
+    right = fromQ[0];
+  } else if (fromBody.length === 1 && open && !same(fromBody[0], open)) {
+    left = open;
+    right = fromBody[0];
+  } else if (fromQ.length === 1 && fromBody.length === 1 && !same(fromQ[0], fromBody[0])) {
+    left = fromBody[0];
+    right = fromQ[0];
+  } else {
+    const client = String(body.clientName || "").trim();
+    const studies = Array.isArray(portfolio?.studies) ? portfolio.studies : [];
+    let hits = [];
+    if (client) {
+      const cl = client.toLowerCase();
+      hits = studies.filter((s) => String(s.clientName || "").toLowerCase().includes(cl));
+    }
+    if (hits.length === 2) {
+      left = hits[0].studyId;
+      right = hits[1].studyId;
+    } else if (hits.length > 2) {
+      return {
+        needIds: true,
+        note: `Found ${hits.length} studies for ${client}. Name two O-ids (or check two on the Studies tab).`,
+        candidates: hits.slice(0, 12).map((s) => ({
+          studyId: s.studyId,
+          clientName: s.clientName,
+          title: s.title,
+          indication: s.indication,
+          phase: s.phase
+        }))
+      };
+    }
+  }
+
+  if (!left || !right) {
+    return {
+      needIds: true,
+      note: "Need two studies to compare. Name two O-ids (e.g. O-12345 and O-67890), check two on the Studies tab, or open one study and name the other."
+    };
+  }
+  if (same(left, right)) {
+    return { needIds: true, note: "Those are the same study id — pick two different studies." };
+  }
+  return { left, right };
+}
+
+function humanizeCompareKey(key) {
+  const k = String(key || "");
+  const raw = k.startsWith("driver.")
+    ? k.slice(7)
+    : k.startsWith("header.")
+      ? k.slice(7)
+      : k.startsWith("total.")
+        ? k.slice(6)
+        : k;
+  const label = raw
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/[_./]+/g, " ")
+    .trim();
+  if (k.startsWith("total.")) return `Fees / ${label}`;
+  if (k.startsWith("driver.")) return label.replace(/^./, (c) => c.toUpperCase());
+  return label.replace(/^./, (c) => c.toUpperCase()) || k;
+}
+
+function slimStudyComparison(diff) {
+  const fieldChanges = (diff.fieldChanges || []).slice(0, 80).map((c) => ({
+    field: humanizeCompareKey(c.key),
+    key: c.key,
+    left: c.previous ?? null,
+    right: c.current ?? null
+  }));
+  const departmentDiffs = (diff.departmentDiffs || [])
+    .filter((d) => d.changed)
+    .slice(0, 20)
+    .map((d) => ({
+      department: d.department,
+      left: {
+        lines: d.previous?.count ?? 0,
+        charge: d.previous?.charge ?? 0,
+        hours: d.previous?.hours ?? 0
+      },
+      right: {
+        lines: d.current?.count ?? 0,
+        charge: d.current?.charge ?? 0,
+        hours: d.current?.hours ?? 0
+      }
+    }));
+  const topLineItemDiffs = (diff.lineItemDiffs || [])
+    .map((li) => {
+      const pc = Number(li.previous?.charge) || 0;
+      const cc = Number(li.current?.charge) || 0;
+      return { ...li, absDelta: Math.abs(cc - pc) };
+    })
+    .sort((a, b) => b.absDelta - a.absDelta)
+    .slice(0, 25)
+    .map((li) => {
+      const row = li.current || li.previous || {};
+      return {
+        oraCode: li.oraCode,
+        change: li.change,
+        service: row.service || null,
+        department: row.department || null,
+        leftCharge: li.previous?.charge ?? null,
+        rightCharge: li.current?.charge ?? null,
+        leftHours: li.previous?.totalHours ?? null,
+        rightHours: li.current?.totalHours ?? null
+      };
+    });
+  return {
+    left: {
+      studyId: diff.leftStudyId,
+      clientName: diff.older?.clientName || null,
+      version: diff.older?.label || null,
+      sourceFile: diff.older?.sourceFileName || null
+    },
+    right: {
+      studyId: diff.rightStudyId,
+      clientName: diff.newer?.clientName || null,
+      version: diff.newer?.label || null,
+      sourceFile: diff.newer?.sourceFileName || null
+    },
+    fieldChangeCount: (diff.fieldChanges || []).length,
+    fieldUnchangedCount: diff.fieldUnchangedCount ?? null,
+    fieldChanges,
+    departmentDiffs,
+    lineItemDiffCount: diff.lineItemDiffCount ?? (diff.lineItemDiffs || []).length,
+    topLineItemDiffs,
+    note: "left = first study, right = second. Summarize headline differences then notable department / line-item deltas. Cite both study ids. Do not use portfolio averages."
+  };
+}
+
 /** Infer studyId / client / year from the question + known client list. */
 function isCrossStudyQuestion(question) {
   const q = String(question || "").toLowerCase();
   if (!q) return false;
+  if (isCompareTwoStudiesQuestion(question)) return false;
   // Explicit multi-study / portfolio intent
   // NOTE: RFP/ballpark/pricing alone is NOT cross-study — keep the open study for "this protocol" asks.
   if (
@@ -93,7 +281,6 @@ function isCrossStudyQuestion(question) {
     /\b(average|avg|mean|median|total|sum|rollup)\b.{0,60}\b(across|all|every|portfolio|studies)\b/.test(q) ||
     /\b(enroll|patient|subject|budget|fee).{0,40}\b(across|all studies|every study)\b/.test(q) ||
     /\bstudies\b.{0,40}\b(last year|this year|in 20\d{2}|overall|combined)\b/.test(q) ||
-    /\bcompare\b.{0,40}\bstud(y|ies)\b/.test(q) ||
     /\b(client|sponsor)\s+concentration\b/.test(q) ||
     /\b(rank|ranking|leaderboard)\b.{0,40}\b(client|sponsor|fees?|revenue)\b/.test(q) ||
     /\b(by\s+year|year\s+over\s+year|yoy|ingest(?:ion)?\s+freshness|what(?:'s| is) in (?:the )?(?:db|database|cosmos))\b/.test(
@@ -155,8 +342,10 @@ function inferAskHints(question, body, clientNames) {
   const q = String(question || "");
   // body.portfolio=true means "include portfolio rollup" (frontend always sends it).
   // It must NOT force cross-study focus — that drops the open study for ops/BD asks.
+  const compareTwo = isCompareTwoStudiesQuestion(q, body);
   const crossStudy =
-    isCrossStudyQuestion(q) || body.crossStudy === true || body.noStudy === true;
+    !compareTwo &&
+    (isCrossStudyQuestion(q) || body.crossStudy === true || body.noStudy === true);
   // Explicit O-##### in the question wins; otherwise open-study id from the UI
   // must NOT bind cross-study / "all studies" questions to one workbook.
   const explicitStudy =
@@ -268,6 +457,23 @@ function inferBuddyWorkflow(question, body = {}) {
     }
   }
   return "auto";
+}
+
+function lastAssistantAskedForFill(history) {
+  const turns = Array.isArray(history) ? history : [];
+  for (let i = turns.length - 1; i >= 0; i--) {
+    if (String(turns[i]?.role || "").toLowerCase() !== "assistant") continue;
+    const t = String(turns[i].content || "").toLowerCase();
+    return (
+      /\bwhat i need\b/.test(t) ||
+      /\bi will autofill\b/.test(t) ||
+      /\bi will fill\b/.test(t) ||
+      /\bi(?:'|’)ll fill\b/.test(t) ||
+      /\bstill need/.test(t) ||
+      /\b(give me|send me|tell me)\b.{0,80}\b(client|sponsor|indication|phase|enrolled|details|info)\b/.test(t)
+    );
+  }
+  return false;
 }
 
 function claimMap(claims) {
@@ -1437,7 +1643,9 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
     // (otherwise Buddy ignores the file and dumps a portfolio overview).
     // body.portfolio=true only means "attach portfolio data" — not force focus.
     const attachmentDriven = hasOkUpload;
+    const compareAsk = isCompareTwoStudiesQuestion(question, body);
     const forcePortfolio =
+      !compareAsk &&
       buddyWorkflow !== "teach" &&
       buddyWorkflow !== "feasibility" &&
       !attachmentDriven &&
@@ -1448,7 +1656,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
     const studyId = forcePortfolio
       ? (String(question).match(/\b(O-\d{3,})\b/i) || [])[1] || null
       : hints.studyId;
-    const crossStudy = !attachmentDriven && (Boolean(hints.crossStudy) || forcePortfolio);
+    const crossStudy = !compareAsk && !attachmentDriven && (Boolean(hints.crossStudy) || forcePortfolio);
     const history = body.history || [];
     const user = signedInUserFromRequest(request, body.user || null);
     const activeTab = body.activeTab ? String(body.activeTab) : null;
@@ -1457,19 +1665,21 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
     const fieldsByTab = body.fieldsByTab && typeof body.fieldsByTab === "object" ? body.fieldsByTab : null;
 
     const answerFocus =
-      buddyWorkflow === "teach"
-        ? "teach"
-        : buddyWorkflow === "feasibility"
-          ? "feasibility"
-          : attachmentDriven
-            ? studyId || body.studySnapshot
-              ? "single_study"
-              : "attachments"
-            : forcePortfolio || crossStudy
-              ? "portfolio"
-              : studyId || body.studySnapshot
+      compareAsk
+        ? "compare"
+        : buddyWorkflow === "teach"
+          ? "teach"
+          : buddyWorkflow === "feasibility"
+            ? "feasibility"
+            : attachmentDriven
+              ? studyId || body.studySnapshot
                 ? "single_study"
-                : "portfolio";
+                : "attachments"
+              : forcePortfolio || crossStudy
+                ? "portfolio"
+                : studyId || body.studySnapshot
+                  ? "single_study"
+                  : "portfolio";
 
     // Browser working copy only for single-study questions
     const clientStudy = answerFocus === "portfolio" ? null : body.studySnapshot || null;
@@ -1519,6 +1729,26 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       }
     }
 
+    let studyComparison = null;
+    if (compareAsk) {
+      const pair = resolveComparePair(question, body, portfolioFull || portfolio);
+      if (pair.needIds) {
+        studyComparison = pair;
+      } else {
+        try {
+          const rawDiff = await compareStudies(pair.left, pair.right);
+          studyComparison = slimStudyComparison(rawDiff);
+        } catch (err) {
+          studyComparison = {
+            error: String(err.message || err),
+            leftStudyId: pair.left,
+            rightStudyId: pair.right,
+            note: "Could not load a Cosmos diff for those two studies."
+          };
+        }
+      }
+    }
+
     // Ora Clinical Intelligence (Veeva + TrialHub) — same filters as Intelligence tab when provided
     let intelligence = null;
     try {
@@ -1553,7 +1783,8 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       // Never force a full intel Cosmos pull just because Dry Eye (etc.) is open in the UI —
       // that was timing out Buddy asks (500s) on remember/ops/field-fill questions.
       const forceIntel =
-        buddyWorkflow === "feasibility" ||
+        !compareAsk &&
+        (buddyWorkflow === "feasibility" ||
         (buddyWorkflow !== "budget" &&
           buddyWorkflow !== "teach" &&
           (isIntelligenceQuestion(question) ||
@@ -1568,7 +1799,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
             Boolean(qIndication) ||
             Boolean(qCountry) ||
             Boolean(extractIntelYearFromQuestion(question)) ||
-            Boolean(extractTherapeuticFilterFromQuestion(question))));
+            Boolean(extractTherapeuticFilterFromQuestion(question)))));
 
       const indication = forceIntel
         ? qIndication || (sourceOverviewAsk ? null : hintIndication || snapIndication) || null
@@ -1637,6 +1868,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         legacyOverviewAsk ||
         (wantsHtmlVisual(question) && isLegacyAnteriorQuestion(question));
       const forceLegacy =
+        !compareAsk &&
         buddyWorkflow !== "budget" &&
         buddyWorkflow !== "teach" &&
         (isLegacyAnteriorQuestion(question) ||
@@ -1764,15 +1996,17 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       moneyIntent,
       wantsHtmlVisual: visualAsk,
       wantsDocumentExport: docExportAsk,
+      fillFollowUp: Boolean(body.fillFollowUp) || lastAssistantAskedForFill(history),
       dataSources: {
-        cosmosPortfolioQueried: Boolean(portfolio && portfolio.source === "cosmos_portfolio"),
+        cosmosPortfolioQueried: Boolean(!compareAsk && portfolio && portfolio.source === "cosmos_portfolio"),
+        studyComparisonAttached: Boolean(studyComparison && !studyComparison.needIds && !studyComparison.error),
         databaseStudyCount: portfolio?.databaseStudyCount ?? null,
         matchedStudyCount: portfolio?.matchedStudyCount ?? null,
         intelligenceAttached: Boolean(intelligence && intelligence.source === "ora_clinical_intelligence"),
         legacyAnteriorAttached: Boolean(legacyAnterior && legacyAnterior.source === "legacy_anterior_segment"),
         pricingScenariosAttached: Boolean(pricingScenarios && pricingScenarios.tiers),
         buddyLiveContextAttached: Boolean(buddyLiveContext && buddyLiveContext.text),
-        note: "portfolio = budget studies. pricingScenarios = past-bid RFP tiers. intelligence = Ora Veeva + TrialHub + CT.gov. legacyAnterior = anterior-segment overview. buddyLiveContext = SME text from Buddy Context tab."
+        note: "studyComparison = two-study bid diff. portfolio = budget studies. pricingScenarios = past-bid RFP tiers. intelligence = Ora Veeva + TrialHub + CT.gov. legacyAnterior = anterior-segment overview. buddyLiveContext = SME text from Buddy Context tab."
       },
       user,
       activeTab,
@@ -1789,6 +2023,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         year: hints.year || null,
         feedYear: hints.portfolioYear || null,
         crossStudy,
+        compare: Boolean(studyComparison),
         intelligence: Boolean(intelligence && !intelligence.error),
         legacyAnterior: Boolean(legacyAnterior && !legacyAnterior.error),
         wantsHtmlVisual: visualAsk
@@ -1803,7 +2038,8 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
           }
         : null,
       cosmos: cosmosContext,
-      portfolio,
+      studyComparison,
+      portfolio: compareAsk ? undefined : portfolio,
       pricingScenarios,
       intelligence,
       legacyAnterior,

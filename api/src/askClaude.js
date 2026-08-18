@@ -15,14 +15,16 @@ const SYSTEM_PROMPT_DEFAULT = [
   "Do not invent Cosmos data that is not in the provided context.",
   "For portfolio / cross-study questions (all studies, averages across studies, clients like Alcon, totals, how many patients/studies last year, budget dollars, which study is largest), use context.portfolio — especially averages.enrolledSubjects, totals, byClient, highestBudgetStudies, matchedStudyCount. Prefer portfolio when context.answerFocus is \"portfolio\". NEVER answer an all-studies / average-across-studies question using only workingStudy or openStudyInUi.",
   "When context.answerFocus is \"single_study\" and cosmos/workingStudy is present, answer about that study. When answerFocus is \"portfolio\", ignore the open UI study except as optional footnote.",
+  "When context.answerFocus is \"compare\" OR context.studyComparison is present: this is a two-study budget diff. Use STUDY COMPARISON facts / fieldChanges / departmentDiffs / topLineItemDiffs. Lead with headline differences (client, indication, phase, enrolled, sites, fees), then notable department and line-item deltas. Cite both O-ids as Left vs Right. Do not answer with portfolio averages. If studyComparison.needIds, tell them to name two O-ids or check two studies on the Studies tab, and end with NAVIGATE:studies.",
   "When both cosmos and portfolio exist, use cosmos for study-specific detail and portfolio for rollups/averages.",
   "HLBP / High Level Ballpark: when the user says they need an HLBP / high-level ballpark form, create or continue an HLBP draft. End with CREATE_STUDY:{\"budgetType\":\"HLBP\",\"clientName\":\"...\",\"phase\":\"...\",\"indication\":\"...\",\"drivers\":{\"enrolledSubjects\":100,\"enrollmentMonths\":12,\"coreSites\":16},\"sites\":[{\"country\":\"United States\",\"coreSites\":12},{\"country\":\"United Kingdom\",\"coreSites\":4}],\"versionLabel\":\"HLBP draft\"} including only fields they gave, then NAVIGATE:hlbp. Guide missing required fields one batch at a time (client, indication, phase, enrolled, enrollment months, site country mix). When they answer, APPLY those fields (drivers.*, sites.N.country, sites.N.coreSites, clientName, etc.). Do not invent a full detailed Internal Budget.",
   "When the user wants a new study / draft bid (not HLBP) and provides details, briefly confirm, then end with exactly one line: CREATE_STUDY:{\"studyId\":\"O-12345 or omit\",\"clientName\":\"...\",\"title\":\"...\",\"protocol\":\"...\",\"phase\":\"...\",\"therapeuticArea\":\"...\",\"indication\":\"...\",\"drivers\":{\"enrolledSubjects\":120,\"screenedSubjects\":180,\"coreSites\":15,\"enrollmentMonths\":12},\"notes\":\"...\",\"versionLabel\":\"draft\"}. Only include fields the user gave. studyId optional — system will assign NEW-… if missing. Do not claim the study exists until the user clicks Create in the UI.",
   "When the user asks to open, go to, or show a tab/section (Hub, HLBP, Ops Dashboard, Studies, Versions, Ora Clinical Intelligence, Data Status, Site Scorecard, Buddy Context, Overview, Recruitment, ClinOps, Monitoring, SMO, Summary, Reviews, Formulas, Upload), put exactly one line at the end of your reply: NAVIGATE:<sectionId> using one of: hub, hlbp, ops, studies, versions, intelligence, data-status, scorecard, buddy-context, overview, recruitment, clinops, monitoring, smo, summary, reviews, formulas, upload.",
   "When the user asks you to set, fill, change, or update a field on the open study, briefly confirm what you will change, then put exactly one line at the end: APPLY:[{\"path\":\"assumptions.recruitment.notes\",\"value\":\"text\",\"label\":\"Notes (Recruitment)\"}].",
+  "FILL FOLLOW-UP (critical): If your previous message asked the user for missing fields / \"give me X and I'll fill it in\" / What I need — and THIS message has their answers: you MUST emit APPLY (open study) or CREATE_STUDY (no study / new HLBP) on THIS turn using the values they just gave. Do not only acknowledge. Do not say you will fill it later. Do not re-ask for fields they already provided. If they were filling an HTML report/template, emit a complete filled HTML_REPORT this turn.",
   "When the user asks Buddy to remember, learn, save for later, add to context/playbook, or keep a fact/process/talking-point: briefly confirm, then end with exactly one line LEARN_CONTEXT:{\"dept\":\"bd\",\"category\":\"talking-points\",\"addition\":\"the durable note to store\"}. dept one of: general, bd, ops, recruitment, clinops, monitoring, smo, analyst, leadership, feasibility, pricing. category one of: playbook, talking-points, ous, sites, indication, pricing, ops, other. The user must click Save to Buddy context before it is stored. Do not claim it is already saved.",
   "Section locks: context.sectionLocks lists tabs currently locked for editing (sectionId + holderName). You may READ and discuss locked tabs. Do NOT emit APPLY (or claim you changed values) for any path whose tab is in sectionLocks and held by someone else — instead say clearly e.g. 'Alex is editing Recruitment — ask them to Save and click Done before I can change that tab.' CREATE_STUDY for a new study is still allowed.",
-  "APPLY paths must come from context.editableFields (path + label + tab). Prefer the activeTab when the user says a generic name like Notes. Examples: assumptions.recruitment.notes, drivers.enrolledSubjects, sites.0.country, sites.0.coreSites, clientName. Never invent paths. Do not claim the value is saved until the user clicks Apply in the UI.",
+  "APPLY paths must come from context.editableFields (path + label + tab). Prefer the activeTab when the user says a generic name like Notes. Examples: assumptions.recruitment.notes, drivers.enrolledSubjects, sites.0.country, sites.0.coreSites, clientName. Never invent paths. The workbench writes APPLY patches immediately when a study is open — still emit APPLY so the fields actually change.",
   "When context.user has a firstName (or displayName), greet them by first name when they say hi/hello or on the first reply of a chat — then skip greetings on follow-ups unless they greet you again.",
   "UPLOADED FILES (critical): When ATTACHED DOCUMENTS appear in the user message, you MUST read them and answer from them. Name each file you used. Never ignore attachments in favor of a portfolio overview, generic BD pitch, or clarifying menu. Only ask for gaps that are truly missing after reading the files.",
   "CREATE A DOC FROM ATTACHMENTS: If the user attaches branding/guidelines/template/slides AND a protocol/bid and asks to create a document/PDF/Word/feasibility report: emit HTML_REPORT_START…END that follows the branding/template and fills from the protocol + chat specs. Do not refuse because you cannot attach binary files — the app builds PDF/DOCX downloads from your HTML."
@@ -194,7 +196,7 @@ const FORMAT_RULES =
   "Web sources: keep them tiny — at the end use [[h]]Sources[[/h]] then a short comma-separated list of hostnames only " +
   "(e.g. sec.gov, bloomberg.com, investor.abbott.com). Never paste full URLs, long article titles, or numbered link dumps. " +
   "Inline cites: (SEC 10-K 2025) or (bloomberg.com) is enough. " +
-  "HTML reports use HTML_REPORT_START/END markers (not [[h]]/[[i]] inside the HTML).";
+  "HTML reports use HTML_REPORT_START/END markers. Inside HTML_REPORT do NOT use [[h]]/[[i]] — those show as literal brackets in the file. Use real HTML instead: <h2 style=\"color:#1B2A4A\">Title</h2> and <span style=\"color:#C0392B;font-weight:700\">$44.3B</span> (or <strong>). Chat summary above the report still uses [[h]]/[[i]].";
 
 /** Never dump Cosmos/JSON field keys into user-facing chat. */
 const PLAIN_LANGUAGE_RULES =
@@ -281,12 +283,14 @@ function systemPromptFor(context) {
   const base = buddyInstructionsBase();
   const protocols =
     " Machine protocols: for tab navigation end with NAVIGATE:<sectionId> (hub,hlbp,ops,studies,versions,intelligence,scorecard,buddy-context,overview,recruitment,clinops,monitoring,smo,summary,reviews,formulas,upload)." +
-    " For field fills end with APPLY:[{\"path\":\"drivers.enrolledSubjects\",\"value\":100,\"label\":\"Enrolled subjects\"}] using only context.editableFields paths; prefer activeTab for ambiguous names; the user must click Apply before values write." +
+    " For field fills end with APPLY:[{\"path\":\"drivers.enrolledSubjects\",\"value\":100,\"label\":\"Enrolled subjects\"}] using only context.editableFields paths; prefer activeTab for ambiguous names. The workbench writes APPLY patches immediately when a study is open." +
+    " FILL FOLLOW-UP: If context.fillFollowUp is true, the user just answered your missing-field ask — emit APPLY or CREATE_STUDY this turn. Never reply with only \"thanks / I'll fill that in\" and no protocol line." +
     " To remember/learn a durable SME note from chat end with LEARN_CONTEXT:{\"dept\":\"bd\",\"category\":\"talking-points\",\"addition\":\"…\"}; user must click Save to Buddy context — do not claim it is stored until then." +
     " If context.sectionLocks shows another person on a tab, do not APPLY that tab — say who is editing it and that they must Save and Done first." +
-    " To create a new study or HLBP from user-provided info end with CREATE_STUDY:{...json...} (set budgetType:\"HLBP\" and sites:[{country,coreSites}] for HLBP); user must click Create before it is saved." +
+    " To create a new study or HLBP from user-provided info end with CREATE_STUDY:{...json...} (set budgetType:\"HLBP\" and sites:[{country,coreSites}] for HLBP). On fillFollowUp the workbench creates it immediately." +
     " For cross-study / all-studies / average / client / year questions: set answer from context.portfolio (averages + totals + byClient); cite matchedStudyCount; do not use openStudyInUi or workingStudy for those answers." +
     " For when a study was ingested/uploaded/added: use portfolio.recentlyIngested or studies[].importedAt / updatedAt (or cosmos.study dates) — do not claim dates are unavailable if present." +
+    " When context.studyComparison is present: summarize Left vs Right from that diff (fieldChanges first, then department/line-item deltas). Cite both study ids. If needIds, ask for two O-ids or two Studies-tab checkboxes." +
     " For feasibility / PSM / TrialHub / competing trials / site performance / NCT / ophthalmology landscape: use context.intelligence; if site lists are present, NAME the sites — do not only NAVIGATE:intelligence." +
     " For legacy anterior-segment site trust / preferred sites / historical scheduled-screened-enrolled: use context.legacyAnterior when present." +
     " For past-bid pricing comps: use context.pricingScenarios when present; include CT.gov $ only if ctgovDollars.available." +
@@ -308,7 +312,9 @@ function systemPromptFor(context) {
           ? " CRITICAL WORKFLOW=teach: Capture the durable note. Confirm briefly, then end with exactly one LEARN_CONTEXT:{\"dept\":\"…\",\"category\":\"…\",\"addition\":\"…\"}. Do not run a budget or feasibility analysis."
           : "";
   const focusNote =
-    focus === "portfolio"
+    focus === "compare"
+      ? " CRITICAL: answerFocus=compare — use context.studyComparison / STUDY COMPARISON facts. Left vs Right by studyId. Do NOT use portfolio averages. If needIds, ask for two O-ids or two checkboxes on Studies."
+      : focus === "portfolio"
       ? " CRITICAL: answerFocus=portfolio — answer from context.portfolio (Cosmos DB) only; you may still use context.intelligence / context.legacyAnterior for feasibility if present AND workflow is not budget."
       : focus === "feasibility"
         ? " answerFocus=feasibility — prefer intelligence packs over portfolio dollars."
@@ -365,6 +371,9 @@ function systemPromptFor(context) {
   const docNote = context?.wantsDocumentExport
     ? " CRITICAL: wantsDocumentExport=true — produce a finished document via HTML_REPORT (branding + bid content). User expects downloadable PDF/Word."
     : "";
+  const fillNote = context?.fillFollowUp
+    ? " CRITICAL: fillFollowUp=true — the user just answered your missing-field ask. THIS TURN MUST end with APPLY:[...] (open study) or CREATE_STUDY:{...} (new/HLBP) using their values. Do not only thank them or say you will fill it later."
+    : "";
   const liveNote =
     context?.buddyLiveContext?.text
       ? " context.buddyLiveContext has SME live additions (append-only, organized by dept/category) — treat as authoritative playbook additions. If asked for current/live context contents, summarize from organized/text."
@@ -392,7 +401,7 @@ function systemPromptFor(context) {
     : "";
   const user = context?.user;
   if (!user?.firstName && !user?.displayName && !user?.email) {
-    return base + protocols + workflowNote + focusNote + moneyNote + intelNote + planNote + visualNote + docNote + liveNote + legacyNote + modelNote;
+    return base + protocols + workflowNote + focusNote + moneyNote + intelNote + planNote + visualNote + docNote + fillNote + liveNote + legacyNote + modelNote;
   }
   const label = user.firstName
     ? `${user.firstName}${user.email ? ` (${user.email})` : ""}`
@@ -407,6 +416,7 @@ function systemPromptFor(context) {
     planNote +
     visualNote +
     docNote +
+    fillNote +
     liveNote +
     legacyNote +
     modelNote +
@@ -1030,10 +1040,79 @@ function formatLegacyFactsBlock(context) {
   return lines.join("\n");
 }
 
+function formatStudyComparisonFactsBlock(context) {
+  const c = context?.studyComparison;
+  if (!c) return "";
+  const fmt = (v) => {
+    if (v == null || v === "") return "missing";
+    if (typeof v === "number" && Math.abs(v) >= 1000) {
+      try {
+        return formatMoney(v);
+      } catch (_) {
+        return String(v);
+      }
+    }
+    return String(v);
+  };
+  if (c.needIds || c.error) {
+    const lines = [
+      "STUDY COMPARISON:",
+      c.error || c.note || "Need two different study ids.",
+      "Ask the user to name two O-ids (e.g. O-12345 and O-67890) or check two studies on the Studies tab."
+    ];
+    if (Array.isArray(c.candidates) && c.candidates.length) {
+      lines.push("Candidates:");
+      for (const s of c.candidates.slice(0, 12)) {
+        lines.push(
+          `  - ${s.studyId || "?"} | ${s.clientName || "?"} | ${s.indication || "?"} | ${s.phase || "?"}`
+        );
+      }
+    }
+    return lines.join("\n");
+  }
+  const left = c.left || {};
+  const right = c.right || {};
+  const lines = [
+    "STUDY COMPARISON (Cosmos bid diff — use this; do not invent):",
+    `Left: ${left.studyId || "?"} | ${left.clientName || "—"} | ${left.version || ""} | ${left.sourceFile || ""}`,
+    `Right: ${right.studyId || "?"} | ${right.clientName || "—"} | ${right.version || ""} | ${right.sourceFile || ""}`,
+    `Field changes: ${c.fieldChangeCount ?? "—"} shown=${(c.fieldChanges || []).length} | unchanged=${c.fieldUnchangedCount ?? "—"} | line-item diffs=${c.lineItemDiffCount ?? "—"}`
+  ];
+  for (const f of (c.fieldChanges || []).slice(0, 40)) {
+    lines.push(`  - ${f.field || f.key}: left=${fmt(f.left)} | right=${fmt(f.right)}`);
+  }
+  const depts = c.departmentDiffs || [];
+  if (depts.length) {
+    lines.push("Department charge/hours changes:");
+    for (const d of depts.slice(0, 12)) {
+      lines.push(
+        `  - ${d.department}: left ${fmt(d.left?.charge)} / ${d.left?.hours ?? 0}h (${d.left?.lines ?? 0} lines) | right ${fmt(d.right?.charge)} / ${d.right?.hours ?? 0}h (${d.right?.lines ?? 0} lines)`
+      );
+    }
+  }
+  const lis = c.topLineItemDiffs || [];
+  if (lis.length) {
+    lines.push("Largest line-item deltas:");
+    for (const li of lis.slice(0, 15)) {
+      lines.push(
+        `  - ${li.oraCode || "?"} ${li.change || ""} | ${li.service || ""} | left=${fmt(li.leftCharge)} | right=${fmt(li.rightCharge)}`
+      );
+    }
+  }
+  lines.push(
+    "RULE: Answer from this block. Lead with headline identity/driver/fee diffs, then departments. Cite both study ids. Never use portfolio averages for this ask."
+  );
+  return lines.join("\n");
+}
+
 function formatCosmosFactsBlock(context) {
   const blocks = [];
-  const portfolioFacts = formatPortfolioFactsBlock(context);
-  if (portfolioFacts) blocks.push(portfolioFacts);
+  const cmp = formatStudyComparisonFactsBlock(context);
+  if (cmp) blocks.push(cmp);
+  if (context?.answerFocus !== "compare") {
+    const portfolioFacts = formatPortfolioFactsBlock(context);
+    if (portfolioFacts) blocks.push(portfolioFacts);
+  }
 
   const intel = context?.intelligence;
   if (!intel || intel.error) {
@@ -1600,6 +1679,12 @@ function userBlock(question, context) {
   const attached = formatAttachedDocumentsBlock(context);
   const cosmosFacts = formatCosmosFactsBlock(context);
   const parts = ["Question:", question, ""];
+  if (context?.fillFollowUp) {
+    parts.unshift(
+      "FILL FOLLOW-UP: The user just answered your missing-field request. End this reply with APPLY:[...] (open study) or CREATE_STUDY:{...} (new/HLBP) using their values. Do not only acknowledge.",
+      ""
+    );
+  }
   if (attached) {
     parts.push(attached);
     parts.push("---");
