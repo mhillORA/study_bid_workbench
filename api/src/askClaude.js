@@ -1897,6 +1897,58 @@ async function askAzureOpenAI({ question, context, history }) {
   );
 }
 
+/**
+ * Consume a Foundry Responses API SSE stream and return the assembled text.
+ * Keeps the HTTP connection alive so SWA's reverse proxy doesn't 502/504
+ * on long-running model calls (the #1 cause of Buddy doc-analysis timeouts).
+ *
+ * SSE events we care about:
+ *   response.output_text.delta  → {delta: "..."}
+ *   response.completed          → {response: {output_text: "..."}}  (fallback)
+ */
+async function consumeFoundryStream(res) {
+  const decoder = new TextDecoder();
+  let accumulated = "";
+  let finalText = "";
+
+  try {
+    // Node 18+ fetch body is a Web ReadableStream
+    const reader = res.body.getReader();
+    let buf = "";
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      // Process complete SSE lines
+      const lines = buf.split("\n");
+      buf = lines.pop(); // keep incomplete last line
+      for (const line of lines) {
+        if (!line.startsWith("data:")) continue;
+        const raw = line.slice(5).trim();
+        if (raw === "[DONE]") continue;
+        let evt;
+        try { evt = JSON.parse(raw); } catch { continue; }
+        // Delta text
+        if (evt?.delta && typeof evt.delta === "string") {
+          accumulated += evt.delta;
+        } else if (evt?.type === "response.output_text.delta" && evt?.delta) {
+          accumulated += evt.delta;
+        } else if (evt?.type === "response.completed" && evt?.response) {
+          // Full response in the completed event — use as authoritative
+          finalText = extractFoundryResponseText(evt.response) || accumulated;
+        } else if (evt?.output_text && typeof evt.output_text === "string") {
+          finalText = evt.output_text;
+        }
+      }
+    }
+  } catch (err) {
+    // If streaming read fails partway, return what we have
+    if (!accumulated && !finalText) throw err;
+  }
+
+  return (finalText || accumulated).trim();
+}
+
 /** Pull assistant text from Foundry / OpenAI Responses API payload. */
 function extractFoundryResponseText(respBody) {
   if (!respBody) return "";
@@ -1965,9 +2017,12 @@ async function askFoundryAgent({ question, context, history, tier = "deep", agen
     }
   ];
 
+  // stream:true keeps the HTTP connection alive while the model generates,
+  // preventing SWA's reverse proxy from issuing a 502/504 gateway timeout
+  // on long doc-analysis or deep-dive responses.
   const payload = {
     input,
-    stream: false
+    stream: true
   };
 
   const preferred = envSet("FOUNDRY_AGENT_API_VERSION") || envSet("AZURE_OPENAI_API_VERSION");
@@ -1991,22 +2046,30 @@ async function askFoundryAgent({ question, context, history, tier = "deep", agen
       body: JSON.stringify(payload)
     });
 
-    const respBody = await res.json().catch(() => ({}));
     if (res.ok) {
-      const text = extractFoundryResponseText(respBody);
+      let text;
+      try {
+        text = await consumeFoundryStream(res);
+      } catch (streamErr) {
+        // If streaming parse fails, try reading as plain JSON (some versions ignore stream flag)
+        try {
+          const fallbackBody = await res.json().catch(() => ({}));
+          text = extractFoundryResponseText(fallbackBody);
+        } catch {
+          throw streamErr;
+        }
+      }
       return {
         answer: ensureBuddyAnswer(text),
-        model: respBody?.model || agent.name,
+        model: agent.name,
         provider: "foundry_agent",
         agent: agent.name,
-        via: `agent_responses:${apiVersion}`,
-        usage: respBody?.usage || null,
-        outputTypes: Array.isArray(respBody?.output)
-          ? [...new Set(respBody.output.map((o) => o?.type).filter(Boolean))]
-          : undefined
+        via: `agent_responses_stream:${apiVersion}`,
+        streamed: true
       };
     }
 
+    const respBody = await res.json().catch(() => ({}));
     const msg =
       respBody?.error?.message ||
       respBody?.error?.code ||
