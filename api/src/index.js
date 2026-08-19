@@ -1582,6 +1582,13 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
     const attachmentAnalyzeVerb = hasOkUpload &&
       /\b(analyze|analyse|review|read|summarize|summarise|what does|what'?s in|what is in|explain|extract|check|look at|go through|tell me about|describe|assess|evaluate)\b/i.test(question);
 
+    // If the user asks to fact-check / verify what the attachment claims against
+    // Ora internal data, we should allow the intel pack so Buddy can verify.
+    const attachmentVerificationAsk = hasOkUpload &&
+      /\b(accuracy|accurate|verify|verification|fact\s*check|fact[-\s]*check|validate|validation|confirm|against\s+(ora|cosmos|database|data)|does\s+this\s+match)\b/i.test(
+        question
+      );
+
     const externalFeedAsk =
       isSourceOverviewQuestion(question) ||
       isTrialhubQuestion(question) ||
@@ -1800,6 +1807,9 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         !catalogAsk &&
         (attachmentAnalyzeVerb || !wantsDocumentExport(question)) &&
         (attachmentAnalyzeVerb || !wantsHtmlVisual(question)) &&
+        // Fact-check / verify requests need Ora internal data,
+        // so we should NOT treat them as "upload-only".
+        !attachmentVerificationAsk &&
         !isPricingQuestion(question) &&
         !nctFromQuestion(question) &&
         !qIndication &&

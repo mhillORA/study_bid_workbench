@@ -650,10 +650,21 @@ function inferModelTier(question, body = {}, workflow = "auto") {
     /* keep fast */
   }
 
-  // Any attachment: go straight to Deep to avoid Fast→escalate double round-trip.
-  // Two model hops under SWA's ~45s gateway is the #1 timeout cause for doc crawl asks.
+  // Attachments usually mean we need to read/use file text.
+  // Prefer Fast for "read/analyze/fact-check this attached doc" so we don't
+  // immediately pay the deep-tier cost (which can push SWA over its gateway limit).
+  // Only force Deep when the user is actually asking us to generate/produce a new
+  // artifact (HTML report/PDF/docx/deck/template) or explicitly asks for deep.
   if (Array.isArray(body?.attachments) && body.attachments.length > 0) {
-    return "deep";
+    if (
+      /\b(html report|full report|create a (?:pdf|docx|word|deck|powerpoint)|document|proposal|memo|leave[- ]behind|one[- ]pager|export|download|table|feasibility report)\b/i.test(
+        q
+      ) ||
+      /\b(produce|build|generate|write|draft)\b/i.test(q)
+    ) {
+      return "deep";
+    }
+    return "fast";
   }
 
   // Everything else starts fast — escalate judges after the mini answer
