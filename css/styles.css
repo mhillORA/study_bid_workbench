@@ -625,10 +625,41 @@ h1 {
   background: linear-gradient(180deg, rgba(26, 127, 142, 0.08), transparent);
 }
 
+.buddy-mode {
+  display: flex;
+  gap: 0.35rem;
+  padding: 0.45rem 0.75rem 0.35rem;
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+
+.buddy-mode-btn {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted, #5c6578);
+  border-radius: 999px;
+  padding: 0.28rem 0.85rem;
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.buddy-mode-btn[aria-selected="true"] {
+  background: #1b2a4a;
+  border-color: #1b2a4a;
+  color: #fff;
+}
+
+.buddy-mode-btn:hover {
+  border-color: #1b2a4a;
+  color: #1b2a4a;
+}
+
 .buddy-workflow {
   display: flex;
   gap: 0.35rem;
-  padding: 0.45rem 0.75rem 0.55rem;
+  padding: 0.35rem 0.75rem 0.55rem;
   border-bottom: 1px solid var(--line);
   flex-wrap: wrap;
 }

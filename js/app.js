@@ -13,8 +13,11 @@
     buddyChatsOpen: false,
     buddyOpen: false,
     buddyAttachments: [],
+    buddyLastAttachments: [],
     buddyBusy: false,
     buddyWorkflow: localStorage.getItem("sbw.buddyWorkflow") || "auto",
+    buddyMode: localStorage.getItem("sbw.buddyMode") || "chat",
+    buddyPendingTask: null,
     source: "none", // none | cosmos | buddy
     versions: [],
     lineItems: [],
@@ -1540,7 +1543,10 @@
       createdAt: existing?.createdAt || now,
       updatedAt: now,
       workflow: state.buddyWorkflow || existing?.workflow || "auto",
-      turns
+      turns,
+      lastAttachments: Array.isArray(state.buddyLastAttachments) ? state.buddyLastAttachments.slice(0, 4) : [],
+      pendingTask: state.buddyPendingTask || null,
+      buddyMode: state.buddyMode || "chat"
     };
     store.chats = [chat, ...store.chats.filter((c) => c.id !== id)];
     store.activeId = id;
@@ -1558,6 +1564,9 @@
     }
     state.buddyChatId = chat.id;
     state.askHistory = Array.isArray(chat.turns) ? chat.turns.slice(-BUDDY_TURNS_MAX) : [];
+    state.buddyLastAttachments = Array.isArray(chat.lastAttachments) ? chat.lastAttachments.slice(0, 4) : [];
+    state.buddyPendingTask = chat.pendingTask && chat.pendingTask.type ? chat.pendingTask : null;
+    if (chat.buddyMode === "chat" || chat.buddyMode === "do") setBuddyMode(chat.buddyMode, { persist: false });
     if (chat.workflow && chat.workflow !== state.buddyWorkflow) {
       // Keep user's current mode preference; only restore if still default auto
       if (!localStorage.getItem("sbw.buddyWorkflow")) setBuddyWorkflow(chat.workflow);
@@ -1606,6 +1615,9 @@
     writeBuddyChatStore(store);
     state.buddyChatId = id;
     state.askHistory = Array.isArray(chat.turns) ? chat.turns.slice(-BUDDY_TURNS_MAX) : [];
+    state.buddyLastAttachments = Array.isArray(chat.lastAttachments) ? chat.lastAttachments.slice(0, 4) : [];
+    state.buddyPendingTask = chat.pendingTask && chat.pendingTask.type ? chat.pendingTask : null;
+    if (chat.buddyMode === "chat" || chat.buddyMode === "do") setBuddyMode(chat.buddyMode, { persist: false });
     state.buddyAttachments = [];
     paintBuddyAttachChips();
     setBuddyChatsOpen(false);
@@ -1621,6 +1633,9 @@
       store.activeId = next ? next.id : null;
       state.buddyChatId = next ? next.id : null;
       state.askHistory = next && Array.isArray(next.turns) ? next.turns.slice(-BUDDY_TURNS_MAX) : [];
+      state.buddyLastAttachments =
+        next && Array.isArray(next.lastAttachments) ? next.lastAttachments.slice(0, 4) : [];
+      state.buddyPendingTask = next && next.pendingTask && next.pendingTask.type ? next.pendingTask : null;
       paintBuddyChat();
     } else if (store.activeId === id) {
       store.activeId = store.chats[0]?.id || null;
@@ -1647,6 +1662,8 @@
     writeBuddyChatStore(store);
     state.buddyChatId = id;
     state.askHistory = [];
+    state.buddyLastAttachments = [];
+    state.buddyPendingTask = null;
     state.buddyAttachments = [];
     paintBuddyAttachChips();
     setBuddyChatsOpen(false);
@@ -1685,6 +1702,8 @@
 
   function clearBuddyChat() {
     state.askHistory = [];
+    state.buddyLastAttachments = [];
+    state.buddyPendingTask = null;
     persistBuddyHistory();
     paintBuddyChat();
     if (els.askStatus) els.askStatus.textContent = "Current chat cleared";
@@ -1694,6 +1713,7 @@
     loadBuddyHistory();
     applyBuddyPanelSize();
     setBuddyWorkflow(state.buddyWorkflow || "auto");
+    setBuddyMode(state.buddyMode || "chat", { persist: false });
     if (new URLSearchParams(location.search).get("buddyPopout") === "1") {
       document.documentElement.classList.add("buddy-popout-mode");
       openBuddy();
@@ -1734,6 +1754,9 @@
     }
     document.querySelectorAll("[data-buddy-workflow]").forEach((btn) => {
       btn.addEventListener("click", () => setBuddyWorkflow(btn.getAttribute("data-buddy-workflow")));
+    });
+    document.querySelectorAll("[data-buddy-mode]").forEach((btn) => {
+      btn.addEventListener("click", () => setBuddyMode(btn.getAttribute("data-buddy-mode")));
     });
     const rememberBtn = document.getElementById("btnBuddyRemember");
     if (rememberBtn) rememberBtn.addEventListener("click", rememberFromCompose);
@@ -1789,6 +1812,32 @@
     paintBuddyModelLabel();
   }
 
+  function setBuddyMode(mode, { persist = true } = {}) {
+    const next = mode === "do" ? "do" : "chat";
+    state.buddyMode = next;
+    if (persist) localStorage.setItem("sbw.buddyMode", next);
+    document.querySelectorAll("[data-buddy-mode]").forEach((btn) => {
+      const on = btn.getAttribute("data-buddy-mode") === next;
+      btn.setAttribute("aria-selected", on ? "true" : "false");
+    });
+    if (els.askInput && !els.askInput.matches(":focus")) {
+      const wf = state.buddyWorkflow || "auto";
+      els.askInput.placeholder =
+        next === "do"
+          ? wf === "budget"
+            ? "Do: fill fields, HLBP, drivers, portfolio fees…"
+            : wf === "feasibility"
+              ? "Do: feasibility + optional field fills…"
+              : "Do: ask Buddy to fill fields, create HLBP, apply changes…"
+          : wf === "budget"
+            ? "Chat: budget questions, portfolio fees, analysis…"
+            : wf === "feasibility"
+              ? "Chat: PSM, sites, TrialHub, reconcile docs…"
+              : "Chat: analyze, answer, reconcile — switch to Do to fill fields";
+    }
+    paintBuddyModelLabel();
+  }
+
   function setBuddyWorkflow(mode) {
     const allowed = new Set(["auto", "budget", "feasibility", "teach"]);
     const next = allowed.has(mode) ? mode : "auto";
@@ -1799,14 +1848,7 @@
       btn.setAttribute("aria-selected", on ? "true" : "false");
     });
     if (els.askInput) {
-      els.askInput.placeholder =
-        next === "budget"
-          ? "Budget: HLBP, drivers, portfolio fees, field fills…"
-          : next === "feasibility"
-            ? "Feasibility: PSM, sites, TrialHub, CT.gov, win themes…"
-            : next === "teach"
-              ? "Teach: type a note to remember, or click Remember…"
-              : "Ask Buddy… attach files (protocol, slides, template…)";
+      setBuddyMode(state.buddyMode || "chat", { persist: false });
     }
     paintBuddyModelLabel();
   }
@@ -1814,6 +1856,7 @@
   function paintBuddyModelLabel() {
     const el = document.getElementById("buddyModelLabel");
     if (!el) return;
+    const mode = isBuddyDoMode() ? "Do" : "Chat";
     const wf =
       state.buddyWorkflow === "budget"
         ? "Budget"
@@ -1825,7 +1868,20 @@
     if (!el.dataset.baseLabel) {
       el.dataset.baseLabel = "Ask Buddy · Budget Buddy";
     }
-    el.textContent = `${el.dataset.baseLabel} · ${wf}`;
+    el.textContent = `${el.dataset.baseLabel} · ${mode} · ${wf}`;
+    if (state.buddyPendingTask?.type) {
+      const taskLabel =
+        state.buddyPendingTask.type === "reconcile"
+          ? "reconcile pending"
+          : state.buddyPendingTask.type === "fill"
+            ? "fill pending"
+            : state.buddyPendingTask.type === "hlbp"
+              ? "HLBP pending"
+              : state.buddyPendingTask.type === "report"
+                ? "report pending"
+                : "task pending";
+      el.textContent += ` · ${taskLabel}`;
+    }
   }
 
   function matchRememberOnly(question) {
@@ -2268,6 +2324,7 @@
   function assistantAskedToFill(text) {
     const t = String(text || "").toLowerCase();
     if (!t) return false;
+    if (assistantAskedToReconcile(text)) return false;
     if (/\bportfolio rollup\b/.test(t) && /\bfeasibility\b/.test(t)) return false;
     return (
       /\bwhat i need\b/.test(t) ||
@@ -2287,6 +2344,117 @@
   function assistantAskedForHtmlFill(text) {
     const t = String(text || "").toLowerCase();
     return /\b(html_report|feasibility report|leave-behind|template|deck|pdf|word doc|filled report)\b/.test(t);
+  }
+
+  function isReconcileAsk(question) {
+    const q = String(question || "").toLowerCase();
+    if (
+      /\b(reconcil\w*|fact\s*check|fact[-\s]*check|verify|verification|validate|validation|confirm|accurate|accuracy)\b/.test(
+        q
+      )
+    ) {
+      return true;
+    }
+    if (
+      /\b(compare|comparison|contrast|cross[-\s]?check|match|check against|benchmark against)\b/.test(q) &&
+      /\b(cosmos|ora|our data|internal data|database|trialhub|ct\.?\s*gov|veeva|benchmark|intelligence|intel)\b/.test(
+        q
+      )
+    ) {
+      return true;
+    }
+    if (/\bagainst\s+(our\s+)?(data|cosmos|ora|database|benchmarks?|internal)\b/.test(q)) {
+      return true;
+    }
+    if (/\b(cosmos|ora)\s+(reconcil\w*|data|intel|intelligence|benchmarks?)\b/.test(q)) {
+      return true;
+    }
+    return false;
+  }
+
+  function assistantAskedToReconcile(text) {
+    const t = String(text || "").toLowerCase();
+    if (!t) return false;
+    if (
+      /\breconcil\w*\b/.test(t) &&
+      /\b(cosmos|ora|our data|database|trialhub|ct\.?\s*gov|intel|intelligence|benchmark)\b/.test(t)
+    ) {
+      return true;
+    }
+    if (
+      /\b(verify|fact[-\s]?check|cross[-\s]?check|compare)\b/.test(t) &&
+      /\b(cosmos|ora|attachment|document|upload|our data|database)\b/.test(t)
+    ) {
+      return true;
+    }
+    return /\b(say|reply|type|send)\b.{0,40}\b(reconcil\w*|verify)\b/.test(t);
+  }
+
+  function recentUserAttachmentInHistory() {
+    const turns = state.askHistory.slice(0, -1).slice(-8);
+    return turns.some(
+      (t) =>
+        t?.role === "user" &&
+        (/\n\n📎\s/.test(String(t.content || "")) || /\battached file/i.test(String(t.content || "")))
+    );
+  }
+
+  function isBuddyDoMode() {
+    return String(state.buddyMode || "chat").toLowerCase() === "do";
+  }
+
+  function isAffirmativeFollowUp(question) {
+    return /^(yes|yep|yeah|sure|ok|okay|go ahead|please do|do it|proceed|sounds good)\.?$/i.test(
+      String(question || "").trim()
+    );
+  }
+
+  function inferPendingTaskFromAssistant(text) {
+    const t = String(text || "");
+    if (!t.trim()) return null;
+    if (assistantAskedToReconcile(t)) return { type: "reconcile", at: Date.now() };
+    if (assistantAskedForHtmlFill(t)) return { type: "report", at: Date.now() };
+    if (/\bhlbp|high level ballpark\b/i.test(t) && assistantAskedToFill(t)) {
+      return { type: "hlbp", at: Date.now() };
+    }
+    if (assistantAskedToFill(t)) return { type: "fill", at: Date.now() };
+    if (/\b(reconcil\w*|verify against|fact[-\s]?check)\b/i.test(t)) {
+      return { type: "reconcile", at: Date.now() };
+    }
+    return null;
+  }
+
+  function setBuddyPendingTask(task) {
+    if (!task || !task.type) {
+      state.buddyPendingTask = null;
+      return;
+    }
+    state.buddyPendingTask = { ...task, at: task.at || Date.now() };
+  }
+
+  function clearBuddyPendingTask() {
+    state.buddyPendingTask = null;
+  }
+
+  function updateBuddyPendingTaskFromAssistant(text) {
+    const task = inferPendingTaskFromAssistant(text);
+    if (task) setBuddyPendingTask(task);
+  }
+
+  function reconcileFollowUpFromContext(question, pendingFiles) {
+    if (pendingFiles.length) return false;
+    const q = String(question || "").trim();
+    if (!q) return false;
+    const pendingReconcile = state.buddyPendingTask?.type === "reconcile";
+    const verb = isReconcileAsk(q) || (pendingReconcile && isAffirmativeFollowUp(q));
+    if (!verb) return false;
+    const lastAsst = [...state.askHistory].reverse().find((t) => t.role === "assistant");
+    return (
+      pendingReconcile ||
+      assistantAskedToReconcile(lastAsst?.content) ||
+      (state.buddyLastAttachments && state.buddyLastAttachments.length) ||
+      recentUserAttachmentInHistory()
+    );
   }
 
   function lastAssistantTurn() {
@@ -2868,8 +3036,9 @@
     state.askHistory.push(turn);
   }
 
-  function applyBuddyAnswer(raw, exports) {
+  function applyBuddyAnswer(raw, exports, opts = {}) {
     let text = String(raw || "").trim();
+    const chatMode = !isBuddyDoMode();
     const navMatch = text.match(/\bNAVIGATE:([a-z0-9_-]+)\b/i);
     let sectionId = null;
     if (navMatch) {
@@ -2909,31 +3078,57 @@
         "I need a bit more to help. Tell me the indication (e.g. Dry Eye), geography if it matters, and whether you want a portfolio rollup, a pitch/feasibility read, or help on the open study.";
     }
     text = text.replace(/(^|\s)\(?null\)?(?=\s|$)/gi, (m, lead) => `${lead}missing`);
-    const fillFollowUp = assistantAskedToFill(lastAssistantTurn()?.content);
+    const prevAsst = lastAssistantTurn()?.content;
+    const fillFollowUp =
+      isBuddyDoMode() &&
+      (state.buddyPendingTask?.type === "fill" ||
+        state.buddyPendingTask?.type === "hlbp" ||
+        assistantAskedToFill(prevAsst));
     if (created.create) {
       pushCreateProposal(text, created.create);
       const last = state.askHistory[state.askHistory.length - 1];
-      if (fillFollowUp && last?.proposal?.id) {
+      if (fillFollowUp && last?.proposal?.id && isBuddyDoMode()) {
         applyCreateStudy(last.proposal.id);
+        clearBuddyPendingTask();
+        paintBuddyModelLabel();
         return;
       }
+      updateBuddyPendingTaskFromAssistant(text);
     } else if (learned.learn) {
       pushLearnProposal(text, learned.learn);
+      clearBuddyPendingTask();
     } else {
-      let patches = extracted.patches;
-      if (!patches.length && !report.html && fillFollowUp && !assistantAskedForHtmlFill(lastAssistantTurn()?.content)) {
+      let patches = chatMode ? [] : extracted.patches;
+      if (
+        isBuddyDoMode() &&
+        !patches.length &&
+        !report.html &&
+        fillFollowUp &&
+        !assistantAskedForHtmlFill(prevAsst)
+      ) {
         const userTurn = [...state.askHistory].reverse().find((t) => t.role === "user");
-        patches = synthesizeFillPatches(userTurn?.content, lastAssistantTurn()?.content);
+        patches = synthesizeFillPatches(userTurn?.content, prevAsst);
         if (patches.length && !text) text = "Filling those fields on the open study.";
       }
+      if (chatMode && extracted.patches.length && !patches.length) {
+        text =
+          (text ? `${text}\n\n` : "") +
+          "I have field changes ready — switch to Do mode and ask me to apply them, or click Apply on the proposal below.";
+        patches = extracted.patches;
+      }
       pushAssistant(text, patches, report.html, exports);
+      updateBuddyPendingTaskFromAssistant(text);
+      if (opts.reconcileDone) clearBuddyPendingTask();
       const last = state.askHistory[state.askHistory.length - 1];
       if (
+        isBuddyDoMode() &&
         hasOpenStudy() &&
         last?.proposal?.patches?.length &&
         last.proposal.status === "pending"
       ) {
         applyProposal(last.proposal.id);
+        clearBuddyPendingTask();
+        paintBuddyModelLabel();
         return;
       }
     }
@@ -2958,6 +3153,7 @@
         if (canRunSiteScorecard()) runSiteScorecard().catch(() => {});
       }
     }
+    paintBuddyModelLabel();
     paintBuddyChat();
   }
 
@@ -3420,6 +3616,25 @@
         if (els.askStatus) els.askStatus.textContent = `Could not read file: ${String(err.message || err)}`;
         return;
       }
+      state.buddyLastAttachments = attachmentsPayload.slice(0, 4);
+      setBuddyPendingTask({
+        type: /\b(reconcil|verify|fact[-\s]?check)\b/i.test(question) ? "reconcile" : "analyze",
+        fileNames: pendingFiles.map((f) => f.name)
+      });
+    }
+
+    const reconcileFollowUp = reconcileFollowUpFromContext(question, pendingFiles);
+    const priorAttachmentsPayload =
+      reconcileFollowUp && !pendingFiles.length && state.buddyLastAttachments?.length
+        ? state.buddyLastAttachments
+        : undefined;
+
+    if (reconcileFollowUp && !pendingFiles.length && !priorAttachmentsPayload) {
+      pushAssistant(
+        "I still have the chat thread, but the file text from your earlier upload isn't cached anymore. Re-attach the same document and say reconcile — I'll compare it to live Cosmos data (no open study needed)."
+      );
+      paintBuddyChat();
+      return;
     }
 
     const fileLabel = pendingFiles.length
@@ -3447,18 +3662,19 @@
       return;
     }
 
-    if (!pendingFiles.length && matchHlbpStart(question)) {
+    if (!pendingFiles.length && isBuddyDoMode() && matchHlbpStart(question)) {
       startBlankHlbp();
       openBuddy();
       pushAssistant(
         "Opened a High Level Ballpark (HLBP) form. [[h]]What I need[[/h]]\n" +
           "Tell me client/sponsor, indication, phase, enrolled subjects, enrollment months, and site country mix (e.g. 12 United States, 4 United Kingdom). Send those details and I will fill the form."
       );
+      setBuddyPendingTask({ type: "hlbp" });
       paintBuddyChat();
       return;
     }
 
-    const fillOnly = !pendingFiles.length ? matchFillOnly(question) : null;
+    const fillOnly = isBuddyDoMode() && !pendingFiles.length ? matchFillOnly(question) : null;
     if (fillOnly && fillOnly.length) {
       if (!hasOpenStudy()) {
         pushAssistant("No study is selected. Click New study or open one from Studies before editing fields — or stay in All studies mode to ask portfolio questions.");
@@ -3474,7 +3690,12 @@
     }
 
     const lastAsst = [...state.askHistory.slice(0, -1)].reverse().find((t) => t.role === "assistant");
-    const fillFollowUp = assistantAskedToFill(lastAsst?.content);
+    const fillFollowUp =
+      isBuddyDoMode() &&
+      !reconcileFollowUp &&
+      (state.buddyPendingTask?.type === "fill" ||
+        state.buddyPendingTask?.type === "hlbp" ||
+        assistantAskedToFill(lastAsst?.content));
     if (fillFollowUp && !pendingFiles.length && !assistantAskedForHtmlFill(lastAsst?.content)) {
       const syn = synthesizeFillPatches(question, lastAsst?.content);
       if (syn.length) {
@@ -3497,11 +3718,15 @@
         );
         const last = state.askHistory[state.askHistory.length - 1];
         applyProposal(last.proposal.id, { quiet: true });
+        clearBuddyPendingTask();
         const still =
           String(state.study?.budgetType || "").toUpperCase() === "HLBP" ? hlbpMissingFields() : [];
         if (still.length) {
           pushAssistant(`Still need: ${still.join(", ")}.`);
+          setBuddyPendingTask({ type: "hlbp" });
           paintBuddyChat();
+        } else {
+          clearBuddyPendingTask();
         }
         return;
       }
@@ -3591,7 +3816,9 @@
           signal: askController ? askController.signal : undefined,
           body: JSON.stringify({
             question,
+            buddyMode: state.buddyMode || "chat",
             buddyWorkflow: state.buddyWorkflow || "auto",
+            pendingTask: state.buddyPendingTask || undefined,
             studyId: wantPortfolio ? undefined : (state.study.studyId || undefined),
             studySnapshot: wantPortfolio ? undefined : leanStudySnapshot(state.study),
             portfolio: true,
@@ -3604,6 +3831,8 @@
             editableFields: wantPortfolio ? [] : catalog.slice(0, 120),
             fieldsByTab: wantPortfolio ? undefined : catalogByTab(catalog.slice(0, 120)),
             fillFollowUp: Boolean(fillFollowUp),
+            reconcileFollowUp: reconcileFollowUp || undefined,
+            priorAttachments: priorAttachmentsPayload,
             user: state.entraUser || undefined,
             intelligenceHint: {
               indication: String(
@@ -3665,7 +3894,9 @@
         );
         if (els.askStatus) els.askStatus.textContent = "Fast";
       } else if (data.answer) {
-        applyBuddyAnswer(data.answer, data.exports);
+        applyBuddyAnswer(data.answer, data.exports, { reconcileDone: Boolean(reconcileFollowUp) });
+        persistBuddyHistory();
+        paintBuddyModelLabel();
         if (Array.isArray(data.attachments) && data.attachments.some((a) => a && a.ok === false)) {
           const fails = data.attachments
             .filter((a) => a && a.ok === false)

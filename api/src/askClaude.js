@@ -310,9 +310,18 @@ function systemPromptFor(context) {
       ? " CRITICAL WORKFLOW=budget: Answer from portfolio / workingStudy / pricingScenarios / editableFields. Do NOT pivot to TrialHub/PSM/site feasibility. Do not invent industry enrollment rates. HLBP/CREATE_STUDY/APPLY are allowed."
       : workflow === "feasibility"
         ? " CRITICAL WORKFLOW=feasibility: Answer from context.intelligence / legacyAnterior. Cite PSM, sites, countries, competing trials. Do NOT invent bid dollars, HLBP totals, or open a budget form unless the user explicitly asks for pricing/budget."
-        : workflow === "teach"
-          ? " CRITICAL WORKFLOW=teach: Capture the durable note. Confirm briefly, then end with exactly one LEARN_CONTEXT:{\"dept\":\"…\",\"category\":\"…\",\"addition\":\"…\"}. Do not run a budget or feasibility analysis."
-          : "";
+        : workflow === "hybrid"
+          ? " CRITICAL WORKFLOW=hybrid: Answer BOTH feasibility (PSM/sites/TrialHub/intelligence) AND budget/pricing (portfolio/pricingScenarios/workingStudy). Use two clearly labeled parts — do not collapse into one domain."
+          : workflow === "teach"
+            ? " CRITICAL WORKFLOW=teach: Capture the durable note. Confirm briefly, then end with exactly one LEARN_CONTEXT:{\"dept\":\"…\",\"category\":\"…\",\"addition\":\"…\"}. Do not run a budget or feasibility analysis."
+            : "";
+  const modeNote =
+    String(context?.buddyMode || "chat").toLowerCase() === "do"
+      ? " DO mode: APPLY/CREATE_STUDY/field fills are allowed when the user wants actions."
+      : " CHAT mode (critical): answer, analyze, and reconcile — do NOT emit APPLY or CREATE_STUDY unless the user explicitly asks to fill/apply/set/create/update a field or study.";
+  const pendingTaskNote = context?.pendingTask?.type
+    ? ` Pending task: ${context.pendingTask.type} — user may be continuing it (e.g. say reconcile/yes for reconcile, or provide missing fields for fill).`
+    : "";
   const focusNote =
     focus === "compare"
       ? " CRITICAL: answerFocus=compare — use context.studyComparison / STUDY COMPARISON facts. Left vs Right by studyId. Do NOT use portfolio averages. If needIds, ask for two O-ids or two checkboxes on Studies."
@@ -376,13 +385,14 @@ function systemPromptFor(context) {
   const docNote = context?.wantsDocumentExport
     ? " CRITICAL: wantsDocumentExport=true — produce a finished document via HTML_REPORT (branding + bid content). User expects downloadable PDF/Word."
     : "";
-  const fillNote = context?.fillFollowUp
-    ? " CRITICAL: fillFollowUp=true — the user just answered your missing-field ask. THIS TURN MUST end with APPLY:[...] (open study) or CREATE_STUDY:{...} (new/HLBP) using their values. Do not only thank them or say you will fill it later."
-    : "";
+  const fillNote =
+    context?.fillFollowUp && !context?.cosmosReconciliation
+      ? " CRITICAL: fillFollowUp=true — the user just answered your missing-field ask. THIS TURN MUST end with APPLY:[...] (open study) or CREATE_STUDY:{...} (new/HLBP) using their values. Do not only thank them or say you will fill it later."
+      : "";
   const reconcileNote = context?.cosmosReconciliation
     ? context?.dataSources?.intelligenceAttached || (context?.intelligence && !context?.intelligence?.error)
-      ? " CRITICAL: cosmosReconciliation=true — live Ora Cosmos intelligence WAS queried on this turn. Compare ATTACHED DOCUMENT claims to ORA COSMOS FACTS / context.intelligence. For each claim: match, mismatch, or not in Cosmos. Do NOT say the Cosmos payload was missing or that you cannot query Cosmos."
-      : " CRITICAL: cosmosReconciliation=true but live Cosmos intel failed or was skipped on this turn. Say the live query failed (see intelligence.error if present). Still summarize the attachment, but do NOT invent Cosmos benchmarks to fill gaps."
+      ? " CRITICAL: cosmosReconciliation=true — live Ora Cosmos intelligence WAS queried on this turn. Compare ATTACHED DOCUMENT claims to ORA COSMOS FACTS / context.intelligence. For each claim: match, mismatch, or not in Cosmos. Do NOT say the Cosmos payload was missing or that you cannot query Cosmos. Reconciliation does NOT require an open study in the UI — use uploadedDocuments / prior attachment text plus Cosmos intel; never refuse with 'no study open'."
+      : " CRITICAL: cosmosReconciliation=true but live Cosmos intel failed or was skipped on this turn. Say the live query failed (see intelligence.error if present). Still summarize the attachment, but do NOT invent Cosmos benchmarks to fill gaps. Reconciliation does NOT require an open study."
     : "";
   const liveNote =
     context?.buddyLiveContext?.text
@@ -411,7 +421,7 @@ function systemPromptFor(context) {
     : "";
   const user = context?.user;
   if (!user?.firstName && !user?.displayName && !user?.email) {
-    return base + protocols + workflowNote + focusNote + moneyNote + intelNote + planNote + visualNote + docNote + fillNote + reconcileNote + liveNote + legacyNote + modelNote;
+    return base + protocols + workflowNote + modeNote + pendingTaskNote + focusNote + moneyNote + intelNote + planNote + visualNote + docNote + fillNote + reconcileNote + liveNote + legacyNote + modelNote;
   }
   const label = user.firstName
     ? `${user.firstName}${user.email ? ` (${user.email})` : ""}`
@@ -420,6 +430,8 @@ function systemPromptFor(context) {
     base +
     protocols +
     workflowNote +
+    modeNote +
+    pendingTaskNote +
     focusNote +
     moneyNote +
     intelNote +

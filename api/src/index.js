@@ -47,16 +47,8 @@ function nctFromQuestion(question) {
   return m ? m[1].toUpperCase() : null;
 }
 
-/** User attached a file and wants claims checked against live Ora Cosmos intel. */
-function isAttachmentCosmosCompareAsk(question, hasOkUpload) {
-  if (!hasOkUpload) return false;
+function reconcileVerbInQuestion(question) {
   const q = String(question || "").toLowerCase();
-  // Any attachment + explicit Cosmos / Ora internal data cue
-  if (
-    /\b(cosmos|trialhub|ct\.?\s*gov|veeva|our data|internal data|ora data|ora intel|database)\b/.test(q)
-  ) {
-    return true;
-  }
   if (
     /\b(reconcil\w*|fact\s*check|fact[-\s]*check|verify|verification|validate|validation|confirm|accurate|accuracy)\b/.test(
       q
@@ -78,6 +70,67 @@ function isAttachmentCosmosCompareAsk(question, hasOkUpload) {
   if (/\b(cosmos|ora)\s+(reconcil\w*|data|intel|intelligence|benchmarks?)\b/.test(q)) {
     return true;
   }
+  return false;
+}
+
+function assistantAskedToReconcile(history) {
+  const turns = Array.isArray(history) ? history : [];
+  for (let i = turns.length - 1; i >= 0; i--) {
+    if (String(turns[i]?.role || "").toLowerCase() !== "assistant") continue;
+    const t = String(turns[i].content || "").toLowerCase();
+    if (
+      /\breconcil\w*\b/.test(t) &&
+      /\b(cosmos|ora|our data|database|trialhub|ct\.?\s*gov|intel|intelligence|benchmark)\b/.test(t)
+    ) {
+      return true;
+    }
+    if (
+      /\b(verify|fact[-\s]?check|cross[-\s]?check|compare)\b/.test(t) &&
+      /\b(cosmos|ora|attachment|document|upload|our data|database)\b/.test(t)
+    ) {
+      return true;
+    }
+    if (/\b(say|reply|type|send)\b.{0,40}\b(reconcil\w*|verify)\b/.test(t)) {
+      return true;
+    }
+    return false;
+  }
+  return false;
+}
+
+function historyHasAttachmentCue(history) {
+  const turns = Array.isArray(history) ? history : [];
+  for (let i = turns.length - 1; i >= 0; i--) {
+    if (String(turns[i]?.role || "").toLowerCase() !== "user") continue;
+    const t = String(turns[i].content || "");
+    if (/\n\n📎\s/.test(t) || /\battached file/i.test(t)) return true;
+  }
+  return false;
+}
+
+/** User wants claims checked against live Ora Cosmos intel (with or without a new upload). */
+function isAttachmentCosmosCompareAsk(question, hasOkUpload, history, body) {
+  const q = String(question || "").toLowerCase();
+  const reconcileVerb = reconcileVerbInQuestion(question);
+  const priorAttachments = Array.isArray(body?.priorAttachments) && body.priorAttachments.length > 0;
+  const reconcileFollowUp =
+    body?.reconcileFollowUp === true ||
+    body?.pendingTask?.type === "reconcile" ||
+    (reconcileVerb &&
+      !hasOkUpload &&
+      (priorAttachments || assistantAskedToReconcile(history) || historyHasAttachmentCue(history)));
+
+  if (reconcileFollowUp) return true;
+
+  if (!hasOkUpload) return false;
+
+  // Any attachment + explicit Cosmos / Ora internal data cue
+  if (
+    /\b(cosmos|trialhub|ct\.?\s*gov|veeva|our data|internal data|ora data|ora intel|database)\b/.test(q)
+  ) {
+    return true;
+  }
+  if (reconcileVerb) return true;
   return false;
 }
 
@@ -493,6 +546,13 @@ function inferBuddyWorkflow(question, body = {}) {
   if (feasCue && !budgetCue) return "feasibility";
   if (budgetCue && !feasCue) return "budget";
   if (feasCue && budgetCue) {
+    const hasFeasTerms = /\b(feasib|psm|site slate|competing|trialhub|scorecard|win themes?|enrollment rate)\b/i.test(
+      q
+    );
+    const hasBudgetTerms = /\b(budget|hlbp|ballpark|pricing|rfp|quote|service fees?|internal budget|grand total)\b/i.test(
+      q
+    );
+    if (hasFeasTerms && hasBudgetTerms) return "hybrid";
     if (/\b(feasib|psm|site slate|competing|trialhub|scorecard|win themes?)\b/i.test(q)) {
       return "feasibility";
     }
@@ -1611,8 +1671,17 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         answerFocus: "error"
       });
     }
-    const uploaded = await normalizeBuddyAttachments(body.attachments);
-    const hasOkUpload = (uploaded.files || []).some((f) => f.ok && f.text);
+    let uploaded = await normalizeBuddyAttachments(body.attachments);
+    let hasOkUpload = (uploaded.files || []).some((f) => f.ok && f.text);
+    const history = body.history || [];
+    // Reconcile follow-up: client replays the last attachment from the prior turn.
+    if (!hasOkUpload && Array.isArray(body.priorAttachments) && body.priorAttachments.length) {
+      const prior = await normalizeBuddyAttachments(body.priorAttachments);
+      if ((prior.files || []).some((f) => f.ok && f.text)) {
+        uploaded = prior;
+        hasOkUpload = true;
+      }
+    }
     let question = String(body.question || "").trim();
     if (!question && hasOkUpload) {
       question =
@@ -1627,7 +1696,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       /\b(analyze|analyse|review|read|summarize|summarise|what does|what'?s in|what is in|explain|extract|check|look at|go through|tell me about|describe|assess|evaluate)\b/i.test(question);
 
     // User wants to verify/compare attachment claims against live Ora Cosmos data.
-    const attachmentCosmosCompareAsk = isAttachmentCosmosCompareAsk(question, hasOkUpload);
+    const attachmentCosmosCompareAsk = isAttachmentCosmosCompareAsk(question, hasOkUpload, history, body);
 
     const externalFeedAsk =
       isSourceOverviewQuestion(question) ||
@@ -1653,7 +1722,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
     // Skip full portfolio on fast tier / feed asks — SWA gateway ~45s; 500s are usually timeouts.
     let portfolioFull = null;
     let clientDirectory = [];
-    if (skipHeavyPortfolio && moneyIntentEarly !== "ora_earned" && buddyWorkflowEarly !== "budget") {
+    if (skipHeavyPortfolio && moneyIntentEarly !== "ora_earned" && buddyWorkflowEarly !== "budget" && buddyWorkflowEarly !== "hybrid") {
       portfolioFull = {
         source: "cosmos_portfolio_skipped",
         skipped: true,
@@ -1687,6 +1756,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
     }
     const moneyIntent = inferMoneyIntent(question);
     const buddyWorkflow = inferBuddyWorkflow(question, body);
+    const buddyMode = String(body.buddyMode || "chat").toLowerCase() === "do" ? "do" : "chat";
     // Ora-earned fee rankings are always portfolio-scope (even with a study open)
     if (moneyIntent === "ora_earned") {
       hints.crossStudy = true;
@@ -1710,7 +1780,6 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       ? (String(question).match(/\b(O-\d{3,})\b/i) || [])[1] || null
       : hints.studyId;
     const crossStudy = !compareAsk && !attachmentDriven && (Boolean(hints.crossStudy) || forcePortfolio);
-    const history = body.history || [];
     const user = signedInUserFromRequest(request, body.user || null);
     const activeTab = body.activeTab ? String(body.activeTab) : null;
     const activeTabLabel = body.activeTabLabel ? String(body.activeTabLabel) : null;
@@ -1862,7 +1931,8 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         Boolean(extractIntelYearFromQuestion(question)) ||
         Boolean(extractTherapeuticFilterFromQuestion(question)) ||
         isTrialhubQuestion(question) ||
-        buddyWorkflow === "feasibility";
+        buddyWorkflow === "feasibility" ||
+        buddyWorkflow === "hybrid";
 
       const intelBase = {
         question: intelQuestion,
@@ -2051,23 +2121,34 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       askedAt: new Date().toISOString(),
       source: requireCopilotKey ? "copilot_studio" : "workbench",
       modelTier,
+      buddyMode,
+      pendingTask: body.pendingTask && body.pendingTask.type ? body.pendingTask : null,
       workflow: attachmentCosmosCompareAsk ? "feasibility" : buddyWorkflow,
       cosmosLiveQuery: true,
       cosmosReconciliation: attachmentCosmosCompareAsk,
       workflowNote: attachmentCosmosCompareAsk
-        ? "COSMOS RECONCILIATION: user attached a document and asked to verify/compare claims against live Ora Cosmos data. Read ATTACHED DOCUMENTS, then compare each factual claim to ORA COSMOS FACTS / context.intelligence. Flag matches, mismatches, and missing data. Do NOT say Cosmos was not queried when intelligenceAttached=true."
+        ? "COSMOS RECONCILIATION: user attached a document (this turn or a prior turn) and asked to verify/compare claims against live Ora Cosmos data. Read ATTACHED DOCUMENTS / uploadedDocuments, then compare each factual claim to ORA COSMOS FACTS / context.intelligence. Flag matches, mismatches, and missing data. Do NOT require an open study in the UI. Do NOT say Cosmos was not queried when intelligenceAttached=true."
         : buddyWorkflow === "budget"
           ? "BUDGET workflow: use portfolio / workingStudy / pricing / APPLY / CREATE_STUDY / HLBP. Do NOT answer with TrialHub/PSM/site feasibility unless the user explicitly asks."
           : buddyWorkflow === "feasibility"
             ? "FEASIBILITY workflow: use context.intelligence / legacyAnterior / scorecard-style site & enrollment facts. Do NOT invent bid dollars or open an HLBP unless the user explicitly asks for budget/pricing."
-            : buddyWorkflow === "teach"
-              ? "TEACH workflow: capture durable SME notes. End with LEARN_CONTEXT:{...}. Do not run a budget or feasibility analysis unless asked."
-              : "AUTO workflow: pick budget vs feasibility from the question; keep those domains separate.",
+            : buddyWorkflow === "hybrid"
+              ? "HYBRID workflow: user wants BOTH feasibility (PSM/sites/TrialHub/intelligence) AND budget/pricing. Answer in two clearly labeled parts. Use context.intelligence for performance/site facts; use context.portfolio/pricingScenarios/workingStudy for Ora fees. Do not answer with only one domain."
+              : buddyWorkflow === "teach"
+                ? "TEACH workflow: capture durable SME notes. End with LEARN_CONTEXT:{...}. Do not run a budget or feasibility analysis unless asked."
+                : "AUTO workflow: pick budget vs feasibility from the question; use hybrid-style two-part answers when both domains are clearly asked.",
+      buddyModeNote:
+        buddyMode === "chat"
+          ? "CHAT mode: analyze, answer, reconcile, and propose — do NOT emit APPLY or CREATE_STUDY unless the user explicitly says fill/apply/set/create study/update field. NAVIGATE and LEARN_CONTEXT are still allowed."
+          : "DO mode: user wants actions — APPLY, CREATE_STUDY, HLBP fills, and NAVIGATE are allowed when appropriate.",
       answerFocus,
       moneyIntent,
       wantsHtmlVisual: visualAsk,
       wantsDocumentExport: docExportAsk,
-      fillFollowUp: Boolean(body.fillFollowUp) || lastAssistantAskedForFill(history),
+      fillFollowUp:
+        buddyMode === "do" &&
+        !attachmentCosmosCompareAsk &&
+        (Boolean(body.fillFollowUp) || lastAssistantAskedForFill(history)),
       dataSources: {
         cosmosPortfolioQueried: Boolean(!compareAsk && portfolio && portfolio.source === "cosmos_portfolio"),
         studyComparisonAttached: Boolean(studyComparison && !studyComparison.needIds && !studyComparison.error),
@@ -2268,6 +2349,12 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       buddyDebug: {
         attachmentCosmosCompareAsk,
         hasOkUpload,
+        reconcileFollowUp: Boolean(body.reconcileFollowUp),
+        buddyMode,
+        pendingTaskType: body.pendingTask?.type || null,
+        priorAttachmentsReplayed: Boolean(
+          !body.attachments?.length && Array.isArray(body.priorAttachments) && body.priorAttachments.length
+        ),
         intelSource: intelligence?.source || null,
         intelError: intelligence?.error || null,
         intelIndication:
