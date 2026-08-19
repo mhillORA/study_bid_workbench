@@ -376,6 +376,11 @@ function systemPromptFor(context) {
   const fillNote = context?.fillFollowUp
     ? " CRITICAL: fillFollowUp=true — the user just answered your missing-field ask. THIS TURN MUST end with APPLY:[...] (open study) or CREATE_STUDY:{...} (new/HLBP) using their values. Do not only thank them or say you will fill it later."
     : "";
+  const reconcileNote = context?.cosmosReconciliation
+    ? context?.dataSources?.intelligenceAttached || (context?.intelligence && !context?.intelligence?.error)
+      ? " CRITICAL: cosmosReconciliation=true — live Ora Cosmos intelligence WAS queried on this turn. Compare ATTACHED DOCUMENT claims to ORA COSMOS FACTS / context.intelligence. For each claim: match, mismatch, or not in Cosmos. Do NOT say the Cosmos payload was missing or that you cannot query Cosmos."
+      : " CRITICAL: cosmosReconciliation=true but live Cosmos intel failed or was skipped on this turn. Say the live query failed (see intelligence.error if present). Still summarize the attachment, but do NOT invent Cosmos benchmarks to fill gaps."
+    : "";
   const liveNote =
     context?.buddyLiveContext?.text
       ? " context.buddyLiveContext has SME live additions (append-only, organized by dept/category) — treat as authoritative playbook additions. If asked for current/live context contents, summarize from organized/text."
@@ -403,7 +408,7 @@ function systemPromptFor(context) {
     : "";
   const user = context?.user;
   if (!user?.firstName && !user?.displayName && !user?.email) {
-    return base + protocols + workflowNote + focusNote + moneyNote + intelNote + planNote + visualNote + docNote + fillNote + liveNote + legacyNote + modelNote;
+    return base + protocols + workflowNote + focusNote + moneyNote + intelNote + planNote + visualNote + docNote + fillNote + reconcileNote + liveNote + legacyNote + modelNote;
   }
   const label = user.firstName
     ? `${user.firstName}${user.email ? ` (${user.email})` : ""}`
@@ -419,6 +424,7 @@ function systemPromptFor(context) {
     visualNote +
     docNote +
     fillNote +
+    reconcileNote +
     liveNote +
     legacyNote +
     modelNote +
@@ -1141,6 +1147,13 @@ function formatCosmosFactsBlock(context) {
           "ORA COSMOS FACTS — intelligence query failed.",
           `Error: ${intel.error}`,
           "Do NOT invent PSM/enrollment/site stats. Say Cosmos intelligence data was unavailable."
+        ].join("\n")
+      );
+    } else if (context?.cosmosReconciliation) {
+      blocks.push(
+        [
+          "ORA COSMOS FACTS — NOT ATTACHED (live Cosmos query did not run or returned empty).",
+          "Do NOT invent verification results. Tell the user the live Cosmos intel pack was missing on this turn."
         ].join("\n")
       );
     }
@@ -2022,7 +2035,10 @@ async function askFoundryAgent({ question, context, history, tier = "deep", agen
         `CRITICAL: If moneyIntent/context says ora_earned OR the ask is studies we've run with clients / rank by revenue we've made — use context.portfolio.byClient (studyCount + grandTotal/serviceFees). Do NOT web-search sponsor corporate revenue (no CHF/USD billions). ` +
         `If this ask is about public COMPANY revenue, biggest pharma, market size, or news — use web search NOW and answer with a ranked list. ` +
         `Default TA = ophthalmology; sponsor = biopharma/device trial sponsors (not payers). Do not ask clarifying menus first.\n\n` +
-        `CRITICAL: If ATTACHED DOCUMENTS appear below, READ THEM. If ORA COSMOS FACTS appear below, USE THOSE NUMBERS — never invent PSM/enrollment/site stats. Say missing when Cosmos fields are null.\n\n` +
+        `CRITICAL: If ATTACHED DOCUMENTS appear below, READ THEM. If ORA COSMOS FACTS appear below, USE THOSE NUMBERS — never invent PSM/enrollment/site stats. Say missing when Cosmos fields are null.\n` +
+        (context?.cosmosReconciliation
+          ? `CRITICAL: This is a COSMOS RECONCILIATION ask — compare document claims to ORA COSMOS FACTS. Do not say Cosmos was not queried if ORA COSMOS FACTS are present below.\n\n`
+          : "") +
         `${system}\n\n---\nPriority: ATTACHED DOCUMENTS (protocol/template) → ORA COSMOS FACTS (performance numbers) → Context JSON portfolio for Ora fees → web for public company facts only.\n---\n\n` +
         userBlock(question, context)
     }

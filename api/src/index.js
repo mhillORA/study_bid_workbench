@@ -45,6 +45,34 @@ function nctFromQuestion(question) {
   return m ? m[1].toUpperCase() : null;
 }
 
+/** User attached a file and wants claims checked against live Ora Cosmos intel. */
+function isAttachmentCosmosCompareAsk(question, hasOkUpload) {
+  if (!hasOkUpload) return false;
+  const q = String(question || "").toLowerCase();
+  if (
+    /\b(reconcil\w*|fact\s*check|fact[-\s]*check|verify|verification|validate|validation|confirm|accurate|accuracy)\b/.test(
+      q
+    )
+  ) {
+    return true;
+  }
+  if (
+    /\b(compare|comparison|contrast|cross[-\s]?check|match|check against|benchmark against)\b/.test(q) &&
+    /\b(cosmos|ora|our data|internal data|database|trialhub|ct\.?\s*gov|veeva|benchmark|intelligence|intel)\b/.test(
+      q
+    )
+  ) {
+    return true;
+  }
+  if (/\bagainst\s+(our\s+)?(data|cosmos|ora|database|benchmarks?|internal)\b/.test(q)) {
+    return true;
+  }
+  if (/\b(cosmos|ora)\s+(reconcil\w*|data|intel|intelligence|benchmarks?)\b/.test(q)) {
+    return true;
+  }
+  return false;
+}
+
 function hasCopilotKey(request) {
   const expected = String(process.env.COPILOT_ASK_KEY || "").trim();
   const got = String(headerGet(request, "x-copilot-key") || "").trim();
@@ -1582,12 +1610,8 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
     const attachmentAnalyzeVerb = hasOkUpload &&
       /\b(analyze|analyse|review|read|summarize|summarise|what does|what'?s in|what is in|explain|extract|check|look at|go through|tell me about|describe|assess|evaluate)\b/i.test(question);
 
-    // If the user asks to fact-check / verify what the attachment claims against
-    // Ora internal data, we should allow the intel pack so Buddy can verify.
-    const attachmentVerificationAsk = hasOkUpload &&
-      /\b(accuracy|accurate|verify|verification|fact\s*check|fact[-\s]*check|validate|validation|confirm|against\s+(ora|cosmos|database|data)|does\s+this\s+match)\b/i.test(
-        question
-      );
+    // User wants to verify/compare attachment claims against live Ora Cosmos data.
+    const attachmentCosmosCompareAsk = isAttachmentCosmosCompareAsk(question, hasOkUpload);
 
     const externalFeedAsk =
       isSourceOverviewQuestion(question) ||
@@ -1807,9 +1831,8 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         !catalogAsk &&
         (attachmentAnalyzeVerb || !wantsDocumentExport(question)) &&
         (attachmentAnalyzeVerb || !wantsHtmlVisual(question)) &&
-        // Fact-check / verify requests need Ora internal data,
-        // so we should NOT treat them as "upload-only".
-        !attachmentVerificationAsk &&
+        // Cosmos compare/verify requests need live intel — not upload-only.
+        !attachmentCosmosCompareAsk &&
         !isPricingQuestion(question) &&
         !nctFromQuestion(question) &&
         !qIndication &&
@@ -1818,23 +1841,24 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         !extractTherapeuticFilterFromQuestion(question);
       const forceIntel =
         !compareAsk &&
-        !uploadOnlyAsk &&
-        (buddyWorkflow === "feasibility" ||
-        (buddyWorkflow !== "budget" &&
-          buddyWorkflow !== "teach" &&
-          (isIntelligenceQuestion(question) ||
-            sourceOverviewAsk ||
-            salesforceAsk ||
-            catalogAsk ||
-            wantsDocumentExport(question) ||
-            wantsHtmlVisual(question) ||
-            hasOkUpload ||
-            isPricingQuestion(question) ||
-            Boolean(nctFromQuestion(question)) ||
-            Boolean(qIndication) ||
-            Boolean(qCountry) ||
-            Boolean(extractIntelYearFromQuestion(question)) ||
-            Boolean(extractTherapeuticFilterFromQuestion(question)))));
+        (attachmentCosmosCompareAsk ||
+          (!uploadOnlyAsk &&
+            (buddyWorkflow === "feasibility" ||
+              (buddyWorkflow !== "budget" &&
+                buddyWorkflow !== "teach" &&
+                (isIntelligenceQuestion(question) ||
+                  sourceOverviewAsk ||
+                  salesforceAsk ||
+                  catalogAsk ||
+                  wantsDocumentExport(question) ||
+                  wantsHtmlVisual(question) ||
+                  hasOkUpload ||
+                  isPricingQuestion(question) ||
+                  Boolean(nctFromQuestion(question)) ||
+                  Boolean(qIndication) ||
+                  Boolean(qCountry) ||
+                  Boolean(extractIntelYearFromQuestion(question)) ||
+                  Boolean(extractTherapeuticFilterFromQuestion(question)))))));
 
       const indication = forceIntel
         ? qIndication || (sourceOverviewAsk ? null : hintIndication || snapIndication) || null
@@ -1850,7 +1874,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         // (indication/country/therapeutic filters) to be derived from the attachment text too.
         // buildIntelligenceContext extracts those filters from the "question" string.
         let attachmentBlobForIntel = null;
-        if (hasOkUpload && (attachmentAnalyzeVerb || attachmentVerificationAsk)) {
+        if (hasOkUpload && (attachmentAnalyzeVerb || attachmentCosmosCompareAsk)) {
           attachmentBlobForIntel = (uploaded.files || [])
             .map((f) => `${f.name || ""}\n${String(f.text || "").slice(0, 4000)}`)
             .join("\n");
@@ -1875,7 +1899,13 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         // Year/TA TrialHub lists are heavy — allow longer (SWA gateway still ~45s total for the whole ask).
         const intelTimeoutMs = Number(
           process.env.BUDDY_INTEL_TIMEOUT_MS ||
-            (needsYearList ? 38000 : modelTierEarly === "fast" ? 15000 : 25000)
+            (attachmentCosmosCompareAsk
+              ? 30000
+              : needsYearList
+                ? 38000
+                : modelTierEarly === "fast"
+                  ? 15000
+                  : 25000)
         );
         const intelPromise = buildIntelligenceContext(getDb, {
           question: intelQuestion,
@@ -2038,9 +2068,11 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       askedAt: new Date().toISOString(),
       source: requireCopilotKey ? "copilot_studio" : "workbench",
       modelTier,
-      workflow: buddyWorkflow,
-      workflowNote:
-        buddyWorkflow === "budget"
+      workflow: attachmentCosmosCompareAsk ? "feasibility" : buddyWorkflow,
+      cosmosReconciliation: attachmentCosmosCompareAsk,
+      workflowNote: attachmentCosmosCompareAsk
+        ? "COSMOS RECONCILIATION: user attached a document and asked to verify/compare claims against live Ora Cosmos data. Read ATTACHED DOCUMENTS, then compare each factual claim to ORA COSMOS FACTS / context.intelligence. Flag matches, mismatches, and missing data. Do NOT say Cosmos was not queried when intelligenceAttached=true."
+        : buddyWorkflow === "budget"
           ? "BUDGET workflow: use portfolio / workingStudy / pricing / APPLY / CREATE_STUDY / HLBP. Do NOT answer with TrialHub/PSM/site feasibility unless the user explicitly asks."
           : buddyWorkflow === "feasibility"
             ? "FEASIBILITY workflow: use context.intelligence / legacyAnterior / scorecard-style site & enrollment facts. Do NOT invent bid dollars or open an HLBP unless the user explicitly asks for budget/pricing."
