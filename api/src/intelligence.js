@@ -2181,6 +2181,39 @@ async function buildReconciliationIntelContext(getDb, opts = {}) {
 }
 
 /**
+ * Minimal live Cosmos touch — inventory / container counts only (~1–2s).
+ * Used when the router plans cosmos_default without full intel or reconciliation.
+ */
+async function buildSlimBuddyIntelContext(getDb, opts = {}) {
+  const { clientName = null, sponsor = null } = opts;
+  const database = getDb();
+  const started = Date.now();
+  try {
+    const inventory = await getIntelligenceHealth(getDb);
+    const out = {
+      source: "ora_clinical_intelligence",
+      attachedFrom: "cosmos_slim_inventory",
+      query: { slimInventory: true },
+      inventory,
+      note:
+        "Live Cosmos inventory (progressive fetch). DB was queried on this turn — use container counts. Say 'go deeper' or ask for indication benchmarks for full intel.",
+      elapsedMs: Date.now() - started
+    };
+    const who = sponsor || clientName;
+    if (who) {
+      out.sponsorCrosswalk = await lookupSponsorCrosswalk(database, who);
+    }
+    return out;
+  } catch (err) {
+    return {
+      source: "ora_clinical_intelligence_error",
+      error: String(err.message || err),
+      elapsedMs: Date.now() - started
+    };
+  }
+}
+
+/**
  * Default live Cosmos pack — attached on EVERY Buddy turn.
  * If indication is known, delegates to the slim reconciliation pack.
  * Otherwise returns inventory + feed overviews so the model never claims DB is missing.
@@ -2870,6 +2903,7 @@ module.exports = {
   buildIntelligenceContext,
   buildReconciliationIntelContext,
   buildDefaultBuddyIntelContext,
+  buildSlimBuddyIntelContext,
   buildSiteScorecard,
   buildLegacyRecruitmentBoard,
   benchmarkIndication,

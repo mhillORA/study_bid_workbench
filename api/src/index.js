@@ -2,11 +2,9 @@ const { app } = require("@azure/functions");
 const AdmZip = require("adm-zip");
 const { parseWorkbookBuffer } = require("./parseWorkbook");
 const { upsertCanonical, createManualStudy, saveStudyVersion, saveSectionPatch, listStudies, getStudy, listVersions, getVersion, listLineItems, compareVersions, compareStudies, listQuarantine, getParseLearningsSummary, loadLearnings, getDb, buildPortfolioContext, listSectionLocks, claimSectionLock, heartbeatSectionLock, requestSectionTakeover, releaseSectionLock } = require("./cosmosLoad");
-const { askAi, getStudyContext, providerStatus, inferModelTier } = require("./askClaude");
+const { askAi, getStudyContext, providerStatus } = require("./askClaude");
 const {
   buildIntelligenceContext,
-  buildReconciliationIntelContext,
-  buildDefaultBuddyIntelContext,
   buildSiteScorecard,
   buildLegacyRecruitmentBoard,
   getIntelligenceHealth,
@@ -42,6 +40,7 @@ const {
 const { normalizeBuddyAttachments } = require("./buddyAttachments");
 const { buildBuddyDocExports, wantsDocumentExport } = require("./buddyDocExport");
 const { routeBuddyAsk, isCompareTwoStudiesQuestion, isCrossStudyQuestion } = require("./buddyRouter");
+const { fetchBuddyIntelligence, fetchBuddyPortfolio } = require("./buddyCosmosFetch");
 
 function nctFromQuestion(question) {
   const m = String(question || "").match(/\b(NCT\d{8})\b/i);
@@ -1458,52 +1457,8 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
     }
     if (!question) return json(400, { error: "question is required (or attach a file)" });
 
-    const routeEarly = routeBuddyAsk({ question, body, history, hasOkUpload });
-    const skipHeavyPortfolio = routeEarly.skipHeavyPortfolio;
-    const externalFeedAsk = routeEarly.externalFeedAsk;
-    const moneyIntentEarly = routeEarly.moneyIntent;
-
-    // Skip full portfolio on fast tier / feed asks — SWA gateway ~45s; 500s are usually timeouts.
-    let portfolioFull = null;
-    let clientDirectory = [];
-    if (
-      skipHeavyPortfolio &&
-      moneyIntentEarly !== "ora_earned" &&
-      routeEarly.workflow !== "budget" &&
-      routeEarly.workflow !== "hybrid"
-    ) {
-      portfolioFull = {
-        source: "cosmos_portfolio_skipped",
-        skipped: true,
-        note:
-          "Portfolio rollup skipped for speed (fast tier / feed ask). Use context.intelligence or open study for numbers."
-      };
-    } else {
-      try {
-        portfolioFull = await buildPortfolioContext({ limit: 500 });
-        clientDirectory = portfolioFull.clientNamesInDatabase || [];
-      } catch (err) {
-        portfolioFull = { source: "cosmos_portfolio_error", error: String(err.message || err) };
-        clientDirectory = [];
-      }
-    }
-
-    const hints = inferAskHints(question, body, clientDirectory);
-    // Year in a TrialHub/CT.gov/Veeva ask filters feed stats — not budget portfolio rows.
-    if (externalFeedAsk && hints.year) {
-      hints.portfolioYear = hints.year;
-      hints.year = null;
-    }
-    // Belt-and-suspenders: never keep a 1–3 char client filter without an explicit cue
-    if (
-      hints.clientName &&
-      String(hints.clientName).trim().length <= 3 &&
-      !body.clientName &&
-      !hasExplicitClientCue(question)
-    ) {
-      hints.clientName = null;
-    }
-
+    // Route first (no portfolio yet) — progressive fetch loads portfolio only when tools include it.
+    let hints = inferAskHints(question, body, []);
     const route = routeBuddyAsk({ question, body, history, hasOkUpload, hints });
     const {
       intent: routerIntent,
@@ -1532,6 +1487,34 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       hints.studyId = hints.studyId && /\b(O-\d{3,})\b/i.test(question) ? hints.studyId : null;
     }
 
+    const portfolioFetch = await fetchBuddyPortfolio(buildPortfolioContext, {
+      routerTools,
+      hints
+    });
+    let portfolioFull = portfolioFetch.portfolioFull || portfolioFetch.portfolio;
+    let portfolio = portfolioFetch.portfolio;
+    let clientDirectory = portfolioFetch.clientDirectory || [];
+
+    if (clientDirectory.length) {
+      hints = inferAskHints(question, body, clientDirectory);
+      if (moneyIntent === "ora_earned") {
+        hints.crossStudy = true;
+        hints.studyId = hints.studyId && /\b(O-\d{3,})\b/i.test(question) ? hints.studyId : null;
+      }
+      if (
+        hints.clientName &&
+        String(hints.clientName).trim().length <= 3 &&
+        !body.clientName &&
+        !hasExplicitClientCue(question)
+      ) {
+        hints.clientName = null;
+      }
+      if (route.externalFeedAsk && hints.year) {
+        hints.portfolioYear = hints.year;
+        hints.year = null;
+      }
+    }
+
     const user = signedInUserFromRequest(request, body.user || null);
     const activeTab = body.activeTab ? String(body.activeTab) : null;
     const activeTabLabel = body.activeTabLabel ? String(body.activeTabLabel) : null;
@@ -1554,11 +1537,10 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       sectionLocks = body.sectionLocks;
     }
 
-    // Prefer filtered portfolio when the question names a client/year; else full DB rollup
-    let portfolio = portfolioFull;
+    // Re-filter portfolio if client/year emerged after client directory scan
     if (
-      portfolioFull &&
-      portfolioFull.source === "cosmos_portfolio" &&
+      portfolio &&
+      portfolio.source === "cosmos_portfolio" &&
       (hints.clientName || hints.year)
     ) {
       try {
@@ -1569,20 +1551,22 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         });
         if (hints.clientName && filtered.matchedStudyCount === 0) {
           portfolio = {
-            ...portfolioFull,
+            ...portfolio,
             filters: {
-              ...(portfolioFull.filters || {}),
+              ...(portfolio.filters || {}),
               clientNameRequested: hints.clientName,
               year: hints.year || null,
               matched: false
             },
-            note: `No studies matched client filter "${hints.clientName}". Showing full database portfolio.`
+            note: `No studies matched client filter "${hints.clientName}". Showing full database portfolio.`,
+            progressiveFetch: true
           };
         } else {
-          portfolio = filtered;
+          portfolio = { ...filtered, progressiveFetch: true };
         }
+        portfolioFull = portfolio;
       } catch (err) {
-        portfolio = { ...portfolioFull, filterError: String(err.message || err) };
+        portfolio = { ...portfolio, filterError: String(err.message || err) };
       }
     }
 
@@ -1663,47 +1647,13 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         sponsor: sourceOverviewAsk ? null : hints.clientName || snapClient || null
       };
 
-      if (hasOkUpload || attachmentCosmosCompareAsk) {
-        intelligence = await buildReconciliationIntelContext(getDb, intelBase);
-      } else if (needsFullIntel) {
-        const needsYearList =
-          Boolean(extractIntelYearFromQuestion(question)) ||
-          Boolean(extractTherapeuticFilterFromQuestion(question)) ||
-          isTrialhubQuestion(question);
-        const intelTimeoutMs = Number(
-          process.env.BUDDY_INTEL_TIMEOUT_MS ||
-            (needsYearList ? 38000 : routerDepth === "fast" ? 20000 : 30000)
-        );
-        const intelPromise = buildIntelligenceContext(getDb, { ...intelBase, force: true });
-        intelligence = await Promise.race([
-          intelPromise,
-          new Promise((_, reject) =>
-            setTimeout(() => reject(new Error(`intelligence pack timed out after ${intelTimeoutMs}ms`)), intelTimeoutMs)
-          )
-        ]).catch(async (err) => {
-          const fallback = await buildDefaultBuddyIntelContext(getDb, intelBase);
-          if (fallback && !fallback.error) {
-            fallback.note =
-              (fallback.note || "") +
-              ` Full intel pack timed out (${String(err.message || err)}); using default Cosmos pack.`;
-            return fallback;
-          }
-          return {
-            source: "ora_clinical_intelligence_error",
-            error: String(err.message || err),
-            note: "Cosmos query failed — do not invent benchmarks."
-          };
-        });
-      } else {
-        intelligence = await buildDefaultBuddyIntelContext(getDb, intelBase);
-      }
-
-      if (intelligence && !intelligence.error) {
-        intelligence.attachedFrom = intelligence.attachedFrom || "cosmos_query";
-        intelligence.note =
-          intelligence.note ||
-          "Queried live from Cosmos on this turn. Prefer these numbers over invented benchmarks.";
-      }
+      intelligence = await fetchBuddyIntelligence(getDb, {
+        intelBase,
+        routerTools,
+        routerDepth,
+        question,
+        cosmosReconciliation: attachmentCosmosCompareAsk
+      });
     } catch (err) {
       intelligence = { source: "ora_clinical_intelligence_error", error: String(err.message || err) };
     }
@@ -2065,6 +2015,8 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         routerTools,
         routerConfidence: route.confidence,
         routerReasons: route.reasons,
+        fetchPlan: intelligence?.fetchPlan || null,
+        portfolioSkipped: Boolean(portfolio?.skipped),
         attachmentCosmosCompareAsk,
         hasOkUpload,
         reconcileFollowUp: Boolean(body.reconcileFollowUp || route.reconcileFollowUp),

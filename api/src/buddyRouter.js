@@ -305,10 +305,18 @@ function pickTools(ctx) {
   } = ctx;
   const tools = new Set(["cosmos_default"]);
 
-  if (cosmosReconciliation || intent === "reconcile") tools.add("cosmos_reconciliation");
+  if (cosmosReconciliation || intent === "reconcile") {
+    tools.add("cosmos_reconciliation");
+  } else if (needsFullIntel || workflow === "feasibility" || workflow === "hybrid") {
+    tools.add("cosmos_intel_full");
+  }
   if (hasOkUpload) tools.add("attachments");
-  if (needsFullIntel || workflow === "feasibility" || workflow === "hybrid") tools.add("cosmos_intel_full");
-  if (!skipHeavyPortfolio && (workflow === "budget" || workflow === "hybrid" || intent === "portfolio")) {
+  if (moneyIntent === "ora_earned") {
+    tools.add("portfolio");
+  } else if (
+    !skipHeavyPortfolio &&
+    (workflow === "budget" || workflow === "hybrid" || intent === "portfolio")
+  ) {
     tools.add("portfolio");
   }
   if (compareAsk || intent === "compare_studies") tools.add("study_compare");

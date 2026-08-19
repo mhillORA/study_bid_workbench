@@ -3922,13 +3922,13 @@
             ? ` · Intel${intelBits.length ? ` ${intelBits.join(" / ")}` : ""}`
             : "";
           if (data.answerFocus === "portfolio" && data.databaseStudyCount != null) {
-            els.askStatus.textContent = `${tierLabel}${intelNote} · Cosmos ${data.portfolioMatched ?? "?"} / ${data.databaseStudyCount}${wfNote}${soft}`;
+            els.askStatus.textContent = `${tierLabel}${intentNote}${intelNote} · Cosmos ${data.portfolioMatched ?? "?"} / ${data.databaseStudyCount}${wfNote}${soft}`;
           } else if (portfolioMode) {
-            els.askStatus.textContent = `${tierLabel}${intelNote}${wfNote}${soft}`;
+            els.askStatus.textContent = `${tierLabel}${intentNote}${intelNote}${wfNote}${soft}`;
           } else {
             els.askStatus.textContent = hasOpenStudy()
-              ? `${tierLabel}${intelNote} · ${state.study.studyId}${wfNote}${soft}`
-              : `${tierLabel}${intelNote}${wfNote}${soft}`;
+              ? `${tierLabel}${intentNote}${intelNote} · ${state.study.studyId}${wfNote}${soft}`
+              : `${tierLabel}${intentNote}${intelNote}${wfNote}${soft}`;
           }
         }
         state.buddyBusy = false;
