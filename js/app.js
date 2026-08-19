@@ -17,6 +17,8 @@
     buddyBusy: false,
     buddyWorkflow: localStorage.getItem("sbw.buddyWorkflow") || "auto",
     buddyMode: localStorage.getItem("sbw.buddyMode") || "chat",
+    buddyDept: localStorage.getItem("sbw.buddyDept") || "auto",
+    buddyDeptPack: null,
     buddyPendingTask: null,
     source: "none", // none | cosmos | buddy
     versions: [],
@@ -93,6 +95,9 @@
       append: "",
       dept: "general",
       category: "playbook",
+      deptPlaybookId: "ops",
+      deptPlaybookStatus: "",
+      deptPlaybookSaving: false,
       viewDept: "*",
       viewCategory: "*",
       departments: [],
@@ -154,6 +159,7 @@
     buddyFileInput: document.getElementById("buddyFileInput"),
     buddyAttachChips: document.getElementById("buddyAttachChips"),
     askStatus: document.getElementById("askStatus"),
+    buddyDeptSelect: document.getElementById("buddyDeptSelect"),
     compareOverlay: document.getElementById("compareOverlay"),
     requestDialog: document.getElementById("requestDialog"),
     requestForm: document.getElementById("requestForm"),
@@ -164,6 +170,116 @@
 
   function currentUser() {
     return SBW.users.find((u) => u.id === state.userId) || SBW.users[0];
+  }
+
+  const BUDDY_DEPT_OPTIONS = [
+    { id: "auto", name: "Auto (your role)" },
+    { id: "ops", name: "Ops" },
+    { id: "bd", name: "BD" },
+    { id: "recruitment", name: "Recruitment" },
+    { id: "clinops", name: "ClinOps" },
+    { id: "monitoring", name: "Monitoring" },
+    { id: "smo", name: "SMO" },
+    { id: "analyst", name: "Analyst" },
+    { id: "leadership", name: "Leadership" }
+  ];
+
+  const WORKBENCH_DEPT_TO_BUDDY = {
+    Recruitment: "recruitment",
+    ClinOps: "clinops",
+    Monitoring: "monitoring",
+    SMO: "smo",
+    Analyst: "analyst",
+    Admin: "auto",
+    TAH: "analyst"
+  };
+
+  function defaultBuddyDeptFromUser() {
+    const dept = currentUser().department;
+    return WORKBENCH_DEPT_TO_BUDDY[dept] || "auto";
+  }
+
+  /** Dept id sent to /api/ask — Auto resolves to the signed-in user's department when known. */
+  function effectiveBuddyDept() {
+    const sel = String(state.buddyDept || "auto").trim().toLowerCase();
+    if (sel && sel !== "auto") return sel;
+    return defaultBuddyDeptFromUser();
+  }
+
+  function buddyDeptLabel(id) {
+    const key = String(id || "auto").toLowerCase();
+    const hit = BUDDY_DEPT_OPTIONS.find((d) => d.id === key);
+    if (hit) return hit.name;
+    const fromPack = (state.buddyDeptPack?.departments || []).find((d) => d.id === key);
+    return fromPack?.name || key;
+  }
+
+  function setBuddyDept(deptId, { persist = true } = {}) {
+    const next = String(deptId || "auto").trim().toLowerCase() || "auto";
+    state.buddyDept = next;
+    if (persist) localStorage.setItem("sbw.buddyDept", next);
+    if (els.buddyDeptSelect) els.buddyDeptSelect.value = next;
+    paintBuddyModelLabel();
+  }
+
+  function paintBuddyDeptSelect() {
+    if (!els.buddyDeptSelect) return;
+    const depts =
+      state.buddyDeptPack?.departments?.length
+        ? state.buddyDeptPack.departments.map((d) => ({ id: d.id, name: d.name || d.id }))
+        : BUDDY_DEPT_OPTIONS.filter((d) => d.id !== "auto");
+    const opts = [
+      `<option value="auto" ${state.buddyDept === "auto" ? "selected" : ""}>Auto (your role)</option>`,
+      ...depts.map(
+        (d) =>
+          `<option value="${escapeAttr(d.id)}" ${state.buddyDept === d.id ? "selected" : ""}>${escapeHtml(
+            d.name
+          )}</option>`
+      )
+    ];
+    els.buddyDeptSelect.innerHTML = opts.join("");
+    if (![...els.buddyDeptSelect.options].some((o) => o.value === state.buddyDept)) {
+      state.buddyDept = "auto";
+    }
+    els.buddyDeptSelect.value = state.buddyDept || "auto";
+  }
+
+  async function loadBuddyDeptContexts() {
+    try {
+      const res = await fetch(apiUrl("/api/buddy/dept-contexts"));
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+      state.buddyDeptPack = {
+        departments: Array.isArray(data.departments) ? data.departments : [],
+        updatedAt: data.updatedAt || null,
+        thinDepts: data.thinDepts || []
+      };
+      paintBuddyDeptSelect();
+      if (state.sectionId === "buddy-context") render();
+    } catch (_) {
+      paintBuddyDeptSelect();
+    }
+  }
+
+  async function saveBuddyDeptPlaybook(deptId, context, relationshipNotes) {
+    const id = String(deptId || "").trim();
+    if (!id || id === "auto") return;
+    const res = await fetch(apiUrl("/api/buddy/dept-contexts"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        department: {
+          id,
+          context: String(context || "").trim(),
+          relationshipNotes: String(relationshipNotes || "").trim()
+        },
+        user: state.entraUser || undefined
+      })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data.ok === false) throw new Error(data.error || `HTTP ${res.status}`);
+    await loadBuddyDeptContexts();
+    return data;
   }
 
   function money(n) {
@@ -1417,6 +1533,8 @@
     }
     if (els.buddyFab) els.buddyFab.setAttribute("aria-expanded", "true");
     paintBuddyChat();
+    paintBuddyDeptSelect();
+    if (!state.buddyDeptPack) loadBuddyDeptContexts().catch(() => {});
     refreshBuddyModelLabel();
     if (els.askInput) els.askInput.focus();
   }
@@ -1869,6 +1987,11 @@
       el.dataset.baseLabel = "Ask Buddy · Budget Buddy";
     }
     el.textContent = `${el.dataset.baseLabel} · ${mode} · ${wf}`;
+    const deptNote =
+      state.buddyDept === "auto"
+        ? `Auto→${buddyDeptLabel(effectiveBuddyDept())}`
+        : buddyDeptLabel(state.buddyDept);
+    if (deptNote && deptNote !== "Auto (your role)") el.textContent += ` · ${deptNote}`;
     if (state.buddyPendingTask?.type) {
       const taskLabel =
         state.buddyPendingTask.type === "reconcile"
@@ -1892,7 +2015,7 @@
     );
     if (!m || !String(m[1] || "").trim()) return null;
     return normalizeLearnPayload({
-      dept: state.buddyContext?.dept || "general",
+      dept: effectiveBuddyDept() === "auto" ? state.buddyContext?.dept || "general" : effectiveBuddyDept(),
       category: state.buddyContext?.category || "other",
       addition: String(m[1]).trim()
     });
@@ -1923,7 +2046,9 @@
           ? "feasibility"
           : state.buddyWorkflow === "budget"
             ? "pricing"
-            : state.buddyContext?.dept || "general",
+            : effectiveBuddyDept() === "auto"
+              ? state.buddyContext?.dept || "general"
+              : effectiveBuddyDept(),
       category:
         state.buddyWorkflow === "feasibility"
           ? "sites"
@@ -3836,6 +3961,7 @@
             question,
             buddyMode: state.buddyMode || "chat",
             buddyWorkflow: state.buddyWorkflow || "auto",
+            buddyDept: effectiveBuddyDept(),
             pendingTask: state.buddyPendingTask || undefined,
             studyId: wantPortfolio ? undefined : (state.study.studyId || undefined),
             studySnapshot: wantPortfolio ? undefined : leanStudySnapshot(state.study),
@@ -3939,6 +4065,9 @@
               : "Fast";
           const soft = data.provider === "error" || data.ok === false ? " · degraded" : "";
           const intentNote = data.buddyDebug?.routerIntent ? ` · ${data.buddyDebug.routerIntent}` : "";
+          const deptNote = data.buddyDebug?.buddyDeptLens
+            ? ` · ${buddyDeptLabel(data.buddyDebug.buddyDeptLens)}`
+            : "";
           const actionNote =
             data.buddyDebug?.actionCount > 0 ? ` · ${data.buddyDebug.actionCount} action(s)` : "";
           const wfNote = data.workflow && data.workflow !== "auto" ? ` · ${data.workflow}` : "";
@@ -3949,13 +4078,13 @@
             ? ` · Intel${intelBits.length ? ` ${intelBits.join(" / ")}` : ""}`
             : "";
           if (data.answerFocus === "portfolio" && data.databaseStudyCount != null) {
-            els.askStatus.textContent = `${tierLabel}${intentNote}${actionNote}${intelNote} · Cosmos ${data.portfolioMatched ?? "?"} / ${data.databaseStudyCount}${wfNote}${soft}`;
+            els.askStatus.textContent = `${tierLabel}${intentNote}${deptNote}${actionNote}${intelNote} · Cosmos ${data.portfolioMatched ?? "?"} / ${data.databaseStudyCount}${wfNote}${soft}`;
           } else if (portfolioMode) {
-            els.askStatus.textContent = `${tierLabel}${intentNote}${actionNote}${intelNote}${wfNote}${soft}`;
+            els.askStatus.textContent = `${tierLabel}${intentNote}${deptNote}${actionNote}${intelNote}${wfNote}${soft}`;
           } else {
             els.askStatus.textContent = hasOpenStudy()
-              ? `${tierLabel}${intentNote}${actionNote}${intelNote} · ${state.study.studyId}${wfNote}${soft}`
-              : `${tierLabel}${intentNote}${actionNote}${intelNote}${wfNote}${soft}`;
+              ? `${tierLabel}${intentNote}${deptNote}${actionNote}${intelNote} · ${state.study.studyId}${wfNote}${soft}`
+              : `${tierLabel}${intentNote}${deptNote}${actionNote}${intelNote}${wfNote}${soft}`;
           }
         }
         state.buddyBusy = false;
@@ -5179,6 +5308,61 @@
       .join("");
   }
 
+  function renderBuddyDeptPlaybooks() {
+    const bc = state.buddyContext;
+    const depts =
+      state.buddyDeptPack?.departments?.length
+        ? state.buddyDeptPack.departments
+        : BUDDY_DEPT_OPTIONS.filter((d) => d.id !== "auto").map((d) => ({
+            id: d.id,
+            name: d.name,
+            context: "",
+            relationshipNotes: ""
+          }));
+    const editId = bc.deptPlaybookId || depts[0]?.id || "ops";
+    const cur = depts.find((d) => d.id === editId) || depts[0] || { id: "ops", name: "Ops", context: "", relationshipNotes: "" };
+    const opts = depts
+      .map(
+        (d) =>
+          `<option value="${escapeAttr(d.id)}" ${d.id === editId ? "selected" : ""}>${escapeHtml(d.name || d.id)}</option>`
+      )
+      .join("");
+    const thin = (state.buddyDeptPack?.thinDepts || []).length
+      ? `<p class="muted">Playbooks still thin for: ${escapeHtml(state.buddyDeptPack.thinDepts.join(", "))} — Buddy will ask learning questions until these are filled.</p>`
+      : "";
+    return `
+      <div class="card wide" style="margin-top:1rem;">
+        <h3>Department playbooks</h3>
+        <p class="muted">How each department works at Ora — attached on every Buddy ask via <strong>Dept lens</strong> in the Buddy panel. Saved to Cosmos (and git mirror when configured).</p>
+        ${thin}
+        <p class="muted">${escapeHtml(bc.deptPlaybookStatus || "")}${
+          state.buddyDeptPack?.updatedAt ? ` · updated ${escapeHtml(state.buddyDeptPack.updatedAt)}` : ""
+        }</p>
+        <label class="field" style="margin-top:0.75rem;">
+          <span>Department</span>
+          <select id="buddyDeptPlaybookSelect" class="select">${opts}</select>
+        </label>
+        <label class="field" style="margin-top:0.75rem;">
+          <span>Playbook (process, priorities, vocabulary)</span>
+          <textarea id="buddyDeptPlaybookContext" class="input" rows="10" placeholder="How this department uses the workbench, what they need from Buddy, typical asks…">${escapeHtml(
+            cur.context || ""
+          )}</textarea>
+        </label>
+        <label class="field" style="margin-top:0.75rem;">
+          <span>Handoffs & relationships</span>
+          <textarea id="buddyDeptPlaybookRelations" class="input" rows="4" placeholder="Who they coordinate with, what to escalate…">${escapeHtml(
+            cur.relationshipNotes || ""
+          )}</textarea>
+        </label>
+        <div style="display:flex;gap:0.6rem;flex-wrap:wrap;margin-top:0.65rem;">
+          <button type="button" class="btn btn-primary" id="btnBuddyDeptPlaybookSave" ${
+            bc.deptPlaybookSaving ? "disabled" : ""
+          }>${bc.deptPlaybookSaving ? "Saving…" : "Save playbook"}</button>
+          <button type="button" class="btn btn-secondary" id="btnBuddyDeptPlaybookRefresh">Refresh</button>
+        </div>
+      </div>`;
+  }
+
   function renderBuddyContext() {
     const bc = state.buddyContext;
     const depts = bc.departments.length
@@ -5264,7 +5448,8 @@
           )}</strong>. Switch department/category above to browse other buckets.</p>
           ${renderBuddyContextOrganized(bc.organized, viewDept, viewCategory)}
         </div>
-      </div>`;
+      </div>
+      ${renderBuddyDeptPlaybooks()}`;
   }
 
   function renderScorecard() {
@@ -7974,6 +8159,7 @@
         !state.buddyContext.text &&
         !state.buddyContext.status;
       if (empty) loadBuddyContext().catch(() => {});
+      if (!state.buddyDeptPack) loadBuddyDeptContexts().catch(() => {});
     }
   }
 
@@ -8311,6 +8497,35 @@
         saveBuddyContext();
         return;
       }
+      if (e.target.id === "btnBuddyDeptPlaybookRefresh") {
+        loadBuddyDeptContexts().catch((err) => {
+          state.buddyContext.deptPlaybookStatus = `Refresh failed: ${err.message || err}`;
+          render();
+        });
+        return;
+      }
+      if (e.target.id === "btnBuddyDeptPlaybookSave") {
+        const sel = document.getElementById("buddyDeptPlaybookSelect");
+        const ctx = document.getElementById("buddyDeptPlaybookContext");
+        const rel = document.getElementById("buddyDeptPlaybookRelations");
+        const deptId = sel ? sel.value : state.buddyContext.deptPlaybookId;
+        state.buddyContext.deptPlaybookId = deptId;
+        state.buddyContext.deptPlaybookSaving = true;
+        state.buddyContext.deptPlaybookStatus = "Saving…";
+        render();
+        saveBuddyDeptPlaybook(deptId, ctx ? ctx.value : "", rel ? rel.value : "")
+          .then(() => {
+            state.buddyContext.deptPlaybookStatus = "Playbook saved.";
+            state.buddyContext.deptPlaybookSaving = false;
+            render();
+          })
+          .catch((err) => {
+            state.buddyContext.deptPlaybookStatus = `Save failed: ${err.message || err}`;
+            state.buddyContext.deptPlaybookSaving = false;
+            render();
+          });
+        return;
+      }
       if (e.target.id === "btnOpsRefresh") {
         state.studiesList = [];
         ensureOpsLoaded();
@@ -8574,6 +8789,10 @@
         if (catVal !== "*") state.buddyContext.category = catVal;
         render();
       }
+      if (e.target.id === "buddyDeptPlaybookSelect") {
+        state.buddyContext.deptPlaybookId = e.target.value;
+        render();
+      }
     });
 
     els.viewRoot.addEventListener("input", (e) => {
@@ -8707,6 +8926,11 @@
     if (els.buddyFab) els.buddyFab.addEventListener("click", openBuddy);
     if (els.buddyClose) els.buddyClose.addEventListener("click", closeBuddy);
     if (els.btnAsk) els.btnAsk.addEventListener("click", sendAsk);
+    if (els.buddyDeptSelect) {
+      els.buddyDeptSelect.addEventListener("change", () => {
+        setBuddyDept(els.buddyDeptSelect.value);
+      });
+    }
     if (els.btnBuddyAttach && els.buddyFileInput) {
       els.btnBuddyAttach.addEventListener("click", () => els.buddyFileInput.click());
       els.buddyFileInput.addEventListener("change", () => {
@@ -8977,6 +9201,8 @@
   bind();
   bindTheme();
   initBuddyChrome();
+  paintBuddyDeptSelect();
+  loadBuddyDeptContexts().catch(() => {});
   render();
   paintBuddyChat();
   markSaved();

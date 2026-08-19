@@ -686,6 +686,29 @@ h1 {
   color: #1b2a4a;
 }
 
+.buddy-dept-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.75rem 0.55rem;
+  border-bottom: 1px solid var(--line);
+  flex-wrap: wrap;
+}
+
+.buddy-dept-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.buddy-dept-select {
+  flex: 1;
+  min-width: 8rem;
+  max-width: 100%;
+  font-size: 0.82rem;
+  padding: 0.25rem 0.5rem;
+}
+
 .buddy-panel-head {
   flex-shrink: 0;
 }

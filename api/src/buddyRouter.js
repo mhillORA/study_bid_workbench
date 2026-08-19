@@ -394,6 +394,7 @@ function pickTools(ctx) {
     tools.add("live_context");
   }
   if (moneyIntent === "public_company") tools.add("web_search");
+  tools.add("dept_context");
 
   return [...tools];
 }

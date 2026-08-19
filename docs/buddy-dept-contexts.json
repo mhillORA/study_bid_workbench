@@ -1,0 +1,62 @@
+{
+  "schemaVersion": 1,
+  "updatedAt": null,
+  "departments": [
+    {
+      "id": "ops",
+      "name": "Ops",
+      "context": "",
+      "relatedTo": ["bd", "recruitment", "clinops"],
+      "relationshipNotes": "Ops coordinates bid workflow, handoffs, and data health across departments."
+    },
+    {
+      "id": "bd",
+      "name": "BD",
+      "context": "",
+      "relatedTo": ["ops", "leadership", "analyst"],
+      "relationshipNotes": "BD sells Ora services; needs feasibility talking points and portfolio comps."
+    },
+    {
+      "id": "recruitment",
+      "name": "Recruitment",
+      "context": "",
+      "relatedTo": ["clinops", "smo", "ops"],
+      "relationshipNotes": ""
+    },
+    {
+      "id": "clinops",
+      "name": "ClinOps",
+      "context": "",
+      "relatedTo": ["recruitment", "monitoring"],
+      "relationshipNotes": ""
+    },
+    {
+      "id": "monitoring",
+      "name": "Monitoring",
+      "context": "",
+      "relatedTo": ["clinops"],
+      "relationshipNotes": ""
+    },
+    {
+      "id": "smo",
+      "name": "SMO",
+      "context": "",
+      "relatedTo": ["recruitment", "ops"],
+      "relationshipNotes": ""
+    },
+    {
+      "id": "analyst",
+      "name": "Analyst",
+      "context": "",
+      "relatedTo": ["bd", "ops"],
+      "relationshipNotes": ""
+    },
+    {
+      "id": "leadership",
+      "name": "Leadership",
+      "context": "",
+      "relatedTo": ["bd", "ops"],
+      "relationshipNotes": ""
+    }
+  ]
+}

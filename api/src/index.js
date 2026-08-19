@@ -42,6 +42,14 @@ const { buildBuddyDocExports, wantsDocumentExport } = require("./buddyDocExport"
 const { routeBuddyAsk, isCompareTwoStudiesQuestion, isCrossStudyQuestion } = require("./buddyRouter");
 const { fetchBuddyIntelligence, fetchBuddyPortfolio } = require("./buddyCosmosFetch");
 const { parseBuddyActions } = require("./buddyActions");
+const {
+  loadDeptContexts,
+  saveDeptContexts,
+  buildDeptContextForAsk,
+  resolveBuddyDeptId,
+  buddyContextSummary,
+  DEFAULT_DEPARTMENTS
+} = require("./deptContext");
 
 function routerHasTool(route, name) {
   return Array.isArray(route?.tools) && route.tools.includes(name);
@@ -1159,6 +1167,51 @@ app.http("buddyContext", {
   }
 });
 
+app.http("buddyDeptContexts", {
+  methods: ["GET", "POST", "OPTIONS"],
+  authLevel: "anonymous",
+  route: "buddy/dept-contexts",
+  handler: async (request, context) => {
+    if (request.method === "OPTIONS") {
+      return {
+        status: 204,
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+          "Access-Control-Allow-Headers": "content-type"
+        }
+      };
+    }
+    try {
+      if (request.method === "GET") {
+        const pack = await loadDeptContexts(getDb);
+        return json(200, {
+          ok: true,
+          ...buddyContextSummary(pack),
+          departments: pack.departments,
+          updatedAt: pack.updatedAt,
+          source: pack.source
+        });
+      }
+      let body = {};
+      try {
+        body = (await request.json()) || {};
+      } catch (_) {
+        body = {};
+      }
+      const user = signedInUserFromRequest(request, body.user || null);
+      const result = await saveDeptContexts(getDb, body, {
+        requirePassword: false,
+        updatedBy: user?.email || user?.displayName || "ui"
+      });
+      return json(result.ok ? 200 : result.status || 400, result);
+    } catch (err) {
+      context.error(err);
+      return json(500, { ok: false, error: String(err.message || err) });
+    }
+  }
+});
+
 app.http("trialhubUpload", {
   methods: ["POST", "OPTIONS"],
   authLevel: "anonymous",
@@ -1799,6 +1852,19 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       buddyLiveContext = { source: "error", error: String(err.message || err) };
     }
 
+    const buddyDeptLens = resolveBuddyDeptId(
+      body.buddyDept || body.deptLens || body.department || body.user?.buddyDept || null
+    );
+    let buddyDeptContexts = null;
+    try {
+      if (routerHasTool(route, "dept_context")) {
+        const deptPack = await loadDeptContexts(getDb);
+        buddyDeptContexts = buildDeptContextForAsk(deptPack, buddyDeptLens);
+      }
+    } catch (err) {
+      buddyDeptContexts = { source: "buddy_dept_contexts_error", error: String(err.message || err) };
+    }
+
     const openStudyId = body.studyId ? String(body.studyId).trim() : null;
     const modelTier = routerDepth;
     const contextPayload = {
@@ -1848,8 +1914,11 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         legacyAnteriorAttached: Boolean(legacyAnterior && legacyAnterior.source === "legacy_anterior_segment"),
         pricingScenariosAttached: Boolean(pricingScenarios && pricingScenarios.tiers),
         buddyLiveContextAttached: Boolean(buddyLiveContext && buddyLiveContext.text),
-        note: "studyComparison = two-study bid diff. portfolio = budget studies. pricingScenarios = past-bid RFP tiers. intelligence = Ora Veeva + TrialHub + CT.gov. legacyAnterior = anterior-segment overview. buddyLiveContext = SME text from Buddy Context tab."
+        buddyDeptContextsAttached: Boolean(buddyDeptContexts && !buddyDeptContexts.error),
+        note: "studyComparison = two-study bid diff. portfolio = budget studies. pricingScenarios = past-bid RFP tiers. intelligence = Ora Veeva + TrialHub + CT.gov. legacyAnterior = anterior-segment overview. buddyLiveContext = SME append notes. buddyDeptContexts = department playbook lens (Ops/BD/Recruitment…)."
       },
+      buddyDept: buddyDeptLens,
+      buddyDeptContexts,
       user,
       activeTab,
       activeTabLabel,
@@ -2052,8 +2121,10 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
           legacy: routerHasTool(route, "legacy_anterior"),
           pricing: routerHasTool(route, "pricing_scenarios"),
           compare: routerHasTool(route, "study_compare"),
-          liveContext: routerHasTool(route, "live_context")
+          liveContext: routerHasTool(route, "live_context"),
+          deptContext: routerHasTool(route, "dept_context")
         },
+        buddyDeptLens,
         portfolioSkipped: Boolean(portfolio?.skipped),
         actionCount: actionParse.actions.length,
         attachmentCosmosCompareAsk,
