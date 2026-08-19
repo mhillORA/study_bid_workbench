@@ -41,6 +41,11 @@ const { normalizeBuddyAttachments } = require("./buddyAttachments");
 const { buildBuddyDocExports, wantsDocumentExport } = require("./buddyDocExport");
 const { routeBuddyAsk, isCompareTwoStudiesQuestion, isCrossStudyQuestion } = require("./buddyRouter");
 const { fetchBuddyIntelligence, fetchBuddyPortfolio } = require("./buddyCosmosFetch");
+const { parseBuddyActions } = require("./buddyActions");
+
+function routerHasTool(route, name) {
+  return Array.isArray(route?.tools) && route.tools.includes(name);
+}
 
 function nctFromQuestion(question) {
   const m = String(question || "").match(/\b(NCT\d{8})\b/i);
@@ -1457,9 +1462,55 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
     }
     if (!question) return json(400, { error: "question is required (or attach a file)" });
 
-    // Route first (no portfolio yet) — progressive fetch loads portfolio only when tools include it.
+    // Route with hints (may refine after client directory from portfolio).
     let hints = inferAskHints(question, body, []);
-    const route = routeBuddyAsk({ question, body, history, hasOkUpload, hints });
+    let route = routeBuddyAsk({ question, body, history, hasOkUpload, hints });
+
+    // Ora-earned fee rankings are always portfolio-scope (even with a study open)
+    if (route.moneyIntent === "ora_earned") {
+      hints.crossStudy = true;
+      hints.studyId = hints.studyId && /\b(O-\d{3,})\b/i.test(question) ? hints.studyId : null;
+    }
+
+    let portfolioFetch = await fetchBuddyPortfolio(buildPortfolioContext, {
+      routerTools: route.tools,
+      hints
+    });
+    let portfolioFull = portfolioFetch.portfolioFull || portfolioFetch.portfolio;
+    let portfolio = portfolioFetch.portfolio;
+    let clientDirectory = portfolioFetch.clientDirectory || [];
+
+    if (clientDirectory.length) {
+      hints = inferAskHints(question, body, clientDirectory);
+      if (route.moneyIntent === "ora_earned") {
+        hints.crossStudy = true;
+        hints.studyId = hints.studyId && /\b(O-\d{3,})\b/i.test(question) ? hints.studyId : null;
+      }
+      if (
+        hints.clientName &&
+        String(hints.clientName).trim().length <= 3 &&
+        !body.clientName &&
+        !hasExplicitClientCue(question)
+      ) {
+        hints.clientName = null;
+      }
+      if (route.externalFeedAsk && hints.year) {
+        hints.portfolioYear = hints.year;
+        hints.year = null;
+      }
+      const route2 = routeBuddyAsk({ question, body, history, hasOkUpload, hints });
+      if (routerHasTool(route2, "portfolio") && !routerHasTool(route, "portfolio")) {
+        portfolioFetch = await fetchBuddyPortfolio(buildPortfolioContext, {
+          routerTools: route2.tools,
+          hints
+        });
+        portfolioFull = portfolioFetch.portfolioFull || portfolioFetch.portfolio;
+        portfolio = portfolioFetch.portfolio;
+        clientDirectory = portfolioFetch.clientDirectory || clientDirectory;
+      }
+      route = route2;
+    }
+
     const {
       intent: routerIntent,
       tools: routerTools,
@@ -1478,42 +1529,9 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       fillFollowUp,
       needsFullIntel,
       visualAsk,
-      docExportAsk
+      docExportAsk,
+      suggestedPendingTask
     } = route;
-
-    // Ora-earned fee rankings are always portfolio-scope (even with a study open)
-    if (moneyIntent === "ora_earned") {
-      hints.crossStudy = true;
-      hints.studyId = hints.studyId && /\b(O-\d{3,})\b/i.test(question) ? hints.studyId : null;
-    }
-
-    const portfolioFetch = await fetchBuddyPortfolio(buildPortfolioContext, {
-      routerTools,
-      hints
-    });
-    let portfolioFull = portfolioFetch.portfolioFull || portfolioFetch.portfolio;
-    let portfolio = portfolioFetch.portfolio;
-    let clientDirectory = portfolioFetch.clientDirectory || [];
-
-    if (clientDirectory.length) {
-      hints = inferAskHints(question, body, clientDirectory);
-      if (moneyIntent === "ora_earned") {
-        hints.crossStudy = true;
-        hints.studyId = hints.studyId && /\b(O-\d{3,})\b/i.test(question) ? hints.studyId : null;
-      }
-      if (
-        hints.clientName &&
-        String(hints.clientName).trim().length <= 3 &&
-        !body.clientName &&
-        !hasExplicitClientCue(question)
-      ) {
-        hints.clientName = null;
-      }
-      if (route.externalFeedAsk && hints.year) {
-        hints.portfolioYear = hints.year;
-        hints.year = null;
-      }
-    }
 
     const user = signedInUserFromRequest(request, body.user || null);
     const activeTab = body.activeTab ? String(body.activeTab) : null;
@@ -1571,7 +1589,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
     }
 
     let studyComparison = null;
-    if (compareAsk) {
+    if (compareAsk && routerHasTool(route, "study_compare")) {
       const pair = resolveComparePair(question, body, portfolioFull || portfolio);
       if (pair.needIds) {
         studyComparison = pair;
@@ -1661,6 +1679,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
     // Legacy anterior-segment site/study trust & feasibility (separate containers — read only)
     let legacyAnterior = null;
     try {
+      if (routerHasTool(route, "legacy_anterior")) {
       const legacyHint =
         body.legacyHint && typeof body.legacyHint === "object" ? body.legacyHint : {};
       const legacyOverviewAsk = isLegacyOverviewQuestion(question);
@@ -1727,6 +1746,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
           }
         }
       }
+      }
     } catch (err) {
       legacyAnterior = { source: "legacy_anterior_segment_error", error: String(err.message || err) };
     }
@@ -1734,6 +1754,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
     // Past-bid RFP pricing tiers (High Level Ballpark / Moderate / Goal Bid)
     let pricingScenarios = null;
     try {
+      if (routerHasTool(route, "pricing_scenarios")) {
       const rfp = extractRfpScenarioFromQuestion(question, body);
       if (
         buddyWorkflow !== "feasibility" &&
@@ -1762,6 +1783,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
           };
         }
       }
+      }
     } catch (err) {
       pricingScenarios = { source: "past_bid_pricing_error", error: String(err.message || err) };
     }
@@ -1769,8 +1791,10 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
     // Live Buddy context (Cosmos) — SME additions without redeploy
     let buddyLiveContext = null;
     try {
+      if (routerHasTool(route, "live_context")) {
       buddyLiveContext = await loadLiveContext(getDb);
       if (buddyLiveContext && !buddyLiveContext.text) buddyLiveContext = { ...buddyLiveContext, empty: true };
+      }
     } catch (err) {
       buddyLiveContext = { source: "error", error: String(err.message || err) };
     }
@@ -1966,9 +1990,14 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
     } catch (exportErr) {
       context.warn?.("buddy doc export failed", exportErr);
     }
+    const actionParse = parseBuddyActions(answer);
     const llm = providerStatus();
     return json(200, {
-      answer,
+      answer: actionParse.cleanAnswer || answer,
+      rawAnswer: answer,
+      actions: actionParse.actions,
+      htmlReport: actionParse.htmlReport,
+      suggestedPendingTask: suggestedPendingTask || null,
       ok: result.provider !== "error",
       model: result.model,
       deployment: llm.deployment || result.model || null,
@@ -2015,8 +2044,18 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         routerTools,
         routerConfidence: route.confidence,
         routerReasons: route.reasons,
+        routerRerouted: Boolean(clientDirectory.length),
         fetchPlan: intelligence?.fetchPlan || null,
+        contextFetchPlan: {
+          portfolio: routerHasTool(route, "portfolio"),
+          intelligence: intelligence?.fetchPlan || null,
+          legacy: routerHasTool(route, "legacy_anterior"),
+          pricing: routerHasTool(route, "pricing_scenarios"),
+          compare: routerHasTool(route, "study_compare"),
+          liveContext: routerHasTool(route, "live_context")
+        },
         portfolioSkipped: Boolean(portfolio?.skipped),
+        actionCount: actionParse.actions.length,
         attachmentCosmosCompareAsk,
         hasOkUpload,
         reconcileFollowUp: Boolean(body.reconcileFollowUp || route.reconcileFollowUp),

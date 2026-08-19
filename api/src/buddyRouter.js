@@ -15,7 +15,7 @@ const {
   extractYearFromQuestion,
   extractTherapeuticFilterFromQuestion
 } = require("./intelligence");
-const { wantsHtmlVisual, isLegacyTableAsk } = require("./legacyAnterior");
+const { wantsHtmlVisual, isLegacyTableAsk, isLegacyAnteriorQuestion, isLegacyOverviewQuestion, userConsentedLegacyEnrollment } = require("./legacyAnterior");
 const { wantsDocumentExport } = require("./buddyDocExport");
 
 function reconcileVerbInQuestion(question) {
@@ -290,6 +290,65 @@ function pickPrimaryIntent(ctx) {
   return "general";
 }
 
+function wantsLegacyAnteriorFetch(ctx) {
+  const { question, body = {}, history = [], compareAsk, workflow } = ctx;
+  if (compareAsk || workflow === "budget" || workflow === "teach") return false;
+  const legacyHint = body.legacyHint && typeof body.legacyHint === "object" ? body.legacyHint : {};
+  const legacyOverviewAsk = isLegacyOverviewQuestion(question);
+  const enrollmentConsent =
+    body.includeLegacyEnrollment === true ||
+    body.useLegacyEnrollment === true ||
+    userConsentedLegacyEnrollment(question, history) ||
+    isLegacyTableAsk(question) ||
+    legacyOverviewAsk ||
+    (wantsHtmlVisual(question) && isLegacyAnteriorQuestion(question));
+  return (
+    isLegacyAnteriorQuestion(question) ||
+    isLegacyTableAsk(question) ||
+    legacyOverviewAsk ||
+    Boolean(
+      legacyHint.siteName ||
+        legacyHint.studyName ||
+        legacyHint.siteId ||
+        legacyHint.studyId
+    ) ||
+    Boolean(body.legacyPack && body.legacyPack.source === "legacy_anterior_segment") ||
+    enrollmentConsent
+  );
+}
+
+function inferSuggestedPendingTask(ctx) {
+  const {
+    intent,
+    hasOkUpload,
+    reconcileFollowUp,
+    fillFollowUp,
+    docExportAsk,
+    visualAsk,
+    cosmosReconciliation
+  } = ctx;
+  if (cosmosReconciliation || reconcileFollowUp || intent === "reconcile") {
+    return { type: "reconcile", source: "router" };
+  }
+  if (fillFollowUp || intent === "fill_fields") {
+    return { type: "fill", source: "router" };
+  }
+  if (hasOkUpload && (intent === "analyze_attachment" || intent === "reconcile")) {
+    return { type: "analyze", source: "router" };
+  }
+  if (docExportAsk || (visualAsk && hasOkUpload)) {
+    return { type: "report", source: "router" };
+  }
+  if (
+    (intent === "budget" || ctx.pendingTask?.type === "hlbp") &&
+    ctx.buddyMode === "do" &&
+    (fillFollowUp || ctx.pendingTask?.type === "hlbp")
+  ) {
+    return { type: "hlbp", source: "router" };
+  }
+  return null;
+}
+
 function pickTools(ctx) {
   const {
     intent,
@@ -323,9 +382,17 @@ function pickTools(ctx) {
   if (workflow === "budget" || workflow === "hybrid" || isPricingQuestion(ctx.question)) {
     tools.add("pricing_scenarios");
   }
+  if (wantsLegacyAnteriorFetch(ctx)) tools.add("legacy_anterior");
   if (intent === "fill_fields" && buddyMode === "do") tools.add("study_apply");
   if (visualAsk || intent === "document_export") tools.add("html_export");
   if (workflow === "teach" || intent === "teach") tools.add("live_context");
+  if (
+    /\b(buddy context|live context|what(?:'s| is) (?:in|already in) (?:buddy|the) context|summarize (?:buddy )?context)\b/i.test(
+      String(ctx.question || "")
+    )
+  ) {
+    tools.add("live_context");
+  }
   if (moneyIntent === "public_company") tools.add("web_search");
 
   return [...tools];
@@ -499,7 +566,14 @@ function routeBuddyAsk(input) {
   };
 
   const intent = pickPrimaryIntent(routeCtx);
-  const tools = pickTools(routeCtx);
+  const tools = pickTools({ ...routeCtx, question, body, history, compareAsk, workflow });
+  const suggestedPendingTask = inferSuggestedPendingTask({
+    ...routeCtx,
+    intent,
+    reconcileFollowUp,
+    cosmosReconciliation,
+    pendingTask
+  });
 
   let confidence = "high";
   if (workflow === "auto" && intent === "general") confidence = "medium";
@@ -533,6 +607,7 @@ function routeBuddyAsk(input) {
     visualAsk,
     docExportAsk,
     pendingTask,
+    suggestedPendingTask,
     confidence,
     reasons: [...reasons, `intent=${intent}`, `tools=${tools.join(",")}`]
   };
@@ -546,5 +621,7 @@ module.exports = {
   inferMoneyIntent,
   isAttachmentCosmosCompareAsk,
   lastAssistantAskedForFill,
-  reconcileVerbInQuestion
+  reconcileVerbInQuestion,
+  inferSuggestedPendingTask,
+  wantsLegacyAnteriorFetch
 };

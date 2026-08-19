@@ -3039,20 +3039,38 @@
   function applyBuddyAnswer(raw, exports, opts = {}) {
     let text = String(raw || "").trim();
     const chatMode = !isBuddyDoMode();
-    const navMatch = text.match(/\bNAVIGATE:([a-z0-9_-]+)\b/i);
     let sectionId = null;
-    if (navMatch) {
-      sectionId = resolveSectionId(navMatch[1]);
-      text = text.replace(/\s*NAVIGATE:[a-z0-9_-]+\s*/gi, "\n").trim();
+    let report = { text, html: null };
+    let created = { text, create: null };
+    let learned = { text, learn: null };
+    let extracted = { text, patches: [] };
+
+    if (Array.isArray(opts.actions) && opts.actions.length) {
+      for (const act of opts.actions) {
+        if (!act || !act.type) continue;
+        if (act.type === "navigate" && act.sectionId) sectionId = act.sectionId;
+        if (act.type === "create_study" && act.payload) created = { text, create: act.payload };
+        if (act.type === "learn_context" && act.payload) learned = { text, learn: act.payload };
+        if (act.type === "apply_patches" && Array.isArray(act.patches)) {
+          extracted = { text, patches: normalizePatches(act.patches) };
+        }
+      }
+      if (opts.htmlReport) report = { text, html: opts.htmlReport };
+    } else {
+      const navMatch = text.match(/\bNAVIGATE:([a-z0-9_-]+)\b/i);
+      if (navMatch) {
+        sectionId = resolveSectionId(navMatch[1]);
+        text = text.replace(/\s*NAVIGATE:[a-z0-9_-]+\s*/gi, "\n").trim();
+      }
+      report = extractHtmlReport(text);
+      text = report.text;
+      created = extractCreateStudy(text);
+      text = created.text;
+      learned = extractLearnContext(text);
+      text = learned.text;
+      extracted = extractApplyPatches(text);
+      text = extracted.text;
     }
-    const report = extractHtmlReport(text);
-    text = report.text;
-    const created = extractCreateStudy(text);
-    text = created.text;
-    const learned = extractLearnContext(text);
-    text = learned.text;
-    const extracted = extractApplyPatches(text);
-    text = extracted.text;
     if (!text) {
       if (report.html) text = "Document ready — Open or Download below.";
       else if (created.create) text = "Proposed a new study — click Create study to open it.";
@@ -3894,7 +3912,14 @@
         );
         if (els.askStatus) els.askStatus.textContent = "Fast";
       } else if (data.answer) {
-        applyBuddyAnswer(data.answer, data.exports, { reconcileDone: Boolean(reconcileFollowUp) });
+        applyBuddyAnswer(data.answer, data.exports, {
+          reconcileDone: Boolean(reconcileFollowUp),
+          actions: data.actions,
+          htmlReport: data.htmlReport
+        });
+        if (data.suggestedPendingTask?.type) {
+          setBuddyPendingTask(data.suggestedPendingTask);
+        }
         persistBuddyHistory();
         paintBuddyModelLabel();
         if (Array.isArray(data.attachments) && data.attachments.some((a) => a && a.ok === false)) {
@@ -3914,6 +3939,8 @@
               : "Fast";
           const soft = data.provider === "error" || data.ok === false ? " · degraded" : "";
           const intentNote = data.buddyDebug?.routerIntent ? ` · ${data.buddyDebug.routerIntent}` : "";
+          const actionNote =
+            data.buddyDebug?.actionCount > 0 ? ` · ${data.buddyDebug.actionCount} action(s)` : "";
           const wfNote = data.workflow && data.workflow !== "auto" ? ` · ${data.workflow}` : "";
           const intelBits = [];
           if (data.intelligenceQuery?.indication) intelBits.push(data.intelligenceQuery.indication);
@@ -3922,13 +3949,13 @@
             ? ` · Intel${intelBits.length ? ` ${intelBits.join(" / ")}` : ""}`
             : "";
           if (data.answerFocus === "portfolio" && data.databaseStudyCount != null) {
-            els.askStatus.textContent = `${tierLabel}${intentNote}${intelNote} · Cosmos ${data.portfolioMatched ?? "?"} / ${data.databaseStudyCount}${wfNote}${soft}`;
+            els.askStatus.textContent = `${tierLabel}${intentNote}${actionNote}${intelNote} · Cosmos ${data.portfolioMatched ?? "?"} / ${data.databaseStudyCount}${wfNote}${soft}`;
           } else if (portfolioMode) {
-            els.askStatus.textContent = `${tierLabel}${intentNote}${intelNote}${wfNote}${soft}`;
+            els.askStatus.textContent = `${tierLabel}${intentNote}${actionNote}${intelNote}${wfNote}${soft}`;
           } else {
             els.askStatus.textContent = hasOpenStudy()
-              ? `${tierLabel}${intentNote}${intelNote} · ${state.study.studyId}${wfNote}${soft}`
-              : `${tierLabel}${intentNote}${intelNote}${wfNote}${soft}`;
+              ? `${tierLabel}${intentNote}${actionNote}${intelNote} · ${state.study.studyId}${wfNote}${soft}`
+              : `${tierLabel}${intentNote}${actionNote}${intelNote}${wfNote}${soft}`;
           }
         }
         state.buddyBusy = false;
