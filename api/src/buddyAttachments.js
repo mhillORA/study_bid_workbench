@@ -80,22 +80,34 @@ async function extractFromPdf(buffer) {
   } catch {
     throw new Error("PDF support not installed on API (pdf-parse)");
   }
+
+  let rawText = "";
   if (typeof pdfParseMod === "function") {
-    const data = await pdfParseMod(buffer);
-    return String(data?.text || "").slice(0, MAX_TEXT_CHARS);
-  }
-  if (pdfParseMod?.PDFParse) {
+    // max:0 disables the built-in page cap so we get all pages
+    const data = await pdfParseMod(buffer, { max: 0 });
+    rawText = String(data?.text || "");
+  } else if (pdfParseMod?.PDFParse) {
     const parser = new pdfParseMod.PDFParse({ data: buffer });
     try {
       const result = await parser.getText();
-      return String(result?.text || "").slice(0, MAX_TEXT_CHARS);
+      rawText = String(result?.text || "");
     } finally {
-      try {
-        await parser.destroy();
-      } catch (_) {}
+      try { await parser.destroy(); } catch (_) {}
     }
+  } else {
+    throw new Error("Unsupported pdf-parse API");
   }
-  throw new Error("Unsupported pdf-parse API");
+
+  const cleaned = rawText.replace(/\u0000/g, "").trim();
+  if (!cleaned) {
+    // Scanned / image-only PDFs produce no extractable text.
+    // Give the user an actionable error rather than a silent skip.
+    throw new Error(
+      "This PDF appears to be scanned or image-based — no selectable text was found. " +
+      "Please use a text-based PDF, or copy-paste the content as a .txt file."
+    );
+  }
+  return cleaned.slice(0, MAX_TEXT_CHARS);
 }
 
 async function extractFromDocx(buffer) {
