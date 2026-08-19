@@ -3573,7 +3573,13 @@
           content: String(t.content || "").slice(0, 4000)
         }));
       const askController = typeof AbortController !== "undefined" ? new AbortController() : null;
-      const askTimeoutMs = 110000;
+      // Keep the browser from being the limiting factor on long deep-dive asks.
+      // SWA/API infrastructure may still impose its own ceiling, but Buddy itself
+      // should not abort after ~110s when the model is still working.
+      const askTimeoutMs = Math.max(
+        110000,
+        Number(window.BUDDY_ASK_TIMEOUT_MS || document.body?.dataset?.buddyAskTimeoutMs || 900000) || 900000
+      );
       const askTimer = askController
         ? setTimeout(() => askController.abort(), askTimeoutMs)
         : null;
