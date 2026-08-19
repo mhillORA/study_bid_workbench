@@ -1576,6 +1576,12 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
     }
     if (!question) return json(400, { error: "question is required (or attach a file)" });
 
+    // True when the user wants Buddy to READ/ANALYZE the attached file — not to create a new doc from it.
+    // Used to suppress forceIntel and wantsHtmlVisual/wantsDocumentExport so an "analyze this HTML"
+    // ask doesn't pull a full Cosmos intel pack or force an unwanted HTML report output.
+    const attachmentAnalyzeVerb = hasOkUpload &&
+      /\b(analyze|analyse|review|read|summarize|summarise|what does|what'?s in|what is in|explain|extract|check|look at|go through|tell me about|describe|assess|evaluate)\b/i.test(question);
+
     const externalFeedAsk =
       isSourceOverviewQuestion(question) ||
       isTrialhubQuestion(question) ||
@@ -1792,8 +1798,8 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         !sourceOverviewAsk &&
         !salesforceAsk &&
         !catalogAsk &&
-        !wantsDocumentExport(question) &&
-        !wantsHtmlVisual(question) &&
+        (attachmentAnalyzeVerb || !wantsDocumentExport(question)) &&
+        (attachmentAnalyzeVerb || !wantsHtmlVisual(question)) &&
         !isPricingQuestion(question) &&
         !nctFromQuestion(question) &&
         !qIndication &&
@@ -1990,12 +1996,16 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       buddyLiveContext = { source: "error", error: String(err.message || err) };
     }
 
+    // When an attachment is being analyzed (not used as input to create a new doc),
+    // don't treat the ask as a visual/export request — that forces an HTML_REPORT
+    // the user didn't ask for and adds unnecessary model overhead.
     const visualAsk =
-      wantsHtmlVisual(question) ||
+      !attachmentAnalyzeVerb &&
+      (wantsHtmlVisual(question) ||
       wantsDocumentExport(question) ||
       (hasOkUpload &&
-        /\b(create|make|produce|build|generate|draft|export|write)\b/i.test(question));
-    const docExportAsk = wantsDocumentExport(question) || Boolean(visualAsk && hasOkUpload);
+        /\b(create|make|produce|build|generate|draft|export|write)\b/i.test(question)));
+    const docExportAsk = !attachmentAnalyzeVerb && (wantsDocumentExport(question) || Boolean(visualAsk && hasOkUpload));
     const openStudyId = body.studyId ? String(body.studyId).trim() : null;
     const modelTier = inferModelTier(question, body, buddyWorkflow);
     const contextPayload = {
