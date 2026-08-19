@@ -1212,7 +1212,9 @@ function formatCosmosFactsBlock(context) {
     }
   } else {
     lines.push(
-      "No indicationBenchmark in this response (often OK for portfolio/CT.gov-overview asks)."
+      intel.indicationMissing
+        ? "Indication not inferred from attachment — use trialhubOverview/veevaOverview below for generic verification, or ask user for indication."
+        : "No indicationBenchmark in this response (often OK for portfolio/CT.gov-overview asks)."
     );
   }
 
@@ -1572,7 +1574,11 @@ function contextJsonForModel(context) {
 
   // Prefer keeping indicationBenchmark if we must shrink — but NEVER drop feed overviews /
   // inventory / NCT / countrySites / trialhubStartedTrials (year lists).
-  if (ctx.intelligence?.indicationBenchmark || ctx.intelligence?.trialhubStartedTrials) {
+  if (
+    ctx.intelligence?.indicationBenchmark ||
+    ctx.intelligence?.trialhubStartedTrials ||
+    ctx.cosmosReconciliation
+  ) {
     const intel = ctx.intelligence;
     const bm = intel.indicationBenchmark;
     const trimOverview = (o, sampleKey = "recentSample") => {
@@ -2037,7 +2043,7 @@ async function askFoundryAgent({ question, context, history, tier = "deep", agen
         `Default TA = ophthalmology; sponsor = biopharma/device trial sponsors (not payers). Do not ask clarifying menus first.\n\n` +
         `CRITICAL: If ATTACHED DOCUMENTS appear below, READ THEM. If ORA COSMOS FACTS appear below, USE THOSE NUMBERS — never invent PSM/enrollment/site stats. Say missing when Cosmos fields are null.\n` +
         (context?.cosmosReconciliation
-          ? `CRITICAL: This is a COSMOS RECONCILIATION ask — compare document claims to ORA COSMOS FACTS. Do not say Cosmos was not queried if ORA COSMOS FACTS are present below.\n\n`
+          ? `CRITICAL: COSMOS RECONCILIATION — live Cosmos data IS in ORA COSMOS FACTS below when intelligenceAttached=true. Compare each document claim to those numbers. Never say you need an exported context pack or that Cosmos was not queried.\n\n`
           : "") +
         `${system}\n\n---\nPriority: ATTACHED DOCUMENTS (protocol/template) → ORA COSMOS FACTS (performance numbers) → Context JSON portfolio for Ora fees → web for public company facts only.\n---\n\n` +
         userBlock(question, context)

@@ -5,6 +5,7 @@ const { upsertCanonical, createManualStudy, saveStudyVersion, saveSectionPatch, 
 const { askAi, getStudyContext, providerStatus, inferModelTier } = require("./askClaude");
 const {
   buildIntelligenceContext,
+  buildReconciliationIntelContext,
   buildSiteScorecard,
   buildLegacyRecruitmentBoard,
   getIntelligenceHealth,
@@ -49,6 +50,12 @@ function nctFromQuestion(question) {
 function isAttachmentCosmosCompareAsk(question, hasOkUpload) {
   if (!hasOkUpload) return false;
   const q = String(question || "").toLowerCase();
+  // Any attachment + explicit Cosmos / Ora internal data cue
+  if (
+    /\b(cosmos|trialhub|ct\.?\s*gov|veeva|our data|internal data|ora data|ora intel|database)\b/.test(q)
+  ) {
+    return true;
+  }
   if (
     /\b(reconcil\w*|fact\s*check|fact[-\s]*check|verify|verification|validate|validation|confirm|accurate|accuracy)\b/.test(
       q
@@ -71,6 +78,14 @@ function isAttachmentCosmosCompareAsk(question, hasOkUpload) {
     return true;
   }
   return false;
+}
+
+function attachmentTextForIntel(uploaded, maxChars = 15000) {
+  return (uploaded.files || [])
+    .filter((f) => f.ok && f.text)
+    .map((f) => `${f.name || ""}\n${String(f.text || "")}`)
+    .join("\n\n")
+    .slice(0, maxChars);
 }
 
 function hasCopilotKey(request) {
@@ -1869,65 +1884,61 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
 
       if (forceIntel) {
         const rfpHint = extractRfpScenarioFromQuestion(question, body);
-        // When the user attached a doc and asked to analyze/verify/compare it
-        // against Ora internal data, we want the intel query filters
-        // (indication/country/therapeutic filters) to be derived from the attachment text too.
-        // buildIntelligenceContext extracts those filters from the "question" string.
-        let attachmentBlobForIntel = null;
-        if (hasOkUpload && (attachmentAnalyzeVerb || attachmentCosmosCompareAsk)) {
-          attachmentBlobForIntel = (uploaded.files || [])
-            .map((f) => `${f.name || ""}\n${String(f.text || "").slice(0, 4000)}`)
-            .join("\n");
-        }
+        const attachmentBlobForIntel = hasOkUpload
+          ? attachmentTextForIntel(uploaded, attachmentCosmosCompareAsk ? 15000 : 4000)
+          : null;
         const intelQuestion = attachmentBlobForIntel
           ? `${question}\n\n--- ATTACHED DOCUMENT TEXT (for extracting filters) ---\n${attachmentBlobForIntel}`
           : question;
 
         let indFromFiles = null;
         if (!indication && !rfpHint.indication && hasOkUpload && !sourceOverviewAsk) {
-          const blob = attachmentBlobForIntel
-            ? attachmentBlobForIntel
-            : (uploaded.files || [])
-                .map((f) => `${f.name || ""}\n${String(f.text || "").slice(0, 4000)}`)
-                .join("\n");
-          indFromFiles = extractIndicationFromQuestion(blob);
+          indFromFiles = extractIndicationFromQuestion(attachmentBlobForIntel || intelQuestion);
         }
-        const needsYearList =
-          Boolean(extractIntelYearFromQuestion(question)) ||
-          Boolean(extractTherapeuticFilterFromQuestion(question)) ||
-          isTrialhubQuestion(question);
-        // Year/TA TrialHub lists are heavy — allow longer (SWA gateway still ~45s total for the whole ask).
-        const intelTimeoutMs = Number(
-          process.env.BUDDY_INTEL_TIMEOUT_MS ||
-            (attachmentCosmosCompareAsk
-              ? 30000
-              : needsYearList
-                ? 38000
-                : modelTierEarly === "fast"
-                  ? 15000
-                  : 25000)
-        );
-        const intelPromise = buildIntelligenceContext(getDb, {
-          question: intelQuestion,
-          indication: rfpHint.indication || indication || indFromFiles,
-          country,
-          clientName: sourceOverviewAsk ? null : hints.clientName || snapClient || null,
-          sponsor: sourceOverviewAsk ? null : hints.clientName || snapClient || null,
-          force: true
-        });
-        intelligence = await Promise.race([
-          intelPromise,
-          new Promise((_, reject) =>
-            setTimeout(() => reject(new Error(`intelligence pack timed out after ${intelTimeoutMs}ms`)), intelTimeoutMs)
-          )
-        ]).catch((err) => ({
-          source: "ora_clinical_intelligence_error",
-          error: String(err.message || err),
-          note: "Skipped heavy intel pack so Buddy can still answer."
-        }));
+
+        if (attachmentCosmosCompareAsk) {
+          // Slim reconciliation query — full intel pack times out too often with attachments.
+          intelligence = await buildReconciliationIntelContext(getDb, {
+            question: intelQuestion,
+            indication: rfpHint.indication || indication || indFromFiles,
+            country,
+            attachmentText: attachmentBlobForIntel || "",
+            clientName: sourceOverviewAsk ? null : hints.clientName || snapClient || null,
+            sponsor: sourceOverviewAsk ? null : hints.clientName || snapClient || null
+          });
+        } else {
+          const needsYearList =
+            Boolean(extractIntelYearFromQuestion(question)) ||
+            Boolean(extractTherapeuticFilterFromQuestion(question)) ||
+            isTrialhubQuestion(question);
+          const intelTimeoutMs = Number(
+            process.env.BUDDY_INTEL_TIMEOUT_MS ||
+              (needsYearList ? 38000 : modelTierEarly === "fast" ? 15000 : 25000)
+          );
+          const intelPromise = buildIntelligenceContext(getDb, {
+            question: intelQuestion,
+            indication: rfpHint.indication || indication || indFromFiles,
+            country,
+            clientName: sourceOverviewAsk ? null : hints.clientName || snapClient || null,
+            sponsor: sourceOverviewAsk ? null : hints.clientName || snapClient || null,
+            force: true
+          });
+          intelligence = await Promise.race([
+            intelPromise,
+            new Promise((_, reject) =>
+              setTimeout(() => reject(new Error(`intelligence pack timed out after ${intelTimeoutMs}ms`)), intelTimeoutMs)
+            )
+          ]).catch((err) => ({
+            source: "ora_clinical_intelligence_error",
+            error: String(err.message || err),
+            note: "Skipped heavy intel pack so Buddy can still answer."
+          }));
+        }
+
         if (intelligence && !intelligence.error) {
-          intelligence.attachedFrom = "cosmos_query";
+          intelligence.attachedFrom = intelligence.attachedFrom || "cosmos_query";
           intelligence.note =
+            intelligence.note ||
             "Queried live from Cosmos (ora_fact_* / TrialHub / CT.gov). Not dependent on which Workbench tab is open. Prefer these numbers over invented benchmarks.";
         }
       }
@@ -2089,7 +2100,9 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         studyComparisonAttached: Boolean(studyComparison && !studyComparison.needIds && !studyComparison.error),
         databaseStudyCount: portfolio?.databaseStudyCount ?? null,
         matchedStudyCount: portfolio?.matchedStudyCount ?? null,
-        intelligenceAttached: Boolean(intelligence && intelligence.source === "ora_clinical_intelligence"),
+        intelligenceAttached: Boolean(
+          intelligence && intelligence.source === "ora_clinical_intelligence" && !intelligence.error
+        ),
         legacyAnteriorAttached: Boolean(legacyAnterior && legacyAnterior.source === "legacy_anterior_segment"),
         pricingScenariosAttached: Boolean(pricingScenarios && pricingScenarios.tiers),
         buddyLiveContextAttached: Boolean(buddyLiveContext && buddyLiveContext.text),
@@ -2272,10 +2285,23 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       })),
       portfolioMatched: portfolio?.matchedStudyCount ?? null,
       databaseStudyCount: portfolio?.databaseStudyCount ?? null,
-      intelligenceAttached: Boolean(intelligence && intelligence.source === "ora_clinical_intelligence"),
+      intelligenceAttached: Boolean(
+        intelligence && intelligence.source === "ora_clinical_intelligence" && !intelligence.error
+      ),
       intelligenceQuery: intelligence?.query || {
         indication: null,
         country: null
+      },
+      buddyDebug: {
+        attachmentCosmosCompareAsk,
+        hasOkUpload,
+        intelSource: intelligence?.source || null,
+        intelError: intelligence?.error || null,
+        intelIndication:
+          intelligence?.query?.indication ||
+          intelligence?.indicationBenchmark?.indicationRequested ||
+          null,
+        reconciliationPack: intelligence?.attachedFrom === "cosmos_reconciliation"
       },
       greetedAs: user?.firstName || user?.displayName || null
     });

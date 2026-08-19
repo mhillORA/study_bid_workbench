@@ -2110,6 +2110,77 @@ async function ctgovByIndication(database, indication, country = null) {
 }
 
 /**
+ * Slim live Cosmos pack for document verification / reconciliation.
+ * Pulls indication benchmark (+ CT.gov slice) without heavy overviews/SF/inventory
+ * that routinely timeout on attachment + analyze asks under SWA.
+ */
+async function buildReconciliationIntelContext(getDb, opts = {}) {
+  const {
+    question = "",
+    indication = null,
+    country = null,
+    attachmentText = "",
+    clientName = null,
+    sponsor = null
+  } = opts;
+
+  const database = getDb();
+  const started = Date.now();
+  const blob = `${String(question || "")}\n${String(attachmentText || "")}`;
+  const qInd = extractIndicationFromQuestion(blob);
+  const resolvedIndication = indication || qInd || null;
+  const resolvedCountries =
+    parseCountryFilter(country) ||
+    (() => {
+      const fromQ = extractCountryFromQuestion(blob);
+      return fromQ ? [fromQ] : null;
+    })();
+
+  const out = {
+    source: "ora_clinical_intelligence",
+    attachedFrom: "cosmos_reconciliation",
+    query: {
+      indication: resolvedIndication,
+      country: resolvedCountries ? resolvedCountries.join(", ") : null,
+      countries: resolvedCountries,
+      reconciliation: true
+    },
+    note:
+      "Live Cosmos reconciliation pack — compare each ATTACHED DOCUMENT claim to indicationBenchmark (Ora Veeva + TrialHub + sites). Do NOT say Cosmos was not queried when this block is present."
+  };
+
+  try {
+    if (resolvedIndication) {
+      out.indicationBenchmark = await benchmarkIndication(database, resolvedIndication, resolvedCountries, {});
+      out.ctgov = await ctgovByIndication(database, resolvedIndication, resolvedCountries);
+      if (out.ctgov && !out.ctgov.error) {
+        out.ctgov.countryRank = rankCountriesFromTrials(out.ctgov.sample || [], { limit: 8 });
+      }
+    } else {
+      out.indicationMissing = true;
+      out.note +=
+        " Could not infer indication from question/attachment — still use trialhubOverview/veevaOverview below for generic checks, or ask which indication to verify.";
+      out.trialhubOverview = await trialhubOverview(database, resolvedCountries);
+      out.veevaOverview = await veevaOverview(database);
+    }
+
+    const who = sponsor || clientName;
+    if (who) {
+      out.sponsorCrosswalk = await lookupSponsorCrosswalk(database, who);
+    }
+
+    out.elapsedMs = Date.now() - started;
+    return out;
+  } catch (err) {
+    return {
+      source: "ora_clinical_intelligence_error",
+      error: String(err.message || err),
+      elapsedMs: Date.now() - started
+    };
+  }
+}
+
+/**
  * Build a bounded intelligence context for Buddy.
  */
 async function buildIntelligenceContext(getDb, opts = {}) {
@@ -2725,6 +2796,7 @@ module.exports = {
   parseCountryFilter,
   getIntelligenceHealth,
   buildIntelligenceContext,
+  buildReconciliationIntelContext,
   buildSiteScorecard,
   buildLegacyRecruitmentBoard,
   benchmarkIndication,
