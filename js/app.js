@@ -3913,6 +3913,7 @@
                 : "Deep"
               : "Fast";
           const soft = data.provider === "error" || data.ok === false ? " · degraded" : "";
+          const intentNote = data.buddyDebug?.routerIntent ? ` · ${data.buddyDebug.routerIntent}` : "";
           const wfNote = data.workflow && data.workflow !== "auto" ? ` · ${data.workflow}` : "";
           const intelBits = [];
           if (data.intelligenceQuery?.indication) intelBits.push(data.intelligenceQuery.indication);

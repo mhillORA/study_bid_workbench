@@ -41,97 +41,11 @@ const {
 } = require("./rfpPricing");
 const { normalizeBuddyAttachments } = require("./buddyAttachments");
 const { buildBuddyDocExports, wantsDocumentExport } = require("./buddyDocExport");
+const { routeBuddyAsk, isCompareTwoStudiesQuestion, isCrossStudyQuestion } = require("./buddyRouter");
 
 function nctFromQuestion(question) {
   const m = String(question || "").match(/\b(NCT\d{8})\b/i);
   return m ? m[1].toUpperCase() : null;
-}
-
-function reconcileVerbInQuestion(question) {
-  const q = String(question || "").toLowerCase();
-  if (
-    /\b(reconcil\w*|fact\s*check|fact[-\s]*check|verify|verification|validate|validation|confirm|accurate|accuracy)\b/.test(
-      q
-    )
-  ) {
-    return true;
-  }
-  if (
-    /\b(compare|comparison|contrast|cross[-\s]?check|match|check against|benchmark against)\b/.test(q) &&
-    /\b(cosmos|ora|our data|internal data|database|trialhub|ct\.?\s*gov|veeva|benchmark|intelligence|intel)\b/.test(
-      q
-    )
-  ) {
-    return true;
-  }
-  if (/\bagainst\s+(our\s+)?(data|cosmos|ora|database|benchmarks?|internal)\b/.test(q)) {
-    return true;
-  }
-  if (/\b(cosmos|ora)\s+(reconcil\w*|data|intel|intelligence|benchmarks?)\b/.test(q)) {
-    return true;
-  }
-  return false;
-}
-
-function assistantAskedToReconcile(history) {
-  const turns = Array.isArray(history) ? history : [];
-  for (let i = turns.length - 1; i >= 0; i--) {
-    if (String(turns[i]?.role || "").toLowerCase() !== "assistant") continue;
-    const t = String(turns[i].content || "").toLowerCase();
-    if (
-      /\breconcil\w*\b/.test(t) &&
-      /\b(cosmos|ora|our data|database|trialhub|ct\.?\s*gov|intel|intelligence|benchmark)\b/.test(t)
-    ) {
-      return true;
-    }
-    if (
-      /\b(verify|fact[-\s]?check|cross[-\s]?check|compare)\b/.test(t) &&
-      /\b(cosmos|ora|attachment|document|upload|our data|database)\b/.test(t)
-    ) {
-      return true;
-    }
-    if (/\b(say|reply|type|send)\b.{0,40}\b(reconcil\w*|verify)\b/.test(t)) {
-      return true;
-    }
-    return false;
-  }
-  return false;
-}
-
-function historyHasAttachmentCue(history) {
-  const turns = Array.isArray(history) ? history : [];
-  for (let i = turns.length - 1; i >= 0; i--) {
-    if (String(turns[i]?.role || "").toLowerCase() !== "user") continue;
-    const t = String(turns[i].content || "");
-    if (/\n\n📎\s/.test(t) || /\battached file/i.test(t)) return true;
-  }
-  return false;
-}
-
-/** User wants claims checked against live Ora Cosmos intel (with or without a new upload). */
-function isAttachmentCosmosCompareAsk(question, hasOkUpload, history, body) {
-  const q = String(question || "").toLowerCase();
-  const reconcileVerb = reconcileVerbInQuestion(question);
-  const priorAttachments = Array.isArray(body?.priorAttachments) && body.priorAttachments.length > 0;
-  const reconcileFollowUp =
-    body?.reconcileFollowUp === true ||
-    body?.pendingTask?.type === "reconcile" ||
-    (reconcileVerb &&
-      !hasOkUpload &&
-      (priorAttachments || assistantAskedToReconcile(history) || historyHasAttachmentCue(history)));
-
-  if (reconcileFollowUp) return true;
-
-  if (!hasOkUpload) return false;
-
-  // Any attachment + explicit Cosmos / Ora internal data cue
-  if (
-    /\b(cosmos|trialhub|ct\.?\s*gov|veeva|our data|internal data|ora data|ora intel|database)\b/.test(q)
-  ) {
-    return true;
-  }
-  if (reconcileVerb) return true;
-  return false;
 }
 
 function attachmentTextForIntel(uploaded, maxChars = 15000) {
@@ -193,26 +107,6 @@ function normalizeAskedStudyId(id) {
   if (/^\d{4,6}$/.test(s)) return `O-${s.padStart(5, "0")}`;
   if (/^O\d{4,6}$/i.test(s)) return `O-${s.slice(1).padStart(5, "0")}`;
   return s;
-}
-
-/** Two named/selected bids — not portfolio rollup, not Ora-vs-industry. */
-function isCompareTwoStudiesQuestion(question, body = {}) {
-  if (Array.isArray(body.compareStudyIds) && body.compareStudyIds.filter(Boolean).length >= 2) {
-    return true;
-  }
-  if (body.compareMode === true) return true;
-  const q = String(question || "").toLowerCase();
-  if (!q) return false;
-  if (/\b(ora\s+vs\.?\s+industry|vs\.?\s+industry|industry\s+psm)\b/.test(q)) return false;
-  const twoIds = extractStudyIdsFromText(question).length >= 2;
-  return (
-    /\b(these two studies|two studies|both studies)\b/.test(q) ||
-    (/\bwhat(?:'s|s| is) different\b/.test(q) && (/\bstud/.test(q) || twoIds)) ||
-    /\b(differences? between|differ from|how (?:do they|does this) differ)\b/.test(q) ||
-    /\bcompare\b.{0,60}\bstud(y|ies)\b/.test(q) ||
-    /\bthis (?:study|one)\b.{0,50}\b(vs\.?|versus|compared to|different from)\b/.test(q) ||
-    (twoIds && /\b(compar|differ|vs\.?|versus|delta)\b/.test(q))
-  );
 }
 
 function resolveComparePair(question, body, portfolio) {
@@ -363,32 +257,6 @@ function slimStudyComparison(diff) {
   };
 }
 
-/** Infer studyId / client / year from the question + known client list. */
-function isCrossStudyQuestion(question) {
-  const q = String(question || "").toLowerCase();
-  if (!q) return false;
-  if (isCompareTwoStudiesQuestion(question)) return false;
-  // Explicit multi-study / portfolio intent
-  // NOTE: RFP/ballpark/pricing alone is NOT cross-study — keep the open study for "this protocol" asks.
-  if (
-    /\b(all studies|across (all )?studies|every study|entire portfolio|whole portfolio|portfolio)\b/.test(q) ||
-    /\b(across|among|between)\b.{0,40}\bstudies\b/.test(q) ||
-    /\b(how many studies|which study|which studies|largest study|biggest study|most expensive|highest budget)\b/.test(q) ||
-    /\b(largest|biggest|highest|top)\b.{0,40}\b(budget|fee|enrollment|study|studies|client|sponsor)\b/.test(q) ||
-    /\b(average|avg|mean|median|total|sum|rollup)\b.{0,60}\b(across|all|every|portfolio|studies)\b/.test(q) ||
-    /\b(enroll|patient|subject|budget|fee).{0,40}\b(across|all studies|every study)\b/.test(q) ||
-    /\bstudies\b.{0,40}\b(last year|this year|in 20\d{2}|overall|combined)\b/.test(q) ||
-    /\b(client|sponsor)\s+concentration\b/.test(q) ||
-    /\b(rank|ranking|leaderboard)\b.{0,40}\b(client|sponsor|fees?|revenue)\b/.test(q) ||
-    /\b(by\s+year|year\s+over\s+year|yoy|ingest(?:ion)?\s+freshness|what(?:'s| is) in (?:the )?(?:db|database|cosmos))\b/.test(
-      q
-    )
-  ) {
-    return true;
-  }
-  return false;
-}
-
 /** True when the user clearly asked about a named client/sponsor (not a soft substring hit). */
 function hasExplicitClientCue(question) {
   const q = String(question || "");
@@ -479,105 +347,6 @@ function inferAskHints(question, body, clientNames) {
   }
 
   return { studyId, clientName, year, crossStudy };
-}
-
-/** Ora earned fees (portfolio) vs sponsor corporate revenue (web). */
-function inferMoneyIntent(question) {
-  const q = String(question || "").toLowerCase();
-  if (!q) return null;
-  const publicCue =
-    /\b(their|company|corporate|market\s*cap|10-?k|sec\s*filing|biggest\s+pharma|largest\s+(pharma|biotech)|public(ly)?\s+trad|wall\s*street)\b/.test(
-      q
-    );
-  const oraCue =
-    /\b(we(?:'ve| have)?\s+(?:made|earned|billed|won)|our\s+(?:revenue|fees|billings)|how much (?:we|we've|ora)|ora(?:'s)?\s+(?:revenue|fees)|made off|rank(?:ed)? by (?:revenue|fees|dollars)|by (?:revenue|fees).{0,40}(?:client|sponsor|stud)|(?:client|sponsor)s?.{0,40}by (?:revenue|fees)|studies?\s+(?:we(?:'ve| have)?\s+)?(?:run|done|worked).{0,80}(?:revenue|fees)|(?:revenue|fees).{0,80}studies?\s+(?:with|we|we've))\b/.test(
-      q
-    ) ||
-    (/\b(revenue|fees|billings|dollars|spend|billed)\b/.test(q) &&
-      /\b(studies?|clients?|sponsors?|portfolio|by client|each|concentration|rank)\b/.test(q) &&
-      !publicCue) ||
-    (/\b(top|biggest|largest|rank(?:ed)?|concentration)\b.{0,40}\b(client|sponsor)s?\b/.test(q) &&
-      /\b(revenue|fees|dollars|billings|money|spend|paid|pay)\b/.test(q) &&
-      !publicCue) ||
-    /\b(who\s+pays\s+us|pays?\s+us\s+the\s+most|client\s+concentration)\b/.test(q);
-  if (oraCue && !publicCue) return "ora_earned";
-  if (publicCue) return "public_company";
-  return null;
-}
-
-/**
- * Two primary Buddy workflows (+ teach for live context).
- * body.buddyWorkflow wins when set (budget | feasibility | teach | auto).
- */
-function inferBuddyWorkflow(question, body = {}) {
-  const forced = String(body.buddyWorkflow || body.workflow || "")
-    .toLowerCase()
-    .trim();
-  if (forced === "budget" || forced === "feasibility" || forced === "teach") return forced;
-
-  const q = String(question || "").toLowerCase();
-  if (!q) return "auto";
-
-  if (
-    /^(remember|learn|save(?:\s+this|\s+that)?|add to (?:buddy )?context|teach buddy)\b/i.test(q) ||
-    /\b(remember this|learn this|save (?:this|that) (?:to|for) (?:buddy )?context|add to (?:the )?playbook|keep this in (?:buddy )?context)\b/i.test(
-      q
-    )
-  ) {
-    return "teach";
-  }
-
-  const feasCue =
-    isIntelligenceQuestion(question) ||
-    /\b(feasib|psm|patients?\s*per\s*site|site (?:mix|slate|selection|performance)|competing trials?|trialhub|ct\.?\s*gov|scorecard|enrollment rate|recruit(?:ment)? rate|win themes?)\b/i.test(
-      q
-    );
-
-  const budgetCue =
-    isPricingQuestion(question) ||
-    /\b(hlbp|ballpark|budget|quote|rfp|pricing|internal budget|service fees?|pass[- ]?through|line items?|drivers?|grand total|opportunity)\b/i.test(
-      q
-    ) ||
-    /\b(create|new)\s+(study|draft|opportunity|hlbp)\b/i.test(q) ||
-    /\b(set|fill|change|update|apply)\b.{0,50}\b(enrolled|screened|core sites|enrollment months|driver|field|notes)\b/i.test(
-      q
-    );
-
-  if (feasCue && !budgetCue) return "feasibility";
-  if (budgetCue && !feasCue) return "budget";
-  if (feasCue && budgetCue) {
-    const hasFeasTerms = /\b(feasib|psm|site slate|competing|trialhub|scorecard|win themes?|enrollment rate)\b/i.test(
-      q
-    );
-    const hasBudgetTerms = /\b(budget|hlbp|ballpark|pricing|rfp|quote|service fees?|internal budget|grand total)\b/i.test(
-      q
-    );
-    if (hasFeasTerms && hasBudgetTerms) return "hybrid";
-    if (/\b(feasib|psm|site slate|competing|trialhub|scorecard|win themes?)\b/i.test(q)) {
-      return "feasibility";
-    }
-    if (/\b(budget|hlbp|ballpark|pricing|rfp|quote|service fees?|internal budget)\b/i.test(q)) {
-      return "budget";
-    }
-  }
-  return "auto";
-}
-
-function lastAssistantAskedForFill(history) {
-  const turns = Array.isArray(history) ? history : [];
-  for (let i = turns.length - 1; i >= 0; i--) {
-    if (String(turns[i]?.role || "").toLowerCase() !== "assistant") continue;
-    const t = String(turns[i].content || "").toLowerCase();
-    return (
-      /\bwhat i need\b/.test(t) ||
-      /\bi will autofill\b/.test(t) ||
-      /\bi will fill\b/.test(t) ||
-      /\bi(?:'|’)ll fill\b/.test(t) ||
-      /\bstill need/.test(t) ||
-      /\b(give me|send me|tell me)\b.{0,80}\b(client|sponsor|indication|phase|enrolled|details|info)\b/.test(t)
-    );
-  }
-  return false;
 }
 
 function claimMap(claims) {
@@ -1689,40 +1458,20 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
     }
     if (!question) return json(400, { error: "question is required (or attach a file)" });
 
-    // True when the user wants Buddy to READ/ANALYZE the attached file — not to create a new doc from it.
-    // Used to suppress forceIntel and wantsHtmlVisual/wantsDocumentExport so an "analyze this HTML"
-    // ask doesn't pull a full Cosmos intel pack or force an unwanted HTML report output.
-    const attachmentAnalyzeVerb = hasOkUpload &&
-      /\b(analyze|analyse|review|read|summarize|summarise|what does|what'?s in|what is in|explain|extract|check|look at|go through|tell me about|describe|assess|evaluate)\b/i.test(question);
-
-    // User wants to verify/compare attachment claims against live Ora Cosmos data.
-    const attachmentCosmosCompareAsk = isAttachmentCosmosCompareAsk(question, hasOkUpload, history, body);
-
-    const externalFeedAsk =
-      isSourceOverviewQuestion(question) ||
-      isTrialhubQuestion(question) ||
-      isCtgovQuestion(question) ||
-      isVeevaQuestion(question);
-    const catalogAskEarly =
-      /\b(what(?:'s| is) in (?:the )?(?:db|database|cosmos)|data\s+catalog|container\s+counts?|ingest(?:ion)?\s+freshness|how many (?:trials|studies|sites) (?:in|does) (?:cosmos|the db|the database))\b/i.test(
-        question
-      );
-    const buddyWorkflowEarly = inferBuddyWorkflow(question, body);
-    const moneyIntentEarly = inferMoneyIntent(question);
-    const modelTierEarly = inferModelTier(question, body, buddyWorkflowEarly);
-    const skipHeavyPortfolio =
-      buddyWorkflowEarly === "teach" ||
-      modelTierEarly === "fast" ||
-      ((externalFeedAsk || catalogAskEarly) &&
-        buddyWorkflowEarly !== "budget" &&
-        !isPricingQuestion(question) &&
-        moneyIntentEarly !== "ora_earned" &&
-        !/\b(portfolio|budget|fee|revenue|hlbp|ballpark|bid|pricing)\b/i.test(question));
+    const routeEarly = routeBuddyAsk({ question, body, history, hasOkUpload });
+    const skipHeavyPortfolio = routeEarly.skipHeavyPortfolio;
+    const externalFeedAsk = routeEarly.externalFeedAsk;
+    const moneyIntentEarly = routeEarly.moneyIntent;
 
     // Skip full portfolio on fast tier / feed asks — SWA gateway ~45s; 500s are usually timeouts.
     let portfolioFull = null;
     let clientDirectory = [];
-    if (skipHeavyPortfolio && moneyIntentEarly !== "ora_earned" && buddyWorkflowEarly !== "budget" && buddyWorkflowEarly !== "hybrid") {
+    if (
+      skipHeavyPortfolio &&
+      moneyIntentEarly !== "ora_earned" &&
+      routeEarly.workflow !== "budget" &&
+      routeEarly.workflow !== "hybrid"
+    ) {
       portfolioFull = {
         source: "cosmos_portfolio_skipped",
         skipped: true,
@@ -1754,54 +1503,40 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
     ) {
       hints.clientName = null;
     }
-    const moneyIntent = inferMoneyIntent(question);
-    const buddyWorkflow = inferBuddyWorkflow(question, body);
-    const buddyMode = String(body.buddyMode || "chat").toLowerCase() === "do" ? "do" : "chat";
+
+    const route = routeBuddyAsk({ question, body, history, hasOkUpload, hints });
+    const {
+      intent: routerIntent,
+      tools: routerTools,
+      depth: routerDepth,
+      workflow: buddyWorkflow,
+      moneyIntent,
+      buddyMode,
+      answerFocus,
+      studyId,
+      forcePortfolio,
+      crossStudy,
+      compareAsk,
+      cosmosReconciliation: attachmentCosmosCompareAsk,
+      attachmentAnalyzeVerb,
+      attachmentDriven,
+      fillFollowUp,
+      needsFullIntel,
+      visualAsk,
+      docExportAsk
+    } = route;
+
     // Ora-earned fee rankings are always portfolio-scope (even with a study open)
     if (moneyIntent === "ora_earned") {
       hints.crossStudy = true;
       hints.studyId = hints.studyId && /\b(O-\d{3,})\b/i.test(question) ? hints.studyId : null;
     }
-    // noStudy / empty selection = portfolio only — EXCEPT when the user attached docs
-    // (otherwise Buddy ignores the file and dumps a portfolio overview).
-    // body.portfolio=true only means "attach portfolio data" — not force focus.
-    const attachmentDriven = hasOkUpload;
-    const compareAsk = isCompareTwoStudiesQuestion(question, body);
-    const forcePortfolio =
-      !compareAsk &&
-      buddyWorkflow !== "teach" &&
-      buddyWorkflow !== "feasibility" &&
-      !attachmentDriven &&
-      (body.noStudy === true ||
-        Boolean(hints.crossStudy) ||
-        moneyIntent === "ora_earned" ||
-        (!body.studyId && !body.studySnapshot));
-    const studyId = forcePortfolio
-      ? (String(question).match(/\b(O-\d{3,})\b/i) || [])[1] || null
-      : hints.studyId;
-    const crossStudy = !compareAsk && !attachmentDriven && (Boolean(hints.crossStudy) || forcePortfolio);
+
     const user = signedInUserFromRequest(request, body.user || null);
     const activeTab = body.activeTab ? String(body.activeTab) : null;
     const activeTabLabel = body.activeTabLabel ? String(body.activeTabLabel) : null;
     const editableFields = Array.isArray(body.editableFields) ? body.editableFields : null;
     const fieldsByTab = body.fieldsByTab && typeof body.fieldsByTab === "object" ? body.fieldsByTab : null;
-
-    const answerFocus =
-      compareAsk
-        ? "compare"
-        : buddyWorkflow === "teach"
-          ? "teach"
-          : buddyWorkflow === "feasibility"
-            ? "feasibility"
-            : attachmentDriven
-              ? studyId || body.studySnapshot
-                ? "single_study"
-                : "attachments"
-              : forcePortfolio || crossStudy
-                ? "portfolio"
-                : studyId || body.studySnapshot
-                  ? "single_study"
-                  : "portfolio";
 
     // Browser working copy only for single-study questions
     const clientStudy = answerFocus === "portfolio" ? null : body.studySnapshot || null;
@@ -1919,21 +1654,6 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       const resolvedCountry =
         qCountry || (sourceOverviewAsk && !qCountry ? null : hintCountry) || null;
 
-      const needsFullIntel =
-        sourceOverviewAsk ||
-        salesforceAsk ||
-        catalogAsk ||
-        isIntelligenceQuestion(question) ||
-        wantsDocumentExport(question) ||
-        wantsHtmlVisual(question) ||
-        isPricingQuestion(question) ||
-        Boolean(nctFromQuestion(question)) ||
-        Boolean(extractIntelYearFromQuestion(question)) ||
-        Boolean(extractTherapeuticFilterFromQuestion(question)) ||
-        isTrialhubQuestion(question) ||
-        buddyWorkflow === "feasibility" ||
-        buddyWorkflow === "hybrid";
-
       const intelBase = {
         question: intelQuestion,
         indication: resolvedIndication,
@@ -1952,7 +1672,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
           isTrialhubQuestion(question);
         const intelTimeoutMs = Number(
           process.env.BUDDY_INTEL_TIMEOUT_MS ||
-            (needsYearList ? 38000 : modelTierEarly === "fast" ? 20000 : 30000)
+            (needsYearList ? 38000 : routerDepth === "fast" ? 20000 : 30000)
         );
         const intelPromise = buildIntelligenceContext(getDb, { ...intelBase, force: true });
         intelligence = await Promise.race([
@@ -2105,24 +1825,21 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       buddyLiveContext = { source: "error", error: String(err.message || err) };
     }
 
-    // When an attachment is being analyzed (not used as input to create a new doc),
-    // don't treat the ask as a visual/export request — that forces an HTML_REPORT
-    // the user didn't ask for and adds unnecessary model overhead.
-    const visualAsk =
-      !attachmentAnalyzeVerb &&
-      (wantsHtmlVisual(question) ||
-      wantsDocumentExport(question) ||
-      (hasOkUpload &&
-        /\b(create|make|produce|build|generate|draft|export|write)\b/i.test(question)));
-    const docExportAsk = !attachmentAnalyzeVerb && (wantsDocumentExport(question) || Boolean(visualAsk && hasOkUpload));
     const openStudyId = body.studyId ? String(body.studyId).trim() : null;
-    const modelTier = inferModelTier(question, body, buddyWorkflow);
+    const modelTier = routerDepth;
     const contextPayload = {
       askedAt: new Date().toISOString(),
       source: requireCopilotKey ? "copilot_studio" : "workbench",
       modelTier,
       buddyMode,
       pendingTask: body.pendingTask && body.pendingTask.type ? body.pendingTask : null,
+      router: {
+        intent: routerIntent,
+        tools: routerTools,
+        depth: routerDepth,
+        confidence: route.confidence,
+        reasons: route.reasons
+      },
       workflow: attachmentCosmosCompareAsk ? "feasibility" : buddyWorkflow,
       cosmosLiveQuery: true,
       cosmosReconciliation: attachmentCosmosCompareAsk,
@@ -2145,10 +1862,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       moneyIntent,
       wantsHtmlVisual: visualAsk,
       wantsDocumentExport: docExportAsk,
-      fillFollowUp:
-        buddyMode === "do" &&
-        !attachmentCosmosCompareAsk &&
-        (Boolean(body.fillFollowUp) || lastAssistantAskedForFill(history)),
+      fillFollowUp,
       dataSources: {
         cosmosPortfolioQueried: Boolean(!compareAsk && portfolio && portfolio.source === "cosmos_portfolio"),
         studyComparisonAttached: Boolean(studyComparison && !studyComparison.needIds && !studyComparison.error),
@@ -2347,9 +2061,13 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         country: null
       },
       buddyDebug: {
+        routerIntent,
+        routerTools,
+        routerConfidence: route.confidence,
+        routerReasons: route.reasons,
         attachmentCosmosCompareAsk,
         hasOkUpload,
-        reconcileFollowUp: Boolean(body.reconcileFollowUp),
+        reconcileFollowUp: Boolean(body.reconcileFollowUp || route.reconcileFollowUp),
         buddyMode,
         pendingTaskType: body.pendingTask?.type || null,
         priorAttachmentsReplayed: Boolean(

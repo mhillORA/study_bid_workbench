@@ -322,6 +322,9 @@ function systemPromptFor(context) {
   const pendingTaskNote = context?.pendingTask?.type
     ? ` Pending task: ${context.pendingTask.type} — user may be continuing it (e.g. say reconcile/yes for reconcile, or provide missing fields for fill).`
     : "";
+  const routerNote = context?.router?.intent
+    ? ` Router intent=${context.router.intent} (confidence=${context.router.confidence || "high"}); planned tools: ${(context.router.tools || []).join(", ")}. Follow this intent — do not pivot to unrelated workflows.`
+    : "";
   const focusNote =
     focus === "compare"
       ? " CRITICAL: answerFocus=compare — use context.studyComparison / STUDY COMPARISON facts. Left vs Right by studyId. Do NOT use portfolio averages. If needIds, ask for two O-ids or two checkboxes on Studies."
@@ -421,7 +424,7 @@ function systemPromptFor(context) {
     : "";
   const user = context?.user;
   if (!user?.firstName && !user?.displayName && !user?.email) {
-    return base + protocols + workflowNote + modeNote + pendingTaskNote + focusNote + moneyNote + intelNote + planNote + visualNote + docNote + fillNote + reconcileNote + liveNote + legacyNote + modelNote;
+    return base + protocols + workflowNote + modeNote + pendingTaskNote + routerNote + focusNote + moneyNote + intelNote + planNote + visualNote + docNote + fillNote + reconcileNote + liveNote + legacyNote + modelNote;
   }
   const label = user.firstName
     ? `${user.firstName}${user.email ? ` (${user.email})` : ""}`
@@ -432,6 +435,7 @@ function systemPromptFor(context) {
     workflowNote +
     modeNote +
     pendingTaskNote +
+    routerNote +
     focusNote +
     moneyNote +
     intelNote +
