@@ -648,6 +648,12 @@ function inferModelTier(question, body = {}, workflow = "auto") {
     /* keep fast */
   }
 
+  // Any attachment: go straight to Deep to avoid Fast→escalate double round-trip.
+  // Two model hops under SWA's ~45s gateway is the #1 timeout cause for doc crawl asks.
+  if (Array.isArray(body?.attachments) && body.attachments.length > 0) {
+    return "deep";
+  }
+
   // Everything else starts fast — escalate judges after the mini answer
   if (workflow === "teach") return "fast";
   return "fast";

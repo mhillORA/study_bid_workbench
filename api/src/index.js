@@ -1782,8 +1782,27 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       // Only use open-study / tab hint filters when the ask itself is intel-shaped.
       // Never force a full intel Cosmos pull just because Dry Eye (etc.) is open in the UI —
       // that was timing out Buddy asks (500s) on remember/ops/field-fill questions.
+      //
+      // hasOkUpload alone is NOT a reason to pull a Cosmos intel pack — that double-loads
+      // the payload (file text + intel) and reliably times out the SWA ~45s gateway.
+      // Only pull intel when the question itself has a feasibility / indication / TA cue.
+      const uploadOnlyAsk =
+        hasOkUpload &&
+        !isIntelligenceQuestion(question) &&
+        !sourceOverviewAsk &&
+        !salesforceAsk &&
+        !catalogAsk &&
+        !wantsDocumentExport(question) &&
+        !wantsHtmlVisual(question) &&
+        !isPricingQuestion(question) &&
+        !nctFromQuestion(question) &&
+        !qIndication &&
+        !qCountry &&
+        !extractIntelYearFromQuestion(question) &&
+        !extractTherapeuticFilterFromQuestion(question);
       const forceIntel =
         !compareAsk &&
+        !uploadOnlyAsk &&
         (buddyWorkflow === "feasibility" ||
         (buddyWorkflow !== "budget" &&
           buddyWorkflow !== "teach" &&
