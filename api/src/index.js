@@ -1845,11 +1845,27 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
 
       if (forceIntel) {
         const rfpHint = extractRfpScenarioFromQuestion(question, body);
-        let indFromFiles = null;
-        if (!indication && !rfpHint.indication && hasOkUpload && !sourceOverviewAsk) {
-          const blob = (uploaded.files || [])
+        // When the user attached a doc and asked to analyze/verify/compare it
+        // against Ora internal data, we want the intel query filters
+        // (indication/country/therapeutic filters) to be derived from the attachment text too.
+        // buildIntelligenceContext extracts those filters from the "question" string.
+        let attachmentBlobForIntel = null;
+        if (hasOkUpload && (attachmentAnalyzeVerb || attachmentVerificationAsk)) {
+          attachmentBlobForIntel = (uploaded.files || [])
             .map((f) => `${f.name || ""}\n${String(f.text || "").slice(0, 4000)}`)
             .join("\n");
+        }
+        const intelQuestion = attachmentBlobForIntel
+          ? `${question}\n\n--- ATTACHED DOCUMENT TEXT (for extracting filters) ---\n${attachmentBlobForIntel}`
+          : question;
+
+        let indFromFiles = null;
+        if (!indication && !rfpHint.indication && hasOkUpload && !sourceOverviewAsk) {
+          const blob = attachmentBlobForIntel
+            ? attachmentBlobForIntel
+            : (uploaded.files || [])
+                .map((f) => `${f.name || ""}\n${String(f.text || "").slice(0, 4000)}`)
+                .join("\n");
           indFromFiles = extractIndicationFromQuestion(blob);
         }
         const needsYearList =
@@ -1862,7 +1878,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
             (needsYearList ? 38000 : modelTierEarly === "fast" ? 15000 : 25000)
         );
         const intelPromise = buildIntelligenceContext(getDb, {
-          question,
+          question: intelQuestion,
           indication: rfpHint.indication || indication || indFromFiles,
           country,
           clientName: sourceOverviewAsk ? null : hints.clientName || snapClient || null,
