@@ -2181,6 +2181,78 @@ async function buildReconciliationIntelContext(getDb, opts = {}) {
 }
 
 /**
+ * Default live Cosmos pack — attached on EVERY Buddy turn.
+ * If indication is known, delegates to the slim reconciliation pack.
+ * Otherwise returns inventory + feed overviews so the model never claims DB is missing.
+ */
+async function buildDefaultBuddyIntelContext(getDb, opts = {}) {
+  const {
+    question = "",
+    indication = null,
+    country = null,
+    attachmentText = "",
+    clientName = null,
+    sponsor = null
+  } = opts;
+
+  const blob = `${String(question || "")}\n${String(attachmentText || "")}`;
+  const resolvedIndication = indication || extractIndicationFromQuestion(blob) || null;
+
+  if (resolvedIndication) {
+    return buildReconciliationIntelContext(getDb, {
+      ...opts,
+      indication: resolvedIndication,
+      attachmentText
+    });
+  }
+
+  const database = getDb();
+  const started = Date.now();
+  const resolvedCountries =
+    parseCountryFilter(country) ||
+    (() => {
+      const fromQ = extractCountryFromQuestion(blob);
+      return fromQ ? [fromQ] : null;
+    })();
+
+  try {
+    const [inventory, veevaPack, trialhubPack] = await Promise.all([
+      getIntelligenceHealth(getDb),
+      veevaOverview(database),
+      trialhubOverview(database, resolvedCountries)
+    ]);
+
+    const out = {
+      source: "ora_clinical_intelligence",
+      attachedFrom: "cosmos_default",
+      query: {
+        indication: null,
+        country: resolvedCountries ? resolvedCountries.join(", ") : null,
+        defaultPack: true
+      },
+      inventory,
+      veevaOverview: veevaPack,
+      trialhubOverview: trialhubPack,
+      note:
+        "Live Cosmos default pack — DB was queried on this turn. Use inventory counts and overviews. Never say Cosmos/DB was not present in context.",
+      elapsedMs: Date.now() - started
+    };
+
+    const who = sponsor || clientName;
+    if (who) {
+      out.sponsorCrosswalk = await lookupSponsorCrosswalk(database, who);
+    }
+    return out;
+  } catch (err) {
+    return {
+      source: "ora_clinical_intelligence_error",
+      error: String(err.message || err),
+      elapsedMs: Date.now() - started
+    };
+  }
+}
+
+/**
  * Build a bounded intelligence context for Buddy.
  */
 async function buildIntelligenceContext(getDb, opts = {}) {
@@ -2797,6 +2869,7 @@ module.exports = {
   getIntelligenceHealth,
   buildIntelligenceContext,
   buildReconciliationIntelContext,
+  buildDefaultBuddyIntelContext,
   buildSiteScorecard,
   buildLegacyRecruitmentBoard,
   benchmarkIndication,

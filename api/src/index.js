@@ -6,6 +6,7 @@ const { askAi, getStudyContext, providerStatus, inferModelTier } = require("./as
 const {
   buildIntelligenceContext,
   buildReconciliationIntelContext,
+  buildDefaultBuddyIntelContext,
   buildSiteScorecard,
   buildLegacyRecruitmentBoard,
   getIntelligenceHealth,
@@ -1828,119 +1829,90 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         /\b(what(?:'s| is) in (?:the )?(?:db|database|cosmos)|data\s+catalog|container\s+counts?|ingest(?:ion)?\s+freshness|how many (?:trials|studies|sites) (?:in|does) (?:cosmos|the db|the database))\b/i.test(
           question
         );
-      // Cosmos-first: question text wins over whatever tab/hint is open in the browser.
-      // Source dashboards (CT.gov / TrialHub / Veeva / crosswalk): ignore open-study indication
-      // so Dry Eye (etc.) does not hijack a feed-wide overview ask.
-      // Only use open-study / tab hint filters when the ask itself is intel-shaped.
-      // Never force a full intel Cosmos pull just because Dry Eye (etc.) is open in the UI —
-      // that was timing out Buddy asks (500s) on remember/ops/field-fill questions.
-      //
-      // hasOkUpload alone is NOT a reason to pull a Cosmos intel pack — that double-loads
-      // the payload (file text + intel) and reliably times out the SWA ~45s gateway.
-      // Only pull intel when the question itself has a feasibility / indication / TA cue.
-      const uploadOnlyAsk =
-        hasOkUpload &&
-        !isIntelligenceQuestion(question) &&
-        !sourceOverviewAsk &&
-        !salesforceAsk &&
-        !catalogAsk &&
-        (attachmentAnalyzeVerb || !wantsDocumentExport(question)) &&
-        (attachmentAnalyzeVerb || !wantsHtmlVisual(question)) &&
-        // Cosmos compare/verify requests need live intel — not upload-only.
-        !attachmentCosmosCompareAsk &&
-        !isPricingQuestion(question) &&
-        !nctFromQuestion(question) &&
-        !qIndication &&
-        !qCountry &&
-        !extractIntelYearFromQuestion(question) &&
-        !extractTherapeuticFilterFromQuestion(question);
-      const forceIntel =
-        !compareAsk &&
-        (attachmentCosmosCompareAsk ||
-          (!uploadOnlyAsk &&
-            (buddyWorkflow === "feasibility" ||
-              (buddyWorkflow !== "budget" &&
-                buddyWorkflow !== "teach" &&
-                (isIntelligenceQuestion(question) ||
-                  sourceOverviewAsk ||
-                  salesforceAsk ||
-                  catalogAsk ||
-                  wantsDocumentExport(question) ||
-                  wantsHtmlVisual(question) ||
-                  hasOkUpload ||
-                  isPricingQuestion(question) ||
-                  Boolean(nctFromQuestion(question)) ||
-                  Boolean(qIndication) ||
-                  Boolean(qCountry) ||
-                  Boolean(extractIntelYearFromQuestion(question)) ||
-                  Boolean(extractTherapeuticFilterFromQuestion(question)))))));
+      // EVERY Buddy ask queries live Cosmos — no skip/upload-only paths.
+      const attachmentBlobForIntel = hasOkUpload ? attachmentTextForIntel(uploaded, 15000) : "";
+      const intelQuestion = attachmentBlobForIntel
+        ? `${question}\n\n--- ATTACHED DOCUMENT TEXT (for extracting filters) ---\n${attachmentBlobForIntel}`
+        : question;
 
-      const indication = forceIntel
-        ? qIndication || (sourceOverviewAsk ? null : hintIndication || snapIndication) || null
-        : qIndication || null;
-      const country = forceIntel
-        ? qCountry || (sourceOverviewAsk && !qCountry ? null : hintCountry) || null
-        : qCountry || null;
+      const rfpHint = extractRfpScenarioFromQuestion(question, body);
+      let indFromFiles = null;
+      if (hasOkUpload && !sourceOverviewAsk) {
+        indFromFiles = extractIndicationFromQuestion(attachmentBlobForIntel || intelQuestion);
+      }
 
-      if (forceIntel) {
-        const rfpHint = extractRfpScenarioFromQuestion(question, body);
-        const attachmentBlobForIntel = hasOkUpload
-          ? attachmentTextForIntel(uploaded, attachmentCosmosCompareAsk ? 15000 : 4000)
-          : null;
-        const intelQuestion = attachmentBlobForIntel
-          ? `${question}\n\n--- ATTACHED DOCUMENT TEXT (for extracting filters) ---\n${attachmentBlobForIntel}`
-          : question;
+      const resolvedIndication =
+        qIndication ||
+        (sourceOverviewAsk ? null : hintIndication || snapIndication) ||
+        indFromFiles ||
+        rfpHint.indication ||
+        null;
+      const resolvedCountry =
+        qCountry || (sourceOverviewAsk && !qCountry ? null : hintCountry) || null;
 
-        let indFromFiles = null;
-        if (!indication && !rfpHint.indication && hasOkUpload && !sourceOverviewAsk) {
-          indFromFiles = extractIndicationFromQuestion(attachmentBlobForIntel || intelQuestion);
-        }
+      const needsFullIntel =
+        sourceOverviewAsk ||
+        salesforceAsk ||
+        catalogAsk ||
+        isIntelligenceQuestion(question) ||
+        wantsDocumentExport(question) ||
+        wantsHtmlVisual(question) ||
+        isPricingQuestion(question) ||
+        Boolean(nctFromQuestion(question)) ||
+        Boolean(extractIntelYearFromQuestion(question)) ||
+        Boolean(extractTherapeuticFilterFromQuestion(question)) ||
+        isTrialhubQuestion(question) ||
+        buddyWorkflow === "feasibility";
 
-        if (attachmentCosmosCompareAsk) {
-          // Slim reconciliation query — full intel pack times out too often with attachments.
-          intelligence = await buildReconciliationIntelContext(getDb, {
-            question: intelQuestion,
-            indication: rfpHint.indication || indication || indFromFiles,
-            country,
-            attachmentText: attachmentBlobForIntel || "",
-            clientName: sourceOverviewAsk ? null : hints.clientName || snapClient || null,
-            sponsor: sourceOverviewAsk ? null : hints.clientName || snapClient || null
-          });
-        } else {
-          const needsYearList =
-            Boolean(extractIntelYearFromQuestion(question)) ||
-            Boolean(extractTherapeuticFilterFromQuestion(question)) ||
-            isTrialhubQuestion(question);
-          const intelTimeoutMs = Number(
-            process.env.BUDDY_INTEL_TIMEOUT_MS ||
-              (needsYearList ? 38000 : modelTierEarly === "fast" ? 15000 : 25000)
-          );
-          const intelPromise = buildIntelligenceContext(getDb, {
-            question: intelQuestion,
-            indication: rfpHint.indication || indication || indFromFiles,
-            country,
-            clientName: sourceOverviewAsk ? null : hints.clientName || snapClient || null,
-            sponsor: sourceOverviewAsk ? null : hints.clientName || snapClient || null,
-            force: true
-          });
-          intelligence = await Promise.race([
-            intelPromise,
-            new Promise((_, reject) =>
-              setTimeout(() => reject(new Error(`intelligence pack timed out after ${intelTimeoutMs}ms`)), intelTimeoutMs)
-            )
-          ]).catch((err) => ({
+      const intelBase = {
+        question: intelQuestion,
+        indication: resolvedIndication,
+        country: resolvedCountry,
+        attachmentText: attachmentBlobForIntel || "",
+        clientName: sourceOverviewAsk ? null : hints.clientName || snapClient || null,
+        sponsor: sourceOverviewAsk ? null : hints.clientName || snapClient || null
+      };
+
+      if (hasOkUpload || attachmentCosmosCompareAsk) {
+        intelligence = await buildReconciliationIntelContext(getDb, intelBase);
+      } else if (needsFullIntel) {
+        const needsYearList =
+          Boolean(extractIntelYearFromQuestion(question)) ||
+          Boolean(extractTherapeuticFilterFromQuestion(question)) ||
+          isTrialhubQuestion(question);
+        const intelTimeoutMs = Number(
+          process.env.BUDDY_INTEL_TIMEOUT_MS ||
+            (needsYearList ? 38000 : modelTierEarly === "fast" ? 20000 : 30000)
+        );
+        const intelPromise = buildIntelligenceContext(getDb, { ...intelBase, force: true });
+        intelligence = await Promise.race([
+          intelPromise,
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error(`intelligence pack timed out after ${intelTimeoutMs}ms`)), intelTimeoutMs)
+          )
+        ]).catch(async (err) => {
+          const fallback = await buildDefaultBuddyIntelContext(getDb, intelBase);
+          if (fallback && !fallback.error) {
+            fallback.note =
+              (fallback.note || "") +
+              ` Full intel pack timed out (${String(err.message || err)}); using default Cosmos pack.`;
+            return fallback;
+          }
+          return {
             source: "ora_clinical_intelligence_error",
             error: String(err.message || err),
-            note: "Skipped heavy intel pack so Buddy can still answer."
-          }));
-        }
+            note: "Cosmos query failed — do not invent benchmarks."
+          };
+        });
+      } else {
+        intelligence = await buildDefaultBuddyIntelContext(getDb, intelBase);
+      }
 
-        if (intelligence && !intelligence.error) {
-          intelligence.attachedFrom = intelligence.attachedFrom || "cosmos_query";
-          intelligence.note =
-            intelligence.note ||
-            "Queried live from Cosmos (ora_fact_* / TrialHub / CT.gov). Not dependent on which Workbench tab is open. Prefer these numbers over invented benchmarks.";
-        }
+      if (intelligence && !intelligence.error) {
+        intelligence.attachedFrom = intelligence.attachedFrom || "cosmos_query";
+        intelligence.note =
+          intelligence.note ||
+          "Queried live from Cosmos on this turn. Prefer these numbers over invented benchmarks.";
       }
     } catch (err) {
       intelligence = { source: "ora_clinical_intelligence_error", error: String(err.message || err) };
@@ -2080,6 +2052,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       source: requireCopilotKey ? "copilot_studio" : "workbench",
       modelTier,
       workflow: attachmentCosmosCompareAsk ? "feasibility" : buddyWorkflow,
+      cosmosLiveQuery: true,
       cosmosReconciliation: attachmentCosmosCompareAsk,
       workflowNote: attachmentCosmosCompareAsk
         ? "COSMOS RECONCILIATION: user attached a document and asked to verify/compare claims against live Ora Cosmos data. Read ATTACHED DOCUMENTS, then compare each factual claim to ORA COSMOS FACTS / context.intelligence. Flag matches, mismatches, and missing data. Do NOT say Cosmos was not queried when intelligenceAttached=true."

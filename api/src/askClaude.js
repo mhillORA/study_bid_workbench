@@ -353,13 +353,16 @@ function systemPromptFor(context) {
       context?.legacyAnterior?.trust?.topSitesByEnrolled?.length ||
       context?.legacyAnterior?.trust?.leaderboard?.length
   );
-  const intelNote = context?.intelligence
-    ? hasSiteList
-      ? " context.intelligence IS attached WITH site rows and/or TrialHub countryRank — list concrete countries (trial mentions) and site names when present. Never claim you lack a leaderboard. Never print JSON keys. NAVIGATE is optional after the list."
-      : hasOverviewPack
-        ? " context.intelligence IS attached WITH feed overview and/or inventory (ctgovOverview / trialhubOverview / veevaOverview / crosswalkOverview / inventory / NCT). You HAVE that source data — summarize counts, ranks, and samples. Do NOT say the feed is missing or ask for an indication first when the user asked for a dashboard/overview."
-        : " context.intelligence IS attached but site/country lists are empty — give medians/NCT/enrollment plan if present, then ask for indication/geography if needed. Do not pretend a tab open will magically list sites without data."
-    : " context.intelligence may be absent on this turn; for site/feasibility asks, ask for indication if missing, or say data was not attached — do not only NAVIGATE:intelligence with no substance.";
+  const intelNote =
+    context?.intelligence && !context?.intelligence?.error
+      ? hasSiteList
+        ? " context.intelligence IS attached from a LIVE Cosmos query on this turn — list concrete countries and site names when present. Never say the DB/Cosmos payload is missing."
+        : hasOverviewPack || context?.intelligence?.inventory
+          ? " context.intelligence IS attached from a LIVE Cosmos query on this turn (inventory/overviews/benchmark). You HAVE DB data — use ORA COSMOS FACTS. Never say Cosmos was not queried or not in context."
+          : " context.intelligence IS attached from a LIVE Cosmos query on this turn — use ORA COSMOS FACTS for numbers. Never say the DB payload is missing."
+      : context?.intelligence?.error
+        ? ` context.intelligence query failed: ${context.intelligence.error}. Say the live Cosmos query failed — do not invent benchmarks.`
+        : " Live Cosmos query did not return — say the DB query failed on this turn; do not invent data.";
   const planNote = context?.enrollmentPlan?.sitesExact != null
     ? ` Enrollment plan is attached — cite exact sites=${context.enrollmentPlan.sitesExact} and recommended with 20% buffer=${context.enrollmentPlan.sitesRecommendedWith20pctBuffer} using those human labels (not JSON keys).`
     : context?.intelligence?.enrollmentPlan?.sitesExact != null
@@ -1164,6 +1167,14 @@ function formatCosmosFactsBlock(context) {
     `Source: ${intel.source || "ora_clinical_intelligence"} | attachedFrom: ${intel.attachedFrom || "cosmos"}`
   ];
 
+  if (intel.inventory && intel.inventory.counts) {
+    const c = intel.inventory.counts;
+    lines.push(
+      `Cosmos inventory: ora_fact_study=${c.ora_fact_study ?? "—"}, ora_fact_site=${c.ora_fact_site ?? "—"}, ` +
+        `ora_trialhub_trials=${c.ora_trialhub_trials ?? "—"}, ora_ctgov_trials=${c.ora_ctgov_trials ?? "—"}`
+    );
+  }
+
   if (bm) {
     lines.push(
       `Indication: ${bm.indicationRequested || intel.query?.indication || "—"} | Geography: ${
@@ -1577,7 +1588,9 @@ function contextJsonForModel(context) {
   if (
     ctx.intelligence?.indicationBenchmark ||
     ctx.intelligence?.trialhubStartedTrials ||
-    ctx.cosmosReconciliation
+    ctx.cosmosReconciliation ||
+    ctx.intelligence?.inventory ||
+    ctx.intelligence?.attachedFrom === "cosmos_default"
   ) {
     const intel = ctx.intelligence;
     const bm = intel.indicationBenchmark;
