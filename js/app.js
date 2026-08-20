@@ -17,6 +17,7 @@
     buddyAttachmentSessionId: null,
     buddyAttachmentIds: [],
     buddyBusy: false,
+    buddyDocPreview: null,
     buddyWorkflow: localStorage.getItem("sbw.buddyWorkflow") || "auto",
     buddyMode: "chat",
     buddyDept: localStorage.getItem("sbw.buddyDept") || "auto",
@@ -163,6 +164,12 @@
     askStatus: document.getElementById("askStatus"),
     buddyDeptSelect: document.getElementById("buddyDeptSelect"),
     btnAskStop: document.getElementById("btnAskStop"),
+    buddyBody: document.getElementById("buddyBody"),
+    buddyDocPane: document.getElementById("buddyDocPane"),
+    buddyDocFrame: document.getElementById("buddyDocFrame"),
+    buddyDocTitle: document.getElementById("buddyDocTitle"),
+    buddyDocClose: document.getElementById("buddyDocClose"),
+    buddyDocPopout: document.getElementById("buddyDocPopout"),
     compareOverlay: document.getElementById("compareOverlay"),
     requestDialog: document.getElementById("requestDialog"),
     requestForm: document.getElementById("requestForm"),
@@ -1527,6 +1534,86 @@
     return byTab;
   }
 
+  function revokeBuddyDocUrl() {
+    if (state.buddyDocPreview?.objectUrl) {
+      try {
+        URL.revokeObjectURL(state.buddyDocPreview.objectUrl);
+      } catch (_) {}
+    }
+  }
+
+  function closeBuddyDocPane() {
+    const dismissId = state.buddyDocPreview?.id || latestBuddyHtmlReport()?.id || null;
+    revokeBuddyDocUrl();
+    state.buddyDocPreview = null;
+    state.buddyDocDismissedId = dismissId;
+    if (els.buddyDocFrame) {
+      els.buddyDocFrame.removeAttribute("srcdoc");
+      els.buddyDocFrame.src = "about:blank";
+    }
+    if (els.buddyDocPane) els.buddyDocPane.hidden = true;
+    if (els.buddyBody) els.buddyBody.classList.remove("has-doc");
+  }
+
+  /** Show HTML beside chat (Buddy workspace). Opens full Buddy tab if needed. */
+  function showBuddyDoc(html, { title, id, openWorkspace = true } = {}) {
+    const full = ensureBuddyReportHtml(html);
+    if (!full) return false;
+    if (openWorkspace && state.sectionId !== "buddy") {
+      state.sectionId = "buddy";
+      render();
+      syncBuddyWorkspaceMode();
+    }
+    revokeBuddyDocUrl();
+    const objectUrl = URL.createObjectURL(
+      new Blob([full], { type: "text/html;charset=utf-8" })
+    );
+    const docId = id || `doc-${Date.now()}`;
+    state.buddyDocDismissedId = null;
+    state.buddyDocPreview = {
+      id: docId,
+      title: title || "Document",
+      html: full,
+      objectUrl
+    };
+    if (els.buddyDocTitle) els.buddyDocTitle.textContent = state.buddyDocPreview.title;
+    if (els.buddyDocFrame) els.buddyDocFrame.src = objectUrl;
+    if (els.buddyDocPane) els.buddyDocPane.hidden = false;
+    if (els.buddyBody) els.buddyBody.classList.add("has-doc");
+    return true;
+  }
+
+  function latestBuddyHtmlReport() {
+    for (let i = (state.askHistory || []).length - 1; i >= 0; i--) {
+      const t = state.askHistory[i];
+      if (t?.htmlReport?.html) return t.htmlReport;
+    }
+    return null;
+  }
+
+  function maybeAutoShowBuddyDoc() {
+    if (!isBuddyWorkspace()) return;
+    const report = latestBuddyHtmlReport();
+    if (!report?.html) return;
+    if (state.buddyDocDismissedId && state.buddyDocDismissedId === report.id) return;
+    const nextHtml = ensureBuddyReportHtml(report.html);
+    if (state.buddyDocPreview?.id === report.id && state.buddyDocPreview.html === nextHtml) return;
+    showBuddyDoc(report.html, {
+      id: report.id,
+      title: report.filename || "Document",
+      openWorkspace: false
+    });
+  }
+
+  function popOutBuddyDoc() {
+    const html = state.buddyDocPreview?.html;
+    if (!html) return;
+    const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    window.open(url, "_blank", "noopener");
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  }
+
   function isBuddyWorkspace() {
     return state.sectionId === "buddy" && !document.documentElement.classList.contains("buddy-popout-mode");
   }
@@ -2201,9 +2288,9 @@
             .join("");
           reportHtml = `<div class="buddy-report">
             <div class="chat-who">Document ready</div>
-            <p class="muted">Open the report, print/save as PDF, or download Word.</p>
+            <p class="muted">Show beside chat to iterate, or download / print.</p>
             <div class="buddy-proposal-actions">
-              <button type="button" class="btn btn-primary" data-buddy-report-open="${escapeAttr(t.htmlReport.id)}">Open report</button>
+              <button type="button" class="btn btn-primary" data-buddy-report-open="${escapeAttr(t.htmlReport.id)}">Show beside chat</button>
               <button type="button" class="btn btn-ghost" data-buddy-report-print="${escapeAttr(t.htmlReport.id)}">Print / PDF</button>
               <button type="button" class="btn btn-ghost" data-buddy-report-dl="${escapeAttr(t.htmlReport.id)}">Download HTML</button>
               ${exportBtns}
@@ -2232,6 +2319,7 @@
     if (els.btnAsk) els.btnAsk.disabled = !!state.buddyBusy;
     if (els.btnAskStop) els.btnAskStop.hidden = !state.buddyBusy;
     persistBuddyHistory();
+    maybeAutoShowBuddyDoc();
   }
 
   function formatPatchValue(v) {
@@ -8242,7 +8330,7 @@
 
   function renderBuddyPage() {
     return `<div class="buddy-page-shell">
-      <p class="muted">Buddy fills this workspace. On any other tab, use the floating <strong>Buddy</strong> button for a side chat — same conversation either way.</p>
+      <p class="muted">Buddy fills this workspace. HTML reports open <strong>beside</strong> the chat — tell Buddy what to change and the preview updates. On other tabs, use the floating Buddy button for a side chat.</p>
     </div>`;
   }
 
@@ -9078,6 +9166,8 @@
     }
     if (els.buddyFab) els.buddyFab.addEventListener("click", openBuddy);
     if (els.buddyClose) els.buddyClose.addEventListener("click", closeBuddy);
+    if (els.buddyDocClose) els.buddyDocClose.addEventListener("click", closeBuddyDocPane);
+    if (els.buddyDocPopout) els.buddyDocPopout.addEventListener("click", popOutBuddyDoc);
     if (els.btnAsk) els.btnAsk.addEventListener("click", sendAsk);
     if (els.btnAskStop) {
       els.btnAskStop.addEventListener("click", () => {
@@ -9158,12 +9248,11 @@
           const id = openReport.getAttribute("data-buddy-report-open");
           const turn = state.askHistory.find((t) => t.htmlReport && t.htmlReport.id === id);
           if (turn?.htmlReport?.html) {
-            const blob = new Blob([ensureBuddyReportHtml(turn.htmlReport.html)], {
-              type: "text/html;charset=utf-8"
+            showBuddyDoc(turn.htmlReport.html, {
+              id: turn.htmlReport.id,
+              title: turn.htmlReport.filename || "Document",
+              openWorkspace: true
             });
-            const url = URL.createObjectURL(blob);
-            window.open(url, "_blank", "noopener");
-            setTimeout(() => URL.revokeObjectURL(url), 60_000);
           }
           return;
         }

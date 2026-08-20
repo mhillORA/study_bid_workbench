@@ -950,12 +950,101 @@ html.buddy-workspace .buddy-resize-handle {
   display: none !important;
 }
 
+html.buddy-workspace .buddy-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+html.buddy-workspace .buddy-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(320px, 1fr) minmax(0, 1.15fr);
+  grid-template-rows: 1fr;
+}
+
+html.buddy-workspace .buddy-body:not(.has-doc) {
+  grid-template-columns: 1fr;
+}
+
+html.buddy-workspace .buddy-chat-col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border-right: 1px solid var(--line);
+}
+
+html.buddy-workspace .buddy-body:not(.has-doc) .buddy-chat-col {
+  border-right: none;
+}
+
 html.buddy-workspace .buddy-chat-log {
   flex: 1 1 auto;
+  min-height: 0;
 }
 
 html.buddy-workspace .buddy-compose .textarea {
   min-height: 5.5rem;
+}
+
+html.buddy-workspace .buddy-doc-pane {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--panel, var(--card-bg));
+}
+
+html.buddy-workspace .buddy-doc-pane[hidden] {
+  display: none !important;
+}
+
+.buddy-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.buddy-chat-col {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.buddy-doc-pane {
+  display: none;
+}
+
+.buddy-doc-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.75rem;
+  padding: 0.65rem 0.85rem;
+  border-bottom: 1px solid var(--line);
+  flex-shrink: 0;
+}
+
+.buddy-doc-head .muted {
+  margin: 0.15rem 0 0;
+  font-size: 0.78rem;
+}
+
+.buddy-doc-actions {
+  display: flex;
+  gap: 0.25rem;
+  flex-shrink: 0;
+}
+
+.buddy-doc-frame {
+  flex: 1 1 auto;
+  width: 100%;
+  min-height: 0;
+  border: 0;
+  background: #fff;
 }
 
 .buddy-page-shell {
@@ -968,6 +1057,16 @@ html.buddy-workspace .buddy-compose .textarea {
 @media (max-width: 900px) {
   html.buddy-workspace .buddy-panel {
     left: 0;
+  }
+
+  html.buddy-workspace .buddy-body.has-doc {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(40vh, 1fr) minmax(40vh, 1fr);
+  }
+
+  html.buddy-workspace .buddy-chat-col {
+    border-right: none;
+    border-bottom: 1px solid var(--line);
   }
 }
 

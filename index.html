@@ -106,18 +106,35 @@
       </div>
       <div class="buddy-chats-list" id="buddyChatsList"></div>
     </div>
-    <div class="chat-log buddy-chat-log" id="askLog"></div>
-    <div class="ask-compose buddy-compose">
-      <div class="buddy-attach-chips" id="buddyAttachChips" hidden></div>
-      <textarea id="askInput" class="textarea" rows="3" placeholder="Ask Buddy… attach multiple files (protocol, slides, template…)"></textarea>
-      <div class="buddy-compose-row">
-        <input type="file" id="buddyFileInput" hidden accept=".pdf,.docx,.pptx,.xlsx,.xlsm,.csv,.txt,.md,.json,.html,.htm" multiple />
-        <button type="button" class="btn btn-ghost" id="btnBuddyAttach" title="Attach multiple files (Ctrl/Cmd+click or Shift+click in the picker)">Attach files</button>
-        <button type="button" class="btn btn-ghost" id="btnBuddyRemember" title="Save typed note (or last Buddy reply) to live context">Remember</button>
-        <button type="button" class="btn btn-primary" id="btnAsk">Send</button>
-        <button type="button" class="btn btn-ghost" id="btnAskStop" hidden title="Stop this ask">Stop</button>
-        <span class="muted" id="askStatus"></span>
+    <div class="buddy-body" id="buddyBody">
+      <div class="buddy-chat-col">
+        <div class="chat-log buddy-chat-log" id="askLog"></div>
+        <div class="ask-compose buddy-compose">
+          <div class="buddy-attach-chips" id="buddyAttachChips" hidden></div>
+          <textarea id="askInput" class="textarea" rows="3" placeholder="Ask Buddy… attach multiple files (protocol, slides, template…)"></textarea>
+          <div class="buddy-compose-row">
+            <input type="file" id="buddyFileInput" hidden accept=".pdf,.docx,.pptx,.xlsx,.xlsm,.csv,.txt,.md,.json,.html,.htm" multiple />
+            <button type="button" class="btn btn-ghost" id="btnBuddyAttach" title="Attach multiple files (Ctrl/Cmd+click or Shift+click in the picker)">Attach files</button>
+            <button type="button" class="btn btn-ghost" id="btnBuddyRemember" title="Save typed note (or last Buddy reply) to live context">Remember</button>
+            <button type="button" class="btn btn-primary" id="btnAsk">Send</button>
+            <button type="button" class="btn btn-ghost" id="btnAskStop" hidden title="Stop this ask">Stop</button>
+            <span class="muted" id="askStatus"></span>
+          </div>
+        </div>
       </div>
+      <aside class="buddy-doc-pane" id="buddyDocPane" hidden aria-label="Document preview">
+        <header class="buddy-doc-head">
+          <div>
+            <strong id="buddyDocTitle">Document</strong>
+            <p class="muted" id="buddyDocHint">Tell Buddy what to change — same chat updates this pane</p>
+          </div>
+          <div class="buddy-doc-actions">
+            <button type="button" class="btn btn-ghost buddy-icon-btn" id="buddyDocPopout" title="Open in new tab">↗</button>
+            <button type="button" class="btn btn-ghost buddy-icon-btn" id="buddyDocClose" title="Hide document" aria-label="Hide document">×</button>
+          </div>
+        </header>
+        <iframe id="buddyDocFrame" class="buddy-doc-frame" title="Buddy document preview" sandbox="allow-same-origin allow-scripts allow-popups allow-forms"></iframe>
+      </aside>
     </div>
     <div class="buddy-resize-handle" id="buddyResizeHandle" title="Drag to resize" aria-hidden="true"></div>
   </aside>
