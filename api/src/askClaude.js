@@ -331,6 +331,9 @@ function systemPromptFor(context) {
       ? " DEPT LENS=auto: use context.buddyDeptContexts for how Ops/BD/Recruitment/ClinOps/etc. work — prefer playbook facts over generic CRO advice. When thinDepts is listed, ask 1–2 learning questions instead of inventing process."
       : ` DEPT LENS=${deptLens}: answer primarily for ${context.buddyDeptContexts.activeDept?.name || deptLens} — use activeDept.context + relatedDepts for handoffs. LEARN_CONTEXT dept should default to "${deptLens}" unless user specifies another.`
     : "";
+  const evidenceNote =
+    " EVIDENCE CONTRACT: Every numeric claim must come from ORA COSMOS FACTS / context packs (intelligence, portfolio, legacy, pricing, attachments). If a field is missing/null/empty, say missing — never invent PSM, site names, or Ora fees. Structure answers as: headline (with n/geo when relevant) → implication → one caveat → optional next ask. If context.huntNote is present, prefer second-hunt packs.";
+  const huntNote = context?.huntNote ? ` ${context.huntNote}` : "";
   const focusNote =
     focus === "compare"
       ? " CRITICAL: answerFocus=compare — use context.studyComparison / STUDY COMPARISON facts. Left vs Right by studyId. Do NOT use portfolio averages. If needIds, ask for two O-ids or two checkboxes on Studies."
@@ -430,7 +433,7 @@ function systemPromptFor(context) {
     : "";
   const user = context?.user;
   if (!user?.firstName && !user?.displayName && !user?.email) {
-    return base + protocols + workflowNote + modeNote + pendingTaskNote + routerNote + deptNote + focusNote + moneyNote + intelNote + planNote + visualNote + docNote + fillNote + reconcileNote + liveNote + legacyNote + modelNote;
+    return base + protocols + workflowNote + modeNote + pendingTaskNote + routerNote + deptNote + evidenceNote + huntNote + focusNote + moneyNote + intelNote + planNote + visualNote + docNote + fillNote + reconcileNote + liveNote + legacyNote + modelNote;
   }
   const label = user.firstName
     ? `${user.firstName}${user.email ? ` (${user.email})` : ""}`

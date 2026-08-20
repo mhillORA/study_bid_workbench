@@ -709,6 +709,39 @@ h1 {
   padding: 0.25rem 0.5rem;
 }
 
+.buddy-evidence {
+  margin-top: 0.55rem;
+  padding: 0.45rem 0.6rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(26, 127, 142, 0.06);
+  font-size: 0.78rem;
+}
+
+.buddy-evidence summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--muted, #5c6578);
+}
+
+.buddy-evidence ul {
+  margin: 0.25rem 0 0.35rem 1.1rem;
+  padding: 0;
+}
+
+.buddy-evidence .buddy-ev-ok strong {
+  color: #1a7f8e;
+}
+
+.buddy-evidence .buddy-ev-miss,
+.buddy-evidence .buddy-ev-warn {
+  color: var(--muted, #5c6578);
+}
+
+.buddy-evidence .buddy-ev-next {
+  margin: 0.35rem 0 0;
+}
+
 .buddy-panel-head {
   flex-shrink: 0;
 }

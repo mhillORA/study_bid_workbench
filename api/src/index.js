@@ -42,6 +42,7 @@ const { buildBuddyDocExports, wantsDocumentExport } = require("./buddyDocExport"
 const { routeBuddyAsk, isCompareTwoStudiesQuestion, isCrossStudyQuestion } = require("./buddyRouter");
 const { fetchBuddyIntelligence, fetchBuddyPortfolio } = require("./buddyCosmosFetch");
 const { parseBuddyActions } = require("./buddyActions");
+const { maybeHuntAndRetry, toolTraceFromPrefetch } = require("./buddyHunt");
 const {
   loadDeptContexts,
   saveDeptContexts,
@@ -2031,14 +2032,48 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       }
     };
 
+    const initialToolTrace = toolTraceFromPrefetch({
+      portfolio,
+      intelligence,
+      legacyAnterior,
+      pricingScenarios,
+      buddyLiveContext,
+      buddyDeptContexts,
+      routerTools
+    });
+
     // askAi is soft-fail: never throws for model/provider errors
-    const result = await askAi({
+    const firstResult = await askAi({
       question,
       context: contextPayload,
       history,
       tier: modelTier,
       body
     });
+
+    const huntOut = await maybeHuntAndRetry({
+      askAi,
+      context: contextPayload,
+      firstResult,
+      question,
+      history,
+      tier: modelTier,
+      body,
+      initialToolTrace,
+      toolDeps: {
+        getDb,
+        buildPortfolioContext,
+        loadLiveContext,
+        loadDeptContexts,
+        buildDeptContextForAsk
+      }
+    });
+
+    const result = huntOut.result;
+    const evidence = huntOut.evidence;
+    if (huntOut.context?.intelligence) intelligence = huntOut.context.intelligence;
+    if (huntOut.context?.portfolio) portfolio = huntOut.context.portfolio;
+
     let answer = result.answer;
     let docExports = [];
     let reportTitle = null;
@@ -2066,6 +2101,9 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       rawAnswer: answer,
       actions: actionParse.actions,
       htmlReport: actionParse.htmlReport,
+      evidence,
+      hunted: Boolean(huntOut.hunted),
+      huntReason: huntOut.huntReason || null,
       suggestedPendingTask: suggestedPendingTask || null,
       ok: result.provider !== "error",
       model: result.model,
@@ -2127,6 +2165,12 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         buddyDeptLens,
         portfolioSkipped: Boolean(portfolio?.skipped),
         actionCount: actionParse.actions.length,
+        hunted: Boolean(huntOut.hunted),
+        huntReason: huntOut.huntReason || null,
+        huntRetry: Boolean(huntOut.huntRetry),
+        evidenceGrounded: evidence?.grounded !== false,
+        evidenceSourceCount: evidence?.sources?.filter((s) => s.ok)?.length ?? 0,
+        evidenceGapCount: evidence?.gaps?.length ?? 0,
         attachmentCosmosCompareAsk,
         hasOkUpload,
         reconcileFollowUp: Boolean(body.reconcileFollowUp || route.reconcileFollowUp),

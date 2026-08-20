@@ -2170,6 +2170,7 @@
           <div class="chat-body">${formatBuddyHtml(t.content)}</div>
           ${proposalHtml}
           ${reportHtml}
+          ${t.role === "assistant" ? renderBuddyEvidence(t.evidence) : ""}
         </div>`;
       })
       .join("");
@@ -3141,7 +3142,7 @@
     return { text: cleaned, html: html || null };
   }
 
-  function pushAssistant(content, patches, htmlReport, exports) {
+  function pushAssistant(content, patches, htmlReport, exports, evidence) {
     const turn = { role: "assistant", content };
     if (patches && patches.length) {
       turn.proposal = {
@@ -3158,7 +3159,51 @@
         exports: Array.isArray(exports) ? exports.filter((e) => e && e.contentBase64) : []
       };
     }
+    if (evidence && typeof evidence === "object") {
+      turn.evidence = evidence;
+    }
     state.askHistory.push(turn);
+  }
+
+  function renderBuddyEvidence(ev) {
+    if (!ev || typeof ev !== "object") return "";
+    const sources = Array.isArray(ev.sources) ? ev.sources : [];
+    const gaps = Array.isArray(ev.gaps) ? ev.gaps : [];
+    const steps = Array.isArray(ev.toolTrace) ? ev.toolTrace : [];
+    if (!sources.length && !gaps.length && !steps.length && !ev.nextAsk) return "";
+
+    const okSrc = sources.filter((s) => s.ok);
+    const missSrc = sources.filter((s) => !s.ok);
+    const srcBits = [
+      ...okSrc.map((s) => `<li class="buddy-ev-ok"><strong>${escapeHtml(s.label)}</strong>${s.detail ? ` — ${escapeHtml(s.detail)}` : ""}${s.n != null ? ` · n=${escapeHtml(String(s.n))}` : ""}</li>`),
+      ...missSrc.slice(0, 4).map((s) => `<li class="buddy-ev-miss">${escapeHtml(s.label)}${s.detail ? ` — ${escapeHtml(s.detail)}` : ""}</li>`)
+    ].join("");
+
+    const gapBits = gaps
+      .slice(0, 4)
+      .map((g) => `<li>${escapeHtml(g.message || g.code || "")}</li>`)
+      .join("");
+
+    const huntBits = steps
+      .filter((t) => t.round === 2)
+      .map(
+        (t) =>
+          `<li>${t.ok === false ? "✗" : "✓"} ${escapeHtml(t.label || t.tool)}${t.detail ? ` — ${escapeHtml(t.detail)}` : ""}</li>`
+      )
+      .join("");
+
+    const warnBits = (ev.warnings || [])
+      .map((w) => `<li class="buddy-ev-warn">${escapeHtml(w.message || w.code || "")}</li>`)
+      .join("");
+
+    return `<details class="buddy-evidence">
+      <summary>What Buddy used${ev.grounded === false ? " · check warnings" : ""}${okSrc.length ? ` · ${okSrc.length} source(s)` : ""}</summary>
+      ${srcBits ? `<p class="muted" style="margin:0.4rem 0 0.2rem;">Sources</p><ul>${srcBits}</ul>` : ""}
+      ${gapBits ? `<p class="muted" style="margin:0.4rem 0 0.2rem;">Gaps</p><ul>${gapBits}</ul>` : ""}
+      ${huntBits ? `<p class="muted" style="margin:0.4rem 0 0.2rem;">Second hunt</p><ul>${huntBits}</ul>` : ""}
+      ${warnBits ? `<p class="muted" style="margin:0.4rem 0 0.2rem;">Grounding</p><ul>${warnBits}</ul>` : ""}
+      ${ev.nextAsk ? `<p class="buddy-ev-next"><strong>Next:</strong> ${escapeHtml(ev.nextAsk)}</p>` : ""}
+    </details>`;
   }
 
   function applyBuddyAnswer(raw, exports, opts = {}) {
@@ -3229,6 +3274,10 @@
         assistantAskedToFill(prevAsst));
     if (created.create) {
       pushCreateProposal(text, created.create);
+      if (opts.evidence) {
+        const lastEv = state.askHistory[state.askHistory.length - 1];
+        if (lastEv && lastEv.role === "assistant") lastEv.evidence = opts.evidence;
+      }
       const last = state.askHistory[state.askHistory.length - 1];
       if (fillFollowUp && last?.proposal?.id && isBuddyDoMode()) {
         applyCreateStudy(last.proposal.id);
@@ -3239,6 +3288,10 @@
       updateBuddyPendingTaskFromAssistant(text);
     } else if (learned.learn) {
       pushLearnProposal(text, learned.learn);
+      if (opts.evidence) {
+        const lastEv = state.askHistory[state.askHistory.length - 1];
+        if (lastEv && lastEv.role === "assistant") lastEv.evidence = opts.evidence;
+      }
       clearBuddyPendingTask();
     } else {
       let patches = chatMode ? [] : extracted.patches;
@@ -3260,6 +3313,10 @@
         patches = extracted.patches;
       }
       pushAssistant(text, patches, report.html, exports);
+      if (opts.evidence) {
+        const last = state.askHistory[state.askHistory.length - 1];
+        if (last && last.role === "assistant") last.evidence = opts.evidence;
+      }
       updateBuddyPendingTaskFromAssistant(text);
       if (opts.reconcileDone) clearBuddyPendingTask();
       const last = state.askHistory[state.askHistory.length - 1];
@@ -4041,7 +4098,8 @@
         applyBuddyAnswer(data.answer, data.exports, {
           reconcileDone: Boolean(reconcileFollowUp),
           actions: data.actions,
-          htmlReport: data.htmlReport
+          htmlReport: data.htmlReport,
+          evidence: data.evidence
         });
         if (data.suggestedPendingTask?.type) {
           setBuddyPendingTask(data.suggestedPendingTask);
@@ -4070,6 +4128,7 @@
             : "";
           const actionNote =
             data.buddyDebug?.actionCount > 0 ? ` · ${data.buddyDebug.actionCount} action(s)` : "";
+          const huntNote = data.hunted ? " · hunted" : "";
           const wfNote = data.workflow && data.workflow !== "auto" ? ` · ${data.workflow}` : "";
           const intelBits = [];
           if (data.intelligenceQuery?.indication) intelBits.push(data.intelligenceQuery.indication);
@@ -4078,13 +4137,13 @@
             ? ` · Intel${intelBits.length ? ` ${intelBits.join(" / ")}` : ""}`
             : "";
           if (data.answerFocus === "portfolio" && data.databaseStudyCount != null) {
-            els.askStatus.textContent = `${tierLabel}${intentNote}${deptNote}${actionNote}${intelNote} · Cosmos ${data.portfolioMatched ?? "?"} / ${data.databaseStudyCount}${wfNote}${soft}`;
+            els.askStatus.textContent = `${tierLabel}${intentNote}${deptNote}${actionNote}${huntNote}${intelNote} · Cosmos ${data.portfolioMatched ?? "?"} / ${data.databaseStudyCount}${wfNote}${soft}`;
           } else if (portfolioMode) {
-            els.askStatus.textContent = `${tierLabel}${intentNote}${deptNote}${actionNote}${intelNote}${wfNote}${soft}`;
+            els.askStatus.textContent = `${tierLabel}${intentNote}${deptNote}${actionNote}${huntNote}${intelNote}${wfNote}${soft}`;
           } else {
             els.askStatus.textContent = hasOpenStudy()
-              ? `${tierLabel}${intentNote}${deptNote}${actionNote}${intelNote} · ${state.study.studyId}${wfNote}${soft}`
-              : `${tierLabel}${intentNote}${deptNote}${actionNote}${intelNote}${wfNote}${soft}`;
+              ? `${tierLabel}${intentNote}${deptNote}${actionNote}${huntNote}${intelNote} · ${state.study.studyId}${wfNote}${soft}`
+              : `${tierLabel}${intentNote}${deptNote}${actionNote}${huntNote}${intelNote}${wfNote}${soft}`;
           }
         }
         state.buddyBusy = false;
