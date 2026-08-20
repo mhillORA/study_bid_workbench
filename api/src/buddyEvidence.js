@@ -338,11 +338,137 @@ function verifyGrounding({ answer, context }) {
   return { warnings, grounded: warnings.length === 0 };
 }
 
+/**
+ * Collect numeric tokens that appear in tool/context packs (allowed set).
+ */
+function allowedNumbersFromContext(context = {}) {
+  const allowed = new Set();
+  const add = (v) => {
+    if (v == null || v === "") return;
+    const n = Number(v);
+    if (Number.isFinite(n)) {
+      allowed.add(String(n));
+      allowed.add(n.toFixed(2).replace(/\.?0+$/, ""));
+      allowed.add(String(Math.round(n * 100) / 100));
+    }
+    const s = String(v);
+    const m = s.match(/-?\d+(?:\.\d+)?/g);
+    if (m) m.forEach((x) => allowed.add(x));
+  };
+
+  const walk = (obj, depth = 0) => {
+    if (obj == null || depth > 8) return;
+    if (typeof obj === "number") {
+      add(obj);
+      return;
+    }
+    if (typeof obj === "string") {
+      if (obj.length < 40) add(obj);
+      return;
+    }
+    if (Array.isArray(obj)) {
+      obj.slice(0, 80).forEach((x) => walk(x, depth + 1));
+      return;
+    }
+    if (typeof obj === "object") {
+      for (const [k, v] of Object.entries(obj)) {
+        if (/note|prompt|error|text|html/i.test(k) && typeof v === "string" && v.length > 80) continue;
+        walk(v, depth + 1);
+      }
+    }
+  };
+
+  walk(context.intelligence);
+  walk(context.portfolio?.totals);
+  walk(context.portfolio?.averages);
+  walk(context.portfolio?.byClient?.slice?.(0, 30));
+  walk(context.portfolio?.matchedStudyCount);
+  walk(context.portfolio?.databaseStudyCount);
+  walk(context.pricingScenarios);
+  walk(context.legacyAnterior);
+  // Common safe literals
+  ["0", "1", "2", "3", "4", "5", "10", "12", "20", "100", "2024", "2025", "2026"].forEach((x) =>
+    allowed.add(x)
+  );
+  return allowed;
+}
+
+/**
+ * Hard grounding: when intel/portfolio packs cannot support PSM-like decimals,
+ * rewrite suspicious decimals to "missing (unverified)" and return warnings.
+ */
+function applyHardGrounding(answer, context = {}) {
+  let text = String(answer || "");
+  const warnings = [];
+  const verify = verifyGrounding({ answer: text, context });
+  warnings.push(...verify.warnings);
+
+  const intel = context.intelligence;
+  const emptyOrBadIntel =
+    !intel ||
+    intel.error ||
+    (intel.indicationBenchmark &&
+      intel.indicationBenchmark.ora?.studyCount === 0 &&
+      !(intel.indicationBenchmark.sites?.topSitesByPsm?.length ||
+        intel.indicationBenchmark.sites?.topSites?.length));
+
+  const allowed = allowedNumbersFromContext(context);
+
+  if (emptyOrBadIntel) {
+    // Replace bare PSM-like decimals near "psm" language
+    const before = text;
+    text = text.replace(
+      /(\bpsm\b[^.\n]{0,40}?)(0\.\d{2,4})\b/gi,
+      (m, lead, num) => {
+        if (allowed.has(num)) return m;
+        warnings.push({
+          code: "stripped_psm",
+          message: `Removed unverified PSM value ${num} (no supporting intelligence pack).`
+        });
+        return `${lead}missing (unverified)`;
+      }
+    );
+    text = text.replace(
+      /\b(0\.\d{2,4})\b([^.\n]{0,40}\bpsm\b)/gi,
+      (m, num, trail) => {
+        if (allowed.has(num)) return m;
+        warnings.push({
+          code: "stripped_psm",
+          message: `Removed unverified PSM value ${num}.`
+        });
+        return `missing (unverified)${trail}`;
+      }
+    );
+    if (text !== before && !/unverified|missing/i.test(text.slice(0, 200))) {
+      text +=
+        "\n\n[[i]]Some performance figures were unmarked because Cosmos had no matching benchmark — do not treat them as Ora data.[[/i]]";
+    }
+  }
+
+  if (context.moneyIntent === "ora_earned" && /\b(chf|€|\$)\s?\d+(\.\d+)?\s*(billion|bn)\b/i.test(text)) {
+    warnings.push({
+      code: "public_billions_on_ora_ask",
+      message: "Stripped public-company billions language on an ora_earned ask."
+    });
+    text = text.replace(
+      /\b((?:chf|€|\$)\s?\d+(?:\.\d+)?\s*(?:billion|bn))\b/gi,
+      "[Ora portfolio fees — use byClient totals, not public $B]"
+    );
+  }
+
+  return {
+    answer: text,
+    warnings,
+    grounded: warnings.length === 0,
+    rewritten: text !== String(answer || "")
+  };
+}
+
 function buildEvidenceEnvelope({ context = {}, question = "", answer = "", toolTrace = [] } = {}) {
   const sources = buildSourcesFromContext(context, toolTrace);
   const gaps = buildGapsFromContext(context, question);
   const nextAsk = suggestNextAsk(context, gaps);
-  const verify = verifyGrounding({ answer, context });
+  const hard = applyHardGrounding(answer, context);
   const claims = [];
 
   const okSources = sources.filter((s) => s.ok);
@@ -352,7 +478,7 @@ function buildEvidenceEnvelope({ context = {}, question = "", answer = "", toolT
       text: `Used ${okSources.map((s) => s.label).join(", ")}`
     });
   }
-  for (const w of verify.warnings) {
+  for (const w of hard.warnings) {
     claims.push({ type: "warning", text: w.message, code: w.code });
   }
 
@@ -362,8 +488,10 @@ function buildEvidenceEnvelope({ context = {}, question = "", answer = "", toolT
     gaps,
     nextAsk,
     claims,
-    grounded: verify.grounded,
-    warnings: verify.warnings,
+    grounded: hard.grounded,
+    warnings: hard.warnings,
+    rewritten: hard.rewritten,
+    cleanAnswer: hard.answer,
     toolTrace: (toolTrace || []).map((t) => ({
       tool: t.tool,
       label: t.label || t.tool,
@@ -382,5 +510,7 @@ module.exports = {
   suggestNextAsk,
   shouldHuntAgain,
   answerLooksWeak,
-  verifyGrounding
+  verifyGrounding,
+  applyHardGrounding,
+  allowedNumbersFromContext
 };

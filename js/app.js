@@ -14,6 +14,8 @@
     buddyOpen: false,
     buddyAttachments: [],
     buddyLastAttachments: [],
+    buddyAttachmentSessionId: null,
+    buddyAttachmentIds: [],
     buddyBusy: false,
     buddyWorkflow: localStorage.getItem("sbw.buddyWorkflow") || "auto",
     buddyMode: localStorage.getItem("sbw.buddyMode") || "chat",
@@ -160,6 +162,7 @@
     buddyAttachChips: document.getElementById("buddyAttachChips"),
     askStatus: document.getElementById("askStatus"),
     buddyDeptSelect: document.getElementById("buddyDeptSelect"),
+    btnAskStop: document.getElementById("btnAskStop"),
     compareOverlay: document.getElementById("compareOverlay"),
     requestDialog: document.getElementById("requestDialog"),
     requestForm: document.getElementById("requestForm"),
@@ -2185,6 +2188,7 @@
       }
     }
     if (els.btnAsk) els.btnAsk.disabled = !!state.buddyBusy;
+    if (els.btnAskStop) els.btnAskStop.hidden = !state.buddyBusy;
     persistBuddyHistory();
   }
 
@@ -3817,6 +3821,9 @@
         return;
       }
       state.buddyLastAttachments = attachmentsPayload.slice(0, 4);
+      // New upload — clear vault ids until server returns fresh ones
+      state.buddyAttachmentSessionId = null;
+      state.buddyAttachmentIds = [];
       setBuddyPendingTask({
         type: /\b(reconcil|verify|fact[-\s]?check)\b/i.test(question) ? "reconcile" : "analyze",
         fileNames: pendingFiles.map((f) => f.name)
@@ -3824,12 +3831,23 @@
     }
 
     const reconcileFollowUp = reconcileFollowUpFromContext(question, pendingFiles);
+    const hasVault =
+      Array.isArray(state.buddyAttachmentIds) && state.buddyAttachmentIds.length > 0;
     const priorAttachmentsPayload =
-      reconcileFollowUp && !pendingFiles.length && state.buddyLastAttachments?.length
+      reconcileFollowUp &&
+      !pendingFiles.length &&
+      !hasVault &&
+      state.buddyLastAttachments?.length
         ? state.buddyLastAttachments
         : undefined;
 
-    if (reconcileFollowUp && !pendingFiles.length && !priorAttachmentsPayload) {
+    if (
+      reconcileFollowUp &&
+      !pendingFiles.length &&
+      !priorAttachmentsPayload &&
+      !hasVault &&
+      !state.buddyAttachmentSessionId
+    ) {
       pushAssistant(
         "I still have the chat thread, but the file text from your earlier upload isn't cached anymore. Re-attach the same document and say reconcile — I'll compare it to live Cosmos data (no open study needed)."
       );
@@ -3943,10 +3961,14 @@
     }
 
     state.buddyBusy = true;
+    state._askController = typeof AbortController !== "undefined" ? new AbortController() : null;
+    if (els.btnAskStop) els.btnAskStop.hidden = false;
     paintBuddyChat();
     const deepCue =
       /\b(go deeper|think harder|deep dive|list them all|tell me every|full list)\b/i.test(question);
-    if (els.askStatus) els.askStatus.textContent = deepCue ? "Deep" : "Fast";
+    if (els.askStatus) {
+      els.askStatus.textContent = deepCue ? "Deep · cooking…" : "Fast · cooking…";
+    }
     const catalog = buildEditableFieldCatalog().filter((f) => {
       const tab = f.tab || (SBW.sectionForFieldPath ? SBW.sectionForFieldPath(f.path) : null);
       if (!tab || !isLockableSection(tab)) return true;
@@ -3997,7 +4019,7 @@
           role: t.role,
           content: String(t.content || "").slice(0, 4000)
         }));
-      const askController = typeof AbortController !== "undefined" ? new AbortController() : null;
+      const askController = state._askController;
       // Keep the browser from being the limiting factor on long deep-dive asks.
       // SWA/API infrastructure may still impose its own ceiling, but Buddy itself
       // should not abort after ~110s when the model is still working.
@@ -4034,6 +4056,11 @@
             fillFollowUp: Boolean(fillFollowUp),
             reconcileFollowUp: reconcileFollowUp || undefined,
             priorAttachments: priorAttachmentsPayload,
+            attachmentSessionId: state.buddyAttachmentSessionId || undefined,
+            attachmentIds:
+              reconcileFollowUp && !pendingFiles.length && state.buddyAttachmentIds?.length
+                ? state.buddyAttachmentIds
+                : undefined,
             user: state.entraUser || undefined,
             intelligenceHint: {
               indication: String(
@@ -4104,6 +4131,12 @@
         if (data.suggestedPendingTask?.type) {
           setBuddyPendingTask(data.suggestedPendingTask);
         }
+        if (data.attachmentSessionId) {
+          state.buddyAttachmentSessionId = data.attachmentSessionId;
+        }
+        if (Array.isArray(data.attachmentIds) && data.attachmentIds.length) {
+          state.buddyAttachmentIds = data.attachmentIds;
+        }
         persistBuddyHistory();
         paintBuddyModelLabel();
         if (Array.isArray(data.attachments) && data.attachments.some((a) => a && a.ok === false)) {
@@ -4129,6 +4162,7 @@
           const actionNote =
             data.buddyDebug?.actionCount > 0 ? ` · ${data.buddyDebug.actionCount} action(s)` : "";
           const huntNote = data.hunted ? " · hunted" : "";
+          const agentNote = data.agent ? ` · ${data.agent}` : "";
           const wfNote = data.workflow && data.workflow !== "auto" ? ` · ${data.workflow}` : "";
           const intelBits = [];
           if (data.intelligenceQuery?.indication) intelBits.push(data.intelligenceQuery.indication);
@@ -4137,16 +4171,18 @@
             ? ` · Intel${intelBits.length ? ` ${intelBits.join(" / ")}` : ""}`
             : "";
           if (data.answerFocus === "portfolio" && data.databaseStudyCount != null) {
-            els.askStatus.textContent = `${tierLabel}${intentNote}${deptNote}${actionNote}${huntNote}${intelNote} · Cosmos ${data.portfolioMatched ?? "?"} / ${data.databaseStudyCount}${wfNote}${soft}`;
+            els.askStatus.textContent = `${tierLabel}${agentNote}${intentNote}${deptNote}${actionNote}${huntNote}${intelNote} · Cosmos ${data.portfolioMatched ?? "?"} / ${data.databaseStudyCount}${wfNote}${soft}`;
           } else if (portfolioMode) {
-            els.askStatus.textContent = `${tierLabel}${intentNote}${deptNote}${actionNote}${huntNote}${intelNote}${wfNote}${soft}`;
+            els.askStatus.textContent = `${tierLabel}${agentNote}${intentNote}${deptNote}${actionNote}${huntNote}${intelNote}${wfNote}${soft}`;
           } else {
             els.askStatus.textContent = hasOpenStudy()
-              ? `${tierLabel}${intentNote}${deptNote}${actionNote}${huntNote}${intelNote} · ${state.study.studyId}${wfNote}${soft}`
-              : `${tierLabel}${intentNote}${deptNote}${actionNote}${huntNote}${intelNote}${wfNote}${soft}`;
+              ? `${tierLabel}${agentNote}${intentNote}${deptNote}${actionNote}${huntNote}${intelNote} · ${state.study.studyId}${wfNote}${soft}`
+              : `${tierLabel}${agentNote}${intentNote}${deptNote}${actionNote}${huntNote}${intelNote}${wfNote}${soft}`;
           }
         }
         state.buddyBusy = false;
+        state._askController = null;
+        if (els.btnAskStop) els.btnAskStop.hidden = true;
         paintBuddyChat();
         return;
       } else {
@@ -4160,12 +4196,17 @@
       const aborted = err && (err.name === "AbortError" || /aborted/i.test(String(err.message || "")));
       pushAssistant(
         aborted
-          ? "Buddy took too long (gateway limit). Try a simpler Fast ask, or split the question — say “go deeper” for Deep analysis."
+          ? state._askStopped
+            ? "Stopped."
+            : "Buddy took too long (gateway limit). Try a simpler Fast ask, or split the question — say “go deeper” for Deep analysis."
           : `Could not reach Buddy. ${String(err.message || err)}`
       );
+      state._askStopped = false;
       if (els.askStatus) els.askStatus.textContent = "Fast";
     }
     state.buddyBusy = false;
+    state._askController = null;
+    if (els.btnAskStop) els.btnAskStop.hidden = true;
     paintBuddyChat();
   }
 

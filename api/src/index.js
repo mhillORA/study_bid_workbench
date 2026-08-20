@@ -43,6 +43,7 @@ const { routeBuddyAsk, isCompareTwoStudiesQuestion, isCrossStudyQuestion } = req
 const { fetchBuddyIntelligence, fetchBuddyPortfolio } = require("./buddyCosmosFetch");
 const { parseBuddyActions } = require("./buddyActions");
 const { maybeHuntAndRetry, toolTraceFromPrefetch } = require("./buddyHunt");
+const { storeAttachments, loadAttachments } = require("./buddyAttachmentVault");
 const {
   loadDeptContexts,
   saveDeptContexts,
@@ -1501,12 +1502,51 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
     let uploaded = await normalizeBuddyAttachments(body.attachments);
     let hasOkUpload = (uploaded.files || []).some((f) => f.ok && f.text);
     const history = body.history || [];
+    let attachmentSessionId = body.attachmentSessionId || null;
+    let vaultFileMeta = [];
+
+    // Vault replay: attachmentIds / sessionId (preferred over base64 priorAttachments)
+    if (
+      !hasOkUpload &&
+      (Array.isArray(body.attachmentIds) && body.attachmentIds.length || body.attachmentSessionId)
+    ) {
+      try {
+        const vaulted = await loadAttachments(getDb, {
+          attachmentIds: body.attachmentIds || [],
+          sessionId: body.attachmentSessionId || null
+        });
+        if ((vaulted.files || []).some((f) => f.ok && f.text)) {
+          uploaded = vaulted;
+          hasOkUpload = true;
+          attachmentSessionId = vaulted.sessionId || body.attachmentSessionId || null;
+        }
+      } catch (_) {
+        /* fall through to priorAttachments */
+      }
+    }
+
     // Reconcile follow-up: client replays the last attachment from the prior turn.
     if (!hasOkUpload && Array.isArray(body.priorAttachments) && body.priorAttachments.length) {
       const prior = await normalizeBuddyAttachments(body.priorAttachments);
       if ((prior.files || []).some((f) => f.ok && f.text)) {
         uploaded = prior;
         hasOkUpload = true;
+      }
+    }
+
+    // Persist new uploads into vault for multi-turn reconcile
+    if (hasOkUpload && (uploaded.files || []).some((f) => f.ok && f.text && !f.fromVault)) {
+      try {
+        const stored = await storeAttachments(getDb, uploaded, {
+          sessionId: attachmentSessionId || undefined,
+          userId: body.user?.email || body.user?.userId || null
+        });
+        if (stored.stored) {
+          attachmentSessionId = stored.sessionId;
+          vaultFileMeta = stored.files || [];
+        }
+      } catch (_) {
+        /* vault optional — base64 replay still works */
       }
     }
     let question = String(body.question || "").trim();
@@ -2042,7 +2082,16 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       routerTools
     });
 
-    // askAi is soft-fail: never throws for model/provider errors
+    const toolDeps = {
+      getDb,
+      buildPortfolioContext,
+      loadLiveContext,
+      loadDeptContexts,
+      buildDeptContextForAsk
+    };
+
+    // Stack: Node hunts Cosmos / TrialHub / CT.gov → Foundry Fast or Terra answers.
+    // Soft-fail: never throws for model/provider errors.
     const firstResult = await askAi({
       question,
       context: contextPayload,
@@ -2051,7 +2100,8 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       body
     });
 
-    const huntOut = await maybeHuntAndRetry({
+    // If Foundry answer is weak/ungrounded, gap-fill Cosmos packs and ask Foundry once more.
+    let huntOut = await maybeHuntAndRetry({
       askAi,
       context: contextPayload,
       firstResult,
@@ -2060,14 +2110,17 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       tier: modelTier,
       body,
       initialToolTrace,
-      toolDeps: {
-        getDb,
-        buildPortfolioContext,
-        loadLiveContext,
-        loadDeptContexts,
-        buildDeptContextForAsk
-      }
+      toolDeps
     });
+    if (huntOut.evidence?.cleanAnswer) {
+      huntOut = {
+        ...huntOut,
+        result: {
+          ...huntOut.result,
+          answer: huntOut.evidence.cleanAnswer
+        }
+      };
+    }
 
     const result = huntOut.result;
     const evidence = huntOut.evidence;
@@ -2085,7 +2138,6 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         const built = await buildBuddyDocExports(answer, question);
         if (built.html) {
           answer = built.answer;
-          // Re-attach markers so the client can still open HTML; also send binary exports
           answer = `${built.answer}\n\nHTML_REPORT_START\n${built.html}\nHTML_REPORT_END`;
           reportTitle = built.title;
           docExports = built.exports || [];
@@ -2104,6 +2156,8 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       evidence,
       hunted: Boolean(huntOut.hunted),
       huntReason: huntOut.huntReason || null,
+      attachmentSessionId: attachmentSessionId || null,
+      attachmentIds: (vaultFileMeta.filter((f) => f.id) || []).map((f) => f.id),
       suggestedPendingTask: suggestedPendingTask || null,
       ok: result.provider !== "error",
       model: result.model,

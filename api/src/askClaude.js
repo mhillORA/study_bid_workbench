@@ -771,15 +771,12 @@ function providerStatus() {
   const agentDeep = foundryAgentConfig("deep");
   const agent = agentDeep.enabled ? agentDeep : agentFast;
   const azure = Boolean(cfg.endpoint) && Boolean(cfg.apiKey) && Boolean(cfg.deployment);
-  const claude = Boolean(envSet("ANTHROPIC_API_KEY"));
   const active =
     agentFast.enabled || agentDeep.enabled
       ? "foundry_agent"
       : azure
         ? "azure_openai"
-        : claude
-          ? "claude"
-          : null;
+        : null;
 
   // Presence only — never return secret values
   const raw = (name) => {
@@ -809,7 +806,6 @@ function providerStatus() {
     foundryAgentFast: agentFast.enabled ? agentFast.name : null,
     foundryAgentDeep: agentDeep.enabled ? agentDeep.name : null,
     displayName: buddyDisplayName(agent.enabled ? agent.name : cfg.deployment),
-    claude,
     active,
     // Deployment / agent name only (not a secret)
     deployment: agent.enabled ? agent.name || cfg.deployment || null : cfg.deployment || null,
@@ -2377,6 +2373,11 @@ async function askAi(opts) {
     }
   };
 
+  // Foundry is the only brain (BudgetBuddy fast → BudgetBuddy2 terra).
+  // Node hunts Cosmos / TrialHub / CT.gov into context BEFORE this call
+  // (progressive fetch + maybeHuntAndRetry in index.js). Do not divert to
+  // Anthropic or a separate Azure function-calling path.
+
   const callFoundry = (t, ctx) =>
     askFoundryAgent({
       question: opts.question,
@@ -2461,26 +2462,23 @@ async function askAi(opts) {
         };
       }
     }
-  } else if (status.active === "claude") {
-    result = await tryProvider("claude", () => askClaude(opts));
   }
 
-  if (!result && status.active !== "claude" && envSet("ANTHROPIC_API_KEY")) {
-    result = await tryProvider("claude_fallback", () => askClaude(opts));
-  }
+  // No Anthropic / Claude path — Ora Buddy is Foundry-only.
 
   if (result) {
     return {
       ...result,
       tier: result.escalated ? "deep" : tier,
-      modelTier: result.escalated ? "deep" : tier
+      modelTier: result.escalated ? "deep" : tier,
+      attempts: attempts.length ? attempts : undefined
     };
   }
 
   if (!status.active) {
     return buddySoftFail(
       new Error(
-        "Ask Buddy is not configured. Set AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, and FOUNDRY_AGENT_NAME (or AZURE_OPENAI_DEPLOYMENT)."
+        "Ask Buddy is not configured. Set AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, and FOUNDRY_AGENT_NAME_FAST / FOUNDRY_AGENT_NAME_DEEP (BudgetBuddy + BudgetBuddy2)."
       ),
       { attempts }
     );
@@ -2502,5 +2500,9 @@ module.exports = {
   inferModelTier,
   shouldEscalateToDeep,
   foundryAgentConfig,
-  buddyDisplayName
+  buddyDisplayName,
+  systemPromptFor,
+  azureConfig,
+  buildAzureChatAttempts,
+  extractAzureMessageText
 };

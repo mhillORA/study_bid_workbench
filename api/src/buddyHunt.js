@@ -61,7 +61,9 @@ async function maybeHuntAndRetry(opts) {
       toolTrace: initialToolTrace
     });
     return {
-      result: firstResult,
+      result: evidence.cleanAnswer
+        ? { ...firstResult, answer: evidence.cleanAnswer }
+        : firstResult,
       context,
       evidence,
       hunted: false,
@@ -197,22 +199,26 @@ async function maybeHuntAndRetry(opts) {
     },
     history,
     tier: tier === "deep" ? "deep" : "fast",
-    body
+    body,
+    skipAgentLoop: true
   });
 
-  const finalResult = {
+  let finalResult = {
     ...retry,
     hunted: true,
     huntReason: decision.reason,
     priorProvider: firstResult.provider
   };
 
-  const evidence = buildEvidenceEnvelope({
+  let evidence = buildEvidenceEnvelope({
     context: nextContext,
     question,
     answer: finalResult.answer,
     toolTrace
   });
+  if (evidence.cleanAnswer) {
+    finalResult = { ...finalResult, answer: evidence.cleanAnswer };
+  }
 
   return {
     result: finalResult,
