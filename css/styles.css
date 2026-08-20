@@ -918,6 +918,59 @@ html.buddy-popout-mode #buddyPopout {
   display: none !important;
 }
 
+/* Full-page Buddy tab — same panel, docked in main */
+html.buddy-workspace .buddy-fab {
+  display: none !important;
+}
+
+html.buddy-workspace .main > .panel#viewRoot {
+  min-height: calc(100vh - 9rem);
+}
+
+html.buddy-workspace .buddy-panel {
+  position: fixed;
+  top: 0;
+  left: 280px;
+  right: 0;
+  bottom: 0;
+  width: auto !important;
+  height: auto !important;
+  min-width: 0;
+  min-height: 0;
+  max-width: none;
+  max-height: none;
+  border-radius: 0;
+  border-left: 1px solid var(--line);
+  box-shadow: none;
+  resize: none;
+  z-index: 30;
+}
+
+html.buddy-workspace .buddy-resize-handle {
+  display: none !important;
+}
+
+html.buddy-workspace .buddy-chat-log {
+  flex: 1 1 auto;
+}
+
+html.buddy-workspace .buddy-compose .textarea {
+  min-height: 5.5rem;
+}
+
+.buddy-page-shell {
+  display: grid;
+  gap: 0.75rem;
+  padding: 1.25rem 0;
+  max-width: 36rem;
+}
+
+@media (max-width: 900px) {
+  html.buddy-workspace .buddy-panel {
+    left: 0;
+  }
+}
+
 .chat-turn.assistant .chat-body .buddy-h {
   display: block;
   color: #1d4ed8;

@@ -608,6 +608,7 @@
 
   function afterSetSection(sectionId) {
     render();
+    syncBuddyWorkspaceMode();
     if (hasOpenStudy()) {
       refreshLocks().then(() => {
         if (document.querySelector(".lock-bar")) render();
@@ -1183,6 +1184,7 @@
 
   const SECTION_NAV_ALIASES = {
     hub: ["hub", "home"],
+    buddy: ["buddy", "ask buddy", "ask", "chat", "talk to buddy"],
     studies: ["studies", "study list"],
     versions: ["versions", "diff", "versions / diff"],
     intelligence: [
@@ -1527,19 +1529,51 @@
     return byTab;
   }
 
-  function openBuddy() {
+  function isBuddyWorkspace() {
+    return state.sectionId === "buddy" && !document.documentElement.classList.contains("buddy-popout-mode");
+  }
+
+  function syncBuddyWorkspaceMode() {
+    if (document.documentElement.classList.contains("buddy-popout-mode")) return;
+    const on = state.sectionId === "buddy";
+    document.documentElement.classList.toggle("buddy-workspace", on);
+    if (els.buddyClose) {
+      els.buddyClose.title = on ? "Show as floating window" : "Close Buddy";
+      els.buddyClose.setAttribute(
+        "aria-label",
+        on ? "Show Buddy as floating window" : "Close Buddy"
+      );
+    }
+    if (on) {
+      const alreadyOpen = state.buddyOpen && els.buddyPanel && !els.buddyPanel.hidden;
+      openBuddy({ focus: !alreadyOpen, skipSize: true });
+      if (els.buddyPanel) {
+        els.buddyPanel.style.removeProperty("--buddy-w");
+        els.buddyPanel.style.removeProperty("--buddy-h");
+      }
+    } else {
+      applyBuddyPanelSize();
+    }
+  }
+
+  function openBuddy(opts = {}) {
+    const focus = opts.focus !== false;
     state.buddyOpen = true;
     if (els.buddyPanel) {
       els.buddyPanel.hidden = false;
       els.buddyPanel.setAttribute("aria-hidden", "false");
-      applyBuddyPanelSize();
+      if (!opts.skipSize && !isBuddyWorkspace()) applyBuddyPanelSize();
     }
     if (els.buddyFab) els.buddyFab.setAttribute("aria-expanded", "true");
     paintBuddyChat();
     paintBuddyDeptSelect();
     if (!state.buddyDeptPack) loadBuddyDeptContexts().catch(() => {});
     refreshBuddyModelLabel();
-    if (els.askInput) els.askInput.focus();
+    if (focus && els.askInput) els.askInput.focus();
+  }
+
+  function openBuddyPage() {
+    setSection("buddy");
   }
 
   const BUDDY_SIZE_KEY = "sbw.buddyPanelSize";
@@ -1795,6 +1829,7 @@
 
   function applyBuddyPanelSize() {
     if (!els.buddyPanel || document.documentElement.classList.contains("buddy-popout-mode")) return;
+    if (document.documentElement.classList.contains("buddy-workspace")) return;
     try {
       const raw = localStorage.getItem(BUDDY_SIZE_KEY);
       if (!raw) return;
@@ -1806,6 +1841,8 @@
 
   function persistBuddyPanelSize() {
     if (!els.buddyPanel) return;
+    if (document.documentElement.classList.contains("buddy-workspace")) return;
+    if (document.documentElement.classList.contains("buddy-popout-mode")) return;
     const rect = els.buddyPanel.getBoundingClientRect();
     if (rect.width < 50 || rect.height < 50) return;
     try {
@@ -2076,6 +2113,25 @@
   }
 
   function closeBuddy() {
+    // Full-page Buddy tab → float (same chat), so both modes stay available
+    if (isBuddyWorkspace()) {
+      state.sectionId = "hub";
+      document.documentElement.classList.remove("buddy-workspace");
+      if (els.buddyClose) {
+        els.buddyClose.title = "Close Buddy";
+        els.buddyClose.setAttribute("aria-label", "Close Buddy");
+      }
+      applyBuddyPanelSize();
+      render();
+      state.buddyOpen = true;
+      if (els.buddyPanel) {
+        els.buddyPanel.hidden = false;
+        els.buddyPanel.setAttribute("aria-hidden", "false");
+      }
+      if (els.buddyFab) els.buddyFab.setAttribute("aria-expanded", "true");
+      if (els.askInput) els.askInput.focus();
+      return;
+    }
     state.buddyOpen = false;
     if (els.buddyPanel) {
       els.buddyPanel.hidden = true;
@@ -2201,7 +2257,8 @@
   function resolveSectionId(target) {
     const t = String(target || "").toLowerCase().trim();
     if (!t) return null;
-    if (["ask", "ask buddy", "buddy", "chat"].includes(t)) return "__buddy__";
+    if (["ask", "ask buddy", "buddy", "chat", "talk to buddy"].includes(t)) return "buddy";
+    if (t === "__buddy__") return "buddy";
     for (const s of SBW.sections) {
       if (s.id === t || s.label.toLowerCase() === t) return s.id;
     }
@@ -3251,8 +3308,8 @@
       else if (learned.learn) text = "Proposed a note for Buddy context — click Save to store it.";
       else if (extracted.patches.length) {
         text = "Filling those fields on the open study.";
-      } else if (sectionId === "__buddy__") {
-        text = "Buddy is already open.";
+      } else if (sectionId === "buddy") {
+        text = "Buddy is ready — ask anything about this study or the portfolio.";
       } else if (sectionId) {
         text = `Opened ${(SBW.sections.find((s) => s.id === sectionId) || {}).label || sectionId}.`;
       } else {
@@ -3336,7 +3393,7 @@
         return;
       }
     }
-    if (sectionId === "__buddy__") openBuddy();
+    if (sectionId === "buddy") setSection("buddy");
     else if (sectionId) {
       setSection(sectionId);
       // Buddy used to NAVIGATE:intelligence without answering — actually run the query so the tab isn't empty
@@ -3868,8 +3925,9 @@
 
     const navOnly = !pendingFiles.length ? matchNavigateOnly(question) : null;
     if (navOnly) {
-      if (navOnly === "__buddy__") {
-        pushAssistant("Buddy is open — ask me anything about this study.");
+      if (navOnly === "buddy") {
+        setSection("buddy");
+        pushAssistant("Buddy is ready — ask anything about this study or the portfolio.");
         paintBuddyChat();
         return;
       }
@@ -8198,6 +8256,12 @@
     return escapeHtml(str).replaceAll('"', "&quot;");
   }
 
+  function renderBuddyPage() {
+    return `<div class="buddy-page-shell">
+      <p class="muted">Buddy fills this workspace. On any other tab, use the floating <strong>Buddy</strong> button for a side chat — same conversation either way.</p>
+    </div>`;
+  }
+
   function render() {
     recalc();
     const user = currentUser();
@@ -8207,11 +8271,14 @@
       ? `${state.study.studyId} · ${state.study.clientName || "—"} · ${state.study.versionLabel || "—"}${state.source === "cosmos" ? " · Cosmos" : ""}`
       : "No study selected · All studies (portfolio)";
     els.pageTitle.textContent = section.label;
-    els.pageSubtitle.textContent = !hasOpenStudy()
-      ? "Portfolio mode — Buddy answers from all Cosmos studies"
-      : section.department
-        ? `Editable by ${section.department}${canEdit(section.department) ? "" : " (view only for you)"}`
-        : "Shared study workspace";
+    els.pageSubtitle.textContent =
+      section.id === "buddy"
+        ? "Talk to Buddy full-screen — floating chat stays available on other tabs"
+        : !hasOpenStudy()
+          ? "Portfolio mode — Buddy answers from all Cosmos studies"
+          : section.department
+            ? `Editable by ${section.department}${canEdit(section.department) ? "" : " (view only for you)"}`
+            : "Shared study workspace";
     if (els.btnClearStudy) {
       els.btnClearStudy.disabled = !hasOpenStudy();
       els.btnClearStudy.textContent = hasOpenStudy() ? "All studies" : "All studies ✓";
@@ -8222,6 +8289,7 @@
     let html = "";
     switch (section.id) {
       case "hub": html = renderHub(); break;
+      case "buddy": html = renderBuddyPage(); break;
       case "hlbp": html = renderHlbp(); break;
       case "ops": html = renderOpsDashboard(); break;
       case "upload": html = renderUpload(); break;
@@ -8261,6 +8329,7 @@
       if (empty) loadBuddyContext().catch(() => {});
       if (!state.buddyDeptPack) loadBuddyDeptContexts().catch(() => {});
     }
+    syncBuddyWorkspaceMode();
   }
 
   function bind() {
@@ -9013,7 +9082,7 @@
     els.btnSave.addEventListener("click", save);
     els.btnExport.addEventListener("click", exportJson);
 
-    if (els.btnBuddyOpen) els.btnBuddyOpen.addEventListener("click", openBuddy);
+    if (els.btnBuddyOpen) els.btnBuddyOpen.addEventListener("click", openBuddyPage);
     if (els.btnNewStudy) els.btnNewStudy.addEventListener("click", openNewStudyDialog);
     if (els.btnClearStudy) els.btnClearStudy.addEventListener("click", () => clearOpenStudy());
     if (els.newStudyForm) {
@@ -9258,7 +9327,7 @@
 
   // Land user on their department page on first load (Admin stays on Hub)
   const user = currentUser();
-  if (state.sectionId === "ask") state.sectionId = "hub";
+  if (state.sectionId === "ask") state.sectionId = "buddy";
 
   // Deep-link: ?section=intelligence&q=Dry+Eye&countries=United%20States or global=true
   try {

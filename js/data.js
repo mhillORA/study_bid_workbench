@@ -12,6 +12,7 @@ SBW.users = [
 
 SBW.sections = [
   { id: "hub", label: "Hub", department: null },
+  { id: "buddy", label: "Buddy", department: null },
   { id: "ops", label: "Ops Dashboard", department: null },
   { id: "studies", label: "Studies", department: null },
   { id: "versions", label: "Versions / Diff", department: null },
