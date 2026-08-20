@@ -9026,6 +9026,17 @@
     if (els.buddyFab) els.buddyFab.addEventListener("click", openBuddy);
     if (els.buddyClose) els.buddyClose.addEventListener("click", closeBuddy);
     if (els.btnAsk) els.btnAsk.addEventListener("click", sendAsk);
+    if (els.btnAskStop) {
+      els.btnAskStop.addEventListener("click", () => {
+        state._askStopped = true;
+        if (state._askController) {
+          try {
+            state._askController.abort();
+          } catch (_) {}
+        }
+        if (els.askStatus) els.askStatus.textContent = "Stopped";
+      });
+    }
     if (els.buddyDeptSelect) {
       els.buddyDeptSelect.addEventListener("change", () => {
         setBuddyDept(els.buddyDeptSelect.value);

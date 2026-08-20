@@ -1,5 +1,6 @@
 /**
- * Ask Buddy — study context + LLM (Azure OpenAI preferred; Claude optional fallback).
+ * Ask Buddy — study context + Foundry agents only (BudgetBuddy fast, BudgetBuddy2 terra).
+ * Node preloads Cosmos / TrialHub / CT.gov; AZURE_OPENAI_* env vars are Foundry project creds.
  */
 
 const fs = require("fs");
@@ -421,15 +422,12 @@ function systemPromptFor(context) {
       : " context.legacyAnterior IS attached for trust notes only — ASK before citing legacy enrollment numbers (enrollmentIncluded=false)."
     : "";
   const agent = foundryAgentConfig();
-  const dep = agent.enabled ? agent.name : azureConfig().deployment;
+  const dep = agent.enabled ? agent.name : null;
   const display = buddyDisplayName(dep);
   const modelNote = dep
-    ? agent.enabled
-    ? ` You are "${display}" (Ask Buddy for Ora Clinical) with live web search. ` +
-      `If asked who/what you are, say "${display}" or "Ask Buddy" — do not lead with the internal Foundry id "${dep}" unless they ask for the technical agent/deployment name. ` +
+    ? ` You are "${display}" (Ask Buddy for Ora Clinical) via Azure AI Foundry with live web search. ` +
+      `If asked who/what you are, say "${display}" or "Ask Buddy" — do not lead with the internal Foundry id "${dep}" unless they ask for the technical agent name. ` +
       `For public facts (sponsor company revenue, filings, news) — unless moneyIntent=ora_earned — SEARCH ON THIS TURN and give a ranked answer — never stall with "I can look it up" or multi-option clarifying menus.`
-    : ` You are "${display}", served via Azure. If asked who you are, say "${display}" or "Ask Buddy". ` +
-      `Only mention the technical deployment name "${dep}" if they ask for the deployment/model id — do not claim GPT-4 or another model unless that is the deployment name.`
     : "";
   const user = context?.user;
   if (!user?.firstName && !user?.displayName && !user?.email) {
@@ -770,13 +768,8 @@ function providerStatus() {
   const agentFast = foundryAgentConfig("fast");
   const agentDeep = foundryAgentConfig("deep");
   const agent = agentDeep.enabled ? agentDeep : agentFast;
-  const azure = Boolean(cfg.endpoint) && Boolean(cfg.apiKey) && Boolean(cfg.deployment);
-  const active =
-    agentFast.enabled || agentDeep.enabled
-      ? "foundry_agent"
-      : azure
-        ? "azure_openai"
-        : null;
+  const foundryReady = agentFast.enabled || agentDeep.enabled;
+  const active = foundryReady ? "foundry_agent" : null;
 
   // Presence only — never return secret values
   const raw = (name) => {
@@ -800,17 +793,17 @@ function providerStatus() {
   }
 
   return {
-    azureOpenAI: azure,
-    foundryAgent: agentFast.enabled || agentDeep.enabled,
+    // Chat completions are not used — AZURE_OPENAI_* are Foundry project credentials only.
+    azureOpenAI: false,
+    foundryAgent: foundryReady,
+    foundryProjectCreds: Boolean(cfg.endpoint && cfg.apiKey),
     foundryAgentName: agent.name || null,
     foundryAgentFast: agentFast.enabled ? agentFast.name : null,
     foundryAgentDeep: agentDeep.enabled ? agentDeep.name : null,
-    displayName: buddyDisplayName(agent.enabled ? agent.name : cfg.deployment),
+    displayName: buddyDisplayName(agent.enabled ? agent.name : null),
     active,
-    // Deployment / agent name only (not a secret)
-    deployment: agent.enabled ? agent.name || cfg.deployment || null : cfg.deployment || null,
-    effort: envSet("ANTHROPIC_EFFORT") || "low",
-    buildId: "2026-08-03-foundry-agent",
+    deployment: agent.enabled ? agent.name || null : null,
+    buildId: "2026-08-20-foundry-only",
     endpointKind: agent.enabled
       ? "foundry_agent_responses"
       : !cfg.endpoint
@@ -819,11 +812,10 @@ function providerStatus() {
           ? "foundry_project"
           : isOpenAiV1Endpoint(cfg.endpoint)
             ? "openai_v1"
-            : "classic_azure_openai",
+            : "foundry_project",
     envCheck: {
       AZURE_OPENAI_ENDPOINT: raw("AZURE_OPENAI_ENDPOINT"),
       AZURE_OPENAI_API_KEY: raw("AZURE_OPENAI_API_KEY"),
-      AZURE_OPENAI_DEPLOYMENT: raw("AZURE_OPENAI_DEPLOYMENT"),
       FOUNDRY_AGENT_NAME: raw("FOUNDRY_AGENT_NAME"),
       FOUNDRY_AGENT_NAME_FAST: raw("FOUNDRY_AGENT_NAME_FAST"),
       FOUNDRY_AGENT_NAME_DEEP: raw("FOUNDRY_AGENT_NAME_DEEP"),
@@ -1887,77 +1879,10 @@ function buildAzureChatAttempts(endpoint, deployment, apiVersion) {
   });
 }
 
-/**
- * Supports Foundry project endpoints and classic Azure OpenAI.
- * Tries multiple URL shapes because Foundry project URLs often 404 for chat.
- */
-async function askAzureOpenAI({ question, context, history }) {
-  const cfg = azureConfig();
-  const endpoint = cfg.endpoint.replace(/\/$/, "");
-  const apiKey = cfg.apiKey;
-  const deployment = cfg.deployment;
-  const apiVersion = envSet("AZURE_OPENAI_API_VERSION") || "2024-08-01-preview";
-
-  if (!endpoint || !apiKey || !deployment) {
-    throw new Error(
-      "Ask Buddy is not configured. Need endpoint + API key + deployment on SWA. " +
-        `Key must be named AZURE_OPENAI_API_KEY (currently: endpoint=${cfg.sources.endpoint || "missing"}, key=${cfg.sources.apiKey || "missing"}, deployment=${cfg.sources.deployment || "missing"}).`
-    );
-  }
-
-  const messages = [
-    { role: "system", content: systemPromptFor(context) },
-    ...buildHistoryMessages(history),
-    { role: "user", content: userBlock(question, context) }
-  ];
-
-  const attempts = buildAzureChatAttempts(endpoint, deployment, apiVersion);
-  if (!attempts.length) {
-    throw new Error(`Could not build Azure chat URL from endpoint: ${endpoint}`);
-  }
-
-  const failures = [];
-  for (const attempt of attempts) {
-    const body = { ...attempt.body, messages };
-    // classic body has no model field
-    if (!("model" in attempt.body)) delete body.model;
-
-    const res = await fetch(attempt.url, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "api-key": apiKey
-      },
-      body: JSON.stringify(body)
-    });
-
-    const respBody = await res.json().catch(() => ({}));
-    if (res.ok) {
-      const text = extractAzureMessageText(respBody);
-      return {
-        answer: ensureBuddyAnswer(text),
-        model: respBody?.model || deployment,
-        provider: "azure_openai",
-        via: attempt.label,
-        usage: respBody?.usage || null
-      };
-    }
-
-    const msg =
-      respBody?.error?.message ||
-      respBody?.error?.code ||
-      (Object.keys(respBody || {}).length ? JSON.stringify(respBody).slice(0, 200) : res.statusText);
-    failures.push(`${attempt.label} → ${res.status} ${msg}`);
-
-    // Retry other hosts only when the route itself is missing
-    if (res.status !== 404) {
-      break;
-    }
-  }
-
+/** @deprecated Chat completions removed — Buddy is Foundry agents only. */
+async function askAzureOpenAI() {
   throw new Error(
-    `Azure AI chat failed for deployment "${deployment}". ` +
-      `Check deployment name matches Foundry exactly. Tried: ${failures.join(" | ")}`
+    "Azure chat completions are not used. Buddy calls Foundry agents only (BudgetBuddy / BudgetBuddy2)."
   );
 }
 
@@ -2286,9 +2211,7 @@ function extractAzureMessageText(respBody) {
   return String(msg.refusal || "").trim();
 }
 
-/** Prefer Foundry Agent (web search); else Azure chat completions; else Claude.
- * Never throws — Buddy UI must always get a speakable answer (no HTTP 500).
- */
+/** Foundry agents only (BudgetBuddy fast → BudgetBuddy2 terra). Never throws — soft-fail answer. */
 function slimContextForRetry(context) {
   const c = { ...(context || {}) };
   if (c.portfolio && typeof c.portfolio === "object") {
@@ -2373,10 +2296,8 @@ async function askAi(opts) {
     }
   };
 
-  // Foundry is the only brain (BudgetBuddy fast → BudgetBuddy2 terra).
-  // Node hunts Cosmos / TrialHub / CT.gov into context BEFORE this call
-  // (progressive fetch + maybeHuntAndRetry in index.js). Do not divert to
-  // Anthropic or a separate Azure function-calling path.
+  // Foundry only: BudgetBuddy (fast) → BudgetBuddy2 (terra).
+  // Node hunts Cosmos / TrialHub / CT.gov into context BEFORE this call.
 
   const callFoundry = (t, ctx) =>
     askFoundryAgent({
@@ -2423,48 +2344,22 @@ async function askAi(opts) {
         };
       }
     }
+    // Last resort: same Foundry agents with trimmed context (no chat-completions path)
     if (!result) {
-      const cfg = azureConfig();
-      if (cfg.endpoint && cfg.apiKey && cfg.deployment) {
-        result = await tryProvider("azure_openai_fallback", () => askAzureOpenAI(opts));
-        if (result) {
-          result = {
-            ...result,
-            provider: "azure_openai_fallback",
-            agentError: String(lastErr?.message || lastErr || ""),
-            note: `Foundry agent failed; used deployment ${cfg.deployment} instead.`
-          };
-        }
-        if (!result) {
-          const slim = { ...opts, context: slimContextForRetry(opts.context) };
-          result = await tryProvider("azure_openai_slim", () => askAzureOpenAI(slim));
-          if (result) {
-            result = {
-              ...result,
-              provider: "azure_openai_slim_fallback",
-              agentError: String(lastErr?.message || lastErr || ""),
-              note: "Retried with trimmed context after model failure."
-            };
-          }
-        }
-      }
-    }
-  } else if (status.active === "azure_openai") {
-    result = await tryProvider("azure_openai", () => askAzureOpenAI(opts));
-    if (!result) {
-      const slim = { ...opts, context: slimContextForRetry(opts.context) };
-      result = await tryProvider("azure_openai_slim", () => askAzureOpenAI(slim));
+      const slimCtx = slimContextForRetry(opts.context);
+      const slimTier = foundryAgentConfig("deep").enabled ? "deep" : tier;
+      result = await tryProvider(`foundry_agent_${slimTier}_slim`, () =>
+        callFoundry(slimTier, slimCtx)
+      );
       if (result) {
         result = {
           ...result,
-          provider: "azure_openai_slim_fallback",
-          note: "Retried with trimmed context after model failure."
+          provider: result.provider || "foundry_agent",
+          note: "Retried Foundry with trimmed context after agent failure."
         };
       }
     }
   }
-
-  // No Anthropic / Claude path — Ora Buddy is Foundry-only.
 
   if (result) {
     return {
@@ -2478,13 +2373,13 @@ async function askAi(opts) {
   if (!status.active) {
     return buddySoftFail(
       new Error(
-        "Ask Buddy is not configured. Set AZURE_OPENAI_ENDPOINT, AZURE_OPENAI_API_KEY, and FOUNDRY_AGENT_NAME_FAST / FOUNDRY_AGENT_NAME_DEEP (BudgetBuddy + BudgetBuddy2)."
+        "Ask Buddy is not configured. Set AZURE_OPENAI_ENDPOINT + AZURE_OPENAI_API_KEY (Foundry project) and FOUNDRY_AGENT_NAME_FAST / FOUNDRY_AGENT_NAME_DEEP (BudgetBuddy + BudgetBuddy2)."
       ),
       { attempts }
     );
   }
 
-  return buddySoftFail(lastErr || new Error(attempts.join(" | ") || "all providers failed"), {
+  return buddySoftFail(lastErr || new Error(attempts.join(" | ") || "Foundry agents failed"), {
     attempts
   });
 }
