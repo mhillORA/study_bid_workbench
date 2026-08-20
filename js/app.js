@@ -18,7 +18,7 @@
     buddyAttachmentIds: [],
     buddyBusy: false,
     buddyWorkflow: localStorage.getItem("sbw.buddyWorkflow") || "auto",
-    buddyMode: localStorage.getItem("sbw.buddyMode") || "chat",
+    buddyMode: "chat",
     buddyDept: localStorage.getItem("sbw.buddyDept") || "auto",
     buddyDeptPack: null,
     buddyPendingTask: null,
@@ -202,11 +202,9 @@
     return WORKBENCH_DEPT_TO_BUDDY[dept] || "auto";
   }
 
-  /** Dept id sent to /api/ask — Auto resolves to the signed-in user's department when known. */
+  /** Dept id sent to /api/ask — lens UI paused; always all playbooks. */
   function effectiveBuddyDept() {
-    const sel = String(state.buddyDept || "auto").trim().toLowerCase();
-    if (sel && sel !== "auto") return sel;
-    return defaultBuddyDeptFromUser();
+    return "auto";
   }
 
   function buddyDeptLabel(id) {
@@ -1970,28 +1968,22 @@
     paintBuddyModelLabel();
   }
 
-  function setBuddyMode(mode, { persist = true } = {}) {
-    const next = mode === "do" ? "do" : "chat";
-    state.buddyMode = next;
-    if (persist) localStorage.setItem("sbw.buddyMode", next);
+  function setBuddyMode(_mode, { persist = true } = {}) {
+    // Do mode UI paused — Buddy is chat-only for now.
+    state.buddyMode = "chat";
+    if (persist) localStorage.setItem("sbw.buddyMode", "chat");
     document.querySelectorAll("[data-buddy-mode]").forEach((btn) => {
-      const on = btn.getAttribute("data-buddy-mode") === next;
+      const on = btn.getAttribute("data-buddy-mode") === "chat";
       btn.setAttribute("aria-selected", on ? "true" : "false");
     });
     if (els.askInput && !els.askInput.matches(":focus")) {
       const wf = state.buddyWorkflow || "auto";
       els.askInput.placeholder =
-        next === "do"
-          ? wf === "budget"
-            ? "Do: fill fields, HLBP, drivers, portfolio fees…"
-            : wf === "feasibility"
-              ? "Do: feasibility + optional field fills…"
-              : "Do: ask Buddy to fill fields, create HLBP, apply changes…"
-          : wf === "budget"
-            ? "Chat: budget questions, portfolio fees, analysis…"
-            : wf === "feasibility"
-              ? "Chat: PSM, sites, TrialHub, reconcile docs…"
-              : "Chat: analyze, answer, reconcile — switch to Do to fill fields";
+        wf === "budget"
+          ? "Ask Buddy about budget, portfolio fees, analysis…"
+          : wf === "feasibility"
+            ? "Ask Buddy about PSM, sites, TrialHub, reconcile docs…"
+            : "Ask Buddy… attach files (protocol, slides, template…)";
     }
     paintBuddyModelLabel();
   }
@@ -2014,7 +2006,6 @@
   function paintBuddyModelLabel() {
     const el = document.getElementById("buddyModelLabel");
     if (!el) return;
-    const mode = isBuddyDoMode() ? "Do" : "Chat";
     const wf =
       state.buddyWorkflow === "budget"
         ? "Budget"
@@ -2026,12 +2017,7 @@
     if (!el.dataset.baseLabel) {
       el.dataset.baseLabel = "Ask Buddy · Budget Buddy";
     }
-    el.textContent = `${el.dataset.baseLabel} · ${mode} · ${wf}`;
-    const deptNote =
-      state.buddyDept === "auto"
-        ? `Auto→${buddyDeptLabel(effectiveBuddyDept())}`
-        : buddyDeptLabel(state.buddyDept);
-    if (deptNote && deptNote !== "Auto (your role)") el.textContent += ` · ${deptNote}`;
+    el.textContent = `${el.dataset.baseLabel} · ${wf}`;
     if (state.buddyPendingTask?.type) {
       const taskLabel =
         state.buddyPendingTask.type === "reconcile"
@@ -2587,7 +2573,8 @@
   }
 
   function isBuddyDoMode() {
-    return String(state.buddyMode || "chat").toLowerCase() === "do";
+    // Do mode UI paused — Buddy is chat-only for now.
+    return false;
   }
 
   function isAffirmativeFollowUp(question) {
@@ -4096,9 +4083,9 @@
           signal: askController ? askController.signal : undefined,
           body: JSON.stringify({
             question,
-            buddyMode: state.buddyMode || "chat",
+            buddyMode: "chat",
             buddyWorkflow: state.buddyWorkflow || "auto",
-            buddyDept: effectiveBuddyDept(),
+            buddyDept: "auto",
             pendingTask: state.buddyPendingTask || undefined,
             studyId: wantPortfolio ? undefined : (state.study.studyId || undefined),
             studySnapshot: wantPortfolio ? undefined : leanStudySnapshot(state.study),
@@ -4214,9 +4201,6 @@
               : "Fast";
           const soft = data.provider === "error" || data.ok === false ? " · degraded" : "";
           const intentNote = data.buddyDebug?.routerIntent ? ` · ${data.buddyDebug.routerIntent}` : "";
-          const deptNote = data.buddyDebug?.buddyDeptLens
-            ? ` · ${buddyDeptLabel(data.buddyDebug.buddyDeptLens)}`
-            : "";
           const actionNote =
             data.buddyDebug?.actionCount > 0 ? ` · ${data.buddyDebug.actionCount} action(s)` : "";
           const huntNote = data.hunted ? " · hunted" : "";
@@ -4229,13 +4213,13 @@
             ? ` · Intel${intelBits.length ? ` ${intelBits.join(" / ")}` : ""}`
             : "";
           if (data.answerFocus === "portfolio" && data.databaseStudyCount != null) {
-            els.askStatus.textContent = `${tierLabel}${agentNote}${intentNote}${deptNote}${actionNote}${huntNote}${intelNote} · Cosmos ${data.portfolioMatched ?? "?"} / ${data.databaseStudyCount}${wfNote}${soft}`;
+            els.askStatus.textContent = `${tierLabel}${agentNote}${intentNote}${actionNote}${huntNote}${intelNote} · Cosmos ${data.portfolioMatched ?? "?"} / ${data.databaseStudyCount}${wfNote}${soft}`;
           } else if (portfolioMode) {
-            els.askStatus.textContent = `${tierLabel}${agentNote}${intentNote}${deptNote}${actionNote}${huntNote}${intelNote}${wfNote}${soft}`;
+            els.askStatus.textContent = `${tierLabel}${agentNote}${intentNote}${actionNote}${huntNote}${intelNote}${wfNote}${soft}`;
           } else {
             els.askStatus.textContent = hasOpenStudy()
-              ? `${tierLabel}${agentNote}${intentNote}${deptNote}${actionNote}${huntNote}${intelNote} · ${state.study.studyId}${wfNote}${soft}`
-              : `${tierLabel}${agentNote}${intentNote}${deptNote}${actionNote}${huntNote}${intelNote}${wfNote}${soft}`;
+              ? `${tierLabel}${agentNote}${intentNote}${actionNote}${huntNote}${intelNote} · ${state.study.studyId}${wfNote}${soft}`
+              : `${tierLabel}${agentNote}${intentNote}${actionNote}${huntNote}${intelNote}${wfNote}${soft}`;
           }
         }
         state.buddyBusy = false;
@@ -5491,7 +5475,7 @@
     return `
       <div class="card wide" style="margin-top:1rem;">
         <h3>Department playbooks</h3>
-        <p class="muted">How each department works at Ora — attached on every Buddy ask via <strong>Dept lens</strong> in the Buddy panel. Saved to Cosmos (and git mirror when configured).</p>
+        <p class="muted">How each department works at Ora — attached on every Buddy ask (all playbooks). Saved to Cosmos (and git mirror when configured).</p>
         ${thin}
         <p class="muted">${escapeHtml(bc.deptPlaybookStatus || "")}${
           state.buddyDeptPack?.updatedAt ? ` · updated ${escapeHtml(state.buddyDeptPack.updatedAt)}` : ""
@@ -9104,11 +9088,6 @@
           } catch (_) {}
         }
         if (els.askStatus) els.askStatus.textContent = "Stopped";
-      });
-    }
-    if (els.buddyDeptSelect) {
-      els.buddyDeptSelect.addEventListener("change", () => {
-        setBuddyDept(els.buddyDeptSelect.value);
       });
     }
     if (els.btnBuddyAttach && els.buddyFileInput) {

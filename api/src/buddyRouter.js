@@ -425,7 +425,8 @@ function routeBuddyAsk(input) {
   } = input;
 
   const reasons = [];
-  const buddyMode = String(body.buddyMode || "chat").toLowerCase() === "do" ? "do" : "chat";
+  // Do mode UI paused — Buddy is chat-only for now.
+  const buddyMode = "chat";
   const workflow = inferBuddyWorkflow(question, body);
   const moneyIntent = inferMoneyIntent(question);
   const reconcile = isAttachmentCosmosCompareAsk(question, hasOkUpload, history, body);

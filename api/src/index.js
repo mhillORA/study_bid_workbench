@@ -1893,9 +1893,8 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       buddyLiveContext = { source: "error", error: String(err.message || err) };
     }
 
-    const buddyDeptLens = resolveBuddyDeptId(
-      body.buddyDept || body.deptLens || body.department || body.user?.buddyDept || null
-    );
+    // Dept lens UI paused — always attach all department playbooks.
+    const buddyDeptLens = "auto";
     let buddyDeptContexts = null;
     try {
       if (routerHasTool(route, "dept_context")) {
