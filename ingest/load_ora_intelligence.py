@@ -38,6 +38,8 @@ COLLECTIONS: dict[str, tuple[str, str, int]] = {
     "ora_trialhub_trials": ("ora_trialhub_trials.json", "indication", 1682),
     "ora_sponsor_crosswalk": ("ora_sponsor_crosswalk.json", "crosswalk_status", 642),
     "ora_site_alias_table": ("ora_site_alias_table.json", "country", 46),
+    # Mike Watson Site Level Veeva milestones (wide: one row per org×study)
+    "ora_veeva_milestones": ("ora_veeva_milestones.json", "country", 1920),
 }
 
 FIELD_RENAMES = {

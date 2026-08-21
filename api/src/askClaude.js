@@ -63,14 +63,16 @@ const INTELLIGENCE_RULES = [
   "3) ora_trialhub_trials (live TrialHub uploads, upsert by NCT): competitive landscape / industry PSM. Key fields: nct, title, sponsor, indication, phase, status, patients, planned_sites, actual_sites, psm_common, th_actual_psm, recruit_days, countries, actual_start (Actual Start Date), in_ora_indication, lead_sponsor_type.",
   "4) ora_sponsor_crosswalk (~642): TrialHub/Veeva sponsor name → Salesforce. Key fields: trialhub_veeva_sponsor, sf_account_name, sf_account_id, sf_owner, tier, ora_grouping (Ora Grouping from SF Ora_Grouping__c), crosswalk_status (confirmed_new | previously_confirmed | no_sf_match | in_sf_inactive). no_sf_match = prospecting targets.",
   "5) ora_site_alias_table (~46): variant site names → canonical_name (already applied into org_clean where possible).",
-  "6) ora_ctgov_trials (ClinicalTrials.gov ophthalmology feed, daily delta ~5AM Eastern): public registry landscape. Key fields: nct, title, status, phase, conditions, oraIndication, sponsor, sponsorClass, enrollment, countries, startDate, lastUpdatePostDate, hasResults. Use when context.intelligence.ctgov is present or user asks about CT.gov / registry / recruiting ophthalmology trials.",
+  "6) ora_veeva_milestones (~1920 org×study wide rows from Mike Watson Site Level 10Jul2026): startup dates + gaps_days (selected_to_contract, contract_to_irb, irb_to_siv, siv_to_fsi, contract_to_siv, contract_to_fsi). Prefer activity_2023_plus=true and outlier_gap_gt_730=false; use medians. Join to fact_site on organization + study_name (fuzzy). Live pack: indicationBenchmark.startupTimelines.",
+  "7) ora_ctgov_trials (ClinicalTrials.gov ophthalmology feed, daily delta ~5AM Eastern): public registry landscape. Key fields: nct, title, status, phase, conditions, oraIndication, sponsor, sponsorClass, enrollment, countries, startDate, lastUpdatePostDate, hasResults. Use when context.intelligence.ctgov is present or user asks about CT.gov / registry / recruiting ophthalmology trials.",
   " USE CASES — match the ask to the right source:",
   "• Indication picking is EXCLUSIVE: one ask → one indication family only. Dry Eye ≠ Dry AMD ≠ Wet AMD; Glaucoma ≠ Neuroprotection; CRVO ≠ BRVO ≠ RVO umbrella unless that exact label was asked. Never mash shared words (dry, macular, optic, retinal, glaucoma…). Use context.intelligence.query.indication / aliasesUsed; if ambiguous, ask which indication.",
   "• Feasibility / \"how fast do we enroll\" / typical PSM for an indication → context.intelligence.indicationBenchmark (Ora median PSM + TrialHub median psm_common + site medians). Prefer medians; cite studiesWithPsm / trialsWithPsm counts.",
   "• Competing / recruiting industry trials → intelligence.indicationBenchmark.trialhub.recruitingSample / sampleTrials OR trialhubOverview.recruitingSample (NCT + sponsor + status).",
   "• TrialHub trials started in a calendar year → intelligence.trialhubStartedTrials AND the ORA COSMOS FACTS block \"TRIALHUB STARTED YYYY\". Use startedCount as the true total; enumerate every listed trial (NCT + actual_start). NEVER say the year result set was cut off/unread if that block is present. NEVER use portfolio.matchedStudyCount for TrialHub.",
   "• TrialHub retina / posterior-segment asks → trialhubStartedTrials with therapeuticFilter=retina (matches indication/title text). \"trialhuh\" = TrialHub typo — still use TrialHub feed.",
-  "• Site selection / which sites perform → LIST real site names from context.intelligence.indicationBenchmark.sites.topSitesByPsm (org_clean + country + site_psm + fsi_trust). Also use countrySites.topSites when present. Optional: NAVIGATE:scorecard for the full scorecard UI — never as a substitute for naming sites.",
+  "• Startup / activation / SIV→FSI / contract→FSI timelines → indicationBenchmark.startupTimelines.gapMedians + topSitesByStartup. Prefer those medians; do not invent day counts.",
+  "• Site selection / which sites perform → LIST real site names from sites.topSitesByPsm AND sites.topSites (org_clean + country + site_psm + fsi_trust). Null PSM still counts — name the site. Also use countrySites.topSites and startupTimelines.topSitesByStartup when present. Optional: NAVIGATE:scorecard after listing — never instead of naming sites.",
   "• Region / country feasibility (US, UK, Germany, Japan, …) → use countryFilter on sites + ctgov + TrialHub countries; cite geography explicitly.",
   "• Site Scorecard (Ora vs industry) → oraScore vs industryScore/Δ; Deeper dive = recommended site slate for enrollment goals. Prefer medians; null ≠ 0.",
   "• BD/sales pitch asks (\"why Ora\", \"what do I tell the sponsor\", RFI bullets) → lead with Ora median vs industry, geography, top sites, competitive recruiting; end with 3 short talking points.",
@@ -137,9 +139,9 @@ function readContextFile(name) {
 
 function loadOraIntelligenceContext() {
   if (_oraContextCache != null) return _oraContextCache;
-  const max = Number(process.env.ORA_CONTEXT_MAX_CHARS || 45000);
-  const masterBudget = Number(process.env.ORA_MASTER_CONTEXT_MAX_CHARS || 22000);
-  const priorBudget = Number(process.env.ORA_PRIOR_CONTEXT_MAX_CHARS || 18000);
+  const max = Number(process.env.ORA_CONTEXT_MAX_CHARS || 72000);
+  const masterBudget = Number(process.env.ORA_MASTER_CONTEXT_MAX_CHARS || 40000);
+  const priorBudget = Number(process.env.ORA_PRIOR_CONTEXT_MAX_CHARS || 28000);
 
   const masterRaw = readContextFile("oraMasterContext.txt");
   const priorRaw = readContextFile("oraIntelligenceContext.txt");
@@ -147,7 +149,7 @@ function loadOraIntelligenceContext() {
   const liveBridge = [
     "PLATFORM LIVE STATE (highest priority — overrides outdated architecture notes below):",
     "- Azure Cosmos DB (bd-budgets) IS LIVE for Buddy: ora_fact_site, ora_fact_study, ora_trialhub_trials,",
-    "  ora_sponsor_crosswalk, ora_site_alias_table, ora_ctgov_trials, buddy_live_context.",
+    "  ora_sponsor_crosswalk, ora_site_alias_table, ora_veeva_milestones, ora_ctgov_trials, buddy_live_context.",
     "- Prefer Context JSON from this ask (portfolio / intelligence / buddyLiveContext) over stale",
     "  \"Cosmos pilot not yet live\" wording in older playbook text.",
     "- TrialHub grows via app upload (Intelligence → Upload TrialHub export); upsert by NCT, no duplicates.",
@@ -1249,14 +1251,53 @@ function formatCosmosFactsBlock(context) {
         `psmMedian=${th.psmMedian ?? "missing"}, recruitingCount=${th.recruitingCount ?? "—"}`
     );
     if (th.note) lines.push(`TrialHub note: ${th.note}`);
-    const sites = bm.sites?.topSitesByPsm || bm.sites?.topSites || [];
+    const sitesPsm = bm.sites?.topSitesByPsm || [];
+    const sitesAll = bm.sites?.topSites || [];
+    const sites = sitesPsm.length ? sitesPsm : sitesAll;
     if (Array.isArray(sites) && sites.length) {
       lines.push("Top Ora sites (from Cosmos):");
-      for (const s of sites.slice(0, 10)) {
+      for (const s of sites.slice(0, 15)) {
         lines.push(
           `  - ${s.org_clean || s.site || "?"} | ${s.country || "?"} | sitePSM=${
             s.site_psm == null ? "missing" : s.site_psm
-          } | FSI=${s.fsi_trust || "—"}`
+          } | FSI=${s.fsi_trust || "—"} | enrolled=${
+            s.total_enrolled == null ? "—" : s.total_enrolled
+          }`
+        );
+      }
+      if (sitesAll.length && sitesPsm.length && sitesAll.length > sitesPsm.length) {
+        lines.push(
+          `Also ${sitesAll.length - sitesPsm.length} additional Ora sites with missing site PSM (still name them from topSites JSON).`
+        );
+      }
+    }
+    const ous = bm.sites?.topOusSites || [];
+    if (Array.isArray(ous) && ous.length) {
+      lines.push("Top OUS Ora sites:");
+      for (const s of ous.slice(0, 10)) {
+        lines.push(
+          `  - ${s.org_clean || "?"} | ${s.country || "?"} | sitePSM=${
+            s.site_psm == null ? "missing" : s.site_psm
+          }`
+        );
+      }
+    }
+    const st = bm.startupTimelines;
+    if (st && !st.error && st.gapMedians) {
+      const g = st.gapMedians;
+      lines.push(
+        `Startup timelines (Veeva milestones n=${st.n ?? "—"}): ` +
+          `Selected→Contract=${g.selected_to_contract ?? "—"}d, ` +
+          `Contract→IRB=${g.contract_to_irb ?? "—"}d, ` +
+          `IRB→SIV=${g.irb_to_siv ?? "—"}d, ` +
+          `SIV→FSI=${g.siv_to_fsi ?? "—"}d, ` +
+          `Contract→FSI=${g.contract_to_fsi ?? "—"}d (medians, 2023+, ≤730d)`
+      );
+      for (const s of (st.topSitesByStartup || []).slice(0, 8)) {
+        lines.push(
+          `  - startup ${s.organization || "?"} | ${s.country || "?"} | Contract→FSI=${
+            s.contract_to_fsi_median ?? "—"
+          }d | SIV→FSI=${s.siv_to_fsi_median ?? "—"}d`
         );
       }
     }
@@ -1642,6 +1683,12 @@ function contextJsonForModel(context) {
   ) {
     const intel = ctx.intelligence;
     const bm = intel.indicationBenchmark;
+    const siteCap =
+      ctx.workflow === "feasibility" ||
+      ctx.workflow === "hybrid" ||
+      ctx.answerFocus === "feasibility"
+        ? 20
+        : 15;
     const trimOverview = (o, sampleKey = "recentSample") => {
       if (!o || o.error) return o;
       const copy = { ...o };
@@ -1700,9 +1747,24 @@ function contextJsonForModel(context) {
                 : undefined
             },
             sites: {
-              topSitesByPsm: (bm.sites?.topSitesByPsm || bm.sites?.topSites || []).slice(0, 12),
-              topOusSites: (bm.sites?.topOusSites || []).slice(0, 12)
-            }
+              sitesWithPsmSampled: bm.sites?.sitesWithPsmSampled,
+              sitePsmMedian: bm.sites?.sitePsmMedian,
+              note: bm.sites?.note,
+              topSitesByPsm: (bm.sites?.topSitesByPsm || []).slice(0, siteCap),
+              topSites: (bm.sites?.topSites || bm.sites?.topSitesByPsm || []).slice(0, siteCap),
+              topOusSites: (bm.sites?.topOusSites || []).slice(0, siteCap)
+            },
+            startupTimelines: bm.startupTimelines
+              ? {
+                  n: bm.startupTimelines.n,
+                  nUniverse: bm.startupTimelines.nUniverse,
+                  scopedToSites: bm.startupTimelines.scopedToSites,
+                  gapMedians: bm.startupTimelines.gapMedians,
+                  topSitesByStartup: (bm.startupTimelines.topSitesByStartup || []).slice(0, 15),
+                  note: bm.startupTimelines.note,
+                  error: bm.startupTimelines.error
+                }
+              : undefined
           }
         : undefined,
       enrollmentPlan: intel.enrollmentPlan || ctx.enrollmentPlan || undefined,
@@ -1751,11 +1813,13 @@ function contextJsonForModel(context) {
   const max =
     ctx.intelligence?.trialhubStartedTrials
       ? 140000
-      : docs?.okCount > 0
-        ? 60000
-        : ctx.answerFocus === "single_study"
-          ? 70000
-          : 90000;
+      : ctx.workflow === "feasibility" || ctx.workflow === "hybrid"
+        ? 110000
+        : docs?.okCount > 0
+          ? 60000
+          : ctx.answerFocus === "single_study"
+            ? 70000
+            : 90000;
   if (raw.length <= max) return raw;
   // Prefer not to mid-cut a TrialHub year list — drop bulky extras first
   if (ctx.intelligence?.trialhubStartedTrials) {

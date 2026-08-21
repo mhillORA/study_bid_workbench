@@ -67,6 +67,21 @@ async function fetchBuddyIntelligence(getDb, opts = {}) {
       ]);
       return finalizeIntel(intel, fetchPlan, started);
     } catch (err) {
+      // Prefer reconciliation (keeps sites + benchmarks) over inventory-only slim when indication known
+      if (hasIndication) {
+        fetchPlan.push("fallback_reconciliation");
+        try {
+          const fallback = await buildReconciliationIntelContext(getDb, intelBase);
+          if (fallback && !fallback.error) {
+            fallback.note =
+              (fallback.note || "") +
+              ` Full intel timed out (${String(err.message || err)}); using indication benchmark + sites (not inventory-only).`;
+            return finalizeIntel(fallback, fetchPlan, started);
+          }
+        } catch (_) {
+          /* fall through to slim */
+        }
+      }
       fetchPlan.push("fallback_slim");
       const fallback = await buildSlimBuddyIntelContext(getDb, intelBase);
       if (fallback && !fallback.error) {
@@ -98,6 +113,12 @@ async function fetchBuddyIntelligence(getDb, opts = {}) {
   }
 
   if (tools.has("cosmos_default") || fetchPlan.length === 0) {
+    // Indication known → real site/PSM pack; inventory-only is useless for site asks
+    if (hasIndication) {
+      fetchPlan.push("cosmos_default_benchmark");
+      const intel = await buildReconciliationIntelContext(getDb, intelBase);
+      return finalizeIntel(intel, fetchPlan, started);
+    }
     fetchPlan.push("cosmos_slim_inventory");
     const intel = await buildSlimBuddyIntelContext(getDb, intelBase);
     return finalizeIntel(intel, fetchPlan, started);

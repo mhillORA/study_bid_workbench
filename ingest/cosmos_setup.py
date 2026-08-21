@@ -29,6 +29,8 @@ CONTAINERS = [
     {"id": "ora_trialhub_trials", "partition_key": "/indication"},
     {"id": "ora_sponsor_crosswalk", "partition_key": "/crosswalk_status"},
     {"id": "ora_site_alias_table", "partition_key": "/country"},
+    # Veeva site milestones (Mike Watson Site Level report → wide org×study)
+    {"id": "ora_veeva_milestones", "partition_key": "/country"},
     # ClinicalTrials.gov ophthalmology feed (daily delta pull).
     {"id": "ora_ctgov_trials", "partition_key": "/oraIndication"},
     # Salesforce live mirrors (Ora Intelligence Tool JWT sync)

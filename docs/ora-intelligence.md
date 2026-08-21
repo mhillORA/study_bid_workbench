@@ -11,7 +11,7 @@ App uses **Cosmos SQL/Core API** (`@azure/cosmos` / `azure.cosmos`), not Mongo A
 | What is industry doing? Competing / recruiting trials? | `ora_trialhub_trials` + `ora_ctgov_trials` |
 | Sites / feasibility **in a country or region** | same tables + `country` / `region` filter |
 | Is this sponsor in Salesforce? Who owns them? | `ora_sponsor_crosswalk` |
-| Which sites perform for an indication? | `ora_fact_site` (+ aliases) |
+| Startup timelines (Selected→Contract→IRB→SIV→FSI) | `ora_veeva_milestones` |
 | Budget dollars / uploaded bids | `studies` / `versions` (portfolio — not these tables) |
 
 UI tab: **Ora Clinical Intelligence** — indication + **country/region** inputs, CT.gov **Sync now** button.  
@@ -26,6 +26,7 @@ Buddy gets the same pack via `/api/ask` (`intelligenceHint` / on-screen pack).
 | `ora_trialhub_trials` | `/indication` | 1,682 | Industry trials / NCT / `psm_common` |
 | `ora_sponsor_crosswalk` | `/crosswalk_status` | 642 | TrialHub sponsor → Salesforce |
 | `ora_site_alias_table` | `/country` | 46 | Site name variants → canonical |
+| `ora_veeva_milestones` | `/country` | 1,920 | Wide org×study Veeva milestones + gaps (Mike Watson Site Level 10Jul2026) |
 | `ora_ctgov_trials` | `/oraIndication` | growing | ClinicalTrials.gov ophthalmology (app delta) |
 | `syncState` | `/id` | cursors | Watermarks (e.g. `ctgov_ophthalmology`) |
 

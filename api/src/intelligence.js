@@ -3,7 +3,7 @@
  * Summaries only for Buddy; never dump full collections into the LLM context.
  *
  * Containers: ora_fact_site, ora_fact_study, ora_trialhub_trials,
- *             ora_sponsor_crosswalk, ora_site_alias_table
+ *             ora_sponsor_crosswalk, ora_site_alias_table, ora_veeva_milestones
  * See docs/ora-intelligence.md
  */
 
@@ -1244,6 +1244,164 @@ async function queryAll(container, query, parameters = []) {
   return resources || [];
 }
 
+const MILESTONE_GAP_KEYS = [
+  "selected_to_contract",
+  "contract_to_irb",
+  "irb_to_siv",
+  "siv_to_fsi",
+  "contract_to_siv",
+  "contract_to_fsi"
+];
+
+function trustRank(t) {
+  const s = String(t || "").toLowerCase();
+  if (s === "high") return 3;
+  if (s === "medium") return 2;
+  if (s === "low") return 1;
+  return 0;
+}
+
+/** Median allowing zeros (startup gaps can be 0 days). */
+function medianGaps(nums) {
+  const a = nums
+    .filter((n) => typeof n === "number" && !Number.isNaN(n) && n >= 0 && n <= 730)
+    .sort((x, y) => x - y);
+  if (!a.length) return null;
+  const mid = Math.floor(a.length / 2);
+  return a.length % 2 ? a[mid] : (a[mid - 1] + a[mid]) / 2;
+}
+
+function gapMedianPack(rows) {
+  const out = {};
+  for (const k of MILESTONE_GAP_KEYS) {
+    const vals = rows
+      .map((r) => r.gaps_days?.[k])
+      .filter((n) => typeof n === "number" && !Number.isNaN(n) && n >= 0 && n <= 730);
+    out[k] = round(medianGaps(vals), 1);
+    out[`${k}_n`] = vals.length;
+  }
+  return out;
+}
+
+/**
+ * Mike Watson Site Level milestones (wide org×study) — startup gap medians for Buddy.
+ * Prefer activity_2023_plus + non-outlier; scope to known orgs/studies when possible.
+ */
+async function queryStartupTimelines(
+  database,
+  { countries = null, orgNames = [], studyNames = [] } = {}
+) {
+  try {
+    const container = database.container("ora_veeva_milestones");
+    const rows = await queryAll(
+      container,
+      `SELECT c.organization, c.study_name, c.country, c.principal_investigator,
+              c.gaps_days, c.dates, c.activity_2023_plus, c.outlier_gap_gt_730
+       FROM c WHERE c.docType = @t
+         AND c.activity_2023_plus = true
+         AND (NOT IS_DEFINED(c.outlier_gap_gt_730) OR c.outlier_gap_gt_730 = false)`,
+      [{ name: "@t", value: "ora_veeva_milestones" }]
+    );
+
+    let universe = rows;
+    if (countries) {
+      universe = universe.filter((r) => countriesMatch(r.country, countries));
+    }
+
+    const orgNeedles = orgNames
+      .map((o) => String(o || "").trim().toLowerCase())
+      .filter((o) => o.length >= 3);
+    const studySet = new Set(
+      studyNames.map((s) => String(s || "").trim().toLowerCase()).filter(Boolean)
+    );
+
+    let scoped = universe;
+    if (orgNeedles.length || studySet.size) {
+      const matched = universe.filter((r) => {
+        const org = String(r.organization || "").toLowerCase();
+        const study = String(r.study_name || "").toLowerCase();
+        if (studySet.size && studySet.has(study)) return true;
+        if (orgNeedles.some((n) => org.includes(n) || n.includes(org))) return true;
+        return false;
+      });
+      if (matched.length >= 5) scoped = matched;
+    }
+
+    const byOrg = new Map();
+    for (const r of scoped) {
+      const org = String(r.organization || "").trim();
+      if (!org) continue;
+      const key = `${org.toLowerCase()}|${String(r.country || "").toLowerCase()}`;
+      if (!byOrg.has(key)) {
+        byOrg.set(key, {
+          organization: org,
+          country: r.country || null,
+          principal_investigator: r.principal_investigator || null,
+          studies: [],
+          gaps: []
+        });
+      }
+      const g = byOrg.get(key);
+      if (r.study_name) g.studies.push(r.study_name);
+      if (r.gaps_days) g.gaps.push(r.gaps_days);
+      if (!g.principal_investigator && r.principal_investigator) {
+        g.principal_investigator = r.principal_investigator;
+      }
+    }
+
+    const topSitesByStartup = [...byOrg.values()]
+      .map((g) => {
+        const contractToFsi = g.gaps
+          .map((x) => x.contract_to_fsi)
+          .filter((n) => typeof n === "number" && n >= 0 && n <= 730);
+        const sivToFsi = g.gaps
+          .map((x) => x.siv_to_fsi)
+          .filter((n) => typeof n === "number" && n >= 0 && n <= 730);
+        return {
+          organization: g.organization,
+          country: g.country,
+          principal_investigator: g.principal_investigator,
+          studyCount: new Set(g.studies).size,
+          contract_to_fsi_median: round(medianGaps(contractToFsi), 1),
+          siv_to_fsi_median: round(medianGaps(sivToFsi), 1),
+          n_contract_to_fsi: contractToFsi.length,
+          n_siv_to_fsi: sivToFsi.length
+        };
+      })
+      .filter((s) => s.n_contract_to_fsi > 0 || s.n_siv_to_fsi > 0)
+      .sort((a, b) => {
+        const aa = a.contract_to_fsi_median ?? a.siv_to_fsi_median ?? 9999;
+        const bb = b.contract_to_fsi_median ?? b.siv_to_fsi_median ?? 9999;
+        return aa - bb;
+      })
+      .slice(0, 25);
+
+    return {
+      scope: "ora_veeva_milestones",
+      filters: {
+        activity_2023_plus: true,
+        outlier_gap_gt_730: false,
+        country: countries
+      },
+      n: scoped.length,
+      nUniverse: universe.length,
+      scopedToSites: scoped.length !== universe.length,
+      gapMedians: gapMedianPack(scoped),
+      topSitesByStartup,
+      note:
+        scoped.length > 0
+          ? "Startup gap medians from Mike Watson Site Level Veeva milestones (2023+, gaps ≤730d). Prefer median over mean. Join to fact_site on organization + study_name (fuzzy)."
+          : "No milestone rows matched filters — still use fact_site PSM slate when present."
+    };
+  } catch (err) {
+    return {
+      scope: "ora_veeva_milestones",
+      error: String(err.message || err),
+      note: "ora_veeva_milestones query failed — do not invent startup timelines."
+    };
+  }
+}
+
 async function safeCount(database, containerId) {
   try {
     const rows = await queryAll(
@@ -1265,7 +1423,8 @@ async function getIntelligenceHealth(getDb) {
     "ora_trialhub_trials",
     "ora_sponsor_crosswalk",
     "ora_site_alias_table",
-    "ora_ctgov_trials"
+    "ora_ctgov_trials",
+    "ora_veeva_milestones"
   ];
   const counts = {};
   for (const id of containers) {
@@ -1276,7 +1435,8 @@ async function getIntelligenceHealth(getDb) {
     ora_fact_site: 3613,
     ora_fact_study: 249,
     ora_sponsor_crosswalk: 642,
-    ora_site_alias_table: 46
+    ora_site_alias_table: 46,
+    ora_veeva_milestones: 1920
   };
   const liveCounts = {
     ora_trialhub_trials: counts.ora_trialhub_trials,
@@ -1430,6 +1590,9 @@ async function benchmarkIndication(database, indication, country = null, opts = 
       const pa = typeof a.site_psm === "number" ? a.site_psm : -1;
       const pb = typeof b.site_psm === "number" ? b.site_psm : -1;
       if (pb !== pa) return pb - pa;
+      const ta = trustRank(a.fsi_trust);
+      const tb = trustRank(b.fsi_trust);
+      if (tb !== ta) return tb - ta;
       return (Number(b.total_enrolled) || 0) - (Number(a.total_enrolled) || 0);
     });
     for (const r of sorted) {
@@ -1437,17 +1600,22 @@ async function benchmarkIndication(database, indication, country = null, opts = 
       if (countries && !countriesMatch(r.country, countries)) continue;
       if (requirePsm && !(typeof r.site_psm === "number" && r.site_psm > 0)) continue;
       if (typeof r.site_psm === "number" && r.site_psm > 0) sitePsms.push(r.site_psm);
-      if (topSites.length < 20 && r.org_clean) {
-        if (!topSites.some((x) => x.org_clean === r.org_clean && x.country === r.country)) {
+      const orgName = String(r.org_clean || r.organization || "").trim();
+      if (!orgName) continue;
+      if (topSites.length < 40) {
+        if (!topSites.some((x) => x.org_clean === orgName && x.country === r.country)) {
           topSites.push({
-            org_clean: r.org_clean,
+            org_clean: orgName,
             country: r.country,
             indication: r.indication || null,
             site_psm: round(r.site_psm),
             total_enrolled: r.total_enrolled,
             fsi_trust: r.fsi_trust,
             study_name: r.study_name,
-            rankedBy: typeof r.site_psm === "number" && r.site_psm > 0 ? "site_psm" : "total_enrolled_or_presence"
+            rankedBy:
+              typeof r.site_psm === "number" && r.site_psm > 0
+                ? "site_psm"
+                : "total_enrolled_or_presence"
           });
         }
       }
@@ -1459,13 +1627,28 @@ async function benchmarkIndication(database, indication, country = null, opts = 
       { name: "@t", value: "ora_fact_site" },
       { name: "@ind", value: alias }
     ];
-    let q = `SELECT TOP 200 c.org_clean, c.organization, c.country, c.indication, c.phase,
+    let q = `SELECT TOP 400 c.org_clean, c.organization, c.country, c.indication, c.phase,
               c.site_psm, c.total_enrolled, c.site_enroll_months, c.fsi_trust, c.study_name
        FROM c WHERE c.docType = @t AND c.indication = @ind AND IS_DEFINED(c.site_psm) AND c.site_psm > 0`;
     const geo = countrySqlClause("c.country", countries, "geo");
     q += geo.sql;
     params.push(...geo.params);
     pushSites(await queryAll(siteContainer, q, params), { requirePsm: true });
+  }
+
+  // Exact aliases WITHOUT PSM filter — ~80% of Veeva site_psm is null; still list real sites
+  for (const alias of [...aliases, ...relatedLabels].slice(0, 6)) {
+    const params = [
+      { name: "@t", value: "ora_fact_site" },
+      { name: "@ind", value: alias }
+    ];
+    let q = `SELECT TOP 400 c.org_clean, c.organization, c.country, c.indication, c.phase,
+              c.site_psm, c.total_enrolled, c.site_enroll_months, c.fsi_trust, c.study_name
+       FROM c WHERE c.docType = @t AND c.indication = @ind`;
+    const geo = countrySqlClause("c.country", countries, "geoExact");
+    q += geo.sql;
+    params.push(...geo.params);
+    pushSites(await queryAll(siteContainer, q, params), { requirePsm: false });
   }
 
   // Fuzzy CONTAINS — always run for known needles (Veeva indication is free-text; exact-only misses variants)
@@ -1521,7 +1704,7 @@ async function benchmarkIndication(database, indication, country = null, opts = 
           { name: "@n", value: needle.toLowerCase() }
         ];
         // Include null-PSM rows — Stargardt / IRD / neuroprotection often lack site_psm
-        let q = `SELECT TOP 200 c.org_clean, c.organization, c.country, c.indication, c.phase,
+        let q = `SELECT TOP 400 c.org_clean, c.organization, c.country, c.indication, c.phase,
                   c.site_psm, c.total_enrolled, c.site_enroll_months, c.fsi_trust, c.study_name
            FROM c WHERE c.docType = @t AND CONTAINS(LOWER(c.indication), @n)`;
         const geo = countrySqlClause("c.country", countries, "geo");
@@ -1564,6 +1747,12 @@ async function benchmarkIndication(database, indication, country = null, opts = 
 
   const sitesWithPsm = topSites.filter((s) => typeof s.site_psm === "number" && s.site_psm > 0);
   const ousSites = topSites.filter((s) => s.country && !isUsCountryName(s.country));
+
+  const startupTimelines = await queryStartupTimelines(database, {
+    countries,
+    orgNames: topSites.map((s) => s.org_clean),
+    studyNames: oraStudies.map((s) => s.study_number).filter(Boolean)
+  });
 
   return {
     indicationRequested: preferred,
@@ -1652,17 +1841,18 @@ async function benchmarkIndication(database, indication, country = null, opts = 
       sitesWithPsmSampled: sitePsms.length,
       sitePsmMedian: round(median(sitePsms)),
       sitePsmP75: round(percentile(sitePsms, 75)),
-      topSitesByPsm: sitesWithPsm.slice(0, 15),
-      topSites: topSites.slice(0, 15),
-      topOusSites: ousSites.slice(0, 15),
+      topSitesByPsm: sitesWithPsm.slice(0, 25),
+      topSites: topSites.slice(0, 25),
+      topOusSites: ousSites.slice(0, 25),
       countryFilter: countries,
       countryFilterLabel: countries ? countries.join(", ") : ousOnly ? "OUS (ex-US)" : "Global",
       note: sitesWithPsm.length
-        ? "Ranked by site_psm when present."
+        ? "Ranked by site_psm when present; FSI trust breaks ties. Null-PSM sites also listed in topSites."
         : topSites.length
           ? "No site_psm in Veeva for this indication — listed real org_clean rows ranked by total_enrolled / presence. This IS the site slate; do not say there is no leaderboard."
           : "No Ora Veeva site rows for this indication. Use trialhub.countryRank for OUS country priorities; do not invent PI names."
-    }
+    },
+    startupTimelines
   };
 }
 
@@ -2907,6 +3097,7 @@ module.exports = {
   buildSiteScorecard,
   buildLegacyRecruitmentBoard,
   benchmarkIndication,
+  queryStartupTimelines,
   lookupSponsorCrosswalk,
   preferredIndicationLabel,
   indicationContainsNeedles,
