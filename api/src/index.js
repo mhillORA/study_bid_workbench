@@ -45,6 +45,7 @@ const { parseBuddyActions } = require("./buddyActions");
 const { maybeHuntAndRetry, toolTraceFromPrefetch } = require("./buddyHunt");
 const { storeAttachments, loadAttachments } = require("./buddyAttachmentVault");
 const { storeAskPack, loadAskPack } = require("./buddyAskPack");
+const { mintBuddySession, assertBuddySession } = require("./buddySession");
 const {
   loadDeptContexts,
   saveDeptContexts,
@@ -85,14 +86,50 @@ function authorizeCtgovSync(request) {
   return { ok: false };
 }
 
-function json(status, body) {
+function corsHeaders(request = null) {
+  const allowed = String(process.env.BUDDY_CORS_ORIGIN || "")
+    .trim()
+    .replace(/\/$/, "");
+  const reqOrigin = request
+    ? String(
+        (typeof request.headers?.get === "function"
+          ? request.headers.get("origin") || request.headers.get("Origin")
+          : "") || ""
+      )
+        .trim()
+        .replace(/\/$/, "")
+    : "";
+  let origin = "*";
+  if (allowed) {
+    origin = allowed;
+    if (reqOrigin && reqOrigin === allowed) origin = reqOrigin;
+  }
+  const headers = {
+    "Access-Control-Allow-Origin": origin,
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers":
+      "content-type, authorization, x-copilot-key, x-buddy-session",
+    "Access-Control-Max-Age": "86400"
+  };
+  if (origin !== "*") headers["Access-Control-Allow-Credentials"] = "true";
+  return headers;
+}
+
+function json(status, body, request = null) {
   return {
     status,
     headers: {
       "Content-Type": "application/json",
-      "Access-Control-Allow-Origin": "*"
+      ...corsHeaders(request)
     },
     jsonBody: body
+  };
+}
+
+function optionsOk(request) {
+  return {
+    status: 204,
+    headers: corsHeaders(request)
   };
 }
 
@@ -1003,16 +1040,82 @@ app.http("GetRoles", {
 });
 
 app.http("health", {
-  methods: ["GET"],
+  methods: ["GET", "OPTIONS"],
   authLevel: "anonymous",
   route: "health",
-  handler: async () => {
+  handler: async (request) => {
+    if (request.method === "OPTIONS") return optionsOk(request);
     const llm = providerStatus();
-    return json(200, {
-      ok: true,
-      service: "study-bid-workbench-api",
-      llm
-    });
+    return json(
+      200,
+      {
+        ok: true,
+        service: "study-bid-workbench-api",
+        llm,
+        externalApi: String(process.env.BUDDY_REQUIRE_SESSION || "")
+          .trim()
+          .toLowerCase() === "1"
+      },
+      request
+    );
+  }
+});
+
+/**
+ * Mint a short-lived token for the external Buddy Function App.
+ * Call from the SWA-hosted UI (Entra already gated /api/*).
+ */
+app.http("buddySession", {
+  methods: ["POST", "OPTIONS"],
+  authLevel: "anonymous",
+  route: "buddy/session",
+  handler: async (request, context) => {
+    if (request.method === "OPTIONS") return optionsOk(request);
+    try {
+      let body = {};
+      try {
+        body = await request.json();
+      } catch (_) {
+        body = {};
+      }
+      const user = signedInUserFromRequest(request, body.user || null);
+      const minted = mintBuddySession({
+        email: user?.email,
+        name: user?.displayName || user?.firstName,
+        userId: user?.userId || user?.email
+      });
+      if (!minted.ok) {
+        return json(
+          200,
+          {
+            ok: false,
+            error: minted.error,
+            apiBase: null,
+            useLocalApi: true,
+            note: "Session mint unavailable — Buddy will use same-origin /api (SWA 45s limit)."
+          },
+          request
+        );
+      }
+      const apiBase = String(process.env.BUDDY_API_BASE || "")
+        .trim()
+        .replace(/\/$/, "");
+      return json(
+        200,
+        {
+          ok: true,
+          token: minted.token,
+          expiresAt: minted.expiresAt,
+          expiresIn: minted.expiresIn,
+          apiBase: apiBase || null,
+          useLocalApi: !apiBase
+        },
+        request
+      );
+    } catch (err) {
+      context.error?.(err);
+      return json(200, { ok: false, error: String(err.message || err), useLocalApi: true }, request);
+    }
   }
 });
 
@@ -1727,20 +1830,34 @@ async function handleAskFromPack({
 
 async function handleAskRequest(request, context, { requireCopilotKey }) {
   if (request.method === "OPTIONS") {
-    return {
-      status: 204,
-      headers: {
-        "Access-Control-Allow-Origin": "*",
-        "Access-Control-Allow-Methods": "POST, OPTIONS",
-        "Access-Control-Allow-Headers": "content-type, x-copilot-key"
-      }
-    };
+    return optionsOk(request);
   }
 
-  // SWA hard-caps each /api request at ~45s. Stay under that or the client sees HTTP 500.
+  // External Function App: require short-lived session minted by SWA.
+  const sessionGate = assertBuddySession(request, headerGet);
+  if (!sessionGate.ok) {
+    return json(
+      sessionGate.status || 401,
+      {
+        ok: false,
+        answer: "Buddy session expired or missing — refresh the page and try again.",
+        error: sessionGate.error,
+        provider: "error",
+        modelTier: "fast",
+        answerFocus: "error"
+      },
+      request
+    );
+  }
+
+  // Longer budget when not behind SWA's 45s proxy (set on Function App).
   const askDeadlineAt =
     Date.now() +
-    Math.max(15000, Number(process.env.BUDDY_ASK_DEADLINE_MS || 38000) || 38000);
+    Math.max(
+      15000,
+      Number(process.env.BUDDY_ASK_DEADLINE_MS || (sessionGate.skipped ? 38000 : 120000)) ||
+        38000
+    );
   const msLeft = () => Math.max(0, askDeadlineAt - Date.now());
 
   try {

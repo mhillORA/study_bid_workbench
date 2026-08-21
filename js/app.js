@@ -1121,6 +1121,51 @@
     return `${base}${path}`;
   }
 
+  /** External Buddy Function App base (from /api/buddy/session). Empty = same-origin SWA /api. */
+  function buddyApiBase() {
+    return String(state.buddyApiBase || window.BUDDY_API_BASE || "").replace(/\/$/, "");
+  }
+
+  function buddyAskUrl(path) {
+    const ext = buddyApiBase();
+    const p = path.startsWith("/") ? path : `/${path}`;
+    if (ext) return `${ext}${p.startsWith("/api") ? p : `/api${p.replace(/^\/api/, "")}`}`;
+    return apiUrl(p.startsWith("/api") ? p : `/api${p}`);
+  }
+
+  async function ensureBuddySession() {
+    const now = Date.now();
+    if (
+      state.buddySessionToken &&
+      state.buddySessionExpiresAt &&
+      state.buddySessionExpiresAt - now > 60_000
+    ) {
+      return { ok: true, token: state.buddySessionToken, apiBase: buddyApiBase() };
+    }
+    try {
+      const res = await fetch(apiUrl("/api/buddy/session"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ user: state.entraUser || undefined })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (data.ok && data.token && data.apiBase) {
+        state.buddySessionToken = data.token;
+        state.buddyApiBase = String(data.apiBase).replace(/\/$/, "");
+        state.buddySessionExpiresAt = data.expiresAt
+          ? Date.parse(data.expiresAt)
+          : now + (Number(data.expiresIn) || 3600) * 1000;
+        return { ok: true, token: data.token, apiBase: state.buddyApiBase, external: true };
+      }
+      state.buddySessionToken = null;
+      state.buddyApiBase = "";
+      state.buddySessionExpiresAt = 0;
+      return { ok: true, token: null, apiBase: "", external: false, useLocalApi: true };
+    } catch (_) {
+      return { ok: true, token: null, apiBase: "", external: false, useLocalApi: true };
+    }
+  }
+
   const STUDY_HEADER_FIELDS = [
     { key: "clientName", label: "Client" },
     { key: "studyId", label: "Opportunity" },
@@ -4205,11 +4250,12 @@
           content: String(t.content || "").slice(0, 4000)
         }));
       const askController = state._askController;
-      // Each SWA /api hop must finish under ~45s. Client orchestrates prepare → answer → visual.
-      const hopTimeoutMs = Math.max(
-        50000,
-        Number(window.BUDDY_ASK_HOP_TIMEOUT_MS || 55000) || 55000
-      );
+      // External Function App can run longer; SWA hops must stay under ~45s.
+      const session = await ensureBuddySession();
+      const externalBuddy = Boolean(session.external && session.apiBase);
+      const hopTimeoutMs = externalBuddy
+        ? Math.max(120000, Number(window.BUDDY_ASK_HOP_TIMEOUT_MS || 180000) || 180000)
+        : Math.max(50000, Number(window.BUDDY_ASK_HOP_TIMEOUT_MS || 55000) || 55000);
       const askPayload = {
         question,
         buddyMode: "chat",
@@ -4284,11 +4330,15 @@
         const hopTimer = hopController
           ? setTimeout(() => hopController.abort(), hopTimeoutMs)
           : null;
+        const headers = { "Content-Type": "application/json" };
+        if (externalBuddy && state.buddySessionToken) {
+          headers.Authorization = `Bearer ${state.buddySessionToken}`;
+        }
         let res;
         try {
-          res = await fetch(apiUrl(path), {
+          res = await fetch(buddyAskUrl(path), {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers,
             signal: hopController ? hopController.signal : askController?.signal,
             body: JSON.stringify({ ...askPayload, ...bodyExtra })
           });
@@ -4304,6 +4354,19 @@
           data = rawText ? JSON.parse(rawText) : {};
         } catch (_) {
           data = {};
+        }
+        // Session expired on external API — mint once and retry this hop.
+        if (
+          externalBuddy &&
+          res.status === 401 &&
+          !bodyExtra?._sessionRetry
+        ) {
+          state.buddySessionToken = null;
+          state.buddySessionExpiresAt = 0;
+          const again = await ensureBuddySession();
+          if (again.external && again.token) {
+            return buddyHop(path, { ...bodyExtra, _sessionRetry: true }, statusText);
+          }
         }
         return { res, rawText, data };
       }

@@ -9,7 +9,14 @@
     "AZURE_OPENAI_ENDPOINT": "https://YOUR_RESOURCE.openai.azure.com",
     "AZURE_OPENAI_API_KEY": "SET_IN_SWA_APP_SETTINGS",
     "AZURE_OPENAI_DEPLOYMENT": "gpt-4o",
-    "AZURE_OPENAI_API_VERSION": "2024-08-01-preview"
+    "AZURE_OPENAI_API_VERSION": "2024-08-01-preview",
+    "FOUNDRY_AGENT_NAME_FAST": "BudgetBuddy",
+    "FOUNDRY_AGENT_NAME_DEEP": "BudgetBuddy2",
+    "BUDDY_CORS_ORIGIN": "https://white-river-0de1aed0f.7.azurestaticapps.net",
+    "BUDDY_API_BASE": "https://ora-buddy-api-hrdbgqh9cvaub5ft.easus2-01.azurewebsites.net",
+    "BUDDY_SESSION_SECRET": "SET_SAME_ON_SWA_AND_FUNCTION_APP",
+    "BUDDY_REQUIRE_SESSION": "1",
+    "BUDDY_ASK_DEADLINE_MS": "120000"
   },
   "Host": {
     "CORS": "*"
