@@ -5622,6 +5622,43 @@
       <tr><td><code>ora_ctgov_trials</code></td><td>${intelStatNum(
         typeof cgCount === "number" ? cgCount : null
       )}</td><td>live sync</td><td><span class="badge" style="background:#E0E7FF;color:#3730A3;">live</span></td></tr>`;
+    const sfFromHealth = h.salesforce || {};
+    const sfCountMap = {
+      ora_sf_account:
+        typeof counts.ora_sf_account === "number"
+          ? counts.ora_sf_account
+          : typeof sfFromHealth.accounts === "number"
+            ? sfFromHealth.accounts
+            : sfTableRows.find((t) => t.container === "ora_sf_account")?.count,
+      ora_sf_opportunity:
+        typeof counts.ora_sf_opportunity === "number"
+          ? counts.ora_sf_opportunity
+          : typeof sfFromHealth.opportunities === "number"
+            ? sfFromHealth.opportunities
+            : sfTableRows.find((t) => t.container === "ora_sf_opportunity")?.count,
+      ora_sf_activity_request:
+        typeof counts.ora_sf_activity_request === "number"
+          ? counts.ora_sf_activity_request
+          : typeof sfFromHealth.activityRequests === "number"
+            ? sfFromHealth.activityRequests
+            : sfTableRows.find((t) => t.container === "ora_sf_activity_request")?.count
+    };
+    const sfLiveRows = [
+      ["ora_sf_account", "Account", sfCountMap.ora_sf_account],
+      ["ora_sf_opportunity", "Opportunity", sfCountMap.ora_sf_opportunity],
+      ["ora_sf_activity_request", "Activity_Request__c", sfCountMap.ora_sf_activity_request]
+    ]
+      .map(([id, label, c]) => {
+        const n = typeof c === "number" ? c : null;
+        const badge =
+          n != null && n > 0
+            ? `<span class="badge" style="background:#D1FAE5;color:#065F46;">live SF</span>`
+            : `<span class="badge" style="background:#FEF3C7;color:#92400E;">empty</span>`;
+        return `<tr><td><code>${escapeHtml(id)}</code> <span class="muted">(${escapeHtml(
+          label
+        )})</span></td><td>${intelStatNum(n)}</td><td>SF ingest</td><td>${badge}</td></tr>`;
+      })
+      .join("");
     const syncDisabled = state.intelligence.syncBusy ? "disabled" : "";
     const thBusy = state.intelligence.trialhubUploadBusy;
     const thMsg = state.intelligence.trialhubUploadMessage
@@ -5636,10 +5673,10 @@
     return `
       <div class="card wide">
         <h3>Data status ${h.ok ? "· loaded" : "· check counts"}</h3>
-        <p class="muted">Ora Veeva + TrialHub reference tables in Cosmos (<code>bd-budgets</code>). Buddy reads summaries from these.</p>
+        <p class="muted">Ora Veeva + TrialHub + Salesforce reference tables in Cosmos (<code>bd-budgets</code>). Buddy reads summaries from these.</p>
         <table class="table">
           <thead><tr><th>Container</th><th>Loaded</th><th>Expected</th><th>Status</th></tr></thead>
-          <tbody>${rows}${liveRows}</tbody>
+          <tbody>${rows}${liveRows}${sfLiveRows}</tbody>
         </table>
         <div style="margin-top:0.85rem;display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap;">
           <button type="button" class="btn btn-secondary" id="btnIntelRefresh">Refresh</button>
@@ -5650,7 +5687,7 @@
             sfBusy ? "Syncing SF…" : "Sync Salesforce now"
           }</button>
           <button type="button" class="btn btn-primary" id="btnSalesforceTablesSync" ${sfTablesDisabled}>${
-            sfTablesBusy ? "Syncing SF tables…" : "Sync SF tables"
+            sfTablesBusy ? "Ingesting SF…" : "Ingest SF + crosswalk"
           }</button>
         </div>
         ${syncMeta}

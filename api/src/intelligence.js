@@ -1424,13 +1424,16 @@ async function getIntelligenceHealth(getDb) {
     "ora_sponsor_crosswalk",
     "ora_site_alias_table",
     "ora_ctgov_trials",
-    "ora_veeva_milestones"
+    "ora_veeva_milestones",
+    "ora_sf_account",
+    "ora_sf_opportunity",
+    "ora_sf_activity_request"
   ];
   const counts = {};
   for (const id of containers) {
     counts[id] = await safeCount(database, id);
   }
-  // Fixed packs (Veeva/crosswalk). TrialHub + CT.gov grow via upload/sync — not fixed expected.
+  // Fixed packs (Veeva/crosswalk). TrialHub + CT.gov + SF grow via upload/sync — not fixed expected.
   const expected = {
     ora_fact_site: 3613,
     ora_fact_study: 249,
@@ -1440,7 +1443,10 @@ async function getIntelligenceHealth(getDb) {
   };
   const liveCounts = {
     ora_trialhub_trials: counts.ora_trialhub_trials,
-    ora_ctgov_trials: counts.ora_ctgov_trials
+    ora_ctgov_trials: counts.ora_ctgov_trials,
+    ora_sf_account: counts.ora_sf_account,
+    ora_sf_opportunity: counts.ora_sf_opportunity,
+    ora_sf_activity_request: counts.ora_sf_activity_request
   };
   const fixedOk = Object.keys(expected).every((id) => counts[id] === expected[id]);
   let syncState = null;
@@ -1457,6 +1463,20 @@ async function getIntelligenceHealth(getDb) {
   } catch (_) {
     syncState = null;
   }
+  let sfSyncState = null;
+  try {
+    const { resource } = await database.container("syncState").item("salesforce_tables", "salesforce_tables").read();
+    sfSyncState = resource
+      ? {
+          lastSuccessfulSync: resource.lastSuccessfulSync || null,
+          lastRunAt: resource.lastRunAt || null,
+          mode: resource.mode || null,
+          note: resource.note || null
+        }
+      : null;
+  } catch (_) {
+    sfSyncState = null;
+  }
   return {
     dataset: DATASET,
     ok: fixedOk,
@@ -1471,6 +1491,13 @@ async function getIntelligenceHealth(getDb) {
       count: counts.ora_ctgov_trials,
       sync: syncState,
       note: "Growing feed — daily delta ~5AM Eastern; no fixed expected count."
+    },
+    salesforce: {
+      accounts: counts.ora_sf_account,
+      opportunities: counts.ora_sf_opportunity,
+      activityRequests: counts.ora_sf_activity_request,
+      sync: sfSyncState,
+      note: "Live SF mirrors via Ingest SF + crosswalk — Account / Opportunity / Activity_Request__c."
     },
     note: fixedOk
       ? "Core intelligence containers loaded."
@@ -2359,6 +2386,17 @@ async function buildReconciliationIntelContext(getDb, opts = {}) {
       out.sponsorCrosswalk = await lookupSponsorCrosswalk(database, who);
     }
 
+    try {
+      const { attachSalesforceData } = require("./salesforceTables");
+      await attachSalesforceData(out, getDb, {
+        question: blob,
+        clientName: who,
+        sponsor: who
+      });
+    } catch (_) {
+      /* optional */
+    }
+
     out.elapsedMs = Date.now() - started;
     return out;
   } catch (err) {
@@ -2375,7 +2413,7 @@ async function buildReconciliationIntelContext(getDb, opts = {}) {
  * Used when the router plans cosmos_default without full intel or reconciliation.
  */
 async function buildSlimBuddyIntelContext(getDb, opts = {}) {
-  const { clientName = null, sponsor = null } = opts;
+  const { question = "", clientName = null, sponsor = null } = opts;
   const database = getDb();
   const started = Date.now();
   try {
@@ -2392,6 +2430,12 @@ async function buildSlimBuddyIntelContext(getDb, opts = {}) {
     const who = sponsor || clientName;
     if (who) {
       out.sponsorCrosswalk = await lookupSponsorCrosswalk(database, who);
+    }
+    try {
+      const { attachSalesforceData } = require("./salesforceTables");
+      await attachSalesforceData(out, getDb, { question, clientName: who, sponsor: who });
+    } catch (_) {
+      /* optional */
     }
     return out;
   } catch (err) {
@@ -2464,6 +2508,16 @@ async function buildDefaultBuddyIntelContext(getDb, opts = {}) {
     const who = sponsor || clientName;
     if (who) {
       out.sponsorCrosswalk = await lookupSponsorCrosswalk(database, who);
+    }
+    try {
+      const { attachSalesforceData } = require("./salesforceTables");
+      await attachSalesforceData(out, getDb, {
+        question: blob,
+        clientName: who,
+        sponsor: who
+      });
+    } catch (_) {
+      /* optional */
     }
     return out;
   } catch (err) {
@@ -2693,17 +2747,16 @@ async function buildIntelligenceContext(getDb, opts = {}) {
       out.sponsorCrosswalk = await lookupSponsorCrosswalk(database, who);
     }
 
-    if (wantsSalesforce || wantsCrosswalk || who) {
-      try {
-        const { buildSalesforceBuddyContext } = require("./salesforceTables");
-        out.salesforceData = await buildSalesforceBuddyContext(getDb, {
-          question,
-          clientName: who || clientName,
-          sponsor: who || sponsor
-        });
-      } catch (sfErr) {
-        out.salesforceData = { error: String(sfErr.message || sfErr) };
-      }
+    // Always attach Salesforce mirrors when available (Buddy must not fall back to portfolio.byClient for CRM).
+    try {
+      const { attachSalesforceData } = require("./salesforceTables");
+      await attachSalesforceData(out, getDb, {
+        question,
+        clientName: who || clientName,
+        sponsor: who || sponsor
+      });
+    } catch (sfErr) {
+      out.salesforceData = { error: String(sfErr.message || sfErr) };
     }
 
     out.elapsedMs = Date.now() - started;

@@ -89,6 +89,30 @@ function buildSourcesFromContext(ctx = {}, toolTrace = []) {
     );
   }
 
+  const sf = intel?.salesforceData;
+  if (sf) {
+    const nAcct = sf.counts?.ora_sf_account;
+    const nOpp = sf.counts?.ora_sf_opportunity;
+    const nAr = sf.counts?.ora_sf_activity_request;
+    const any =
+      (typeof nAcct === "number" && nAcct > 0) ||
+      (typeof nOpp === "number" && nOpp > 0) ||
+      (typeof nAr === "number" && nAr > 0);
+    sources.push(
+      sourceRow(
+        "salesforce",
+        "Salesforce (Cosmos ora_sf_*)",
+        Boolean(any && !sf.error && !sf.empty),
+        sf.error
+          ? sf.error
+          : sf.empty
+            ? "empty — run Ingest SF + crosswalk"
+            : `accounts=${nAcct ?? "—"} · opps=${nOpp ?? "—"} · ARs=${nAr ?? "—"}`,
+        { n: typeof nOpp === "number" ? nOpp : nAcct ?? null }
+      )
+    );
+  }
+
   if (legacy) {
     sources.push(
       sourceRow(

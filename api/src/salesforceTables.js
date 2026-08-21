@@ -272,10 +272,12 @@ function isSalesforceDataQuestion(question) {
   if (!q) return false;
   return (
     /\b(salesforce|\bsf\b|ora grouping|activity request|\bars?\b)\b/.test(q) ||
-    /\b(opportunit(?:y|ies)|pipeline|stage|close date)\b/.test(q) ||
-    /\b(product2|sf services|opportunity line|line items?)\b/.test(q) ||
+    /\b(opportunit(?:y|ies)|pipeline|stage|close date|open opps?)\b/.test(q) ||
+    /\b(product2|sf services|opportunity line)\b/.test(q) ||
     /\b(who owns|account owner|bd owner|tier)\b/.test(q) ||
-    /\b(accounts? in (sf|salesforce)|sf accounts?)\b/.test(q)
+    /\b(accounts? in (sf|salesforce)|sf accounts?)\b/.test(q) ||
+    /\b(bd activity|activity requests?)\b/.test(q) ||
+    /\b(crm|account tier|sf owner)\b/.test(q)
   );
 }
 
@@ -318,12 +320,45 @@ async function buildSalesforceBuddyContext(getDb, opts = {}) {
   if (!anyData) {
     out.empty = true;
     out.note =
-      "ora_sf_* containers are empty — run Intelligence → Sync SF tables (after SF_* App Settings). Until then use sponsorCrosswalk for owner/tier/grouping only.";
+      "ora_sf_* containers are empty — run Data Status → Ingest SF + crosswalk (after SF_* App Settings). Until then use sponsorCrosswalk for owner/tier/grouping only.";
     out.elapsedMs = Date.now() - started;
     return out;
   }
 
   try {
+    // Lightweight pipeline snapshot (always) so Buddy is not stuck on portfolio.byClient
+    try {
+      const openOpps = await queryAll(
+        database.container("ora_sf_opportunity"),
+        `SELECT TOP 200 c.Amount, c.StageName, c.IsClosed, c.IsWon
+         FROM c WHERE c.docType = @t`,
+        [{ name: "@t", value: "ora_sf_opportunity" }]
+      );
+      let openCount = 0;
+      let openAmount = 0;
+      const byStage = {};
+      for (const o of openOpps) {
+        const closed = o.IsClosed === true;
+        if (!closed) {
+          openCount += 1;
+          openAmount += Number(o.Amount) || 0;
+        }
+        const st = String(o.StageName || "Unknown");
+        byStage[st] = (byStage[st] || 0) + 1;
+      }
+      out.pipelineSummary = {
+        sampledOpps: openOpps.length,
+        openCount,
+        openAmountSum: Math.round(openAmount),
+        stageCounts: Object.entries(byStage)
+          .sort((a, b) => b[1] - a[1])
+          .slice(0, 12)
+          .map(([stage, n]) => ({ stage, n }))
+      };
+    } catch (_) {
+      /* optional */
+    }
+
     if (nameHint) {
       const accts = await queryAll(
         database.container("ora_sf_account"),
@@ -439,13 +474,30 @@ async function buildSalesforceBuddyContext(getDb, opts = {}) {
 
   out.elapsedMs = Date.now() - started;
   out.rules = [
+    "PRIORITY: When counts > 0, answer Account / Opportunity / AR / owner / tier / pipeline asks from this pack — NOT portfolio.byClient.",
+    "portfolio.byClient = Ora uploaded bid/service-fee dollars only. Salesforce Amount/Stage = CRM pipeline — different source; label which you use.",
     "Cite Account Name, Owner, Tier__c → tier, Ora_Grouping__c → ora grouping.",
     "Opportunities: Name, Stage, Amount, CloseDate — do not invent pipeline numbers.",
     "Activity_Request__c rows are ARs — say Activity Request, not invent statuses.",
     "We do not sync OpportunityLineItem or Product2 — do not invent line items/services.",
-    "If counts are 0, tell the user to run Sync SF tables on the Intelligence tab."
+    "If counts are 0, tell the user to run Ingest SF + crosswalk on Data Status."
   ];
   return out;
+}
+
+/** Attach SF pack onto any intelligence context object (full / slim / default / reconcile). */
+async function attachSalesforceData(intel, getDb, opts = {}) {
+  if (!intel || typeof intel !== "object" || intel.error) return intel;
+  try {
+    intel.salesforceData = await buildSalesforceBuddyContext(getDb, {
+      question: opts.question || "",
+      clientName: opts.clientName || opts.sponsor || null,
+      sponsor: opts.sponsor || opts.clientName || null
+    });
+  } catch (err) {
+    intel.salesforceData = { error: String(err.message || err) };
+  }
+  return intel;
 }
 
 module.exports = {
@@ -454,5 +506,6 @@ module.exports = {
   runSalesforceTablesSync,
   getSalesforceTablesStatus,
   isSalesforceDataQuestion,
-  buildSalesforceBuddyContext
+  buildSalesforceBuddyContext,
+  attachSalesforceData
 };

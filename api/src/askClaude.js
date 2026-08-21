@@ -41,10 +41,13 @@ const PORTFOLIO_RULES =
   "If both are null, the query is the FULL Cosmos portfolio — never invent filters (e.g. \"BL only\") or claim the UI filtered the DB. " +
   "Never invent reasons like \"filtered so it can reliably confirm 1 study\". " +
   "If matchedStudyCount < databaseStudyCount, explain it ONLY from filters / note / filterError on context.portfolio — do not invent a reason. " +
-  "ORA EARNED $ vs SPONSOR COMPANY $ (critical): " +
+  "ORA EARNED $ vs SPONSOR COMPANY $ vs SALESFORCE PIPELINE (critical): " +
   "When the user asks how many studies we've run with clients/sponsors AND/OR to rank them by revenue/fees/what we've made/made off them — " +
   "use context.portfolio.byClient: studyCount + grandTotal (or serviceFees). That is Ora bid/service-fee dollars from uploaded budgets — NOT the sponsor's corporate revenue, CHF/USD billions, 10-K filings, or web market caps. " +
   "Label clearly as Ora fees / bid totals. Sort by grandTotal (fallback serviceFees). Cite studiesWithMoneyCount when some clients lack money. " +
+  "When the user asks about Salesforce / CRM / pipeline / opportunities / stages / amounts / Activity Requests / account owner / tier / Ora grouping — " +
+  "use context.intelligence.salesforceData (and sponsorCrosswalk). Do NOT substitute portfolio.byClient for CRM pipeline Amount/Stage. " +
+  "If salesforceData.counts show rows > 0, you HAVE Salesforce data — lead with it for those asks. " +
   "Only use web company revenue when they explicitly ask for the sponsor's own company revenue, biggest pharma by market revenue, filings, or similar public facts. " +
   "If context.moneyIntent is \"ora_earned\", you MUST use portfolio byClient and MUST NOT web-search sponsor corporate revenue. " +
   "INGEST / UPLOAD DATES (critical): portfolio.studies[].importedAt = first ingest into Cosmos; updatedAt = last workbench save. " +
@@ -65,6 +68,7 @@ const INTELLIGENCE_RULES = [
   "5) ora_site_alias_table (~46): variant site names → canonical_name (already applied into org_clean where possible).",
   "6) ora_veeva_milestones (~1920 org×study wide rows from Mike Watson Site Level 10Jul2026): startup dates + gaps_days (selected_to_contract, contract_to_irb, irb_to_siv, siv_to_fsi, contract_to_siv, contract_to_fsi). Prefer activity_2023_plus=true and outlier_gap_gt_730=false; use medians. Join to fact_site on organization + study_name (fuzzy). Live pack: indicationBenchmark.startupTimelines.",
   "7) ora_ctgov_trials (ClinicalTrials.gov ophthalmology feed, daily delta ~5AM Eastern): public registry landscape. Key fields: nct, title, status, phase, conditions, oraIndication, sponsor, sponsorClass, enrollment, countries, startDate, lastUpdatePostDate, hasResults. Use when context.intelligence.ctgov is present or user asks about CT.gov / registry / recruiting ophthalmology trials.",
+  "8) ora_sf_account / ora_sf_opportunity / ora_sf_activity_request (live Salesforce mirrors via Ingest SF + crosswalk): CRM accounts, pipeline opportunities (Amount/Stage/CloseDate/Owner), Activity Requests. Pack: intelligence.salesforceData (+ pipelineSummary). Prefer for CRM asks; never confuse with portfolio.byClient Ora bid fees.",
   " USE CASES — match the ask to the right source:",
   "• Indication picking is EXCLUSIVE: one ask → one indication family only. Dry Eye ≠ Dry AMD ≠ Wet AMD; Glaucoma ≠ Neuroprotection; CRVO ≠ BRVO ≠ RVO umbrella unless that exact label was asked. Never mash shared words (dry, macular, optic, retinal, glaucoma…). Use context.intelligence.query.indication / aliasesUsed; if ambiguous, ask which indication.",
   "• Feasibility / \"how fast do we enroll\" / typical PSM for an indication → context.intelligence.indicationBenchmark (Ora median PSM + TrialHub median psm_common + site medians). Prefer medians; cite studiesWithPsm / trialsWithPsm counts.",
@@ -79,11 +83,11 @@ const INTELLIGENCE_RULES = [
   "• BD call prep / win themes / meeting prep → indicationBenchmark + sponsorCrosswalk (owner/tier) + competing recruitingSample + 3 talking points; emit HTML_REPORT when they ask for a leave-behind. Prefer open-study indication/client when the question does not name one.",
   "• Leadership briefing / exec one-pager → context.portfolio (totals, byClient with pctOfGrandTotal, byYear, byIndication, highestBudgetStudies, recentlyIngested) + intelligence.inventory when present. Headline + n first.",
   "• What's in the DB / Cosmos catalog / ingest freshness → portfolio.databaseStudyCount + recentlyIngested + intelligence.inventory (+ CT.gov sync time when present).",
-  "• Client concentration / who pays us the most → portfolio.byClient sorted by grandTotal with pctOfGrandTotal — Ora fees only.",
+  "• Client concentration / who pays us the most → portfolio.byClient sorted by grandTotal with pctOfGrandTotal — Ora fees only (not Salesforce pipeline).",
   "• Ops briefing (section status, fill requests, what to do next) → workingStudy.sectionStatus / requests / drivers; suggest NAVIGATE:ops or NAVIGATE:reviews.",
   "• Legacy recruitment board / anterior overview (no indication) → legacyAnterior trust + topByEnrolled / counts. If enrollmentIncluded or htmlTable present, list enrollment; never ask user to paste the table.",
   "• Sponsor already in SF? BD owner / tier / Ora grouping? → intelligence.sponsorCrosswalk (sf_owner, tier, ora_grouping). Crosswalk dashboard (no sponsor named) → intelligence.crosswalkOverview (totalCount, statusRank, tierRank, noSfMatchSample).",
-  "• Salesforce Accounts / Opportunities / Activity Requests (ARs) → intelligence.salesforceData (ora_sf_account / ora_sf_opportunity / ora_sf_activity_request). If counts are 0, say Sync SF tables is needed. Never invent pipeline Amount/Stage.",
+  "• Salesforce Accounts / Opportunities / Activity Requests (ARs) → intelligence.salesforceData (ora_sf_account / ora_sf_opportunity / ora_sf_activity_request). Prefer this over portfolio.byClient for CRM/pipeline/owner/tier/AR. Use pipelineSummary when present. If counts are 0, say Ingest SF + crosswalk is needed. Never invent pipeline Amount/Stage.",
   "• NCT lookup → intelligence.nctLookup (TrialHub) and/or intelligence.ctgovNct / ctgov.",
   "• CT.gov dashboard / registry overview (no indication named) → intelligence.ctgovOverview (totalCount, indicationRank, statusRank, recentSample, countryRank). If totalCount > 0 you HAVE data — never say CT.gov is empty.",
   "• CT.gov by indication → intelligence.ctgov (trialCount, sample, recruitingSample).",
@@ -91,7 +95,7 @@ const INTELLIGENCE_RULES = [
   "• TrialHub by indication → indicationBenchmark.trialhub.",
   "• Veeva / Ora history dashboard (no indication) → intelligence.veevaOverview (studyCount, siteCount, psmMedian, indicationRank, sampleStudies, topSites). If studyCount/siteCount > 0 you HAVE data.",
   "• Country-only site asks (no indication) → intelligence.countrySites.topSites — list sites even when site_psm is null.",
-  "• Budget dollars / uploaded bid portfolio → context.portfolio (not intelligence).",
+  "• Budget dollars / uploaded bid portfolio → context.portfolio (not intelligence, not SF Amount).",
   "• HLBP form asks → CREATE_STUDY with budgetType HLBP + sites country mix, NAVIGATE:hlbp, then APPLY missing fields as the user answers. Past-bid dollar comps may use context.pricingScenarios when present — label them as comparable past service fees, not 'the HLBP form'.",
   "• CT.gov dollars → only when pricingScenarios.ctgovDollars.available or intelligence.ctgov.dollarMentions.available. Those are rare free-text mentions (not CRO bids). If unavailable, say CT.gov has no structured bid costs — do not invent.",
   "• RFP / pricing numbers from past bids → context.pricingScenarios when present (comparable service-fee ranges scaled to N). Cite comparableCount. Not a formal quote.",
@@ -1520,7 +1524,9 @@ function formatCosmosFactsBlock(context) {
       `Cosmos inventory: CT.gov trials=${cgCount ?? "—"}, TrialHub trials=${thCount ?? "—"}, ` +
         `Ora studies=${inv.counts?.ora_fact_study ?? inv.ora_fact_study ?? "—"}, Ora sites=${
           inv.counts?.ora_fact_site ?? inv.ora_fact_site ?? "—"
-        }`
+        }, SF accounts=${inv.counts?.ora_sf_account ?? inv.salesforce?.accounts ?? "—"}, ` +
+        `SF opps=${inv.counts?.ora_sf_opportunity ?? inv.salesforce?.opportunities ?? "—"}, ` +
+        `SF ARs=${inv.counts?.ora_sf_activity_request ?? inv.salesforce?.activityRequests ?? "—"}`
     );
     if ((Number(cgCount) > 0 || Number(thCount) > 0) && !cgo && !tho && !cg) {
       lines.push(
@@ -1545,9 +1551,20 @@ function formatCosmosFactsBlock(context) {
     ];
     if (sf.empty) {
       sfLines.push(
-        "RULE: SF tables empty — tell user to run Intelligence → Sync SF tables. You may still use sponsorCrosswalk for owner/tier/grouping."
+        "RULE: SF tables empty — tell user to run Data Status → Ingest SF + crosswalk. You may still use sponsorCrosswalk for owner/tier/grouping. Do NOT invent CRM Amount/Stage from portfolio.byClient."
       );
     } else {
+      if (sf.pipelineSummary) {
+        const ps = sf.pipelineSummary;
+        sfLines.push(
+          `pipelineSummary: openOpps≈${ps.openCount ?? "—"} · openAmountSum≈${
+            ps.openAmountSum == null ? "—" : ps.openAmountSum
+          } · sampled=${ps.sampledOpps ?? "—"}`
+        );
+        for (const s of (ps.stageCounts || []).slice(0, 8)) {
+          sfLines.push(`  - stage ${s.stage}: ${s.n}`);
+        }
+      }
       for (const a of (sf.accounts || []).slice(0, 8)) {
         sfLines.push(
           `  - Account ${a.name || "?"} | owner=${a.owner || "—"} | tier=${a.tier || "—"} | grouping=${
@@ -1569,7 +1586,7 @@ function formatCosmosFactsBlock(context) {
         sfLines.push(`  - Service ${s.name || "?"} | code=${s.productCode || "—"} | family=${s.family || "—"}`);
       }
       sfLines.push(
-        "RULE: If counts > 0 you HAVE Salesforce data — answer from these rows. Never invent Amount/Stage/AR status."
+        "RULE: If counts > 0 you HAVE Salesforce data — answer CRM/pipeline/owner/AR from these rows. Never use portfolio.byClient as a substitute for SF Amount/Stage. Never invent Amount/Stage/AR status."
       );
     }
     blocks.push(sfLines.join("\n"));
@@ -1795,18 +1812,15 @@ function contextJsonForModel(context) {
       nctLookup: intel.nctLookup,
       ctgovNct: intel.ctgovNct,
       sponsorCrosswalk: intel.sponsorCrosswalk,
-      salesforceData: started
-        ? undefined
-        : intel.salesforceData
-          ? {
-              ...intel.salesforceData,
-              accounts: (intel.salesforceData.accounts || []).slice(0, 10),
-              opportunities: (intel.salesforceData.opportunities || []).slice(0, 12),
-              activityRequests: (intel.salesforceData.activityRequests || []).slice(0, 10),
-              opportunityLines: (intel.salesforceData.opportunityLines || []).slice(0, 15),
-              services: (intel.salesforceData.services || []).slice(0, 12)
-            }
-          : undefined
+      // Never drop SF when TrialHub year lists are present — Buddy needs CRM alongside portfolio
+      salesforceData: intel.salesforceData
+        ? {
+            ...intel.salesforceData,
+            accounts: (intel.salesforceData.accounts || []).slice(0, 10),
+            opportunities: (intel.salesforceData.opportunities || []).slice(0, 12),
+            activityRequests: (intel.salesforceData.activityRequests || []).slice(0, 10)
+          }
+        : undefined
     };
   }
 

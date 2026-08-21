@@ -159,7 +159,7 @@ function inferBuddyWorkflow(question, body = {}) {
 
   const budgetCue =
     isPricingQuestion(question) ||
-    /\b(hlbp|ballpark|budget|quote|rfp|pricing|internal budget|service fees?|pass[- ]?through|line items?|drivers?|grand total|opportunity)\b/i.test(
+    /\b(hlbp|ballpark|budget|quote|rfp|pricing|internal budget|service fees?|pass[- ]?through|line items?|drivers?|grand total)\b/i.test(
       q
     ) ||
     /\b(create|new)\s+(study|draft|opportunity|hlbp)\b/i.test(q) ||
@@ -424,9 +424,14 @@ function pickTools(ctx) {
     tools.add("portfolio");
   } else if (
     !skipHeavyPortfolio &&
-    (workflow === "budget" || workflow === "hybrid" || intent === "portfolio")
+    (workflow === "budget" || workflow === "hybrid" || intent === "portfolio") &&
+    !isSalesforceDataQuestion(ctx.question)
   ) {
     tools.add("portfolio");
+  }
+  // SF CRM asks still get full intel (salesforceData) even when portfolio is skipped
+  if (isSalesforceDataQuestion(ctx.question)) {
+    tools.add("cosmos_intel_full");
   }
   if (compareAsk || intent === "compare_studies") tools.add("study_compare");
   if (workflow === "budget" || workflow === "hybrid" || isPricingQuestion(ctx.question)) {
