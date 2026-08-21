@@ -68,6 +68,9 @@
       sfSyncMessage: "",
       sfTablesBusy: false,
       sfTablesMessage: "",
+      veevaSyncStatus: null,
+      veevaBusy: false,
+      veevaMessage: "",
       trialhubUploadBusy: false,
       trialhubUploadMessage: "",
       trialhubUploadResult: null
@@ -5064,6 +5067,11 @@
       const sfdata = await sfres.json().catch(() => ({}));
       if (sfres.ok) state.intelligence.sfSyncStatus = sfdata;
     } catch (_) {}
+    try {
+      const vres = await fetch(apiUrl("/api/veeva/sync"));
+      const vdata = await vres.json().catch(() => ({}));
+      if (vres.ok) state.intelligence.veevaSyncStatus = vdata;
+    } catch (_) {}
     state.intelligence.loading = false;
     if (state.sectionId === "intelligence" || isDataStatusTab()) render();
   }
@@ -5146,6 +5154,57 @@
       state.intelligence.syncDeltas = null;
     }
     state.intelligence.syncBusy = false;
+    refreshDataStatusIfOpen();
+  }
+
+  async function runVeevaSyncManual() {
+    if (state.intelligence.veevaBusy) return;
+    state.intelligence.veevaBusy = true;
+    state.intelligence.veevaMessage =
+      "Ingesting Veeva Vault (study/site/org/sponsor/milestone) → Cosmos — may take a few minutes…";
+    refreshDataStatusIfOpen();
+    try {
+      const res = await fetch(apiUrl("/api/veeva/sync"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ full: true })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (data.skipped) {
+        state.intelligence.veevaMessage =
+          data.error || "Veeva not configured (set VEEVA_* on ora-buddy-api).";
+      } else if (data.ok === false || (data.results || []).some((r) => r.error)) {
+        const bits = (data.results || []).map((r) =>
+          r.error
+            ? `${r.object}: ${r.error}`
+            : `${r.object}: ${r.upserted ?? 0}/${r.fetched ?? 0}`
+        );
+        state.intelligence.veevaMessage = [
+          "Veeva ingest issues",
+          bits.join(" · ") || data.error || `HTTP ${res.status}`,
+          data.elapsedMs ? `${Math.round(data.elapsedMs / 1000)}s` : ""
+        ]
+          .filter(Boolean)
+          .join(" · ");
+      } else {
+        const bits = (data.results || []).map(
+          (r) => `${r.object}: ${r.upserted ?? 0}/${r.fetched ?? 0}`
+        );
+        const mw = data.milestoneWide;
+        state.intelligence.veevaMessage = [
+          data.incomplete ? "Partial Veeva ingest (re-run)" : "Veeva ingest OK",
+          bits.join(" · "),
+          mw && mw.upserted != null ? `wide milestones ${mw.upserted}` : "",
+          data.elapsedMs ? `${Math.round(data.elapsedMs / 1000)}s` : ""
+        ]
+          .filter(Boolean)
+          .join(" · ");
+      }
+      await loadIntelligenceHealth();
+    } catch (err) {
+      state.intelligence.veevaMessage = `Veeva sync error: ${String(err)}`;
+    }
+    state.intelligence.veevaBusy = false;
     refreshDataStatusIfOpen();
   }
 
@@ -5659,6 +5718,60 @@
         )})</span></td><td>${intelStatNum(n)}</td><td>SF ingest</td><td>${badge}</td></tr>`;
       })
       .join("");
+    const vv = state.intelligence.veevaSyncStatus || {};
+    const vvTables = Array.isArray(vv.tables) ? vv.tables : [];
+    const vvFromHealth = h.veeva || {};
+    const vvCount = (container) => {
+      const fromHealth = counts[container];
+      if (typeof fromHealth === "number") return fromHealth;
+      const row = vvTables.find((t) => t.container === container);
+      return typeof row?.count === "number" ? row.count : null;
+    };
+    const veevaLiveRows = [
+      ["ora_veeva_study", "study__v", vvCount("ora_veeva_study") ?? vvFromHealth.studies],
+      ["ora_veeva_site", "site__v", vvCount("ora_veeva_site") ?? vvFromHealth.sites],
+      [
+        "ora_veeva_organization",
+        "organization__v",
+        vvCount("ora_veeva_organization") ?? vvFromHealth.organizations
+      ],
+      ["ora_veeva_sponsor", "sponsor__c", vvCount("ora_veeva_sponsor") ?? vvFromHealth.sponsors],
+      [
+        "ora_veeva_milestone",
+        "milestone__v",
+        vvCount("ora_veeva_milestone") ?? vvFromHealth.milestones
+      ]
+    ]
+      .map(([id, label, c]) => {
+        const n = typeof c === "number" ? c : null;
+        const badge =
+          n != null && n > 0
+            ? `<span class="badge" style="background:#D1FAE5;color:#065F46;">live Vault</span>`
+            : `<span class="badge" style="background:#FEF3C7;color:#92400E;">empty</span>`;
+        return `<tr><td><code>${escapeHtml(id)}</code> <span class="muted">(${escapeHtml(
+          label
+        )})</span></td><td>${intelStatNum(n)}</td><td>Veeva ingest</td><td>${badge}</td></tr>`;
+      })
+      .join("");
+    const veevaConfigured = vv.configured === true;
+    const veevaBusy = state.intelligence.veevaBusy;
+    const veevaDisabled = veevaBusy || !veevaConfigured ? "disabled" : "";
+    const veevaMsg = state.intelligence.veevaMessage
+      ? `<p class="muted" style="margin-top:0.5rem;">${escapeHtml(state.intelligence.veevaMessage)}</p>`
+      : "";
+    const veevaMeta = `<p class="muted" style="margin:0.35rem 0 0;">Veeva Vault: ${
+      veevaConfigured ? "configured" : "not configured (VEEVA_* on ora-buddy-api)"
+    }${vv.dns ? ` · <code>${escapeHtml(String(vv.dns))}</code>` : ""}${
+      vv.sync?.lastSuccessfulSync
+        ? ` · last ${escapeHtml(String(vv.sync.lastSuccessfulSync))}`
+        : ""
+    }${
+      vv.projections
+        ? ` · fact live study/site/ms=${vv.projections.ora_fact_study_live ?? "—"}/${
+            vv.projections.ora_fact_site_live ?? "—"
+          }/${vv.projections.ora_veeva_milestones_live ?? "—"}`
+        : ""
+    }</p>`;
     const syncDisabled = state.intelligence.syncBusy ? "disabled" : "";
     const thBusy = state.intelligence.trialhubUploadBusy;
     const thMsg = state.intelligence.trialhubUploadMessage
@@ -5676,7 +5789,7 @@
         <p class="muted">Ora Veeva + TrialHub + Salesforce reference tables in Cosmos (<code>bd-budgets</code>). Buddy reads summaries from these.</p>
         <table class="table">
           <thead><tr><th>Container</th><th>Loaded</th><th>Expected</th><th>Status</th></tr></thead>
-          <tbody>${rows}${liveRows}${sfLiveRows}</tbody>
+          <tbody>${rows}${liveRows}${sfLiveRows}${veevaLiveRows}</tbody>
         </table>
         <div style="margin-top:0.85rem;display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap;">
           <button type="button" class="btn btn-secondary" id="btnIntelRefresh">Refresh</button>
@@ -5689,6 +5802,9 @@
           <button type="button" class="btn btn-primary" id="btnSalesforceTablesSync" ${sfTablesDisabled}>${
             sfTablesBusy ? "Ingesting SF…" : "Ingest SF + crosswalk"
           }</button>
+          <button type="button" class="btn btn-primary" id="btnVeevaSync" ${veevaDisabled}>${
+            veevaBusy ? "Ingesting Veeva…" : "Ingest Veeva (full)"
+          }</button>
         </div>
         ${syncMeta}
         ${syncMsg}
@@ -5697,6 +5813,8 @@
         ${sfMsg}
         ${sfTablesMeta}
         ${sfTablesMsg}
+        ${veevaMeta}
+        ${veevaMsg}
         ${renderCtgovSyncDeltas(state.intelligence.syncDeltas)}
       </div>
       <div class="card wide" style="margin-top:1rem;">
@@ -9489,6 +9607,10 @@
       }
       if (e.target.id === "btnSalesforceTablesSync") {
         runSalesforceTablesSyncManual();
+        return;
+      }
+      if (e.target.id === "btnVeevaSync") {
+        runVeevaSyncManual();
         return;
       }
       if (e.target.id === "btnTrialhubUpload") {

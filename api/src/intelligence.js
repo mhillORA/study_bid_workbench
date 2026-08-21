@@ -1293,15 +1293,33 @@ async function queryStartupTimelines(
 ) {
   try {
     const container = database.container("ora_veeva_milestones");
-    const rows = await queryAll(
+    // Prefer live Vault projection; fall back to Mike Watson Excel import
+    let rows = await queryAll(
       container,
       `SELECT c.organization, c.study_name, c.country, c.principal_investigator,
-              c.gaps_days, c.dates, c.activity_2023_plus, c.outlier_gap_gt_730
+              c.gaps_days, c.dates, c.activity_2023_plus, c.outlier_gap_gt_730, c.source
        FROM c WHERE c.docType = @t
-         AND c.activity_2023_plus = true
+         AND c.source = @src
+         AND (NOT IS_DEFINED(c.activity_2023_plus) OR c.activity_2023_plus = true)
          AND (NOT IS_DEFINED(c.outlier_gap_gt_730) OR c.outlier_gap_gt_730 = false)`,
-      [{ name: "@t", value: "ora_veeva_milestones" }]
+      [
+        { name: "@t", value: "ora_veeva_milestones" },
+        { name: "@src", value: "veeva_live" }
+      ]
     );
+    let sourceUsed = "veeva_live";
+    if (!rows.length) {
+      rows = await queryAll(
+        container,
+        `SELECT c.organization, c.study_name, c.country, c.principal_investigator,
+                c.gaps_days, c.dates, c.activity_2023_plus, c.outlier_gap_gt_730, c.source
+         FROM c WHERE c.docType = @t
+           AND c.activity_2023_plus = true
+           AND (NOT IS_DEFINED(c.outlier_gap_gt_730) OR c.outlier_gap_gt_730 = false)`,
+        [{ name: "@t", value: "ora_veeva_milestones" }]
+      );
+      sourceUsed = "mike_watson_or_mixed";
+    }
 
     let universe = rows;
     if (countries) {
@@ -1378,6 +1396,7 @@ async function queryStartupTimelines(
 
     return {
       scope: "ora_veeva_milestones",
+      source: sourceUsed,
       filters: {
         activity_2023_plus: true,
         outlier_gap_gt_730: false,
@@ -1390,7 +1409,9 @@ async function queryStartupTimelines(
       topSitesByStartup,
       note:
         scoped.length > 0
-          ? "Startup gap medians from Mike Watson Site Level Veeva milestones (2023+, gaps ≤730d). Prefer median over mean. Join to fact_site on organization + study_name (fuzzy)."
+          ? sourceUsed === "veeva_live"
+            ? "Startup gap medians from live Vault milestone__v projection (source=veeva_live). Prefer over Mike Watson Excel."
+            : "Startup gap medians from ora_veeva_milestones (legacy Mike Watson Excel until live Vault ingest populates source=veeva_live)."
           : "No milestone rows matched filters — still use fact_site PSM slate when present."
     };
   } catch (err) {
@@ -1427,13 +1448,19 @@ async function getIntelligenceHealth(getDb) {
     "ora_veeva_milestones",
     "ora_sf_account",
     "ora_sf_opportunity",
-    "ora_sf_activity_request"
+    "ora_sf_activity_request",
+    "ora_veeva_study",
+    "ora_veeva_site",
+    "ora_veeva_organization",
+    "ora_veeva_sponsor",
+    "ora_veeva_milestone"
   ];
   const counts = {};
   for (const id of containers) {
     counts[id] = await safeCount(database, id);
   }
-  // Fixed packs (Veeva/crosswalk). TrialHub + CT.gov + SF grow via upload/sync — not fixed expected.
+  // Fixed packs from Mike Watson / Claude Excel — expected only until live Vault replaces them.
+  // When ora_veeva_* live counts > 0, fixed expected is informational (not a hard fail).
   const expected = {
     ora_fact_site: 3613,
     ora_fact_study: 249,
@@ -1441,14 +1468,24 @@ async function getIntelligenceHealth(getDb) {
     ora_site_alias_table: 46,
     ora_veeva_milestones: 1920
   };
+  const liveVault =
+    (typeof counts.ora_veeva_study === "number" && counts.ora_veeva_study > 0) ||
+    (typeof counts.ora_veeva_site === "number" && counts.ora_veeva_site > 0);
   const liveCounts = {
     ora_trialhub_trials: counts.ora_trialhub_trials,
     ora_ctgov_trials: counts.ora_ctgov_trials,
     ora_sf_account: counts.ora_sf_account,
     ora_sf_opportunity: counts.ora_sf_opportunity,
-    ora_sf_activity_request: counts.ora_sf_activity_request
+    ora_sf_activity_request: counts.ora_sf_activity_request,
+    ora_veeva_study: counts.ora_veeva_study,
+    ora_veeva_site: counts.ora_veeva_site,
+    ora_veeva_organization: counts.ora_veeva_organization,
+    ora_veeva_sponsor: counts.ora_veeva_sponsor,
+    ora_veeva_milestone: counts.ora_veeva_milestone
   };
-  const fixedOk = Object.keys(expected).every((id) => counts[id] === expected[id]);
+  const fixedOk = liveVault
+    ? true
+    : Object.keys(expected).every((id) => counts[id] === expected[id]);
   let syncState = null;
   try {
     const { resource } = await database.container("syncState").item("ctgov_ophthalmology", "ctgov_ophthalmology").read();
@@ -1499,10 +1536,42 @@ async function getIntelligenceHealth(getDb) {
       sync: sfSyncState,
       note: "Live SF mirrors via Ingest SF + crosswalk — Account / Opportunity / Activity_Request__c."
     },
-    note: fixedOk
-      ? "Core intelligence containers loaded."
-      : "Count mismatch or containers missing — run ingest/load_ora_intelligence.py"
+    veeva: {
+      studies: counts.ora_veeva_study,
+      sites: counts.ora_veeva_site,
+      organizations: counts.ora_veeva_organization,
+      sponsors: counts.ora_veeva_sponsor,
+      milestones: counts.ora_veeva_milestone,
+      livePreferred: liveVault,
+      note: liveVault
+        ? "Live Vault mirrors (ora_veeva_*) preferred over Mike Watson Excel packs. Fact tables may include source=veeva_live projections."
+        : "Run Data Status → Ingest Veeva to replace Mike Watson Excel with live Vault study/site/milestone."
+    },
+    note: liveVault
+      ? "Live Veeva Vault sync present — Excel fixed counts are legacy reference only."
+      : fixedOk
+        ? "Core intelligence containers loaded."
+        : "Count mismatch or containers missing — run ingest/load_ora_intelligence.py or Ingest Veeva"
   };
+}
+
+async function prefersLiveVeevaFacts(database) {
+  try {
+    const rows = await queryAll(
+      database.container("ora_veeva_study"),
+      "SELECT VALUE COUNT(1) FROM c WHERE c.docType = @t",
+      [{ name: "@t", value: "ora_veeva_study" }]
+    );
+    return (rows[0] || 0) > 0;
+  } catch (_) {
+    return false;
+  }
+}
+
+function keepFactRowForSource(row, preferLive) {
+  const src = row && row.source;
+  if (preferLive) return src === "veeva_live";
+  return src !== "veeva_live";
 }
 
 async function lookupSponsorCrosswalk(database, sponsorOrClient) {
@@ -1550,6 +1619,7 @@ async function benchmarkIndication(database, indication, country = null, opts = 
   const studyContainer = database.container("ora_fact_study");
   const siteContainer = database.container("ora_fact_site");
   const thContainer = database.container("ora_trialhub_trials");
+  const preferLive = await prefersLiveVeevaFacts(database);
 
   const mergeRow = (list, row, keyFn) => {
     const k = keyFn(row);
@@ -1576,7 +1646,7 @@ async function benchmarkIndication(database, indication, country = null, opts = 
       studyContainer,
       `SELECT c.study_number, c.sponsor, c.indication, c.phase, c.psm, c.study_rate_pt_mo,
               c.total_enrolled, c.enroll_months, c.n_contributing_sites, c.screen_fail_rate_recomputed,
-              c.lifecycle_state, c.countries
+              c.lifecycle_state, c.countries, c.source
        FROM c WHERE c.docType = @t AND c.indication = @ind`,
       [
         { name: "@t", value: "ora_fact_study" },
@@ -1584,6 +1654,7 @@ async function benchmarkIndication(database, indication, country = null, opts = 
       ]
     );
     for (const r of rows) {
+      if (!keepFactRowForSource(r, preferLive)) continue;
       if (!passesGeo(r.countries, null)) continue;
       mergeRow(oraStudies, r, (x) => x.study_number);
     }
@@ -1623,6 +1694,7 @@ async function benchmarkIndication(database, indication, country = null, opts = 
       return (Number(b.total_enrolled) || 0) - (Number(a.total_enrolled) || 0);
     });
     for (const r of sorted) {
+      if (!keepFactRowForSource(r, preferLive)) continue;
       if (ousOnly && r.country && isUsCountryName(r.country)) continue;
       if (countries && !countriesMatch(r.country, countries)) continue;
       if (requirePsm && !(typeof r.site_psm === "number" && r.site_psm > 0)) continue;
@@ -1655,7 +1727,7 @@ async function benchmarkIndication(database, indication, country = null, opts = 
       { name: "@ind", value: alias }
     ];
     let q = `SELECT TOP 400 c.org_clean, c.organization, c.country, c.indication, c.phase,
-              c.site_psm, c.total_enrolled, c.site_enroll_months, c.fsi_trust, c.study_name
+              c.site_psm, c.total_enrolled, c.site_enroll_months, c.fsi_trust, c.study_name, c.source
        FROM c WHERE c.docType = @t AND c.indication = @ind AND IS_DEFINED(c.site_psm) AND c.site_psm > 0`;
     const geo = countrySqlClause("c.country", countries, "geo");
     q += geo.sql;
@@ -1670,7 +1742,7 @@ async function benchmarkIndication(database, indication, country = null, opts = 
       { name: "@ind", value: alias }
     ];
     let q = `SELECT TOP 400 c.org_clean, c.organization, c.country, c.indication, c.phase,
-              c.site_psm, c.total_enrolled, c.site_enroll_months, c.fsi_trust, c.study_name
+              c.site_psm, c.total_enrolled, c.site_enroll_months, c.fsi_trust, c.study_name, c.source
        FROM c WHERE c.docType = @t AND c.indication = @ind`;
     const geo = countrySqlClause("c.country", countries, "geoExact");
     q += geo.sql;
@@ -1690,7 +1762,7 @@ async function benchmarkIndication(database, indication, country = null, opts = 
           studyContainer,
           `SELECT TOP 80 c.study_number, c.sponsor, c.indication, c.phase, c.psm, c.study_rate_pt_mo,
                   c.total_enrolled, c.enroll_months, c.n_contributing_sites, c.screen_fail_rate_recomputed,
-                  c.lifecycle_state, c.countries
+                  c.lifecycle_state, c.countries, c.source
            FROM c WHERE c.docType = @t AND CONTAINS(LOWER(c.indication), @n)`,
           [
             { name: "@t", value: "ora_fact_study" },
@@ -1698,6 +1770,7 @@ async function benchmarkIndication(database, indication, country = null, opts = 
           ]
         );
         for (const r of rows) {
+          if (!keepFactRowForSource(r, preferLive)) continue;
           if (!passesGeo(r.countries, null)) continue;
           if (!indicationCompatible(r.indication, preferred, aliases)) continue;
           mergeRow(oraStudies, r, (x) => x.study_number);
@@ -1732,7 +1805,7 @@ async function benchmarkIndication(database, indication, country = null, opts = 
         ];
         // Include null-PSM rows — Stargardt / IRD / neuroprotection often lack site_psm
         let q = `SELECT TOP 400 c.org_clean, c.organization, c.country, c.indication, c.phase,
-                  c.site_psm, c.total_enrolled, c.site_enroll_months, c.fsi_trust, c.study_name
+                  c.site_psm, c.total_enrolled, c.site_enroll_months, c.fsi_trust, c.study_name, c.source
            FROM c WHERE c.docType = @t AND CONTAINS(LOWER(c.indication), @n)`;
         const geo = countrySqlClause("c.country", countries, "geo");
         q += geo.sql;
@@ -1753,7 +1826,7 @@ async function benchmarkIndication(database, indication, country = null, opts = 
         { name: "@ind", value: alias }
       ];
       let q = `SELECT TOP 200 c.org_clean, c.organization, c.country, c.indication, c.phase,
-                c.site_psm, c.total_enrolled, c.site_enroll_months, c.fsi_trust, c.study_name
+                c.site_psm, c.total_enrolled, c.site_enroll_months, c.fsi_trust, c.study_name, c.source
          FROM c WHERE c.docType = @t AND c.indication = @ind`;
       const geo = countrySqlClause("c.country", countries, "geo2");
       q += geo.sql;

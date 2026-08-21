@@ -31,6 +31,7 @@ const { loadLiveContext, saveLiveContext } = require("./buddyLiveContext");
 const { runCtgovSync, getCtgovSyncStatus, remapCtgovIndications } = require("./ctgovSync");
 const { runSalesforceCrosswalkSync, getSalesforceSyncStatus } = require("./salesforceSync");
 const { runSalesforceTablesSync, getSalesforceTablesStatus } = require("./salesforceTables");
+const { runVeevaTablesSync, getVeevaSyncStatus } = require("./veevaSync");
 const { ingestTrialHubUpload } = require("./trialhubIngest");
 const {
   isPricingQuestion,
@@ -1452,6 +1453,75 @@ app.http("ctgovSync", {
         triggeredBy: auth.via === "copilot_key" ? "scheduler_or_key" : `ui:${auth.user?.email || auth.user?.userId || "user"}`
       });
       return json(result.ok || result.skipped ? 200 : 500, result);
+    } catch (err) {
+      context.error(err);
+      return json(500, { ok: false, error: String(err.message || err) });
+    }
+  }
+});
+
+app.http("veevaSync", {
+  methods: ["GET", "POST", "OPTIONS"],
+  authLevel: "anonymous",
+  route: "veeva/sync",
+  handler: async (request, context) => {
+    if (request.method === "OPTIONS") {
+      return {
+        status: 204,
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+          "Access-Control-Allow-Headers": "content-type, x-copilot-key"
+        }
+      };
+    }
+    try {
+      if (request.method === "GET") {
+        const status = await getVeevaSyncStatus(getDb);
+        return json(200, status);
+      }
+
+      const auth = authorizeCtgovSync(request);
+      if (!auth.ok) {
+        return json(401, {
+          error: "Unauthorized — sign in, or pass x-copilot-key (same as Copilot Ask key)"
+        });
+      }
+
+      let body = {};
+      try {
+        body = (await request.json()) || {};
+      } catch (_) {
+        body = {};
+      }
+      const triggeredBy =
+        auth.via === "copilot_key"
+          ? "scheduler_or_key"
+          : `ui:${auth.user?.email || auth.user?.userId || "user"}`;
+      const onlyRaw = body.only || request.query.get("only");
+      const only = Array.isArray(onlyRaw)
+        ? onlyRaw
+        : typeof onlyRaw === "string" && onlyRaw.trim()
+          ? onlyRaw.split(/[,|;]+/).map((s) => s.trim()).filter(Boolean)
+          : null;
+      const full =
+        body.full === true ||
+        request.query.get("full") === "true" ||
+        body.mode === "full";
+      const result = await runVeevaTablesSync(getDb, {
+        full,
+        delta: !full,
+        only,
+        triggeredBy
+      });
+      const errSummary = (result.results || [])
+        .filter((r) => r.error)
+        .map((r) => `${r.object}: ${r.error}`)
+        .join(" · ");
+      return json(200, {
+        ...result,
+        error: result.ok ? undefined : errSummary || result.error || "Veeva sync failed"
+      });
     } catch (err) {
       context.error(err);
       return json(500, { ok: false, error: String(err.message || err) });

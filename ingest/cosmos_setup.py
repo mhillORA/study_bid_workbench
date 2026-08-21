@@ -37,6 +37,12 @@ CONTAINERS = [
     {"id": "ora_sf_account", "partition_key": "/id"},
     {"id": "ora_sf_opportunity", "partition_key": "/id"},
     {"id": "ora_sf_activity_request", "partition_key": "/id"},
+    # Veeva Vault live mirrors (API sync — prefer over Mike Watson Excel packs)
+    {"id": "ora_veeva_study", "partition_key": "/id"},
+    {"id": "ora_veeva_site", "partition_key": "/id"},
+    {"id": "ora_veeva_organization", "partition_key": "/id"},
+    {"id": "ora_veeva_sponsor", "partition_key": "/id"},
+    {"id": "ora_veeva_milestone", "partition_key": "/id"},
     # Watermarks / cursors for scheduled sync jobs.
     {"id": "syncState", "partition_key": "/id"},
 ]
