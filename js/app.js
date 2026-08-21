@@ -5362,7 +5362,7 @@
           "Sign in required (or Buddy session mint failed) to run SF ingest on ora-buddy-api.";
       } else if (data.skipped) {
         state.intelligence.sfTablesMessage =
-          data.error || "Salesforce not configured (set SF_* App Settings).";
+          data.error || "Salesforce not configured on ora-buddy-api (SF_CLIENT_ID + SF_USERNAME + JWT key).";
       } else if (data.ok === false || (data.results || []).some((r) => r.error)) {
         const bits = (data.results || []).map((r) =>
           r.error
@@ -5689,68 +5689,59 @@
     const lastSync = sync.lastSuccessfulSync || sync.lastSuccessAt || sync.lastRunAt || sync.watermark || null;
     const trialCount = syncWrap.count != null ? syncWrap.count : sync.count;
     const syncMeta = lastSync
-      ? `<p class="muted" style="margin:0.35rem 0 0;">Last CT.gov sync: ${escapeHtml(
+      ? `<p class="muted" style="margin:0.35rem 0 0;">CT.gov · last sync ${escapeHtml(
           String(lastSync)
-        )}${trialCount != null ? ` · ${Number(trialCount).toLocaleString()} trials` : ""}${
-          sync.lastDeltas
-            ? ` · last run ${sync.lastDeltas.added || 0} new / ${sync.lastDeltas.changed || 0} changed`
-            : ""
-        }</p>`
-      : `<p class="muted" style="margin:0.35rem 0 0;">CT.gov sync status unavailable yet.</p>`;
+        )}${trialCount != null ? ` · ${Number(trialCount).toLocaleString()} trials` : ""}</p>`
+      : `<p class="muted" style="margin:0.35rem 0 0;">CT.gov · no sync yet</p>`;
 
     const sfWrap = state.intelligence.sfSyncStatus || {};
     const sfSync = sfWrap.sync || {};
-    const sfLast = sfSync.lastSuccessfulSync || sfSync.lastRunAt || null;
-    const sfConfigured = sfWrap.configured === true;
-    const sfMeta = `<p class="muted" style="margin:0.35rem 0 0;">Salesforce: ${
-      sfConfigured ? "configured" : "not configured (set SF_* App Settings)"
-    }${sfWrap.usernameHint ? ` · user ${escapeHtml(String(sfWrap.usernameHint))}` : ""}${
-      sfLast ? ` · last sync ${escapeHtml(String(sfLast))}` : ""
-    }${
-      sfWrap.crosswalkWithSfId != null
-        ? ` · ${Number(sfWrap.crosswalkWithSfId).toLocaleString()} crosswalk Ids`
-        : ""
-    }${sfWrap.tierField ? ` · tier <code>${escapeHtml(String(sfWrap.tierField))}</code>` : ""}${
-      sfWrap.groupingField
-        ? ` · grouping <code>${escapeHtml(String(sfWrap.groupingField))}</code>`
-        : ""
-    }</p>`;
+    const sfTables = sfWrap.tables || {};
+    const sfTableRows = Array.isArray(sfTables.tables) ? sfTables.tables : [];
+    const sfTablesLast =
+      sfTables.sync?.lastSuccessfulSync || sfTables.sync?.lastRunAt || null;
+    const sfLast =
+      sfTablesLast || sfSync.lastSuccessfulSync || sfSync.lastRunAt || null;
+    // Status GET may hit SWA (no SF_* env) while Cosmos still has JWT + ingested rows.
+    const sfTableTotal = sfTableRows.reduce(
+      (n, t) => n + (typeof t.count === "number" ? t.count : 0),
+      0
+    );
+    const sfHasData =
+      Boolean(sfLast) ||
+      sfTableTotal > 0 ||
+      (typeof sfWrap.crosswalkWithSfId === "number" && sfWrap.crosswalkWithSfId > 0);
     const jwtKey = sfWrap.jwtKey || {};
-    const jwtKeyMeta = sfWrap.privateKeySet
-      ? `<p class="muted" style="margin:0.35rem 0 0;">JWT key: ${
-          jwtKey.parseOk
-            ? `OK (${escapeHtml(String(jwtKey.keyType || "rsa"))} · ${escapeHtml(
-                String(jwtKey.source || "—")
-              )})`
-            : `NOT LOADABLE — ${escapeHtml(String(jwtKey.error || "unknown error"))}. Prefer App Setting <code>SF_JWT_PRIVATE_KEY_B64</code> (base64 of the whole .key file).`
-        }</p>`
-      : "";
+    const jwtBroken = sfWrap.privateKeySet && jwtKey.parseOk === false;
     const sfMsg = state.intelligence.sfSyncMessage
       ? `<p class="muted" style="margin-top:0.5rem;">${escapeHtml(state.intelligence.sfSyncMessage)}</p>`
       : "";
     const sfBusy = state.intelligence.sfSyncBusy;
     const sfDisabled = sfBusy ? "disabled" : "";
-    const sfTables = sfWrap.tables || {};
-    const sfTableRows = Array.isArray(sfTables.tables) ? sfTables.tables : [];
-    const sfTablesLast =
-      sfTables.sync?.lastSuccessfulSync || sfTables.sync?.lastRunAt || null;
     const sfTablesBusy = state.intelligence.sfTablesBusy;
-    const sfTablesDisabled = sfTablesBusy || !sfConfigured ? "disabled" : "";
+    const sfTablesDisabled = sfTablesBusy ? "disabled" : "";
     const sfTablesMsg = state.intelligence.sfTablesMessage
       ? `<p class="muted" style="margin-top:0.5rem;">${escapeHtml(state.intelligence.sfTablesMessage)}</p>`
       : "";
-    const sfTablesMeta = sfTableRows.length
-      ? `<p class="muted" style="margin:0.35rem 0 0;">SF tables (Buddy context): ${sfTableRows
-          .map(
-            (t) =>
-              `${escapeHtml(t.container || t.sfObject)}=${
-                typeof t.count === "number" ? Number(t.count).toLocaleString() : "—"
-              }`
-          )
-          .join(" · ")}${
-          sfTablesLast ? ` · last ${escapeHtml(String(sfTablesLast))}` : ""
-        }</p>`
-      : `<p class="muted" style="margin:0.35rem 0 0;">SF tables empty — use <strong>Ingest SF + crosswalk</strong> (Account, Opportunity, Activity_Request__c → then crosswalk).</p>`;
+    const sfCountBits = sfTableRows
+      .filter((t) => typeof t.count === "number" && t.count > 0)
+      .map(
+        (t) =>
+          `${escapeHtml(String(t.sfObject || t.container).replace(/__c$/i, ""))}=${Number(
+            t.count
+          ).toLocaleString()}`
+      );
+    const sfMeta = `<p class="muted" style="margin:0.35rem 0 0;">Salesforce · ${
+      sfLast
+        ? `last sync ${escapeHtml(String(sfLast))}`
+        : sfHasData
+          ? "synced"
+          : "no sync yet"
+    }${sfCountBits.length ? ` · ${sfCountBits.join(" · ")}` : ""}${
+      jwtBroken
+        ? ` · JWT key not loadable (${escapeHtml(String(jwtKey.error || "check key upload"))})`
+        : ""
+    }</p>`;
 
     if (!h) {
       return `<div class="card wide"><h3>Data status</h3><p class="muted">Loading intelligence containers…</p></div>`;
@@ -5874,25 +5865,22 @@
         )})</span></td><td>${intelStatNum(n)}</td><td>Veeva ingest</td><td>${badge}</td></tr>`;
       })
       .join("");
-    const veevaConfigured = vv.configured === true;
     const veevaBusy = state.intelligence.veevaBusy;
-    const veevaDisabled = veevaBusy || !veevaConfigured ? "disabled" : "";
+    const veevaDisabled = veevaBusy ? "disabled" : "";
     const veevaMsg = state.intelligence.veevaMessage
       ? `<p class="muted" style="margin-top:0.5rem;">${escapeHtml(state.intelligence.veevaMessage)}</p>`
       : "";
-    const veevaMeta = `<p class="muted" style="margin:0.35rem 0 0;">Veeva Vault: ${
-      veevaConfigured ? "configured" : "not configured (VEEVA_* on ora-buddy-api)"
-    }${vv.dns ? ` · <code>${escapeHtml(String(vv.dns))}</code>` : ""}${
-      vv.sync?.lastSuccessfulSync
-        ? ` · last ${escapeHtml(String(vv.sync.lastSuccessfulSync))}`
-        : ""
-    }${
-      vv.projections
-        ? ` · fact live study/site/ms=${vv.projections.ora_fact_study_live ?? "—"}/${
-            vv.projections.ora_fact_site_live ?? "—"
-          }/${vv.projections.ora_veeva_milestones_live ?? "—"}`
-        : ""
-    }</p>`;
+    const vvLast = vv.sync?.lastSuccessfulSync || vv.sync?.lastRunAt || null;
+    const vvCountBits = [
+      ["study", vvCount("ora_veeva_study") ?? vvFromHealth.studies],
+      ["site", vvCount("ora_veeva_site") ?? vvFromHealth.sites],
+      ["milestone", vvCount("ora_veeva_milestone") ?? vvFromHealth.milestones]
+    ]
+      .filter(([, n]) => typeof n === "number" && n > 0)
+      .map(([label, n]) => `${label}=${Number(n).toLocaleString()}`);
+    const veevaMeta = `<p class="muted" style="margin:0.35rem 0 0;">Veeva · ${
+      vvLast ? `last sync ${escapeHtml(String(vvLast))}` : "no sync yet"
+    }${vvCountBits.length ? ` · ${vvCountBits.join(" · ")}` : ""}</p>`;
     const syncDisabled = state.intelligence.syncBusy ? "disabled" : "";
     const thBusy = state.intelligence.trialhubUploadBusy;
     const thMsg = state.intelligence.trialhubUploadMessage
@@ -5932,9 +5920,7 @@
         ${syncMeta}
         ${syncMsg}
         ${sfMeta}
-        ${jwtKeyMeta}
         ${sfMsg}
-        ${sfTablesMeta}
         ${sfTablesMsg}
         ${veevaMeta}
         ${veevaMsg}

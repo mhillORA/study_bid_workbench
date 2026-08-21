@@ -1246,8 +1246,11 @@ async function getVeevaSyncStatus(getDb) {
     milestonesLive = rows[0] || 0;
   } catch (_) {}
 
+  const hasVaultData = tables.some((t) => typeof t.count === "number" && t.count > 0);
+  const hasSynced = Boolean(sync?.lastSuccessfulSync || sync?.lastRunAt) || hasVaultData;
   return {
-    configured: cfg.configured,
+    configured: Boolean(cfg.configured) || hasSynced,
+    credentialsOnHost: Boolean(cfg.configured),
     dns: cfg.dns || null,
     usernameHint: cfg.username
       ? cfg.username.replace(/(.{2}).+(@.+)/, "$1***$2")

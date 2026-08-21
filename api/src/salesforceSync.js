@@ -344,15 +344,23 @@ async function getSalesforceSyncStatus(getDb) {
       usernameHint = uname.slice(0, 2) + "***";
     }
   }
+  const privateKeySet =
+    Boolean(cfg.envKeySet) || Boolean(jwtKey.cosmosKeySet) || Boolean(jwtKey.parseOk);
+  const hasSynced =
+    Boolean(state?.lastSuccessfulSync) || Boolean(state?.lastRunAt) || withSfId > 0;
+  // SWA status GET often lacks SF_CLIENT_ID/USERNAME even when FA can sync and Cosmos has data.
+  // Report configured when this host has creds OR when JWT + prior sync evidence exists.
+  const configured = Boolean(cfg.configured) || (privateKeySet && hasSynced);
   return {
-    configured: cfg.configured,
+    configured,
+    credentialsOnHost: Boolean(cfg.configured),
     loginUrl: cfg.loginUrl,
     tierField: cfg.tierField,
     groupingField: cfg.groupingField,
     usernameSet: Boolean(cfg.username),
     usernameHint,
     clientIdSet: Boolean(cfg.clientId),
-    privateKeySet: Boolean(cfg.envKeySet) || Boolean(jwtKey.cosmosKeySet) || Boolean(jwtKey.parseOk),
+    privateKeySet,
     keySource: jwtKey.source || cfg.keySource || null,
     jwtKey,
     crosswalkWithSfId: withSfId,
