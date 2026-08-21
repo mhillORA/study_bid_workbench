@@ -25,6 +25,26 @@ Add/update:
 
 Plus Cosmos + Foundry settings you already copied.
 
+### CORS (required for browser → Function App — this kills the 45s SWA ceiling)
+
+**What CORS is:** the browser blocks your website from calling another hostname (the Function App) unless that Function App explicitly allows your site’s URL. Without it you see **405**, failed preflight, or “could not reach Buddy.” App setting `BUDDY_CORS_ORIGIN` alone is **not** enough — Azure also needs **platform CORS**.
+
+**Put it in (Portal, ~30 seconds):**
+
+1. Azure Portal → Function App **`ora-buddy-api`**
+2. Left menu → **API** → **CORS** (sometimes under “API” or search “CORS”)
+3. **Allowed Origins** — add exactly (no trailing slash):
+
+   `https://white-river-0de1aed0f.7.azurestaticapps.net`
+
+4. Enable **Enable Access-Control-Allow-Credentials** only if shown — prefer **off** (we use Bearer tokens, not cookies)
+5. **Save**
+6. Hard-refresh the workbench (Ctrl+Shift+R)
+
+**Prove it:** Buddy status should say **Function App** (not SWA). Leave-behinds can run past 45 seconds.
+
+GitHub deploy also tries `az functionapp cors add` for that origin; Portal is the source of truth if something still 405s.
+
 ### B) On the **Static Web App** (website)
 
 Add:

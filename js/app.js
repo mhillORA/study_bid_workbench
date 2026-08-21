@@ -4642,8 +4642,7 @@
       }
 
       async function runVisualHop(contextId, priorAnswer) {
-        // Prefer same-origin bridge → FA (no browser CORS). Direct FA if bridge unavailable.
-        const status = "Deep · leave-behind…";
+        // Direct Function App first (no SWA 45s ceiling). Bridge only if FA returns 405/CORS failure.
         let vis = await buddyHop(
           "/api/ask",
           {
@@ -4651,17 +4650,19 @@
             contextId,
             priorAnswer
           },
-          status,
-          { bridge: true, external: false, wantBridge: true }
+          canExternal && !state._buddyExternalDisabled
+            ? "Deep · leave-behind (Function App)…"
+            : "Deep · leave-behind (bridge)…",
+          canExternal && !state._buddyExternalDisabled
+            ? { bridge: false, external: true, wantBridge: true }
+            : { bridge: true, external: false, wantBridge: true }
         );
         if (
           !vis.data.answer &&
           !vis.data.htmlReport &&
           !(vis.data.exports && vis.data.exports.length) &&
-          canExternal &&
-          state.buddySessionToken &&
-          !state._buddyExternalDisabled &&
-          (vis.res.status === 405 || vis.res.status === 404 || !vis.res.ok)
+          (vis.res.status === 405 || vis.usedExternal === false) &&
+          !vis.usedBridge
         ) {
           vis = await buddyHop(
             "/api/ask",
@@ -4671,8 +4672,8 @@
               priorAnswer,
               _bridgeFallback: true
             },
-            "Deep · leave-behind (Function App)…",
-            { bridge: false, external: true }
+            "Deep · leave-behind (bridge)…",
+            { bridge: true, external: false, wantBridge: true }
           );
         }
         if (vis.data.answer || vis.data.htmlReport || (vis.data.exports && vis.data.exports.length)) {
@@ -4683,7 +4684,7 @@
           pushAssistant(
             `Chat is ready — the leave-behind failed (HTTP ${vis.res.status || "?"}). ` +
               (vis.res.status === 405
-                ? "Visual route hit HTTP 405 — hard-refresh and retry; if it persists, Function App CORS/methods need a redeploy."
+                ? "Function App CORS is blocking the browser. In Azure Portal → ora-buddy-api → CORS, add this site’s URL, then hard-refresh."
                 : "Say “spin up the visual” to retry.")
           );
         }
