@@ -961,17 +961,19 @@ Code pattern:
           # Color: ≤protocol_window=green, ≤+20%=amber, >+20%=red
 
 ================================================================
-INTERNAL BD BID BRIEF — STAT / SPECIALTY CRO PATTERN (Aug 2026)
+INTERNAL BD BID BRIEF — STAT / SPECIALTY CRO PATTERN (structure only)
 ================================================================
 Use when BD asks for an internal HTML brief for a specialty CRO / rescue
-start-up bid (example: Oculgen OCUL101-002 STAT, treatment-naïve nAMD).
-Salesforce is OPTIONAL (owner/tasks only). Activation + site slate + PSM
-math come from Cosmos: ora_veeva_milestones, ora_fact_site, ora_fact_study,
-plus curated industry CT.gov PSM table below.
+start-up bid (example shape: treatment-naïve nAMD, ~30 US sites, aggressive
+sponsor PSM). Salesforce is OPTIONAL (owner/tasks only).
 
-Golden HTML + full prompt:
-  scripts/docs/buddy-golden/Oculgen_STAT_Internal_Brief_Aug2026.html
-  scripts/docs/buddy-golden/Oculgen_STAT_Internal_Brief_PROMPT.md
+CRITICAL — NOT A DATA SOURCE:
+- Any "golden" / example STAT HTML or prompt in the repo is a LAYOUT RECIPE only.
+- NEVER say you have that file, NEVER list sites/PSM/activation numbers from it,
+  NEVER invent "I found Texas Retina in the Oculgen brief."
+- Every site name, activation day count, study count, and Ora PSM MUST come from
+  live Context JSON (ora_veeva_milestones, ora_fact_site, ora_fact_study) on THIS ask.
+- If Cosmos packs are empty, say so — do not fall back to memorized brief numbers.
 
 Required sections (HTML_REPORT, teal #0d9488 / navy #04003B, Internal badge):
 1. Key takeaways (speed, known sites / skip-feasibility, PSM reality, site selection)
@@ -989,15 +991,12 @@ US RETINA filter only: nAMD, GA, DME, RVO / retinal — exclude dry eye, glaucom
 
 Speed badges: ≤63d Very Fast (green), ≤95d Fast (blue), ≤149d Moderate (amber), >149d Slow (red).
 
-TREATMENT-NAÏVE nAMD INDUSTRY PSM (US enrollment-weighted ~0.32; max ~0.42 Sandoz BS):
-TENAYA faricimab Ph3 US PSM ~0.317; LUCERNE ~0.331 global; HAWK ~0.325; HARRIER ~0.319;
-PULSAR aflibercept 8mg ~0.286; VIEW1 ~0.359; VIEW2 ~0.256; ShORe OPT-302 ~0.262;
-Sandoz ranibizumab BS ~0.42; MERLIN ~0.319. Recommend: expected 0.32–0.35, aggressive upside 0.42–0.50,
-conservative 0.25–0.30. Oculgen 0.52 = ~1.6× industry average — flag as upside not base.
-
-Example headline metrics from Aug 2026 golden brief (recompute from live Cosmos when possible):
-177 US retina sites with SIV history; 102 multi-study; ~308 US retina activation records for percentiles;
-P10 ~43d, P25 ~63d (target), median ~95d, P75 ~149d.
+TREATMENT-NAÏVE nAMD INDUSTRY PSM (curated CT.gov landmark pack — not from a local HTML file):
+US enrollment-weighted ~0.32; industry max ~0.42 (Sandoz biosimilar).
+TENAYA ~0.317; LUCERNE ~0.331 global; HAWK ~0.325; HARRIER ~0.319;
+PULSAR ~0.286; VIEW1 ~0.359; VIEW2 ~0.256; ShORe ~0.262; Sandoz BS ~0.42; MERLIN ~0.319.
+Recommend: expected 0.32–0.35, aggressive upside 0.42–0.50, conservative 0.25–0.30.
+Sponsor targets like 0.52 (~1.6× industry avg) = upside framing, not base case.
 
 ================================================================
 END OF APPENDIX — CROSS-DATABASE CONCATENATION LOGIC

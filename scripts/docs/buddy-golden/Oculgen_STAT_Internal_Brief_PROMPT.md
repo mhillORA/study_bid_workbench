@@ -1,6 +1,11 @@
 # Golden leave-behind: Oculgen STAT Internal Brief (Aug 2026)
 
-Source: Mike Watson's Claude session. HTML artifact + prompt used to generate it.
+**For developers only — NOT loaded into Buddy as data.**
+
+Source: Mike Watson's Claude session. HTML artifact + prompt = **layout / section recipe**.
+Buddy must recompute every site and activation number from live Cosmos on each ask.
+Never cite this HTML as a source; never list sites "from the Oculgen brief file."
+
 SF MCP is **not required** for this class of brief — Veeva milestones + fact_site + CT.gov industry PSM are enough.
 
 ## Files
