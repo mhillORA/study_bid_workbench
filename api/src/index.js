@@ -1097,7 +1097,10 @@ app.http("buddySession", {
           request
         );
       }
-      const apiBase = String(process.env.BUDDY_API_BASE || "")
+      const apiBase = String(
+        process.env.BUDDY_API_BASE ||
+          "https://ora-buddy-api-hrdbgqh9cvaub5ft.eastus2-01.azurewebsites.net"
+      )
         .trim()
         .replace(/\/$/, "");
       return json(
