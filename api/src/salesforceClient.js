@@ -514,28 +514,107 @@ async function soqlQuery(session, soql, opts = {}) {
   return maxRecords != null ? records.slice(0, maxRecords) : records;
 }
 
-/** Pull all (or capped) rows for an object using describe-selected fields. */
+/** Lean field lists when describe returns nothing (common for Integration users). */
+const LEAN_OBJECT_FIELDS = {
+  Account: [
+    "Id",
+    "Name",
+    "OwnerId",
+    "Type",
+    "Industry",
+    "Website",
+    "Phone",
+    "Tier__c",
+    "Ora_Grouping__c",
+    "CreatedDate",
+    "LastModifiedDate"
+  ],
+  Opportunity: [
+    "Id",
+    "Name",
+    "AccountId",
+    "StageName",
+    "Amount",
+    "CloseDate",
+    "OwnerId",
+    "Type",
+    "IsClosed",
+    "IsWon",
+    "CreatedDate",
+    "LastModifiedDate"
+  ],
+  Activity_Request__c: [
+    "Id",
+    "Name",
+    "Account__c",
+    "AccountId",
+    "Status__c",
+    "Status",
+    "Subject__c",
+    "CreatedDate",
+    "LastModifiedDate"
+  ]
+};
+
+/** Pull all (or capped) rows — describe when possible, else lean known fields. */
 async function queryFullObject(session, objectName, opts = {}) {
-  const desc = await describeSObject(session, objectName);
-  if (!desc.queryable || !desc.fields.length) {
-    throw new Error(`${objectName} is not queryable or has no fields`);
-  }
-  let fieldSet = new Set(desc.fields);
-  const fieldList = [...fieldSet];
-  const soql = `SELECT ${fieldList.join(",")} FROM ${objectName}`;
+  let desc = null;
+  let fieldList = [];
   try {
-    const records = await soqlQuery(session, soql, { maxRecords: opts.maxRecords });
-    return { objectName, fields: fieldList, records, describe: desc };
+    desc = await describeSObject(session, objectName);
+    if (desc.fields?.length) fieldList = [...desc.fields];
   } catch (err) {
-    const lean = [
-      "Id",
-      ...fieldList.filter((f) => f === "Name" || f.endsWith("__c") || f.endsWith("Id")).slice(0, 40)
-    ];
-    const uniq = [...new Set(lean)];
-    const records = await soqlQuery(session, `SELECT ${uniq.join(",")} FROM ${objectName}`, {
-      maxRecords: opts.maxRecords
-    });
-    return { objectName, fields: uniq, records, describe: desc, note: String(err.message || err) };
+    desc = { error: String(err.message || err), queryable: false, fields: [] };
+  }
+
+  if (!fieldList.length) {
+    fieldList = [...(LEAN_OBJECT_FIELDS[objectName] || ["Id", "Name"])];
+  }
+
+  // Always ensure Id is first
+  fieldList = ["Id", ...fieldList.filter((f) => f !== "Id")];
+
+  async function tryQuery(fields) {
+    const uniq = [...new Set(fields.filter(Boolean))];
+    const soql = `SELECT ${uniq.join(",")} FROM ${objectName}`;
+    const records = await soqlQuery(session, soql, { maxRecords: opts.maxRecords });
+    return { objectName, fields: uniq, records, describe: desc };
+  }
+
+  // Shrink field list until SOQL works (drop unknown custom fields, etc.)
+  let lastErr = null;
+  let attempt = fieldList;
+  for (let round = 0; round < 8; round++) {
+    try {
+      const out = await tryQuery(attempt);
+      if (round > 0 || (desc && !desc.fields?.length)) {
+        out.note = `Used ${attempt.length} fields` + (desc?.error ? ` (describe: ${desc.error})` : " (lean fallback)");
+      }
+      return out;
+    } catch (err) {
+      lastErr = err;
+      const msg = String(err.message || err);
+      // Drop a field named in the error, else peel from the end
+      const m =
+        msg.match(/No such column '([^']+)'/i) ||
+        msg.match(/field\s+([A-Za-z0-9_]+)\s+does not exist/i) ||
+        msg.match(/'\s*([A-Za-z][A-Za-z0-9_]*)\s*'/);
+      if (m && m[1] && attempt.includes(m[1])) {
+        attempt = attempt.filter((f) => f !== m[1]);
+      } else if (attempt.length > 2) {
+        attempt = attempt.slice(0, Math.max(2, attempt.length - 5));
+      } else {
+        break;
+      }
+      if (!attempt.includes("Id")) attempt = ["Id", ...attempt];
+    }
+  }
+
+  // Last resort — Id + Name only (crosswalk proved this works for Account)
+  try {
+    return await tryQuery(["Id", "Name"]);
+  } catch (err) {
+    throw lastErr || err;
   }
 }
 

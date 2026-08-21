@@ -5197,11 +5197,22 @@
         body: JSON.stringify({ tables: true })
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        state.intelligence.sfTablesMessage = data.error || `SF tables sync failed (${res.status})`;
-      } else if (data.skipped) {
+      if (data.skipped) {
         state.intelligence.sfTablesMessage =
           data.error || "Salesforce not configured (set SF_* App Settings).";
+      } else if (data.ok === false || (data.results || []).some((r) => r.error)) {
+        const bits = (data.results || []).map((r) =>
+          r.error
+            ? `${r.object}: ${r.error}`
+            : `${r.object}: ${r.upserted ?? 0}/${r.fetched ?? 0}`
+        );
+        state.intelligence.sfTablesMessage = [
+          "SF tables sync issues",
+          bits.join(" · ") || data.error || `HTTP ${res.status}`,
+          data.elapsedMs ? `${Math.round(data.elapsedMs / 1000)}s` : ""
+        ]
+          .filter(Boolean)
+          .join(" · ");
       } else {
         const bits = (data.results || []).map(
           (r) => `${r.object}: ${r.upserted ?? 0}/${r.fetched ?? 0}${r.error ? " ERR" : ""}`

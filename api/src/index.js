@@ -1522,7 +1522,15 @@ app.http("salesforceSync", {
           only,
           triggeredBy
         });
-        return json(result.ok || result.skipped ? 200 : 500, result);
+        // Always 200 with structured results — UI shows per-object errors (avoid bare 500).
+        const errSummary = (result.results || [])
+          .filter((r) => r.error)
+          .map((r) => `${r.object}: ${r.error}`)
+          .join(" · ");
+        return json(200, {
+          ...result,
+          error: result.ok ? undefined : errSummary || result.error || "SF tables sync failed"
+        });
       }
 
       const result = await runSalesforceCrosswalkSync(getDb, {
