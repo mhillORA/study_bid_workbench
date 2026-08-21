@@ -2134,7 +2134,13 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         result.provider !== "error" &&
         (visualAsk || docExportAsk || /HTML_REPORT_START/i.test(String(answer || "")))
       ) {
-        const built = await buildBuddyDocExports(answer, question);
+        const built = await buildBuddyDocExports(answer, question, {
+          wantsHtmlVisual: visualAsk,
+          wantsDocumentExport: docExportAsk,
+          intelligence,
+          portfolio,
+          clientStudy: contextPayload.clientStudy || contextPayload.workingStudy || null
+        });
         if (built.html) {
           answer = built.answer;
           answer = `${built.answer}\n\nHTML_REPORT_START\n${built.html}\nHTML_REPORT_END`;

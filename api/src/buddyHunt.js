@@ -53,7 +53,17 @@ async function maybeHuntAndRetry(opts) {
   const answer = firstResult?.answer || "";
   const decision = shouldHuntAgain({ answer, context, toolTrace: initialToolTrace });
 
-  if (!decision.yes || !toolDeps?.getDb) {
+  // Second Foundry call is the #1 SWA gateway timeout cause. Prefetch already
+  // loaded Cosmos — skip hunt re-ask unless explicitly enabled.
+  const huntRetryOn =
+    String(process.env.BUDDY_HUNT_RETRY || "")
+      .trim()
+      .toLowerCase() === "1" ||
+    String(process.env.BUDDY_HUNT_RETRY || "")
+      .trim()
+      .toLowerCase() === "true";
+
+  if (!decision.yes || !toolDeps?.getDb || !huntRetryOn) {
     const evidence = buildEvidenceEnvelope({
       context,
       question,
@@ -67,7 +77,7 @@ async function maybeHuntAndRetry(opts) {
       context,
       evidence,
       hunted: false,
-      huntReason: null
+      huntReason: huntRetryOn ? null : decision.yes ? "hunt_retry_disabled" : null
     };
   }
 

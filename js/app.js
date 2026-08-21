@@ -4247,13 +4247,6 @@
           "Your session expired — sign in again (refresh the page), then retry. Buddy cannot answer while Azure AD is asking for login."
         );
         if (els.askStatus) els.askStatus.textContent = "";
-      } else if (!res.ok || (res.status >= 500 && !data.answer)) {
-        // Gateway/timeout often returns HTML 500/502/504 — never leave the user with a dead 500.
-        pushAssistant(
-          data.answer ||
-            "Buddy timed out or the gateway returned an error. Try a shorter question, or ask again — simple asks stay on Fast; say “go deeper” for Deep."
-        );
-        if (els.askStatus) els.askStatus.textContent = "Fast";
       } else if (data.answer) {
         applyBuddyAnswer(data.answer, data.exports, {
           reconcileDone: Boolean(reconcileFollowUp),
@@ -4287,7 +4280,7 @@
                 ? "Deep↑"
                 : "Deep"
               : "Fast";
-          const soft = data.provider === "error" || data.ok === false ? " · degraded" : "";
+          const soft = data.provider === "error" || data.ok === false || !res.ok ? " · degraded" : "";
           const intentNote = data.buddyDebug?.routerIntent ? ` · ${data.buddyDebug.routerIntent}` : "";
           const actionNote =
             data.buddyDebug?.actionCount > 0 ? ` · ${data.buddyDebug.actionCount} action(s)` : "";
@@ -4315,6 +4308,12 @@
         if (els.btnAskStop) els.btnAskStop.hidden = true;
         paintBuddyChat();
         return;
+      } else if (!res.ok) {
+        // Gateway/timeout often returns HTML 500/502/504 — never leave the user with a dead 500.
+        pushAssistant(
+          "Buddy hit a gateway timeout before finishing. Ask again with a shorter question — Fast answers first; say “go deeper” only if you need a full dump."
+        );
+        if (els.askStatus) els.askStatus.textContent = "Fast";
       } else {
         pushAssistant(
           data.error ||

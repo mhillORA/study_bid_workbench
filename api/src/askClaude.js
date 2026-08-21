@@ -137,9 +137,9 @@ function readContextFile(name) {
 
 function loadOraIntelligenceContext() {
   if (_oraContextCache != null) return _oraContextCache;
-  const max = Number(process.env.ORA_CONTEXT_MAX_CHARS || 120000);
-  const masterBudget = Number(process.env.ORA_MASTER_CONTEXT_MAX_CHARS || 70000);
-  const priorBudget = Number(process.env.ORA_PRIOR_CONTEXT_MAX_CHARS || 45000);
+  const max = Number(process.env.ORA_CONTEXT_MAX_CHARS || 45000);
+  const masterBudget = Number(process.env.ORA_MASTER_CONTEXT_MAX_CHARS || 22000);
+  const priorBudget = Number(process.env.ORA_PRIOR_CONTEXT_MAX_CHARS || 18000);
 
   const masterRaw = readContextFile("oraMasterContext.txt");
   const priorRaw = readContextFile("oraIntelligenceContext.txt");
@@ -682,14 +682,10 @@ function inferModelTier(question, body = {}, workflow = "auto") {
     /* keep fast */
   }
 
-  // Attachments usually mean we need to read/use file text.
-  // Prefer Fast for "read/analyze/fact-check this attached doc" so we don't
-  // immediately pay the deep-tier cost (which can push SWA over its gateway limit).
-  // Only force Deep when the user is actually asking us to generate/produce a new
-  // artifact (HTML report/PDF/docx/deck/template) or explicitly asks for deep.
+  // Attachments: Fast for analyze/reconcile; Deep when producing a visual/doc artifact
   if (Array.isArray(body?.attachments) && body.attachments.length > 0) {
     if (
-      /\b(html report|full report|create a (?:pdf|docx|word|deck|powerpoint)|document|proposal|memo|leave[- ]behind|one[- ]pager|export|download|table|feasibility report)\b/i.test(
+      /\b(html report|full report|create a (?:pdf|docx|word|deck|powerpoint)|document|proposal|memo|leave[- ]behind|one[- ]pager|export|download|table|feasibility report|visual|chart|dashboard|slide)\b/i.test(
         q
       ) ||
       /\b(produce|build|generate|write|draft)\b/i.test(q)
@@ -697,6 +693,15 @@ function inferModelTier(question, body = {}, workflow = "auto") {
       return "deep";
     }
     return "fast";
+  }
+
+  // Visual / leave-behind / feasibility report → Deep once (HTML_REPORT needs room)
+  try {
+    const { wantsHtmlVisual } = require("./legacyAnterior");
+    const { wantsDocumentExport } = require("./buddyDocExport");
+    if (wantsHtmlVisual(q) || wantsDocumentExport(q)) return "deep";
+  } catch (_) {
+    /* keep fast */
   }
 
   // Everything else starts fast — escalate judges after the mini answer
@@ -1966,10 +1971,22 @@ function extractFoundryResponseText(respBody) {
 
 function withApiVersion(url, apiVersion) {
   const u = String(url || "").replace(/\/$/, "");
-  const sep = u.includes("?") ? "&" : "?";
   // Drop any existing api-version then set ours
   const cleaned = u.replace(/([?&])api-version=[^&]*/gi, "$1").replace(/[?&]$/, "").replace(/\?&/, "?");
   return `${cleaned}${cleaned.includes("?") ? "&" : "?"}api-version=${encodeURIComponent(apiVersion)}`;
+}
+
+/** Remember which Foundry api-version worked — avoid burning 5 serial tries per ask. */
+let _foundryApiVersionCache = null;
+
+function foundryTimeoutMs(tier) {
+  const envFast = Number(process.env.BUDDY_FOUNDRY_TIMEOUT_MS || process.env.BUDDY_FOUNDRY_FAST_TIMEOUT_MS);
+  const envDeep = Number(process.env.BUDDY_FOUNDRY_DEEP_TIMEOUT_MS);
+  // Deep needs headroom for HTML_REPORT; stay under typical SWA gateway (~100–230s).
+  if (tier === "deep") {
+    return Number.isFinite(envDeep) && envDeep > 5000 ? envDeep : 95000;
+  }
+  return Number.isFinite(envFast) && envFast > 5000 ? envFast : 50000;
 }
 
 /**
@@ -2019,6 +2036,7 @@ async function askFoundryAgent({ question, context, history, tier = "deep", agen
 
   const preferred = envSet("FOUNDRY_AGENT_API_VERSION") || envSet("AZURE_OPENAI_API_VERSION");
   const versions = [
+    _foundryApiVersionCache,
     preferred,
     "2025-11-15-preview",
     "2025-05-01-preview",
@@ -2026,17 +2044,34 @@ async function askFoundryAgent({ question, context, history, tier = "deep", agen
     "2024-12-01-preview"
   ].filter((v, i, arr) => v && arr.indexOf(v) === i);
 
+  const timeoutMs = foundryTimeoutMs(tier);
   const failures = [];
   for (const apiVersion of versions) {
     const url = withApiVersion(agent.url, apiVersion);
-    const res = await fetch(url, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "api-key": agent.apiKey
-      },
-      body: JSON.stringify(payload)
-    });
+    const ac = typeof AbortController !== "undefined" ? new AbortController() : null;
+    const timer = ac ? setTimeout(() => ac.abort(), timeoutMs) : null;
+    let res;
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "api-key": agent.apiKey
+        },
+        body: JSON.stringify(payload),
+        signal: ac ? ac.signal : undefined
+      });
+    } catch (fetchErr) {
+      if (timer) clearTimeout(timer);
+      const aborted =
+        fetchErr?.name === "AbortError" || /aborted|timeout/i.test(String(fetchErr?.message || ""));
+      failures.push(
+        `${apiVersion} → ${aborted ? `timeout ${timeoutMs}ms` : String(fetchErr.message || fetchErr).slice(0, 120)}`
+      );
+      if (aborted) break;
+      continue;
+    }
+    if (timer) clearTimeout(timer);
 
     if (res.ok) {
       let text;
@@ -2051,13 +2086,19 @@ async function askFoundryAgent({ question, context, history, tier = "deep", agen
           throw streamErr;
         }
       }
+      if (!String(text || "").trim()) {
+        failures.push(`${apiVersion} → empty stream`);
+        continue;
+      }
+      _foundryApiVersionCache = apiVersion;
       return {
         answer: ensureBuddyAnswer(text),
         model: agent.name,
         provider: "foundry_agent",
         agent: agent.name,
         via: `agent_responses_stream:${apiVersion}`,
-        streamed: true
+        streamed: true,
+        timeoutMs
       };
     }
 
@@ -2185,11 +2226,38 @@ function sanitizeBuddyMarkup(text) {
 }
 
 function ensureBuddyAnswer(text) {
-  const raw = sanitizeBuddyMarkup(String(text == null ? "" : text).trim());
+  const src = String(text == null ? "" : text);
+  // Preserve HTML_REPORT body — do not sanitize/mangle markup inside the report
+  const startRe = /HTML_REPORT_START/i;
+  const endRe = /HTML_REPORT_END/i;
+  const sIdx = src.search(startRe);
+  if (sIdx >= 0) {
+    const eIdx = src.search(endRe);
+    const before = sanitizeBuddyMarkup(src.slice(0, sIdx).trim());
+    const markerStart = "HTML_REPORT_START";
+    const markerEnd = "HTML_REPORT_END";
+    if (eIdx > sIdx) {
+      const htmlBody = src.slice(sIdx + src.slice(sIdx).match(startRe)[0].length, eIdx).trim();
+      const after = sanitizeBuddyMarkup(src.slice(eIdx + src.slice(eIdx).match(endRe)[0].length).trim());
+      const chat = [before, after].filter(Boolean).join("\n\n").trim();
+      const chatOut = chat && !isEmptyOrRefusalAnswer(chat) ? chat : "Document ready — open beside chat.";
+      return `${chatOut}\n\n${markerStart}\n${htmlBody}\n${markerEnd}`;
+    }
+    // Truncated stream: close the report so the UI can still show it
+    const htmlBody = src.slice(sIdx + src.slice(sIdx).match(startRe)[0].length).trim();
+    const chatOut =
+      before && !isEmptyOrRefusalAnswer(before) ? before : "Document ready — open beside chat.";
+    return `${chatOut}\n\n${markerStart}\n${htmlBody}\n${markerEnd}`;
+  }
+
+  const raw = sanitizeBuddyMarkup(src.trim());
   if (isEmptyOrRefusalAnswer(raw)) return BUDDY_FALLBACK_ANSWER;
-  // Never surface literal null tokens as the whole answer
   if (/^\(?null\)?$/i.test(raw)) return BUDDY_FALLBACK_ANSWER;
   return raw.replace(/(^|\s)\(?null\)?(?=\s|$)/gi, (m, lead) => `${lead}missing`);
+}
+
+function answerHasHtmlReport(text) {
+  return /HTML_REPORT_START/i.test(String(text || ""));
 }
 
 /** Normalize Azure chat message content (string or multipart). */
@@ -2280,9 +2348,13 @@ async function askAi(opts) {
   const attempts = [];
   let lastErr = null;
   const workflow = opts.context?.workflow || "auto";
+  const wantsVisual =
+    Boolean(opts.context?.wantsHtmlVisual) || Boolean(opts.context?.wantsDocumentExport);
   let tier =
     opts.tier ||
     inferModelTier(opts.question, opts.body || {}, workflow);
+  // Visuals / docs need Deep (BudgetBuddy2) — Fast truncates HTML under gateway limits
+  if (wantsVisual) tier = "deep";
   if (tier !== "fast" && tier !== "deep") tier = "fast";
 
   const tryProvider = async (label, fn) => {
@@ -2311,26 +2383,62 @@ async function askAi(opts) {
   let result = null;
   if (status.active === "foundry_agent") {
     result = await tryProvider(`foundry_agent_${tier}`, () => callFoundry(tier, opts.context));
-    // Fast miss or weak answer → BudgetBuddy2 (terra)
-    if (
-      tier === "fast" &&
-      foundryAgentConfig("deep").enabled &&
-      (!result || shouldEscalateToDeep(result, opts.question, opts.context))
-    ) {
+
+    // Visual ask: Deep timed out/failed entirely — one slim Deep shot
+    if (wantsVisual && !result && foundryAgentConfig("deep").enabled) {
+      const visualCtx = {
+        ...slimContextForRetry(opts.context),
+        wantsHtmlVisual: true,
+        wantsDocumentExport: Boolean(opts.context?.wantsDocumentExport),
+        priorAttempt: {
+          note: "Prior Foundry call failed. Emit a complete HTML_REPORT_START…END feasibility/leave-behind document now."
+        }
+      };
+      result = await tryProvider("foundry_agent_deep_visual_slim", () =>
+        callFoundry("deep", visualCtx)
+      );
+    }
+
+    // Visual miss: Deep answered chat-only — one slim Deep retry that MUST emit HTML_REPORT
+    if (wantsVisual && result && !answerHasHtmlReport(result.answer) && foundryAgentConfig("deep").enabled) {
+      const visualCtx = {
+        ...slimContextForRetry(opts.context),
+        wantsHtmlVisual: true,
+        wantsDocumentExport: Boolean(opts.context?.wantsDocumentExport),
+        priorAttempt: {
+          tier,
+          note: "Prior reply had no HTML_REPORT. This turn MUST emit HTML_REPORT_START … HTML_REPORT_END with a complete HTML document after a 2–4 line chat summary."
+        }
+      };
+      const visualRetry = await tryProvider("foundry_agent_deep_visual_retry", () =>
+        callFoundry("deep", visualCtx)
+      );
+      if (visualRetry && answerHasHtmlReport(visualRetry.answer)) {
+        result = {
+          ...visualRetry,
+          escalated: true,
+          escalationReason: "visual_html_missing",
+          priorTier: tier
+        };
+      } else if (visualRetry && (!result || !String(result.answer || "").trim())) {
+        result = visualRetry;
+      }
+    }
+
+    // Only escalate Fast→Deep when Fast produced NOTHING usable (non-visual asks).
+    const fastEmpty =
+      !result ||
+      result.provider === "error" ||
+      !String(result.answer || "").trim() ||
+      /^i could not complete/i.test(String(result.answer || "").trim());
+    if (!wantsVisual && tier === "fast" && fastEmpty && foundryAgentConfig("deep").enabled) {
       const deepCtx = {
         ...(opts.context || {}),
-        priorAttempt: result
-          ? {
-              tier: "fast",
-              agent: result.agent || foundryAgentConfig("fast").name,
-              answer: String(result.answer || "").slice(0, 2500),
-              note: "Fast tier answer was incomplete — deep tier should finish using full intelligence."
-            }
-          : {
-              tier: "fast",
-              error: String(lastErr?.message || lastErr || "fast agent failed"),
-              note: "Fast agent failed — deep tier should answer."
-            }
+        priorAttempt: {
+          tier: "fast",
+          error: String(lastErr?.message || lastErr || "fast agent failed"),
+          note: "Fast agent failed — deep tier should answer."
+        }
       };
       const escalated = await tryProvider("foundry_agent_deep_escalation", () =>
         callFoundry("deep", deepCtx)
@@ -2339,23 +2447,23 @@ async function askAi(opts) {
         result = {
           ...escalated,
           escalated: true,
-          escalationReason: result ? "fast_tier_incomplete" : "fast_tier_failed",
+          escalationReason: "fast_tier_failed",
           priorTier: "fast"
         };
       }
     }
-    // Last resort: same Foundry agents with trimmed context (no chat-completions path)
-    if (!result) {
+    // Last resort: Fast with trimmed context (chat asks only)
+    if (
+      !wantsVisual &&
+      (!result || result.provider === "error" || !String(result.answer || "").trim())
+    ) {
       const slimCtx = slimContextForRetry(opts.context);
-      const slimTier = foundryAgentConfig("deep").enabled ? "deep" : tier;
-      result = await tryProvider(`foundry_agent_${slimTier}_slim`, () =>
-        callFoundry(slimTier, slimCtx)
-      );
+      result = await tryProvider("foundry_agent_fast_slim", () => callFoundry("fast", slimCtx));
       if (result) {
         result = {
           ...result,
           provider: result.provider || "foundry_agent",
-          note: "Retried Foundry with trimmed context after agent failure."
+          note: "Retried Foundry Fast with trimmed context after agent failure."
         };
       }
     }

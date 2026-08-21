@@ -32,12 +32,88 @@ function convertBuddyMarkupInHtml(html) {
 
 function extractHtmlReport(text) {
   const src = String(text || "");
-  const re = /HTML_REPORT_START\s*([\s\S]*?)\s*HTML_REPORT_END/i;
-  const m = src.match(re);
-  if (!m) return { answer: src.trim(), html: null };
-  const html = convertBuddyMarkupInHtml(String(m[1] || "").trim());
-  const answer = src.replace(re, "\n").trim();
+  const startM = src.match(/HTML_REPORT_START/i);
+  if (!startM) return { answer: src.trim(), html: null };
+  const sIdx = startM.index;
+  const afterStart = sIdx + startM[0].length;
+  const endM = src.slice(afterStart).match(/HTML_REPORT_END/i);
+  let htmlRaw;
+  let answer;
+  if (endM) {
+    const eIdx = afterStart + endM.index;
+    htmlRaw = src.slice(afterStart, eIdx).trim();
+    answer = (src.slice(0, sIdx) + src.slice(eIdx + endM[0].length)).trim();
+  } else {
+    // Truncated model output — still salvage the HTML so Buddy can show a visual
+    htmlRaw = src.slice(afterStart).trim();
+    answer = src.slice(0, sIdx).trim() || "Document ready — open beside chat.";
+  }
+  const html = convertBuddyMarkupInHtml(htmlRaw);
   return { answer, html: html || null };
+}
+
+/** When the model fails to emit HTML_REPORT, still ship a usable Ora-styled visual. */
+function synthesizeFallbackHtmlReport(question, context = {}) {
+  const ind =
+    context.intelligence?.query?.indication ||
+    context.intelligence?.indicationBenchmark?.indicationRequested ||
+    context.clientStudy?.indication ||
+    "";
+  const country = context.intelligence?.query?.country || "";
+  const ora = context.intelligence?.indicationBenchmark?.ora || null;
+  const th = context.intelligence?.indicationBenchmark?.trialhub || null;
+  const port = context.portfolio || null;
+  const q = String(question || "").slice(0, 200);
+  const rows = [];
+  if (ora) {
+    rows.push(
+      `<tr><td>Ora studies (indication)</td><td>${escapeHtmlSynth(String(ora.studyCount ?? "—"))}</td></tr>`,
+      `<tr><td>Ora median PSM</td><td>${escapeHtmlSynth(ora.medianPsm != null ? String(ora.medianPsm) : "missing")}</td></tr>`,
+      `<tr><td>Ora sites (n)</td><td>${escapeHtmlSynth(String(ora.siteCount ?? ora.nSites ?? "—"))}</td></tr>`
+    );
+  }
+  if (th) {
+    rows.push(
+      `<tr><td>TrialHub trials</td><td>${escapeHtmlSynth(String(th.trialCount ?? th.n ?? "—"))}</td></tr>`,
+      `<tr><td>TrialHub median PSM</td><td>${escapeHtmlSynth(th.medianPsm != null ? String(th.medianPsm) : "missing")}</td></tr>`
+    );
+  }
+  if (port && !port.skipped) {
+    rows.push(
+      `<tr><td>Portfolio studies matched</td><td>${escapeHtmlSynth(String(port.matchedStudyCount ?? "—"))} / ${escapeHtmlSynth(String(port.databaseStudyCount ?? "—"))}</td></tr>`
+    );
+  }
+  if (!rows.length) {
+    rows.push(
+      `<tr><td colspan="2">Live packs were thin for this ask — open Ora Clinical Intelligence with an indication, or re-ask with geography.</td></tr>`
+    );
+  }
+  const title = ind
+    ? `Ora feasibility snapshot — ${ind}${country ? ` · ${country}` : ""}`
+    : "Ora feasibility snapshot";
+  const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtmlSynth(title)}</title>
+<style>
+body{font-family:Segoe UI,Arial,sans-serif;background:#F0F4F8;color:#1B2A4A;margin:0;padding:24px;line-height:1.5}
+.header{background:linear-gradient(135deg,#1B2A4A,#1A7F8E);color:#fff;padding:20px 24px;border-radius:10px;margin-bottom:16px}
+.card{background:#fff;border-radius:10px;padding:16px 20px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+table{width:100%;border-collapse:collapse;margin-top:8px}
+td,th{border-bottom:1px solid #E2E8F0;padding:8px 6px;text-align:left;font-size:14px}
+.muted{color:#64748B;font-size:13px}
+</style></head><body>
+<div class="header"><h1 style="margin:0;font-size:1.35rem">${escapeHtmlSynth(title)}</h1>
+<p style="margin:8px 0 0;opacity:.9;font-size:14px">Ask: ${escapeHtmlSynth(q || "—")}</p></div>
+<div class="card"><p class="muted">Buddy built this shell because the model reply had no HTML_REPORT block. Numbers below are from attached Cosmos packs only — say if something looks off.</p>
+<table><thead><tr><th>Metric</th><th>Value</th></tr></thead><tbody>${rows.join("")}</tbody></table></div>
+</body></html>`;
+  return html;
+}
+
+function escapeHtmlSynth(s) {
+  return String(s || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
 }
 
 function wantsDocumentExport(question) {
@@ -118,8 +194,14 @@ async function htmlToDocxBuffer(html, title) {
 /**
  * @returns {Promise<{answer:string, html:string|null, title:string, exports:Array}>}
  */
-async function buildBuddyDocExports(answerText, question) {
-  const { answer, html } = extractHtmlReport(answerText);
+async function buildBuddyDocExports(answerText, question, context = null) {
+  let { answer, html } = extractHtmlReport(answerText);
+  if (!html && context && (context.wantsHtmlVisual || context.wantsDocumentExport)) {
+    html = synthesizeFallbackHtmlReport(question, context);
+    answer =
+      String(answer || answerText || "").trim() ||
+      "Built a feasibility snapshot from Cosmos packs — open beside chat. Ask me to refine layout or add sections.";
+  }
   if (!html) {
     return { answer: answerText, html: null, title: null, exports: [] };
   }
@@ -159,5 +241,6 @@ module.exports = {
   convertBuddyMarkupInHtml,
   wantsDocumentExport,
   requestedFormats,
-  buildBuddyDocExports
+  buildBuddyDocExports,
+  synthesizeFallbackHtmlReport
 };
