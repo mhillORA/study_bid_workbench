@@ -71,33 +71,31 @@ Ora Clinical Intelligence Platform — Context Document v2
 
  3. Data Architecture & File Reference
 
- LIVE PIVOT (Aug 2026 — highest priority): Veeva and Salesforce answers come from Cosmos live sync
- (ora_veeva_* / ora_sf_* / source=veeva_live fact projections), NOT from re-querying Excel/JSON files.
- Keep all analytical rules below (PSM, indication coding, crosswalk sheets, milestone gaps). The file
- paths were the bootstrap; once Ingest Veeva / Ingest SF has rows, those files are obsolete as data
- sources. Crosswalk + site alias tables remain in Cosmos and still define name matching to SF.
+ LIVE PIVOT (Aug 2026 — highest priority): Veeva answers come from Cosmos live mirrors
+ (ora_veeva_study / ora_veeva_site / ora_veeva_milestone / metrics / subjects) — NOT ora_fact_*
+ and NOT Excel/JSON files. Salesforce from ora_sf_*. Buddy computes site PSM = enrolled /
+ months(FSI→LSI from milestones). Keep analytical rules below (indication coding, crosswalk,
+ planning landmarks). Crosswalk + site alias tables remain in Cosmos for name matching.
 
- Primary Data Collections (Veeva CTM) — legacy file map → live containers
+ Primary Data Collections — LIVE
 
- Collection Records Key Fields Legacy file → Live
+ Collection Role
 
- ora_fact_site 3,613 (legacy) / growing live Organization, PI, city, country, indication, Study Name, enrolled, site_psm, … harmonized_clinical_data.xlsx fact_site → ora_veeva_site + projected ora_fact_site (source=veeva_live)
+ ora_veeva_study Vault study__v — indication picklist, sponsor, phase, enrollment
+ ora_veeva_site Vault site__v — org, country, enrolled; PSM computed with milestones
+ ora_veeva_milestone Vault milestone__v — FSI/LSI/SIV/contract/IRB dates for PSM + startup gaps
+ ora_veeva_metric / ora_veeva_subject metrics__ctms / subject__clin — enrollment performance / counts
+ ora_veeva_organization / ora_veeva_sponsor / ora_veeva_study_country name + geography dims
+ ora_trialhub_trials TrialHub upload (still file→Cosmos; industry PSM study-level)
+ ora_sponsor_crosswalk / ora_site_alias_table name bridges (still authoritative until refreshed)
+ ora_sf_* Salesforce Account / Opportunity / Activity_Request__c
 
- ora_fact_study 249 (legacy) / growing live Study Number, sponsor, indication, phase, PSM, … harmonized → ora_veeva_study + projected ora_fact_study (source=veeva_live)
-
- ora_trialhub_trials live upload TrialHub fields TrialHub xlsx upload (still file→Cosmos; not Vault)
-
- ora_sponsor_crosswalk 642 sponsor_name → SF id/owner/tier Sponsor_Crosswalk_MASTER.xlsx (still authoritative for name bridge until refreshed)
-
- ora_site_alias_table ~46 alias → canonical Site_Alias_Table.xlsx
-
- Salesforce — LIVE via Cosmos ora_sf_* (Ingest SF). Do NOT require sf_db_full.json or MCP when counts > 0.
- Key objects synced: Account, Opportunity, Activity_Request__c. Crosswalk still bridges TrialHub/Veeva names → sf_account_id.
+ Do NOT query ora_fact_study / ora_fact_site for Buddy (legacy projection only).
 
  Milestone Data
 
- Prefer ora_veeva_milestone (Vault milestone__v) / ora_veeva_milestones source=veeva_live.
- Legacy: Mike_Watson_Claude_Report__Site_Level__10Jul2026.xlsx. Use 2023+; exclude gap outliers >730d; median not mean.
+ Prefer ora_veeva_milestone (Vault milestone__v). Startup gaps Selected→Contract→IRB→SIV→FSI
+ computed from site-level actual dates. Use 2023+ activity when filtering; exclude gap outliers >730d; median not mean.
 
  TrialHub Scope Note
 
@@ -111,21 +109,24 @@ Ora Clinical Intelligence Platform — Context Document v2
 
  Definition
 
- PSM = enrolled patients ÷ (n_sites × enrollment_months) . This is the fundamental unit of enrollment productivity. It normalizes enrollment across studies of different sizes and durations, enabling apples-to-apples comparison across sites and studies.
+ Site-level (PRIMARY for Ora/Buddy): site_psm = enrolled ÷ months(FSI → LSI from ora_veeva_milestone), min 1 month.
+ Study-level rollup: median of positive site PSMs, or enrolled ÷ (n_sites × enrollment_months) when only study totals exist.
+ TrialHub: use psm_common / th_actual_psm (study-level industry) — label grain when comparing to Ora site PSM.
 
  Study-Level PSM
 
- study_psm = total_enrolled / (n_active_sites × enrollment_duration_months)
- Enrollment duration = date of last patient enrolled minus date of first patient enrolled, in months. Do NOT use planned enrollment window — use actuals where available.
+ study_psm = median(site_psm) for the study when site milestones exist; else total_enrolled / (n_active_sites × enrollment_duration_months)
+ Enrollment duration = last patient in minus first patient in, in months. Do NOT use planned window — use actuals.
 
  Site-Level PSM
 
  site_psm = site_enrolled / site_enroll_months
- Where site_enroll_months = months between a site's first patient enrolled and last patient enrolled (or study closure if site was still active). Sites with 0 enrolled have PSM = 0, not null — these are meaningful data points indicating the site activated but did not enroll.
+ site_enroll_months = months between site FSI milestone actual and site LSI milestone actual (same month → 1).
+ Sites with 0 enrolled have PSM = 0, not null — activated but did not enroll; exclude from medians, still list.
 
  The ~80% Null PSM Rate
 
- Critical structural fact: Approximately 80% of site records in Veeva have null PSM. This is structural — Veeva stores enrollment counts only when they are captured at the site level, and many historical studies only recorded study-level totals. A null PSM does NOT mean the site didn't enroll. It means the data was not captured at site level. Always distinguish null (unknown) from zero (enrolled nothing). When calculating indication-level benchmarks, use the subset with non-null PSM and note the n.
+ Critical structural fact: Many site records lack FSI/LSI actuals and/or enrolled counts, so site_psm is null. Null ≠ zero. When calculating indication-level benchmarks, use the subset with positive PSM and note the n.
 
  Block Enrollment Studies
 
@@ -552,7 +553,9 @@ td.ctr{text-align:center}
 
  12a. Indication Coding in Veeva — Known Inconsistencies & Search Rules
 
- The indication field in fact_site and fact_study is a free-text field entered by Ora study teams at study setup. There is no enforced controlled vocabulary. The same clinical indication can appear under multiple label variants. Any query that searches on a single exact term will silently miss records coded under alternative labels.
+ The indication field on live Veeva studies comes from the Vault Indication picklist (indication__v),
+ canonicalized to Ora labels (e.g. dry_eye__c → Dry Eye). Historical free-text variants may still appear
+ on older rows. ALWAYS use multi-alias / exclusive indication groups — never a single exact string.
 
  Rule: Always search using a multi-term pattern covering all known label variants, never a single exact string alone.
 

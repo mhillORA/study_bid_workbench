@@ -28,60 +28,55 @@ SECTION 2 — DATA ARCHITECTURE
 ================================================================
 
 *** LIVE DATA PIVOT (Aug 2026 — overrides file-based paths below) ***
-Source of truth for Ora Veeva clinical data is now Vault API → Cosmos:
+Source of truth for Ora Veeva clinical data is Vault API → Cosmos live mirrors:
   ora_veeva_study ← study__v
   ora_veeva_site ← site__v
+  ora_veeva_study_country ← study_country__v
   ora_veeva_organization ← organization__v
   ora_veeva_sponsor ← sponsor__c
   ora_veeva_milestone ← milestone__v
-Projected Buddy packs (source=veeva_live): ora_fact_study, ora_fact_site, ora_veeva_milestones.
+  ora_veeva_metric ← metrics__ctms
+  ora_veeva_subject ← subject__clin
+Buddy feasibility / PSM / site lists / scorecard / startup gaps query THESE mirrors directly.
+Do NOT use ora_fact_study / ora_fact_site for Buddy answers (containers may still exist from older projection — ignore them).
+Site PSM = total_enrolled / months(FSI → LSI from ora_veeva_milestone), minimum 1 month.
 Source of truth for Salesforce CRM is JWT sync → Cosmos:
   ora_sf_account, ora_sf_opportunity, ora_sf_activity_request
 The Excel/JSON files listed under PRIMARY FILES were the bootstrap for rules, joins, and quality
-caveats. KEEP those analytical rules. STOP treating the files as the queryable warehouse once
-live containers have rows. Do not ask users to re-upload Mike Watson Site Level / harmonized
-Excel / sf_db_full.json for answers Buddy can take from Cosmos.
+caveats. KEEP those analytical rules. STOP treating the files as the queryable warehouse.
+Do not ask users to re-upload Site Level / harmonized Excel / sf_db_full.json for answers Buddy can take from Cosmos.
 
-JOIN MAP (file era → live era — same logic):
-  fact_site.Study Name / study_name → fact_study.Study Number / study_number
-    live: ora_veeva_site.study_name__v / study__v → ora_veeva_study.name__v / id
-  fact_site.Organization / org_clean ← site_alias.canonical_name
-    live: ora_veeva_site.organization__clin → ora_veeva_organization.name__v (+ alias table)
-  fact_study.sponsor → crosswalk.trialhub_veeva_sponsor → sf_account_id
-    live: ora_veeva_study.sponsor__c → ora_veeva_sponsor.name__v → crosswalk / ora_sf_account
-  Milestone gaps Selected→Contract→IRB→SIV→FSI from Site Level Excel
-    live: ora_veeva_milestone (site-level) projected into ora_veeva_milestones wide gaps
-  SF account/owner/tier/pipeline: was sf_db_full.json + MCP
-    live: ora_sf_* + salesforceData pack; crosswalk still for name bridging
+JOIN MAP (live era):
+  ora_veeva_site.study__v / study_name__v → ora_veeva_study.id / name__v / alternate_study_number__vs
+  ora_veeva_site.organization__clin → ora_veeva_organization (+ ora_site_alias_table)
+  ora_veeva_study.sponsor__c → ora_veeva_sponsor.name__v → crosswalk / ora_sf_account
+  Startup gaps Selected→Contract→IRB→SIV→FSI from ora_veeva_milestone (site-level actual dates)
+  SF account/owner/tier/pipeline: ora_sf_* + salesforceData pack; crosswalk for name bridging
 
-PRIMARY FILES (LEGACY BOOTSTRAP — historical reference only):
-- harmonized_clinical_data.xlsx → sheet: fact_site (3,613 records)
-- harmonized_clinical_data.xlsx → sheet: fact_study (249 records)
-- Eye_Diseases_-_Trials_Search_Data_-_June_18__2026.xlsx → sheet: Trials (Detailed) [TrialHub, 1,682 records]
-- Sponsor_Crosswalk_MASTER.xlsx (4 sheets, 642 sponsors)
-- crosswalk_master.csv (backing CSV for crosswalk)
-- Site_Alias_Table.xlsx (48 aliases)
-- sf_db_full.json (1,910 active Salesforce accounts — superseded by ora_sf_account when synced)
-- Mike_Watson_Claude_Report__Site_Level__10Jul2026.xlsx (raw Veeva milestone data — superseded by milestone__v)
+PRIMARY FILES (LEGACY BOOTSTRAP — historical reference only; not Buddy data sources):
+- harmonized_clinical_data.xlsx → sheet: fact_site / fact_study (superseded by ora_veeva_*)
+- Eye_Diseases TrialHub xlsx → still used via Intelligence → Upload TrialHub → ora_trialhub_trials
+- Sponsor_Crosswalk_MASTER.xlsx / crosswalk_master.csv → ora_sponsor_crosswalk
+- Site_Alias_Table.xlsx → ora_site_alias_table
+- sf_db_full.json (superseded by ora_sf_account when synced)
+- Older Site Level Excel milestone dumps (superseded by milestone__v → ora_veeva_milestone)
 
-FACT_SITE KEY FIELDS:
-Organization, Principal Investigator, Location City, country, indication, Study Name,
-total_enrolled, total_screened, site_psm, screen_fail_rate, activation_date,
-first_patient_date, last_patient_date, site_enroll_months, phase
+LIVE SITE KEY FIELDS (ora_veeva_site + computed):
+org / site name, country, indication (from study picklist or site), study name,
+total_enrolled (site field or subject count), site_enroll_months (FSI→LSI), site_psm, fsi_date, lsi_date
 
-FACT_STUDY KEY FIELDS:
-Study Number, Study Name, sponsor, indication, phase, n_sites, n_enrolled,
-study_psm, start_date, primary_completion_date
+LIVE STUDY KEY FIELDS (ora_veeva_study + computed):
+study number/name, sponsor, indication (Vault Indication picklist), phase, status,
+enrollment, n_sites, study-level psm = median of positive site PSMs when available
 
 TRIALHUB KEY FIELDS:
 Trial Id (link), Sponsor, Lead Sponsor Type, Indications, Status, Phase, Countries,
-Patients, Planned Number Of Sites, Treatment Duration (months), Actual LPI Date, Drop Rate
+Patients, Planned Number Of Sites, Treatment Duration (months), Actual LPI Date, Drop Rate,
+psm_common / th_actual_psm (study-level industry — do not mix unlabeled with site_psm)
 
-SALESFORCE: Connected via MCP (Salesforce Prod connector). Key objects: Account, Opportunity, Task.
-Use soqlQuery, find, getRelatedRecords, createSobjectRecord, updateSobjectRecord.
+SALESFORCE: Prefer Cosmos ora_sf_* + intelligence.salesforceData. Crosswalk bridges names → sf_account_id.
 
-COSMOS DB: Azure Cosmos DB pilot in progress. Data engineer loading 5 collection exports.
-Not yet live. When live, Claude interfaces via natural language chat queries.
+COSMOS DB: Azure Cosmos (bd-budgets) is LIVE for Buddy. Query via Context JSON on each ask.
 
 TRIALHUB SCOPE NOTE: TrialHub is scoped to Ora's active US-anchored indications.
 German dry eye device trials NOT in TrialHub. EU-only device programmes underrepresented.
@@ -142,8 +137,25 @@ Stargardt, LCA, RP, DME, TED already consistent — no remediation needed.
 SECTION 4 — PSM (PATIENT SITE MONTH) METHODOLOGY
 ================================================================
 
-DEFINITION: PSM = enrolled patients / (n_sites × enrollment_months)
-Fundamental unit of enrollment productivity. Normalizes across studies.
+DEFINITION: Patients per Site per Month — enrollment productivity for one site (or study rollup).
+
+SITE-LEVEL PSM (PRIMARY — Ora Veeva / Buddy):
+  site_psm = total_enrolled / site_enroll_months
+  site_enroll_months = months from site FSI (First Subject In / FPFV) milestone actual
+                       → site LSI (Last Subject In) milestone actual; same month → 1 (never ÷0)
+  Dates come from ora_veeva_milestone (milestone__v), NOT study header fields.
+  LSO / LPLV = Last Subject Out — end of treatment; NOT the PSM window end unless specified.
+  Enrolled: site.no_subjects_enrolled__v, else count from ora_veeva_subject when needed.
+  PSM = 0 means activated but never enrolled — exclude from medians; still list the site.
+  Null PSM = missing FSI/LSI and/or enrolled — not zero.
+
+STUDY-LEVEL PSM (Ora rollup):
+  Prefer median of positive site_psm values for that study.
+  Alternate (when only study totals exist): total_enrolled / (n_sites × enrollment_months)
+  Do NOT mix study-level grain with site-level PSM in one comparison without labeling.
+
+TRIALHUB STUDY-LEVEL:
+  Use th_actual_psm / psm_common when present — do not recalculate from patients/sites unless null.
 
 STUDY-LEVEL PSM: total_enrolled / (n_active_sites × enrollment_duration_months)
 Use ACTUAL enrollment duration (FPFV to LPLV), not planned window.
@@ -806,13 +818,19 @@ END OF MASTER CONTEXT DOCUMENT
 SECTION 21 — CROSS-DATABASE CONCATENATION & JOIN LOGIC
 ================================================================
 
+*** LIVE OVERRIDE (Aug 2026): Use ora_veeva_site / ora_veeva_study / ora_veeva_milestone /
+ora_veeva_sponsor / ora_sf_* / ora_trialhub_trials / ora_ctgov_trials. Map every "fact_site"
+mention below to ora_veeva_site (+ computed site_psm from FSI→LSI), every "fact_study" to
+ora_veeva_study, every "Milestone Data / Site Level Excel" to ora_veeva_milestone.
+Do NOT query ora_fact_* or re-open Excel packs for these joins. ***
+
 The five data collections do NOT share a common primary key. Linking them requires
 specific join strategies depending on the analysis. Below is every cross-database
-relationship and how to execute the joins correctly.
+relationship and how to execute the joins correctly (file-era names → live containers).
 
 --- COLLECTION RELATIONSHIPS ---
 
-fact_site ←→ fact_study:
+fact_site ←→ fact_study:  (LIVE: ora_veeva_site ←→ ora_veeva_study via study__v)
   Join key: Study Name (fact_site) = Study Number (fact_study)
   Type: Many-to-one (many sites per study)
   Use: Enrich site records with study-level metadata (sponsor, phase, study_psm)
@@ -999,7 +1017,7 @@ CRITICAL — NOT A DATA SOURCE:
 - NEVER say you have that file, NEVER list sites/PSM/activation numbers from it,
   NEVER invent "I found Texas Retina in the Oculgen brief."
 - Every site name, activation day count, study count, and Ora PSM MUST come from
-  live Context JSON (ora_veeva_milestones, ora_fact_site, ora_fact_study) on THIS ask.
+  live Context JSON (ora_veeva_site, ora_veeva_study, ora_veeva_milestone / startupTimelines) on THIS ask.
 - If Cosmos packs are empty, say so — do not fall back to memorized brief numbers.
 
 Required sections (HTML_REPORT, teal #0d9488 / navy #04003B, Internal badge):

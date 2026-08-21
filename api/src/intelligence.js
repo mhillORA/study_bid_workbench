@@ -1406,42 +1406,22 @@ function gapMedianPack(rows) {
 }
 
 /**
- * Mike Watson Site Level milestones (wide org×study) — startup gap medians for Buddy.
- * Prefer activity_2023_plus + non-outlier; scope to known orgs/studies when possible.
+ * Startup gap medians from live ora_veeva_milestone (FSI/SIV/contract/IRB/selected).
+ * Does not use Excel Site Level packs or ora_fact_*.
  */
 async function queryStartupTimelines(
   database,
   { countries = null, orgNames = [], studyNames = [] } = {}
 ) {
   try {
-    const container = database.container("ora_veeva_milestones");
-    // Prefer live Vault projection; fall back to Mike Watson Excel import
-    let rows = await queryAll(
-      container,
-      `SELECT c.organization, c.study_name, c.country, c.principal_investigator,
-              c.gaps_days, c.dates, c.activity_2023_plus, c.outlier_gap_gt_730, c.source
-       FROM c WHERE c.docType = @t
-         AND c.source = @src
-         AND (NOT IS_DEFINED(c.activity_2023_plus) OR c.activity_2023_plus = true)
-         AND (NOT IS_DEFINED(c.outlier_gap_gt_730) OR c.outlier_gap_gt_730 = false)`,
-      [
-        { name: "@t", value: "ora_veeva_milestones" },
-        { name: "@src", value: "veeva_live" }
-      ]
+    const { loadVeevaStartupGapRows } = require("./veevaLiveIntel");
+    let rows = await loadVeevaStartupGapRows(database);
+    rows = rows.filter(
+      (r) =>
+        (r.activity_2023_plus !== false) &&
+        !r.outlier_gap_gt_730
     );
-    let sourceUsed = "veeva_live";
-    if (!rows.length) {
-      rows = await queryAll(
-        container,
-        `SELECT c.organization, c.study_name, c.country, c.principal_investigator,
-                c.gaps_days, c.dates, c.activity_2023_plus, c.outlier_gap_gt_730, c.source
-         FROM c WHERE c.docType = @t
-           AND c.activity_2023_plus = true
-           AND (NOT IS_DEFINED(c.outlier_gap_gt_730) OR c.outlier_gap_gt_730 = false)`,
-        [{ name: "@t", value: "ora_veeva_milestones" }]
-      );
-      sourceUsed = "mike_watson_or_mixed";
-    }
+    const sourceUsed = "ora_veeva_milestone";
 
     let universe = rows;
     if (countries) {
@@ -1517,7 +1497,7 @@ async function queryStartupTimelines(
       .slice(0, 25);
 
     return {
-      scope: "ora_veeva_milestones",
+      scope: "ora_veeva_milestone",
       source: sourceUsed,
       filters: {
         activity_2023_plus: true,
@@ -1531,16 +1511,14 @@ async function queryStartupTimelines(
       topSitesByStartup,
       note:
         scoped.length > 0
-          ? sourceUsed === "veeva_live"
-            ? "Startup gap medians from live Vault milestone__v projection (source=veeva_live). Prefer over Mike Watson Excel."
-            : "Startup gap medians from ora_veeva_milestones (legacy Mike Watson Excel until live Vault ingest populates source=veeva_live)."
-          : "No milestone rows matched filters — still use fact_site PSM slate when present."
+          ? "Startup gap medians from live ora_veeva_milestone (Vault milestone__v). Excel Site Level packs not used."
+          : "No live milestone gap rows matched filters — still use ora_veeva_site slate when present."
     };
   } catch (err) {
     return {
-      scope: "ora_veeva_milestones",
+      scope: "ora_veeva_milestone",
       error: String(err.message || err),
-      note: "ora_veeva_milestones query failed — do not invent startup timelines."
+      note: "ora_veeva_milestone startup query failed — do not invent startup timelines."
     };
   }
 }
@@ -1591,14 +1569,10 @@ async function getIntelligenceHealth(getDb) {
   for (const id of containers) {
     counts[id] = await safeCount(database, id);
   }
-  // Fixed packs from Mike Watson / Claude Excel — expected only until live Vault replaces them.
-  // When ora_veeva_* live counts > 0, fixed expected is informational (not a hard fail).
+  // Fixed pack sizes are legacy reference only — Buddy uses ora_veeva_*.
   const expected = {
-    ora_fact_site: 3613,
-    ora_fact_study: 249,
     ora_sponsor_crosswalk: 642,
-    ora_site_alias_table: 46,
-    ora_veeva_milestones: 1920
+    ora_site_alias_table: 46
   };
   const liveVault =
     (typeof counts.ora_veeva_study === "number" && counts.ora_veeva_study > 0) ||
@@ -2968,7 +2942,7 @@ async function buildIntelligenceContext(getDb, opts = {}) {
 }
 
 /**
- * Site scorecard from Veeva (ora_fact_site).
+ * Site scorecard from live ora_veeva_* (milestone PSM).
  * source=ora → Ora scores only
  * source=compare → Ora score + industry (TrialHub country) score side-by-side
  */
@@ -2995,10 +2969,14 @@ async function buildSiteScorecard(getDb, opts = {}) {
   const mergeSite = (r) => {
     if (!r) return;
     if (preferred && r.indication && !indicationCompatible(r.indication, preferred, aliases)) {
-      return;
+      const relatedOk = related.some((rel) =>
+        indicationCompatible(r.indication, rel, indicationAliases(rel))
+      );
+      if (!relatedOk) return;
     }
     const org = r.org_clean || r.organization;
     if (!org) return;
+    if (countries && !countriesMatch(r.country, countries)) return;
     const key = `${org}||${r.country || "_unknown"}||${r.study_name || ""}||${r.site_psm || ""}`;
     if (siteRows.some((x) => `${x.org_clean || x.organization}||${x.country || "_unknown"}||${x.study_name || ""}||${x.site_psm || ""}` === key)) {
       return;
@@ -3006,52 +2984,25 @@ async function buildSiteScorecard(getDb, opts = {}) {
     siteRows.push(r);
   };
 
-  const querySites = async ({ exactInd, containsNeedle, requirePsm }) => {
-    const params = [{ name: "@t", value: "ora_fact_site" }];
-    let q = `SELECT TOP 400 c.org_clean, c.organization, c.country, c.indication, c.phase,
-              c.site_psm, c.total_enrolled, c.site_enroll_months, c.fsi_trust, c.screen_fail_rate, c.study_name
-       FROM c WHERE c.docType = @t`;
-    if (requirePsm) q += ` AND IS_DEFINED(c.site_psm) AND c.site_psm > 0`;
-    if (exactInd) {
-      q += ` AND c.indication = @ind`;
-      params.push({ name: "@ind", value: exactInd });
-    } else if (containsNeedle) {
-      q += ` AND CONTAINS(LOWER(c.indication), @n)`;
-      params.push({ name: "@n", value: String(containsNeedle).toLowerCase() });
-    }
-    const geo = countrySqlClause("c.country", countries, "geo");
-    q += geo.sql;
-    params.push(...geo.params);
-    const rows = await queryAll(database.container("ora_fact_site"), q, params);
-    for (const r of rows) mergeSite(r);
-  };
+  const { loadVeevaLiveFeasibility } = require("./veevaLiveIntel");
+  let pack = { sites: [] };
+  try {
+    pack = await loadVeevaLiveFeasibility(database);
+  } catch (err) {
+    return {
+      source,
+      error: String(err.message || err),
+      note: "Failed to load ora_veeva_* for scorecard."
+    };
+  }
 
-  const indList = aliases.length ? aliases.slice(0, 6) : [null];
-  for (const alias of indList) {
-    await querySites({ exactInd: alias, requirePsm: true });
+  const liveSites = pack.sites || [];
+  // Prefer sites with positive PSM, then fill with null-PSM rows
+  for (const r of liveSites) {
+    if (typeof r.site_psm === "number" && r.site_psm > 0) mergeSite(r);
   }
-  // Related labels (e.g. Neuroprotection → Optic neuropathies / Glaucoma)
-  if (!siteRows.length && related.length) {
-    for (const alias of related.slice(0, 4)) {
-      await querySites({ exactInd: alias, requirePsm: true });
-    }
-  }
-  // Fuzzy CONTAINS when Veeva labels don't match pill names
-  if (!siteRows.length && preferred) {
-    for (const needle of indicationContainsNeedles(preferred).slice(0, 5)) {
-      await querySites({ containsNeedle: needle, requirePsm: true });
-    }
-  }
-  // Last resort: include null-PSM site rows so pills aren't empty
-  if (!siteRows.length && (aliases.length || related.length || preferred)) {
-    for (const alias of [...aliases, ...related].slice(0, 6)) {
-      await querySites({ exactInd: alias, requirePsm: false });
-    }
-    if (!siteRows.length && preferred) {
-      for (const needle of indicationContainsNeedles(preferred).slice(0, 4)) {
-        await querySites({ containsNeedle: needle, requirePsm: false });
-      }
-    }
+  if (!siteRows.length) {
+    for (const r of liveSites) mergeSite(r);
   }
 
   // Aggregate by org_clean + country
@@ -3268,9 +3219,9 @@ async function buildSiteScorecard(getDb, opts = {}) {
       sites.length === 0
         ? `No Ora Veeva site rows matched "${indication || "filter"}". Try a broader indication (e.g. Glaucoma) or Global geography.`
         : usedRelated || related.length
-          ? `Matched via related/fuzzy Veeva labels when exact "${indication}" had few/no site_psm rows. Ora scores from ora_fact_site.`
+          ? `Matched via related/fuzzy Veeva labels when exact "${indication}" had few/no site_psm rows. Ora scores from ora_veeva_* (milestone PSM).`
           : source === "ora"
-            ? "Ora scores from Veeva site history (ora_fact_site)."
+            ? "Ora scores from live Veeva site history (ora_veeva_site + FSI→LSI milestones)."
             : "Ora site score vs industry country score (TrialHub PSM by country). Industry has no named competitor sites — country-level benchmark only.",
     sites,
     elapsedMs: Date.now() - started

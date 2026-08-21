@@ -1,7 +1,7 @@
 # Ora Clinical Intelligence → Cosmos (`bd-budgets`)
 
-**Live-first (Aug 2026):** Veeva Vault API → `ora_veeva_*` (+ fact projections `source=veeva_live`); Salesforce JWT → `ora_sf_*`.  
-Bootstrap Excel/JSON packs (Claude model files, Mike Watson Site Level, `sf_db_full.json`) are **legacy** once live sync has rows — keep their analytical rules in Ora context files; do not treat the files as the warehouse.  
+**Live-first (Aug 2026):** Veeva Vault API → `ora_veeva_*` (Buddy queries these directly; site PSM from FSI→LSI milestones). Salesforce JWT → `ora_sf_*`.  
+`ora_fact_*` may still exist from older projection but are **not** used for Buddy answers. Bootstrap Excel packs are legacy as data sources — keep analytical rules in Ora context files.  
 See [`docs/live-data-pivot.md`](live-data-pivot.md).
 
 App uses **Cosmos SQL/Core API** (`@azure/cosmos` / `azure.cosmos`), not Mongo API.
@@ -10,11 +10,11 @@ App uses **Cosmos SQL/Core API** (`@azure/cosmos` / `azure.cosmos`), not Mongo A
 
 | Ask | Source |
 |-----|--------|
-| How fast does Ora enroll in Dry Eye? Typical PSM? | `ora_fact_study` / `ora_fact_site` (prefer `source=veeva_live`) or `ora_veeva_*` |
+| How fast does Ora enroll in Dry Eye? Typical PSM? | `ora_veeva_study` / `ora_veeva_site` + `ora_veeva_milestone` (PSM = enrolled / months FSI→LSI) |
 | What is industry doing? Competing / recruiting trials? | `ora_trialhub_trials` + `ora_ctgov_trials` |
 | Sites / feasibility **in a country or region** | same + `country` / `region` filter |
 | Is this sponsor in Salesforce? Who owns them? | `ora_sponsor_crosswalk` + `ora_sf_account` |
-| Startup timelines (Selected→Contract→IRB→SIV→FSI) | `ora_veeva_milestones` prefer `source=veeva_live` |
+| Startup timelines (Selected→Contract→IRB→SIV→FSI) | `ora_veeva_milestone` (live) |
 | Pipeline / opps / ARs | `ora_sf_*` |
 | Budget dollars / uploaded bids | `studies` / `versions` (portfolio — not these tables) |
 

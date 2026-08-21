@@ -225,8 +225,115 @@ async function loadVeevaLiveFeasibility(database) {
   };
 }
 
+function classifyStartupMilestoneKey(name, type) {
+  const s = `${name || ""} ${type || ""}`.toLowerCase();
+  if (/\bsiv\b|site initiated|ir_site_initiated|first study site initiated/.test(s)) return "siv";
+  if (/\bfsi\b|\bfpi\b|first subject|first patient|ready to enroll/.test(s)) return "fsi";
+  if (/\birb\b|ethics|ec approval|irb submission|irb approv/.test(s)) return "irb";
+  if (/cta signed|contract|site financial|financial docs/.test(s)) return "contract";
+  if (/site selected|selected_site|site selection/.test(s)) return "selected";
+  return null;
+}
+
+function daysBetween(a, b) {
+  if (!a || !b) return null;
+  const da = Date.parse(a);
+  const db = Date.parse(b);
+  if (Number.isNaN(da) || Number.isNaN(db)) return null;
+  return Math.round((db - da) / 86400000);
+}
+
+/**
+ * Startup gap rows from live ora_veeva_milestone (+ site/org names).
+ * Same shape as wide ora_veeva_milestones docs — used by Buddy startupTimelines.
+ */
+async function loadVeevaStartupGapRows(database) {
+  const siteRows = await queryAll(
+    database.container("ora_veeva_site"),
+    `SELECT c.id, c.name__v, c.site_name__v, c.study__v, c.study_name__v, c.organization__clin, c.country__v
+     FROM c WHERE c.docType = @t`,
+    [{ name: "@t", value: "ora_veeva_site" }]
+  );
+  const orgName = new Map();
+  try {
+    const orgRows = await queryAll(
+      database.container("ora_veeva_organization"),
+      `SELECT c.id, c.name__v, c.full_name__v FROM c WHERE c.docType = @t`,
+      [{ name: "@t", value: "ora_veeva_organization" }]
+    );
+    for (const o of orgRows) orgName.set(o.id, o.full_name__v || o.name__v);
+  } catch (_) {
+    /* optional */
+  }
+  const siteById = new Map(siteRows.map((s) => [s.id, s]));
+
+  const ms = await queryAll(
+    database.container("ora_veeva_milestone"),
+    `SELECT c.site__v, c.study__v, c.name__v, c.milestone_type__v,
+            c.actual_finish_date__v, c.actual_start_date__v, c.planned_finish_date__v
+     FROM c WHERE c.docType = @t AND IS_DEFINED(c.site__v) AND c.site__v != null`,
+    [{ name: "@t", value: "ora_veeva_milestone" }]
+  );
+
+  const bySiteStudy = new Map();
+  for (const m of ms) {
+    const site = siteById.get(m.site__v);
+    if (!site) continue;
+    const key = `${m.site__v}|${m.study__v || site.study__v || ""}`;
+    if (!bySiteStudy.has(key)) {
+      const org =
+        (site.organization__clin && orgName.get(site.organization__clin)) ||
+        site.site_name__v ||
+        site.name__v ||
+        null;
+      bySiteStudy.set(key, {
+        organization: org,
+        study_name: site.study_name__v || site.study__v || m.study__v,
+        country: site.country__v || "_unknown",
+        dates: {},
+        source: "ora_veeva_milestone"
+      });
+    }
+    const pack = bySiteStudy.get(key);
+    const kind = classifyStartupMilestoneKey(m.name__v, m.milestone_type__v);
+    const when = m.actual_finish_date__v || m.actual_start_date__v || m.planned_finish_date__v;
+    if (kind && when && !pack.dates[kind]) pack.dates[kind] = when;
+  }
+
+  const rows = [];
+  for (const pack of bySiteStudy.values()) {
+    if (!pack.organization) continue;
+    const d = pack.dates;
+    const gaps_days = {
+      selected_to_contract: daysBetween(d.selected, d.contract),
+      contract_to_irb: daysBetween(d.contract, d.irb),
+      irb_to_siv: daysBetween(d.irb, d.siv),
+      siv_to_fsi: daysBetween(d.siv, d.fsi),
+      contract_to_siv: daysBetween(d.contract, d.siv),
+      contract_to_fsi: daysBetween(d.contract, d.fsi)
+    };
+    const hasGap = Object.values(gaps_days).some((n) => typeof n === "number");
+    if (!hasGap && Object.keys(d).length < 2) continue;
+    const year = Object.values(d)
+      .map((x) => String(x || "").slice(0, 4))
+      .find((y) => /^20\d{2}$/.test(y));
+    rows.push({
+      organization: pack.organization,
+      study_name: pack.study_name,
+      country: pack.country,
+      dates: d,
+      gaps_days,
+      activity_2023_plus: !year || Number(year) >= 2023,
+      outlier_gap_gt_730: Object.values(gaps_days).some((n) => typeof n === "number" && n > 730),
+      source: "ora_veeva_milestone"
+    });
+  }
+  return rows;
+}
+
 module.exports = {
   loadVeevaLiveFeasibility,
+  loadVeevaStartupGapRows,
   round,
   median
 };
