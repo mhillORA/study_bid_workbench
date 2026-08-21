@@ -170,6 +170,7 @@
     buddyDocTitle: document.getElementById("buddyDocTitle"),
     buddyDocClose: document.getElementById("buddyDocClose"),
     buddyDocPopout: document.getElementById("buddyDocPopout"),
+    buddyDocDownload: document.getElementById("buddyDocDownload"),
     compareOverlay: document.getElementById("compareOverlay"),
     requestDialog: document.getElementById("requestDialog"),
     requestForm: document.getElementById("requestForm"),
@@ -1122,53 +1123,40 @@
   }
 
   /**
-   * External Function App hop is OFF until Azure Portal CORS allows the SWA origin.
-   * Right now OPTIONS /api/ask returns 204 with no Access-Control-* headers, so the
-   * browser blocks (often shows as HTTP 405) and nothing reaches Foundry.
-   * Flip to true only after: Function App → CORS → add the SWA hostname.
+   * Chat/light → same-origin SWA /api (~45s).
+   * Leave-behind HTML → Function App when session mint works (needs platform CORS).
    */
-  const BUDDY_USE_EXTERNAL_API = window.BUDDY_USE_EXTERNAL_API === true;
-
   const DEFAULT_BUDDY_API_BASE =
     "https://ora-buddy-api-hrdbgqh9cvaub5ft.eastus2-01.azurewebsites.net";
 
-  function buddyApiBase() {
-    if (!BUDDY_USE_EXTERNAL_API) return "";
+  function buddyApiBaseRaw() {
     return String(
       state.buddyApiBase || window.BUDDY_API_BASE || DEFAULT_BUDDY_API_BASE || ""
     ).replace(/\/$/, "");
   }
 
-  /** Always same-origin SWA /api unless external CORS is explicitly enabled. */
-  function buddyAskUrl(path) {
+  function buddyAskUrl(path, { external = false } = {}) {
     const p = path.startsWith("/") ? path : `/${path}`;
     const apiPath = p.startsWith("/api") ? p : `/api${p}`;
-    if (BUDDY_USE_EXTERNAL_API && state.buddySessionToken && buddyApiBase()) {
-      return `${buddyApiBase()}${apiPath}`;
+    if (external && state.buddySessionToken && buddyApiBaseRaw()) {
+      return `${buddyApiBaseRaw()}${apiPath}`;
     }
     return apiUrl(apiPath);
   }
 
+  /** Mint JWT for Function App visual hops. No-op if SWA secret missing. */
   async function ensureBuddySession() {
-    // Same-origin only — skip mint so we never steer the browser at the Function App.
-    if (!BUDDY_USE_EXTERNAL_API) {
-      state.buddySessionToken = null;
-      state.buddyApiBase = "";
-      state._buddyPreferExternal = false;
-      state.buddySessionExpiresAt = 0;
-      return { ok: true, token: null, apiBase: "", external: false, useLocalApi: true };
-    }
     const now = Date.now();
     if (
       state.buddySessionToken &&
       state.buddySessionExpiresAt &&
       state.buddySessionExpiresAt - now > 60_000 &&
-      buddyApiBase()
+      buddyApiBaseRaw()
     ) {
       return {
         ok: true,
         token: state.buddySessionToken,
-        apiBase: buddyApiBase(),
+        apiBase: buddyApiBaseRaw(),
         external: true
       };
     }
@@ -1195,11 +1183,8 @@
       state.buddyApiBase = "";
       state._buddyPreferExternal = false;
       state.buddySessionExpiresAt = 0;
-      console.warn("[Buddy] session mint did not enable external API", {
+      console.warn("[Buddy] session mint unavailable — visuals stay on SWA (45s)", {
         status: res.status,
-        ok: data.ok,
-        hasToken: Boolean(data.token),
-        apiBase: data.apiBase || null,
         error: data.error || null
       });
       return {
@@ -1657,7 +1642,7 @@
     if (els.buddyBody) els.buddyBody.classList.remove("has-doc");
   }
 
-  /** Show HTML beside chat (Buddy workspace). Opens full Buddy tab if needed. */
+  /** Show HTML beside chat as a canvas. Opens full Buddy tab if needed. */
   function showBuddyDoc(html, { title, id, openWorkspace = true } = {}) {
     const full = ensureBuddyReportHtml(html);
     if (!full) return false;
@@ -1674,14 +1659,39 @@
     state.buddyDocDismissedId = null;
     state.buddyDocPreview = {
       id: docId,
-      title: title || "Document",
+      title: title || "Leave-behind",
       html: full,
-      objectUrl
+      objectUrl,
+      filename:
+        (title && /\.html?$/i.test(title) ? title : null) ||
+        `ora-leavebehind-${new Date().toISOString().slice(0, 10)}.html`
     };
     if (els.buddyDocTitle) els.buddyDocTitle.textContent = state.buddyDocPreview.title;
     if (els.buddyDocFrame) els.buddyDocFrame.src = objectUrl;
     if (els.buddyDocPane) els.buddyDocPane.hidden = false;
     if (els.buddyBody) els.buddyBody.classList.add("has-doc");
+    return true;
+  }
+
+  function downloadBuddyDocHtml() {
+    const preview = state.buddyDocPreview;
+    const report = preview?.html
+      ? preview
+      : latestBuddyHtmlReport();
+    const html = report?.html ? ensureBuddyReportHtml(report.html) : null;
+    if (!html) return false;
+    const blob = new Blob([html], { type: "text/html;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download =
+      report.filename ||
+      preview?.filename ||
+      `ora-leavebehind-${new Date().toISOString().slice(0, 10)}.html`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
     return true;
   }
 
@@ -1694,16 +1704,16 @@
   }
 
   function maybeAutoShowBuddyDoc() {
-    if (!isBuddyWorkspace()) return;
     const report = latestBuddyHtmlReport();
     if (!report?.html) return;
     if (state.buddyDocDismissedId && state.buddyDocDismissedId === report.id) return;
     const nextHtml = ensureBuddyReportHtml(report.html);
     if (state.buddyDocPreview?.id === report.id && state.buddyDocPreview.html === nextHtml) return;
+    // Always open beside chat when a new HTML leave-behind lands.
     showBuddyDoc(report.html, {
       id: report.id,
-      title: report.filename || "Document",
-      openWorkspace: false
+      title: report.filename || "Leave-behind",
+      openWorkspace: true
     });
   }
 
@@ -2389,12 +2399,12 @@
             )
             .join("");
           reportHtml = `<div class="buddy-report">
-            <div class="chat-who">Document ready</div>
-            <p class="muted">Show beside chat to iterate, or download / print.</p>
+            <div class="chat-who">Canvas ready</div>
+            <p class="muted">Opened beside chat. Download HTML anytime from the canvas bar or here.</p>
             <div class="buddy-proposal-actions">
-              <button type="button" class="btn btn-primary" data-buddy-report-open="${escapeAttr(t.htmlReport.id)}">Show beside chat</button>
-              <button type="button" class="btn btn-ghost" data-buddy-report-print="${escapeAttr(t.htmlReport.id)}">Print / PDF</button>
+              <button type="button" class="btn btn-primary" data-buddy-report-open="${escapeAttr(t.htmlReport.id)}">Show canvas</button>
               <button type="button" class="btn btn-ghost" data-buddy-report-dl="${escapeAttr(t.htmlReport.id)}">Download HTML</button>
+              <button type="button" class="btn btn-ghost" data-buddy-report-print="${escapeAttr(t.htmlReport.id)}">Print / PDF</button>
               ${exportBtns}
             </div>
           </div>`;
@@ -3554,21 +3564,28 @@
           extracted = { text, patches: normalizePatches(act.patches) };
         }
       }
-      if (opts.htmlReport) report = { text, html: opts.htmlReport };
     } else {
       const navMatch = text.match(/\bNAVIGATE:([a-z0-9_-]+)\b/i);
       if (navMatch) {
         sectionId = resolveSectionId(navMatch[1]);
         text = text.replace(/\s*NAVIGATE:[a-z0-9_-]+\s*/gi, "\n").trim();
       }
-      report = extractHtmlReport(text);
-      text = report.text;
       created = extractCreateStudy(text);
       text = created.text;
       learned = extractLearnContext(text);
       text = learned.text;
       extracted = extractApplyPatches(text);
       text = extracted.text;
+    }
+
+    // HTML may arrive as opts.htmlReport (server already split it) and/or markers in text.
+    if (opts.htmlReport) {
+      const stripped = extractHtmlReport(text);
+      text = stripped.text;
+      report = { text, html: opts.htmlReport };
+    } else {
+      report = extractHtmlReport(text);
+      text = report.text;
     }
     if (!text) {
       if (report.html) text = "Document ready — Open or Download below.";
@@ -4367,27 +4384,26 @@
           content: String(t.content || "").slice(0, 4000)
         }));
       const askController = state._askController;
-      // External Function App can run longer; SWA hops must stay under ~45s.
+      // Mint session so leave-behind can use Function App; chat hops stay on SWA.
       const session = await ensureBuddySession();
-      const externalBuddy = Boolean(session.external && session.apiBase && session.token);
+      const canExternalVisual = Boolean(session.external && session.apiBase && session.token);
       if (els.askStatus) {
-        els.askStatus.textContent = externalBuddy
-          ? deepCue
-            ? "Deep · Function App…"
-            : "Fast · Function App…"
-          : deepCue
-            ? "Deep · SWA (45s)…"
-            : "Fast · SWA (45s)…";
+        els.askStatus.textContent = deepCue ? "Deep · SWA…" : "Fast · SWA…";
       }
-      if (!externalBuddy) {
+      if (deepCue && !canExternalVisual) {
         console.warn(
-          "[Buddy] Using SWA /api (45s limit). Set BUDDY_SESSION_SECRET + BUDDY_API_BASE on SWA.",
+          "[Buddy] Visuals need Function App session. Set BUDDY_SESSION_SECRET on SWA + Function App CORS.",
           session.mintError || null
         );
       }
-      const hopTimeoutMs = externalBuddy
-        ? Math.max(120000, Number(window.BUDDY_ASK_HOP_TIMEOUT_MS || 180000) || 180000)
-        : Math.max(50000, Number(window.BUDDY_ASK_HOP_TIMEOUT_MS || 55000) || 55000);
+      const swaHopTimeoutMs = Math.max(
+        50000,
+        Number(window.BUDDY_ASK_HOP_TIMEOUT_MS || 55000) || 55000
+      );
+      const externalHopTimeoutMs = Math.max(
+        120000,
+        Number(window.BUDDY_ASK_HOP_TIMEOUT_MS || 180000) || 180000
+      );
       const askPayload = {
         question,
         buddyMode: "chat",
@@ -4451,7 +4467,8 @@
         attachments: attachmentsPayload
       };
 
-      async function buddyHop(path, bodyExtra, statusText) {
+      async function buddyHop(path, bodyExtra, statusText, hopOpts = {}) {
+        const useExternal = Boolean(hopOpts.external && canExternalVisual && state.buddySessionToken);
         if (els.askStatus && statusText) els.askStatus.textContent = statusText;
         const hopController =
           typeof AbortController !== "undefined" ? new AbortController() : null;
@@ -4459,16 +4476,17 @@
         if (askController && hopController) {
           askController.signal.addEventListener("abort", onAbort, { once: true });
         }
+        const hopTimeoutMs = useExternal ? externalHopTimeoutMs : swaHopTimeoutMs;
         const hopTimer = hopController
           ? setTimeout(() => hopController.abort(), hopTimeoutMs)
           : null;
         const headers = { "Content-Type": "application/json" };
-        if (externalBuddy && state.buddySessionToken) {
+        if (useExternal && state.buddySessionToken) {
           headers.Authorization = `Bearer ${state.buddySessionToken}`;
         }
         let res;
         try {
-          res = await fetch(buddyAskUrl(path), {
+          res = await fetch(buddyAskUrl(path, { external: useExternal }), {
             method: "POST",
             headers,
             signal: hopController ? hopController.signal : askController?.signal,
@@ -4487,20 +4505,43 @@
         } catch (_) {
           data = {};
         }
-        // Session expired on external API — mint once and retry this hop.
-        if (
-          externalBuddy &&
-          res.status === 401 &&
-          !bodyExtra?._sessionRetry
-        ) {
+        if (useExternal && res.status === 401 && !bodyExtra?._sessionRetry) {
           state.buddySessionToken = null;
           state.buddySessionExpiresAt = 0;
           const again = await ensureBuddySession();
           if (again.external && again.token) {
-            return buddyHop(path, { ...bodyExtra, _sessionRetry: true }, statusText);
+            return buddyHop(path, { ...bodyExtra, _sessionRetry: true }, statusText, hopOpts);
           }
         }
-        return { res, rawText, data };
+        return { res, rawText, data, usedExternal: useExternal };
+      }
+
+      async function runVisualHop(contextId, priorAnswer) {
+        const status = canExternalVisual
+          ? "Deep · leave-behind (Function App)…"
+          : "Deep · leave-behind (SWA 45s)…";
+        const vis = await buddyHop(
+          "/api/ask",
+          {
+            askPhase: "visual",
+            contextId,
+            priorAnswer
+          },
+          status,
+          { external: true }
+        );
+        if (vis.data.answer || vis.data.htmlReport || (vis.data.exports && vis.data.exports.length)) {
+          applyAskResult(vis.data, vis.res);
+          return true;
+        }
+        if (!vis.res.ok || vis.data.softDeadline || vis.data.ok === false) {
+          pushAssistant(
+            canExternalVisual
+              ? "Chat is ready — the leave-behind still timed out on the Function App. Say “spin up the visual” to retry."
+              : "Chat is ready — HTML leave-behinds need the Function App (SWA cuts off at ~45s). On Azure: set BUDDY_SESSION_SECRET on SWA, and CORS on ora-buddy-api for this site. Then say “spin up the visual”."
+          );
+        }
+        return false;
       }
 
       function applyAskResult(data, res, { softLabel } = {}) {
@@ -4513,11 +4554,12 @@
         if (data.suggestedPendingTask?.type) {
           setBuddyPendingTask(data.suggestedPendingTask);
         }
-        if (data.answer) {
-          applyBuddyAnswer(data.answer, data.exports, {
+        if (data.answer || data.htmlReport) {
+          applyBuddyAnswer(data.answer || "Canvas ready — opened beside chat.", data.exports, {
             reconcileDone: Boolean(reconcileFollowUp),
             actions: data.actions,
             htmlReport: data.htmlReport,
+            documentTitle: data.documentTitle,
             evidence: data.evidence
           });
         }
@@ -4583,7 +4625,7 @@
         ({ res, rawText, data } = await buddyHop(
           "/api/ask",
           { askPhase: "auto" },
-          externalBuddy ? "Fast · Function App…" : "Fast · SWA…"
+          "Fast · SWA…"
         ));
         if (/sign in to your account|login\.microsoftonline|AADSTS/i.test(rawText)) {
           pushAssistant(
@@ -4592,11 +4634,10 @@
         } else if (data.answer) {
           applyAskResult(data, res);
         } else if (!res.ok) {
-          const where = externalBuddy ? "Function App" : "SWA (45s gateway)";
           pushAssistant(
-            `Buddy could not answer via ${where} (HTTP ${res.status || "?"}). Try again in a moment.`
+            `Buddy could not answer via SWA (HTTP ${res.status || "?"}). Try again in a moment.`
           );
-          if (els.askStatus) els.askStatus.textContent = externalBuddy ? "Function App" : "SWA";
+          if (els.askStatus) els.askStatus.textContent = "SWA";
         } else {
           pushAssistant(
             data.error ||
@@ -4634,14 +4675,10 @@
 
       // Prepare may short-circuit (instant/light shouldn't hit prepare often; if pack failed, fall back)
       if (!res.ok && !data.contextId && !data.answer) {
-        const where = externalBuddy ? "Function App" : "SWA (45s gateway)";
         pushAssistant(
-          `Buddy could not finish prepare via ${where} (HTTP ${res.status || "?"}). ` +
-            (externalBuddy
-              ? "Try again in a moment — if this keeps happening, check Function App logs."
-              : "SWA still has a ~45s limit. On the Static Web App add BUDDY_API_BASE + BUDDY_SESSION_SECRET (same secret as the Function App), save, hard-refresh, and retry.")
+          `Buddy could not finish prepare via SWA (HTTP ${res.status || "?"}). Try again in a moment.`
         );
-        if (els.askStatus) els.askStatus.textContent = externalBuddy ? "Function App" : "SWA";
+        if (els.askStatus) els.askStatus.textContent = "SWA";
       } else if (data.answer && !data.contextId) {
         // Unexpected full answer from prepare path
         applyAskResult(data, res);
@@ -4664,19 +4701,7 @@
         } else if (data.answer) {
           applyAskResult(data, res);
           if (data.visualPending && data.contextId) {
-            if (els.askStatus) els.askStatus.textContent = "Deep · building leave-behind…";
-            const vis = await buddyHop(
-              "/api/ask",
-              {
-                askPhase: "visual",
-                contextId: data.contextId,
-                priorAnswer: data.answer
-              },
-              "Deep · building leave-behind…"
-            );
-            if (vis.data.answer || vis.data.htmlReport || (vis.data.exports && vis.data.exports.length)) {
-              applyAskResult(vis.data, vis.res, { softLabel: "" });
-            }
+            await runVisualHop(data.contextId, data.answer);
           }
         } else if (!res.ok) {
           pushAssistant(
@@ -4711,24 +4736,8 @@
           );
         } else if (data.answer) {
           applyAskResult(data, res);
-          // Hop 3: optional visual / HTML leave-behind
           if ((wantVisual || data.visualPending) && (data.contextId || contextId)) {
-            const vis = await buddyHop(
-              "/api/ask",
-              {
-                askPhase: "visual",
-                contextId: data.contextId || contextId,
-                priorAnswer: data.answer
-              },
-              "Deep · building leave-behind…"
-            );
-            if (vis.data.answer || vis.data.htmlReport || (vis.data.exports && vis.data.exports.length)) {
-              applyAskResult(vis.data, vis.res);
-            } else if (!vis.res.ok) {
-              pushAssistant(
-                "Chat answer is ready — the leave-behind visual timed out. Ask me to “spin up the visual” again."
-              );
-            }
+            await runVisualHop(data.contextId || contextId, data.answer);
           }
         } else if (!res.ok) {
           pushAssistant(
@@ -9589,6 +9598,9 @@
     if (els.buddyClose) els.buddyClose.addEventListener("click", closeBuddy);
     if (els.buddyDocClose) els.buddyDocClose.addEventListener("click", closeBuddyDocPane);
     if (els.buddyDocPopout) els.buddyDocPopout.addEventListener("click", popOutBuddyDoc);
+    if (els.buddyDocDownload) {
+      els.buddyDocDownload.addEventListener("click", () => downloadBuddyDocHtml());
+    }
     if (els.btnAsk) els.btnAsk.addEventListener("click", sendAsk);
     if (els.btnAskStop) {
       els.btnAskStop.addEventListener("click", () => {

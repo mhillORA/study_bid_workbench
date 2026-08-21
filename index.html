@@ -112,18 +112,20 @@
           </div>
         </div>
       </div>
-      <aside class="buddy-doc-pane" id="buddyDocPane" hidden aria-label="Document preview">
+      <aside class="buddy-doc-pane" id="buddyDocPane" hidden aria-label="Buddy canvas">
         <header class="buddy-doc-head">
           <div>
-            <strong id="buddyDocTitle">Document</strong>
-            <p class="muted" id="buddyDocHint">Tell Buddy what to change — same chat updates this pane</p>
+            <span class="buddy-doc-kicker">Canvas</span>
+            <strong id="buddyDocTitle">Leave-behind</strong>
+            <p class="muted" id="buddyDocHint">Ask Buddy to revise — updates stay in this pane</p>
           </div>
           <div class="buddy-doc-actions">
+            <button type="button" class="btn btn-ghost" id="buddyDocDownload" title="Download HTML">Download HTML</button>
             <button type="button" class="btn btn-ghost buddy-icon-btn" id="buddyDocPopout" title="Open in new tab">↗</button>
-            <button type="button" class="btn btn-ghost buddy-icon-btn" id="buddyDocClose" title="Hide document" aria-label="Hide document">×</button>
+            <button type="button" class="btn btn-ghost buddy-icon-btn" id="buddyDocClose" title="Hide canvas" aria-label="Hide canvas">×</button>
           </div>
         </header>
-        <iframe id="buddyDocFrame" class="buddy-doc-frame" title="Buddy document preview" sandbox="allow-same-origin allow-scripts allow-popups allow-forms"></iframe>
+        <iframe id="buddyDocFrame" class="buddy-doc-frame" title="Buddy canvas" sandbox="allow-same-origin allow-scripts allow-popups allow-forms"></iframe>
       </aside>
     </div>
     <div class="buddy-resize-handle" id="buddyResizeHandle" title="Drag to resize" aria-hidden="true"></div>
@@ -169,6 +171,6 @@
   <script src="js/data.js"></script>
   <script src="js/intelCountries.js"></script>
   <script src="js/formulas.js"></script>
-  <script src="js/app.js?v=20260821-swa"></script>
+  <script src="js/app.js?v=20260821-canvas"></script>
 </body>
 </html>

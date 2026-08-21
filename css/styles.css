@@ -963,6 +963,10 @@ html.buddy-workspace .buddy-body {
   grid-template-rows: 1fr;
 }
 
+html.buddy-workspace .buddy-body.has-doc {
+  grid-template-columns: minmax(280px, 0.85fr) minmax(0, 1.35fr);
+}
+
 html.buddy-workspace .buddy-body:not(.has-doc) {
   grid-template-columns: 1fr;
 }
@@ -1028,6 +1032,15 @@ html.buddy-workspace .buddy-doc-pane[hidden] {
   flex-shrink: 0;
 }
 
+.buddy-doc-kicker {
+  display: block;
+  font-size: 0.68rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted, #6b7280);
+  margin-bottom: 0.1rem;
+}
+
 .buddy-doc-head .muted {
   margin: 0.15rem 0 0;
   font-size: 0.78rem;
@@ -1035,8 +1048,11 @@ html.buddy-workspace .buddy-doc-pane[hidden] {
 
 .buddy-doc-actions {
   display: flex;
-  gap: 0.25rem;
+  gap: 0.35rem;
   flex-shrink: 0;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 
 .buddy-doc-frame {

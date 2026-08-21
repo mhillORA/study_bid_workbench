@@ -83,3 +83,15 @@ jobs:
           slot-name: Production
           package: deploy
           sku: flexconsumption
+
+      # Platform CORS (not BUDDY_CORS_ORIGIN alone) — needed so browser can call visual hops.
+      - name: Allow SWA origin CORS
+        uses: azure/CLI@v2
+        with:
+          inlineScript: |
+            set -e
+            ORIGIN="https://white-river-0de1aed0f.7.azurestaticapps.net"
+            RG=$(az functionapp list --query "[?name=='ora-buddy-api'].resourceGroup | [0]" -o tsv)
+            echo "Resource group: ${RG}"
+            az functionapp cors add -g "$RG" -n ora-buddy-api --allowed-origins "$ORIGIN" || true
+            az functionapp cors show -g "$RG" -n ora-buddy-api -o table
