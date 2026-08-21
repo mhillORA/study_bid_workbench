@@ -88,7 +88,7 @@ function hasCopilotKey(request) {
 
 /**
  * Scheduler uses Copilot key; SWA UI uses signed-in principal;
- * browser → Function App uses Buddy session JWT (VEEVA_*/SF_* live on ora-buddy-api).
+ * browser → Function App uses Buddy session JWT (VEEVA_* / SF_* live on ora-buddy-api).
  */
 function authorizeCtgovSync(request) {
   if (hasCopilotKey(request)) return { ok: true, via: "copilot_key" };
