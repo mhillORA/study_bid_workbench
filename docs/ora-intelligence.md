@@ -1,64 +1,69 @@
 # Ora Clinical Intelligence → Cosmos (`bd-budgets`)
 
-Source pack: `Claude AI Model Files for Matt.zip` (July 2026) + ClinicalTrials.gov feed.  
+**Live-first (Aug 2026):** Veeva Vault API → `ora_veeva_*` (+ fact projections `source=veeva_live`); Salesforce JWT → `ora_sf_*`.  
+Bootstrap Excel/JSON packs (Claude model files, Mike Watson Site Level, `sf_db_full.json`) are **legacy** once live sync has rows — keep their analytical rules in Ora context files; do not treat the files as the warehouse.  
+See [`docs/live-data-pivot.md`](live-data-pivot.md).
+
 App uses **Cosmos SQL/Core API** (`@azure/cosmos` / `azure.cosmos`), not Mongo API.
 
 ## What this is for (use cases)
 
 | Ask | Source |
 |-----|--------|
-| How fast does Ora enroll in Dry Eye? Typical PSM? | `ora_fact_study` / `ora_fact_site` |
+| How fast does Ora enroll in Dry Eye? Typical PSM? | `ora_fact_study` / `ora_fact_site` (prefer `source=veeva_live`) or `ora_veeva_*` |
 | What is industry doing? Competing / recruiting trials? | `ora_trialhub_trials` + `ora_ctgov_trials` |
-| Sites / feasibility **in a country or region** | same tables + `country` / `region` filter |
-| Is this sponsor in Salesforce? Who owns them? | `ora_sponsor_crosswalk` |
-| Startup timelines (Selected→Contract→IRB→SIV→FSI) | `ora_veeva_milestones` |
+| Sites / feasibility **in a country or region** | same + `country` / `region` filter |
+| Is this sponsor in Salesforce? Who owns them? | `ora_sponsor_crosswalk` + `ora_sf_account` |
+| Startup timelines (Selected→Contract→IRB→SIV→FSI) | `ora_veeva_milestones` prefer `source=veeva_live` |
+| Pipeline / opps / ARs | `ora_sf_*` |
 | Budget dollars / uploaded bids | `studies` / `versions` (portfolio — not these tables) |
 
-UI tab: **Ora Clinical Intelligence** — indication + **country/region** inputs, CT.gov **Sync now** button.  
-Buddy gets the same pack via `/api/ask` (`intelligenceHint` / on-screen pack).
+UI: **Data Status** — Ingest Veeva / Ingest SF / TrialHub upload / CT.gov sync.  
+Buddy gets packs via `/api/ask`.
 
 ## Containers
 
-| Container | Partition key | Docs | Purpose |
-|-----------|---------------|------|---------|
-| `ora_fact_site` | `/country` | 3,613 | Site-level enrollment / `site_psm` (Veeva) |
-| `ora_fact_study` | `/indication` | 249 | Ora study rollups / `psm` |
-| `ora_trialhub_trials` | `/indication` | 1,682 | Industry trials / NCT / `psm_common` |
-| `ora_sponsor_crosswalk` | `/crosswalk_status` | 642 | TrialHub sponsor → Salesforce |
-| `ora_site_alias_table` | `/country` | 46 | Site name variants → canonical |
-| `ora_veeva_milestones` | `/country` | 1,920 | Wide org×study Veeva milestones + gaps (Mike Watson Site Level 10Jul2026) |
-| `ora_ctgov_trials` | `/oraIndication` | growing | ClinicalTrials.gov ophthalmology (app delta) |
-| `syncState` | `/id` | cursors | Watermarks (e.g. `ctgov_ophthalmology`) |
+### Live mirrors
 
-Every reference document gets:
+| Container | Partition | Purpose |
+|-----------|-----------|---------|
+| `ora_veeva_study` | `/id` | Vault `study__v` |
+| `ora_veeva_site` | `/id` | Vault `site__v` |
+| `ora_veeva_organization` | `/id` | Vault `organization__v` |
+| `ora_veeva_sponsor` | `/id` | Vault `sponsor__c` |
+| `ora_veeva_milestone` | `/id` | Vault `milestone__v` |
+| `ora_sf_account` | `/id` | SF Account |
+| `ora_sf_opportunity` | `/id` | SF Opportunity |
+| `ora_sf_activity_request` | `/id` | SF Activity_Request__c |
 
-- `docType` — same as container id  
-- `dataset` — `ora_clinical_intelligence` or `clinicaltrials_gov`  
-- `schemaVersion` — `1`  
-- `importedAt` — ISO timestamp  
+### Buddy / bridge packs
 
-Null partition values are written as `"_unknown"`.
-
-## Field renames (crosswalk)
-
-| Source JSON | Cosmos field |
-|-------------|--------------|
-| `trialhub/veeva_sponsor` | `trialhub_veeva_sponsor` |
-| `sf_account_(inactive)` | `sf_account_inactive` |
-| `reason_/_notes` | `reason_notes` |
-| `create_in_sf?` | `create_in_sf` |
+| Container | Partition key | Purpose |
+|-----------|---------------|---------|
+| `ora_fact_site` | `/country` | Site enrollment / PSM (live projection or legacy Excel) |
+| `ora_fact_study` | `/indication` | Study rollups / PSM |
+| `ora_trialhub_trials` | `/indication` | Industry trials / NCT |
+| `ora_sponsor_crosswalk` | `/crosswalk_status` | TrialHub/Veeva sponsor → Salesforce |
+| `ora_site_alias_table` | `/country` | Site name variants → canonical |
+| `ora_veeva_milestones` | `/country` | Wide org×study startup gaps |
+| `ora_ctgov_trials` | `/oraIndication` | ClinicalTrials.gov ophthalmology |
+| `syncState` | `/id` | Sync watermarks |
 
 ## Joins
 
 ```
 ora_fact_site.study_name  →  ora_fact_study.study_number
+ora_veeva_site.study__v   →  ora_veeva_study.id
 ora_fact_site.org_clean   ←  ora_site_alias_table.canonical_name
-ora_trialhub_trials.sponsor  →  ora_sponsor_crosswalk.trialhub_veeva_sponsor  →  sf_account_id
+ora_veeva_study.sponsor__c → ora_veeva_sponsor → ora_sponsor_crosswalk → sf_account_id / ora_sf_account
 ora_ctgov_trials.nct  ↔  ora_trialhub_trials.nct
-indication / oraIndication (aliases) links Ora ↔ TrialHub ↔ CT.gov ↔ budget studies.indication
 ```
 
-## Load (Veeva + TrialHub pack)
+## Load
+
+**Preferred:** Data Status → **Ingest Veeva (full)** / **Ingest SF + crosswalk** (Function App `ora-buddy-api` App Settings).
+
+Legacy Excel bootstrap (only if live empty):
 
 ```bash
 python ingest/cosmos_setup.py
@@ -66,38 +71,14 @@ python ingest/load_ora_intelligence.py --dry-run
 python ingest/load_ora_intelligence.py
 ```
 
-Default data dir: `_inbox/claude-model-files/` (gitignored).
-
-## ClinicalTrials.gov sync (Mon–Fri ~9AM Eastern)
-
-**Preferred:** app API uses SWA App Settings (Cosmos already there).
-
-```http
-POST /api/ctgov/sync
-Header: x-copilot-key: <COPILOT_ASK_KEY>
-Body: {"full":false}
-```
-
-- Signed-in users can click **Sync CT.gov now** on the Intelligence tab (no key in browser).
-- GitHub Actions `.github/workflows/ctgov-daily-delta.yml` only **HTTP-pings** that endpoint (cron `0 13 * * 1-5` ≈ 9AM EDT). Needs Actions secret `COPILOT_ASK_KEY` (same as SWA). Optional `CTGOV_SYNC_URL`.
-
-**Full 10y backfill** (too large for the web API):
-
-```bash
-python ingest/pull_ctgov_ophthalmology.py --full
-```
-
-API: https://clinicaltrials.gov/data-api/api (`/api/v2/studies`).
-
 ## Buddy
 
-`/api/ask` attaches `context.intelligence` for feasibility / PSM / TrialHub / CT.gov / site / NCT / region asks (or when the open study has an indication, or the Intelligence tab hint/pack is sent). System prompt always includes the intelligence data catalog (even if `BUDDY_SYSTEM_PROMPT` is overridden in SWA).
-
-Model = SWA `AZURE_OPENAI_DEPLOYMENT` (Foundry **deployment name**). `/api/health` → `llm.deployment` shows what is live.
+`/api/ask` attaches `context.intelligence` for feasibility / PSM / TrialHub / CT.gov / site / NCT / region / SF / Veeva asks. System prompt includes the intelligence catalog + Ora master context (live-first bridge).
 
 ## Data quality
 
-- High null rates on PSM / enrollment are expected Veeva gaps — never treat null as 0.  
-- Prefer `fsi_trust = "high"` for site PSM.  
-- TrialHub `psm_common` has extreme outliers — use **median**, not mean.  
+- High null rates on PSM / enrollment are expected Veeva gaps — never treat null as 0.
+- Prefer `fsi_trust = "high"` for site PSM when present.
+- TrialHub `psm_common` has extreme outliers — use **median**, not mean.
 - Indication vocab differs across Ora / TrialHub / CT.gov — alias map in `api/src/intelligence.js`.
+- Milestone gaps: prefer 2023+; exclude outliers >730 days; median not mean.

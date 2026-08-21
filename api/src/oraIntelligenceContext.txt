@@ -71,35 +71,41 @@ Ora Clinical Intelligence Platform — Context Document v2
 
  3. Data Architecture & File Reference
 
- Primary Data Collections (Veeva CTM)
+ LIVE PIVOT (Aug 2026 — highest priority): Veeva and Salesforce answers come from Cosmos live sync
+ (ora_veeva_* / ora_sf_* / source=veeva_live fact projections), NOT from re-querying Excel/JSON files.
+ Keep all analytical rules below (PSM, indication coding, crosswalk sheets, milestone gaps). The file
+ paths were the bootstrap; once Ingest Veeva / Ingest SF has rows, those files are obsolete as data
+ sources. Crosswalk + site alias tables remain in Cosmos and still define name matching to SF.
 
- Collection Records Key Fields File Path
+ Primary Data Collections (Veeva CTM) — legacy file map → live containers
 
- ora_fact_site 3,613 Organization, Principal Investigator, Location City, country, indication, Study Name, total_enrolled, total_screened, site_psm, screen_fail_rate, activation_date, first_patient_date, last_patient_date, site_enroll_months /mnt/user-data/outputs/harmonized_clinical_data.xlsx → sheet: fact_site
+ Collection Records Key Fields Legacy file → Live
 
- ora_fact_study 249 Study Number, Study Name, sponsor, indication, phase, n_sites, n_enrolled, study_psm, start_date, primary_completion_date /mnt/user-data/outputs/harmonized_clinical_data.xlsx → sheet: fact_study
+ ora_fact_site 3,613 (legacy) / growing live Organization, PI, city, country, indication, Study Name, enrolled, site_psm, … harmonized_clinical_data.xlsx fact_site → ora_veeva_site + projected ora_fact_site (source=veeva_live)
 
- ora_trialhub_trials 1,682 Trial Id (link), Sponsor, Lead Sponsor Type, Indications, Status, Phase, Countries, Patients, Planned Number Of Sites, Treatment Duration (months), Actual LPI Date, Drop Rate /mnt/user-data/uploads/Eye_Diseases_-_Trials_Search_Data_-_June_18__2026.xlsx → sheet: Trials (Detailed)
+ ora_fact_study 249 (legacy) / growing live Study Number, sponsor, indication, phase, PSM, … harmonized → ora_veeva_study + projected ora_fact_study (source=veeva_live)
 
- ora_sponsor_crosswalk 642 sponsor_name, sf_account_name, sf_account_id, sf_tier, sf_owner, match_type, sheet_number /mnt/user-data/outputs/Sponsor_Crosswalk_MASTER.xlsx · backing CSV: crosswalk_master.csv
+ ora_trialhub_trials live upload TrialHub fields TrialHub xlsx upload (still file→Cosmos; not Vault)
 
- ora_site_alias_table 48 alias_name, canonical_name, pi_name, city, state, notes /mnt/user-data/outputs/Site_Alias_Table.xlsx
+ ora_sponsor_crosswalk 642 sponsor_name → SF id/owner/tier Sponsor_Crosswalk_MASTER.xlsx (still authoritative for name bridge until refreshed)
 
- Salesforce (Live via MCP)
+ ora_site_alias_table ~46 alias → canonical Site_Alias_Table.xlsx
 
- Connected to Salesforce Prod via MCP. Use soqlQuery , find , getRelatedRecords , createSobjectRecord , and updateSobjectRecord tools. Key objects: Account, Opportunity, Task. Authoritative SF account list: sf_db_full.json (1,910 active accounts at last export).
+ Salesforce — LIVE via Cosmos ora_sf_* (Ingest SF). Do NOT require sf_db_full.json or MCP when counts > 0.
+ Key objects synced: Account, Opportunity, Activity_Request__c. Crosswalk still bridges TrialHub/Veeva names → sf_account_id.
 
  Milestone Data
 
- Raw Veeva milestone data: /mnt/user-data/uploads/Mike_Watson_Claude_Report__Site_Level__10Jul2026.xlsx . Contains Selected date, Contract date, IRB/EC dates, SIV date, FSI date per site. Use 2023+ data only (older records have high rate of data entry errors). Exclude outliers >730 days in any milestone gap as data entry errors — use median not mean.
+ Prefer ora_veeva_milestone (Vault milestone__v) / ora_veeva_milestones source=veeva_live.
+ Legacy: Mike_Watson_Claude_Report__Site_Level__10Jul2026.xlsx. Use 2023+; exclude gap outliers >730d; median not mean.
 
  TrialHub Scope Note
 
  TrialHub data is scoped to Ora's active indications and is NOT comprehensive for all geographies. German dry eye device trials, for example, do not appear in TrialHub — CT.gov is the primary source for OUS device trial site intelligence. TrialHub's country frequency counts are reliable for US-anchored indications (nAMD, glaucoma, DR) but less so for EU-only programmes.
 
- Cosmos DB (Pilot — In Progress)
+ Cosmos DB — LIVE
 
- Azure Cosmos DB data warehouse is being loaded by the internal data engineer. Five collection exports have been prepared. Once live, Claude will interface with Cosmos via natural language chat. Until then, all queries run against the Excel harmonized files.
+ Azure Cosmos (bd-budgets) is live for Buddy. Ignore older \"pilot / query Excel until Cosmos\" notes.
 
  4. Core Analytical Methodology — Patient Site Month (PSM)
 
@@ -673,7 +679,7 @@ print(sites_found[['Organization', 'Location City', 'country']].drop_duplicates(
 
  Authoritative SF Account List
 
- The file sf_db_full.json contains 1,910 active Salesforce accounts and is the authoritative reference for crosswalk matching. When determining whether a sponsor is in SF, always check against this file first before querying live Salesforce. The live MCP connection provides real-time data for account details (owner, tier, opportunities) once the account ID is known.
+ When ora_sf_account is populated (Ingest SF), that Cosmos mirror is authoritative for account / owner / tier / pipeline. The file sf_db_full.json was a bootstrap export only — do not require it or Salesforce MCP when Cosmos SF counts > 0. Crosswalk (ora_sponsor_crosswalk) still maps TrialHub/Veeva sponsor names to sf_account_id.
 
  Match Hierarchy (in order of preference)
 
@@ -877,7 +883,7 @@ createSobjectRecord('Task', {
 
  SF Account Not Found — Standard Response
 
- When a sponsor name is not found in Salesforce via the MCP connector, try: (1) exact name search, (2) partial/normalized name search (strip legal suffixes), (3) check sf_db_full.json for similar names, (4) check crosswalk Sheet 4 (No SF Match). If still not found after all four steps, confirm to the user that the sponsor does not appear to have an SF account and recommend creating one if they want to pursue the relationship. Known example: "Inflammasome Therapeutics Inc" — owned by Mike Watson in SF, Type: Business Development.
+ When a sponsor name is not found in Salesforce (ora_sf_account / salesforceData / crosswalk), try: (1) exact name, (2) partial/normalized name (strip legal suffixes), (3) CONTAINS on ora_sf_account.Name, (4) crosswalk status no_sf_match. If still not found, say the sponsor does not appear to have an SF account and recommend creating one if they want to pursue the relationship. Known example: "Inflammasome Therapeutics Inc" — owned by Mike Watson in SF, Type: Business Development. Do not ask for sf_db_full.json or MCP when Cosmos SF is live.
 
  19. CT.gov & TrialHub Search Methodology
 

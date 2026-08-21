@@ -151,13 +151,20 @@ function loadOraIntelligenceContext() {
   const priorRaw = readContextFile("oraIntelligenceContext.txt");
 
   const liveBridge = [
-    "PLATFORM LIVE STATE (highest priority — overrides outdated architecture notes below):",
-    "- Azure Cosmos DB (bd-budgets) IS LIVE for Buddy: ora_fact_site, ora_fact_study, ora_trialhub_trials,",
-    "  ora_sponsor_crosswalk, ora_site_alias_table, ora_veeva_milestones, ora_ctgov_trials, buddy_live_context.",
-    "- Prefer Context JSON from this ask (portfolio / intelligence / buddyLiveContext) over stale",
-    "  \"Cosmos pilot not yet live\" wording in older playbook text.",
-    "- TrialHub grows via app upload (Intelligence → Upload TrialHub export); upsert by NCT, no duplicates.",
+    "PLATFORM LIVE STATE (highest priority — overrides outdated Excel/file architecture notes below):",
+    "- Azure Cosmos DB (bd-budgets) IS LIVE for Buddy.",
+    "- VEEVA: Prefer live Vault mirrors ora_veeva_study / ora_veeva_site / ora_veeva_organization /",
+    "  ora_veeva_sponsor / ora_veeva_milestone (Ingest Veeva on Data Status). Fact packs ora_fact_study /",
+    "  ora_fact_site / ora_veeva_milestones with source=veeva_live are projections from Vault — prefer those",
+    "  over Mike Watson / Claude Excel imports (harmonized_clinical_data.xlsx, Site Level 10Jul2026).",
+    "  Excel/JSON Veeva files are LEGACY once live sync has rows — keep their RULES (PSM nulls, indication",
+    "  coding, joins, milestone gap logic) but do NOT ask users to re-upload those files for answers.",
+    "- SALESFORCE: Prefer ora_sf_account / ora_sf_opportunity / ora_sf_activity_request + intelligence.salesforceData.",
+    "  sf_db_full.json and offline SF exports are LEGACY — do not ask for CSV/MCP when Cosmos SF counts > 0.",
+    "  Crosswalk (ora_sponsor_crosswalk) still maps TrialHub/Veeva sponsor names → sf_account_id / owner / tier.",
+    "- TrialHub grows via app upload (Intelligence → Upload TrialHub export); upsert by NCT.",
     "- CT.gov ophthalmology feed syncs via /api/ctgov/sync.",
+    "- Prefer Context JSON from this ask over stale \"Cosmos pilot\" / \"query Excel\" wording in older playbook text.",
     "- Buddy Context tab appends SME notes live without redeploy."
   ].join("\n");
 

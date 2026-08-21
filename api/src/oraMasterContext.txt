@@ -27,15 +27,42 @@ OraNet = Ora's proprietary site network database. Harmonized into Veeva CTM.
 SECTION 2 — DATA ARCHITECTURE
 ================================================================
 
-PRIMARY FILES:
+*** LIVE DATA PIVOT (Aug 2026 — overrides file-based paths below) ***
+Source of truth for Ora Veeva clinical data is now Vault API → Cosmos:
+  ora_veeva_study ← study__v
+  ora_veeva_site ← site__v
+  ora_veeva_organization ← organization__v
+  ora_veeva_sponsor ← sponsor__c
+  ora_veeva_milestone ← milestone__v
+Projected Buddy packs (source=veeva_live): ora_fact_study, ora_fact_site, ora_veeva_milestones.
+Source of truth for Salesforce CRM is JWT sync → Cosmos:
+  ora_sf_account, ora_sf_opportunity, ora_sf_activity_request
+The Excel/JSON files listed under PRIMARY FILES were the bootstrap for rules, joins, and quality
+caveats. KEEP those analytical rules. STOP treating the files as the queryable warehouse once
+live containers have rows. Do not ask users to re-upload Mike Watson Site Level / harmonized
+Excel / sf_db_full.json for answers Buddy can take from Cosmos.
+
+JOIN MAP (file era → live era — same logic):
+  fact_site.Study Name / study_name → fact_study.Study Number / study_number
+    live: ora_veeva_site.study_name__v / study__v → ora_veeva_study.name__v / id
+  fact_site.Organization / org_clean ← site_alias.canonical_name
+    live: ora_veeva_site.organization__clin → ora_veeva_organization.name__v (+ alias table)
+  fact_study.sponsor → crosswalk.trialhub_veeva_sponsor → sf_account_id
+    live: ora_veeva_study.sponsor__c → ora_veeva_sponsor.name__v → crosswalk / ora_sf_account
+  Milestone gaps Selected→Contract→IRB→SIV→FSI from Site Level Excel
+    live: ora_veeva_milestone (site-level) projected into ora_veeva_milestones wide gaps
+  SF account/owner/tier/pipeline: was sf_db_full.json + MCP
+    live: ora_sf_* + salesforceData pack; crosswalk still for name bridging
+
+PRIMARY FILES (LEGACY BOOTSTRAP — historical reference only):
 - harmonized_clinical_data.xlsx → sheet: fact_site (3,613 records)
 - harmonized_clinical_data.xlsx → sheet: fact_study (249 records)
 - Eye_Diseases_-_Trials_Search_Data_-_June_18__2026.xlsx → sheet: Trials (Detailed) [TrialHub, 1,682 records]
 - Sponsor_Crosswalk_MASTER.xlsx (4 sheets, 642 sponsors)
 - crosswalk_master.csv (backing CSV for crosswalk)
 - Site_Alias_Table.xlsx (48 aliases)
-- sf_db_full.json (1,910 active Salesforce accounts — authoritative SF reference)
-- Mike_Watson_Claude_Report__Site_Level__10Jul2026.xlsx (raw Veeva milestone data)
+- sf_db_full.json (1,910 active Salesforce accounts — superseded by ora_sf_account when synced)
+- Mike_Watson_Claude_Report__Site_Level__10Jul2026.xlsx (raw Veeva milestone data — superseded by milestone__v)
 
 FACT_SITE KEY FIELDS:
 Organization, Principal Investigator, Location City, country, indication, Study Name,
