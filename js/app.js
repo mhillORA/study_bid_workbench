@@ -5323,7 +5323,7 @@
         state.intelligence.sfSyncMessage = data.error || `Salesforce sync failed (${res.status})`;
       } else if (data.skipped) {
         state.intelligence.sfSyncMessage =
-          data.error || data.reason || "Salesforce not configured yet (set SF_* App Settings).";
+          data.error || data.reason || "Salesforce not configured on ora-buddy-api (SF_CLIENT_ID + SF_USERNAME).";
       } else {
         const parts = [
           `Salesforce: ${data.updated ?? 0} updated · ${data.unchanged ?? 0} unchanged · ${

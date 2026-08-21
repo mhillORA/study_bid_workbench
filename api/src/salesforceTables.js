@@ -106,7 +106,7 @@ async function runSalesforceTablesSync(getDb, opts = {}) {
       ok: false,
       skipped: true,
       reason: "not_configured",
-      error: "Salesforce App Settings missing (SF_CLIENT_ID, SF_USERNAME). JWT key via App Settings or Data Status upload.",
+      error: "Salesforce not configured on ora-buddy-api — set SF_CLIENT_ID + SF_USERNAME (and JWT key B64 or Data Status key upload).",
       elapsedMs: 0
     };
   }

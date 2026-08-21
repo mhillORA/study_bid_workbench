@@ -397,7 +397,7 @@ async function getSalesforceAccessToken(cfg = salesforceConfig(), getDb = null) 
     const missing = [];
     if (!cfg.clientId) missing.push("SF_CLIENT_ID");
     if (!cfg.username) missing.push("SF_USERNAME");
-    throw new Error(`Salesforce not configured — set ${missing.join(", ")} in SWA App Settings`);
+    throw new Error(`Salesforce not configured — set ${missing.join(", ")} on ora-buddy-api Application settings`);
   }
   const assertion = await buildJwtAssertion(cfg, getDb);
   const body = new URLSearchParams({

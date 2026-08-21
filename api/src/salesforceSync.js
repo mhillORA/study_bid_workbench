@@ -97,7 +97,7 @@ async function runSalesforceCrosswalkSync(getDb, opts = {}) {
       skipped: true,
       reason: "not_configured",
       error:
-        "Salesforce App Settings missing (SF_CLIENT_ID, SF_USERNAME, SF_JWT_PRIVATE_KEY). See docs/salesforce-azure-sync.md",
+        "Salesforce not configured on ora-buddy-api — set SF_CLIENT_ID + SF_USERNAME (JWT key via App Setting or Data Status upload).",
       elapsedMs: Date.now() - started
     };
   }
