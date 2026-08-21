@@ -114,12 +114,18 @@ If the tables sync hits the time budget, click **Sync SF tables** again — it c
 
 | Error | Fix |
 |---|---|
-| `invalid_grant` / user hasn’t approved | Admin approved + pre-authorize integration user |
-| `invalid_client_id` | Wrong `SF_CLIENT_ID` |
+| **`invalid_app_access` / `user is not admin approved to access this app`** | **This is the current live failure (key is OK).** In Salesforce on **Ora Intelligence Tool**: (1) Policies → Permitted Users = **Admin approved users are pre-authorized**; (2) **Manage** → **Profiles** and/or **Permission Sets** → add the profile/perm set of the user in `SF_USERNAME`; (3) that user must be active + **API Enabled**. Then **Sync Salesforce now** again. |
+| `invalid_grant` / user hasn’t approved | Same pre-authorize path as above |
+| `invalid_client_id` | Wrong `SF_CLIENT_ID` (Consumer Key) |
 | `user hasn’t approved this consumer` | Same as pre-authorize |
 | Certificate / JWT signature | Key must match the cert uploaded to SF |
 | `routines::unsupported` / DECODER | Azure mangled the PEM. Set `SF_JWT_PRIVATE_KEY_B64` to base64 of the whole `.key` file (see above). Do not paste the `.crt`. |
 | Tier field invalid | Confirm `SF_TIER_FIELD=Tier__c` |
+
+### Prove auth after the SF fix
+
+Data Status → **Sync Salesforce now**.  
+`GET /api/salesforce/sync` should show `lastSuccessfulSync` set and `lastError` cleared. Then **Sync SF tables** for Buddy pipeline data.
 
 ## Security
 
