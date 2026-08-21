@@ -4,7 +4,7 @@ I (the agent) do **not** log into your Azure. You do Portal steps. Code is in th
 
 Function App URL you created:
 
-`https://ora-buddy-api-hrdbgqh9cvaub5ft.easus2-01.azurewebsites.net`
+`https://ora-buddy-api-hrdbgqh9cvaub5ft.eastus2-01.azurewebsites.net`
 
 ---
 
@@ -31,56 +31,47 @@ Add:
 
 | Name | Value |
 |---|---|
-| `BUDDY_API_BASE` | `https://ora-buddy-api-hrdbgqh9cvaub5ft.easus2-01.azurewebsites.net` |
+| `BUDDY_API_BASE` | `https://ora-buddy-api-hrdbgqh9cvaub5ft.eastus2-01.azurewebsites.net` |
 | `BUDDY_SESSION_SECRET` | **Exact same** string as on the Function App |
 
-### Make a secret (Windows PowerShell)
+### Make a secret (bash / Git Bash / WSL / macOS)
 
-```powershell
-[Convert]::ToBase64String((1..48 | ForEach-Object { Get-Random -Maximum 256 }) -as [byte[]])
+```bash
+openssl rand -base64 48
 ```
 
 Copy the output → paste as `BUDDY_SESSION_SECRET` on **both** SWA and Function App → Save / restart both if prompted.
 
 ---
 
-## Part 2 — Deploy API code to the Function App
+## Part 2 — Deploy API code (browser only — any computer)
 
-SWA still deploys `api/` for the **website’s** `/api` (session mint + fallback).  
-The **Function App** needs the same `api/` folder published separately.
+You do **not** need `func` or this PC. Use Azure’s Deployment Center (it talks to GitHub for you).
 
-### Option A — VS Code (easiest for many people)
+### Recommended: Deployment Center → GitHub
 
-1. Install [Azure Functions extension](https://marketplace.visualstudio.com/items?itemName=ms-azuretools.vscode-azurefunctions)  
-2. Open this repo in VS Code  
-3. Open the `api` folder as the Functions project  
-4. Azure sidebar → Function App `ora-buddy-api-…` → **Deploy to Function App…**  
-5. Confirm  
+1. Azure Portal → Function App `ora-buddy-api-…`  
+2. Left menu → **Deployment Center**  
+3. **Settings** tab → Source: **GitHub**  
+4. **Authorize** / sign in as the GitHub user that owns `mhillORA/study_bid_workbench`  
+5. Pick:
+   - Organization: `mhillORA`  
+   - Repository: `study_bid_workbench`  
+   - Branch: `main`  
+6. If it asks for app location / package path, use: `api`  
+7. **Save**  
+8. Open the **Logs** tab — wait until a deploy finishes green  
 
-### Option B — Azure Portal zip (no VS Code)
+Azure may add a GitHub Actions workflow itself (that’s fine).
 
-1. On your PC, zip the contents of the `api` folder **including** `package.json`, `host.json`, `src/`, `node_modules` after `npm install`  
-   Or from repo root in PowerShell:
+### Prove it
 
-```powershell
-cd api
-npm ci
-cd ..
-Compress-Archive -Path api\* -DestinationPath buddy-api-deploy.zip -Force
-```
+`https://ora-buddy-api-hrdbgqh9cvaub5ft.eastus2-01.azurewebsites.net/api/health`  
+→ `"ok": true`
 
-2. Function App → **Deployment Center** or **Advanced Tools (Kudu)** → zip deploy  
-   (Portal UI varies; “Zip push deploy” / Deployment Center → zip is fine.)
+### Optional later: secret-based Actions workflow
 
-### Option C — Azure CLI (if you use `az` locally)
-
-```powershell
-cd api
-npm ci
-func azure functionapp publish ora-buddy-api-hrdbgqh9cvaub5ft --javascript
-```
-
-(Function App **name** may be `ora-buddy-api-hrdbgqh9cvaub5ft` — check Overview → Name.)
+There is a local commit with `.github/workflows/buddy-function-app.yml` if you prefer a publish-profile secret. Push needs a GitHub token with the `workflow` scope (`gh auth refresh -s workflow` then `git push`). Deployment Center above is simpler and doesn’t need that.
 
 ---
 
@@ -88,7 +79,7 @@ func azure functionapp publish ora-buddy-api-hrdbgqh9cvaub5ft --javascript
 
 Browser:
 
-`https://ora-buddy-api-hrdbgqh9cvaub5ft.easus2-01.azurewebsites.net/api/health`
+`https://ora-buddy-api-hrdbgqh9cvaub5ft.eastus2-01.azurewebsites.net/api/health`
 
 Expect JSON with `"ok": true`.
 
@@ -105,7 +96,7 @@ Do this **after** health works.
 | Field | Value |
 |---|---|
 | Name | `buddy-warmup` |
-| URL | `https://ora-buddy-api-hrdbgqh9cvaub5ft.easus2-01.azurewebsites.net/api/health` |
+| URL | `https://ora-buddy-api-hrdbgqh9cvaub5ft.eastus2-01.azurewebsites.net/api/health` |
 | Frequency | **5 minutes** |
 | Locations | **1** (e.g. East US) |
 | Success | HTTP 200 |
