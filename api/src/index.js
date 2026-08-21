@@ -1520,6 +1520,7 @@ app.http("salesforceSync", {
         const result = await runSalesforceTablesSync(getDb, {
           dryRun: false,
           only,
+          thenCrosswalk: body.thenCrosswalk !== false && request.query.get("thenCrosswalk") !== "false",
           triggeredBy
         });
         // Always 200 with structured results — UI shows per-object errors (avoid bare 500).

@@ -519,6 +519,7 @@ const LEAN_OBJECT_FIELDS = {
   Account: [
     "Id",
     "Name",
+    "Owner.Name",
     "OwnerId",
     "Type",
     "Industry",
@@ -536,6 +537,7 @@ const LEAN_OBJECT_FIELDS = {
     "StageName",
     "Amount",
     "CloseDate",
+    "Owner.Name",
     "OwnerId",
     "Type",
     "IsClosed",

@@ -5188,13 +5188,13 @@
     if (state.intelligence.sfTablesBusy) return;
     state.intelligence.sfTablesBusy = true;
     state.intelligence.sfTablesMessage =
-      "Pulling Salesforce tables (Accounts, Opps, ARs, services) into Cosmos — may take a minute…";
+      "Ingesting Accounts, Opportunities, Activity Requests → then refreshing crosswalk…";
     refreshDataStatusIfOpen();
     try {
       const res = await fetch(apiUrl("/api/salesforce/sync"), {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tables: true })
+        body: JSON.stringify({ tables: true, thenCrosswalk: true })
       });
       const data = await res.json().catch(() => ({}));
       if (data.skipped) {
@@ -5207,7 +5207,7 @@
             : `${r.object}: ${r.upserted ?? 0}/${r.fetched ?? 0}`
         );
         state.intelligence.sfTablesMessage = [
-          "SF tables sync issues",
+          "SF ingest issues",
           bits.join(" · ") || data.error || `HTTP ${res.status}`,
           data.elapsedMs ? `${Math.round(data.elapsedMs / 1000)}s` : ""
         ]
@@ -5215,11 +5215,18 @@
           .join(" · ");
       } else {
         const bits = (data.results || []).map(
-          (r) => `${r.object}: ${r.upserted ?? 0}/${r.fetched ?? 0}${r.error ? " ERR" : ""}`
+          (r) => `${r.object}: ${r.upserted ?? 0}/${r.fetched ?? 0}`
         );
+        const cw = data.crosswalk;
+        const cwBit = cw
+          ? cw.ok === false
+            ? `crosswalk ERR ${cw.error || ""}`
+            : `crosswalk ${cw.updated ?? 0} updated (${cw.accountSource || "—"})`
+          : "";
         state.intelligence.sfTablesMessage = [
-          data.incomplete ? "Partial (re-run to continue)" : "SF tables synced",
+          data.incomplete ? "Partial ingest (re-run)" : "SF ingest OK",
           bits.join(" · "),
+          cwBit,
           data.elapsedMs ? `${Math.round(data.elapsedMs / 1000)}s` : ""
         ]
           .filter(Boolean)
@@ -5580,7 +5587,7 @@
           .join(" · ")}${
           sfTablesLast ? ` · last ${escapeHtml(String(sfTablesLast))}` : ""
         }</p>`
-      : `<p class="muted" style="margin:0.35rem 0 0;">SF tables not synced yet — use <strong>Sync SF tables</strong> after App Settings are set.</p>`;
+      : `<p class="muted" style="margin:0.35rem 0 0;">SF tables empty — use <strong>Ingest SF + crosswalk</strong> (Account, Opportunity, Activity_Request__c → then crosswalk).</p>`;
 
     if (!h) {
       return `<div class="card wide"><h3>Data status</h3><p class="muted">Loading intelligence containers…</p></div>`;

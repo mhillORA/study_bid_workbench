@@ -48,10 +48,40 @@ async function writeSyncState(database, patch) {
 function collectCrosswalkIds(rows) {
   const ids = [];
   for (const r of rows) {
-    const id = String(r.sf_account_id || r.sfAccountId || "").trim();
-    if (id) ids.push(id);
+    const id = String(r.sf_account_id || "").trim();
+    if (id && /^[a-zA-Z0-9]{15}([a-zA-Z0-9]{3})?$/.test(id)) ids.push(id);
   }
   return [...new Set(ids)];
+}
+
+/** Prefer Accounts already ingested into ora_sf_account (full table sync). */
+async function loadAccountsMapFromCosmos(database, accountIds) {
+  const byId = new Map();
+  if (!accountIds.length) return byId;
+  try {
+    const rows = await queryAll(
+      database.container("ora_sf_account"),
+      `SELECT c.id, c.Name, c.OwnerName, c.OwnerId, c.Tier__c, c.Ora_Grouping__c
+       FROM c WHERE c.docType = @t`,
+      [{ name: "@t", value: "ora_sf_account" }]
+    );
+    const want = new Set(accountIds);
+    for (const r of rows) {
+      const id = String(r.id || "").trim();
+      if (!id || !want.has(id)) continue;
+      byId.set(id, {
+        id,
+        name: r.Name || null,
+        ownerName: r.OwnerName || null,
+        tier: r.Tier__c != null ? r.Tier__c : null,
+        oraGrouping: r.Ora_Grouping__c != null ? r.Ora_Grouping__c : null,
+        isDeleted: false
+      });
+    }
+  } catch (_) {
+    /* container empty / missing */
+  }
+  return byId;
 }
 
 /**
@@ -103,43 +133,89 @@ async function runSalesforceCrosswalkSync(getDb, opts = {}) {
     };
   }
 
-  let session;
-  try {
-    session = await getSalesforceAccessToken(cfg, getDb);
-  } catch (err) {
-    await writeSyncState(database, {
-      lastRunAt: new Date().toISOString(),
-      mode: "crosswalk_refresh",
-      triggeredBy: opts.triggeredBy || "api",
-      lastError: String(err.message || err),
-      note: "Token/auth failed — check JWT cert, Consumer Key, username, pre-authorization."
-    });
-    return {
-      ok: false,
-      error: String(err.message || err),
-      elapsedMs: Date.now() - started
-    };
+  let session = null;
+  let accounts;
+  let accountSource = "cosmos";
+
+  // 1) Prefer full Account ingest in ora_sf_account
+  accounts = await loadAccountsMapFromCosmos(database, accountIds);
+  const missing = accountIds.filter((id) => !accounts.has(id));
+
+  // 2) Fill gaps (or all) via live SOQL if needed
+  if (missing.length) {
+    try {
+      session = await getSalesforceAccessToken(cfg, getDb);
+    } catch (err) {
+      if (!accounts.size) {
+        await writeSyncState(database, {
+          lastRunAt: new Date().toISOString(),
+          mode: "crosswalk_refresh",
+          triggeredBy: opts.triggeredBy || "api",
+          lastError: String(err.message || err),
+          note: "Token/auth failed — check JWT cert, Consumer Key, username, pre-authorization."
+        });
+        return {
+          ok: false,
+          error: String(err.message || err),
+          elapsedMs: Date.now() - started
+        };
+      }
+      accountSource = `cosmos_partial_missing_${missing.length}`;
+    }
   }
 
-  let accounts;
-  try {
-    accounts = await fetchAccountsByIds(session, accountIds, {
-      tierField: cfg.tierField,
-      groupingField: cfg.groupingField
-    });
-  } catch (err) {
-    await writeSyncState(database, {
-      lastRunAt: new Date().toISOString(),
-      mode: "crosswalk_refresh",
-      triggeredBy: opts.triggeredBy || "api",
-      lastError: String(err.message || err),
-      note: "SOQL failed — check Account read permission and SF_TIER_FIELD."
-    });
-    return {
-      ok: false,
-      error: String(err.message || err),
-      elapsedMs: Date.now() - started
-    };
+  if (session && missing.length) {
+    try {
+      const live = await fetchAccountsByIds(session, missing, {
+        tierField: cfg.tierField,
+        groupingField: cfg.groupingField
+      });
+      for (const [id, acct] of live) accounts.set(id, acct);
+      accountSource = accounts.size > accountIds.length - missing.length ? "cosmos+live" : "live";
+    } catch (err) {
+      if (!accounts.size) {
+        await writeSyncState(database, {
+          lastRunAt: new Date().toISOString(),
+          mode: "crosswalk_refresh",
+          triggeredBy: opts.triggeredBy || "api",
+          lastError: String(err.message || err),
+          note: "SOQL failed — check Account read permission and SF_TIER_FIELD."
+        });
+        return {
+          ok: false,
+          error: String(err.message || err),
+          elapsedMs: Date.now() - started
+        };
+      }
+      accountSource = `cosmos_live_error`;
+    }
+  } else if (!missing.length) {
+    accountSource = "cosmos";
+  }
+
+  // Need token only when we had zero cosmos hits and somehow skipped above
+  if (!accounts.size && !session) {
+    try {
+      session = await getSalesforceAccessToken(cfg, getDb);
+      accounts = await fetchAccountsByIds(session, accountIds, {
+        tierField: cfg.tierField,
+        groupingField: cfg.groupingField
+      });
+      accountSource = "live";
+    } catch (err) {
+      await writeSyncState(database, {
+        lastRunAt: new Date().toISOString(),
+        mode: "crosswalk_refresh",
+        triggeredBy: opts.triggeredBy || "api",
+        lastError: String(err.message || err),
+        note: "Token/SOQL failed — ingest SF tables first, or check Account read permission."
+      });
+      return {
+        ok: false,
+        error: String(err.message || err),
+        elapsedMs: Date.now() - started
+      };
+    }
   }
 
   const nowIso = new Date().toISOString();
@@ -153,7 +229,7 @@ async function runSalesforceCrosswalkSync(getDb, opts = {}) {
     const sfId = String(row.sf_account_id || "").trim();
     if (!sfId) continue;
     const acct = accounts.get(sfId);
-    const next = { ...row, sfLastSyncedAt: nowIso, sfSyncSource: "salesforce_jwt" };
+    const next = { ...row, sfLastSyncedAt: nowIso, sfSyncSource: accountSource };
 
     if (!acct || acct.isDeleted) {
       missingInSf += 1;
@@ -184,7 +260,7 @@ async function runSalesforceCrosswalkSync(getDb, opts = {}) {
       // Still stamp last sync time lightly
       if (!dryRun) {
         try {
-          await container.items.upsert({ ...row, sfLastSyncedAt: nowIso, sfSyncSource: "salesforce_jwt" });
+          await container.items.upsert({ ...row, sfLastSyncedAt: nowIso, sfSyncSource: accountSource });
         } catch (err) {
           errors.push(`${row.id || sfId}: ${err.message || err}`);
         }
@@ -209,6 +285,7 @@ async function runSalesforceCrosswalkSync(getDb, opts = {}) {
     unchanged,
     missingInSf,
     errorCount: errors.length,
+    accountSource,
     tierField: cfg.tierField,
     groupingField: cfg.groupingField,
     dryRun
@@ -224,13 +301,14 @@ async function runSalesforceCrosswalkSync(getDb, opts = {}) {
     lastDeltas: deltas,
     lastError: errors.length ? errors.slice(0, 5).join(" | ") : null,
     note: ok
-      ? `Refreshed owner/tier/grouping/name from Salesforce (${cfg.tierField}, ${cfg.groupingField}). crosswalk_status unchanged (Cosmos PK).`
+      ? `Refreshed owner/tier/grouping/name (source=${accountSource}; ${cfg.tierField}, ${cfg.groupingField}). crosswalk_status unchanged.`
       : "Completed with upsert errors — see lastError."
   });
 
   return {
     ok,
     mode: dryRun ? "crosswalk_refresh_dry_run" : "crosswalk_refresh",
+    accountSource,
     ...deltas,
     errors: errors.slice(0, 10),
     elapsedMs: Date.now() - started,

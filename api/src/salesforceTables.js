@@ -200,10 +200,10 @@ async function runSalesforceTablesSync(getDb, opts = {}) {
     lastDeltas: { results, incomplete },
     note: incomplete
       ? "Time budget hit — re-run Sync SF tables to continue remaining objects."
-      : "Full Salesforce table sync into ora_sf_* containers."
+      : "Full Salesforce table sync into ora_sf_* (Account, Opportunity, Activity_Request__c)."
   });
 
-  return {
+  const out = {
     ok: !hardFail,
     mode: "tables",
     incomplete,
@@ -211,6 +211,22 @@ async function runSalesforceTablesSync(getDb, opts = {}) {
     elapsedMs: Date.now() - started,
     sync: state
   };
+
+  // Default: after ingest, refresh sponsor crosswalk from Cosmos Accounts
+  const thenCrosswalk = opts.thenCrosswalk !== false;
+  if (thenCrosswalk && !hardFail) {
+    try {
+      const { runSalesforceCrosswalkSync } = require("./salesforceSync");
+      out.crosswalk = await runSalesforceCrosswalkSync(getDb, {
+        triggeredBy: opts.triggeredBy || "api",
+        dryRun: false
+      });
+    } catch (err) {
+      out.crosswalk = { ok: false, error: String(err.message || err) };
+    }
+  }
+
+  return out;
 }
 
 async function countDocType(database, containerId, docType) {
