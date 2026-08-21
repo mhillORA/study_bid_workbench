@@ -1,0 +1,1048 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Oculgen STAT — Internal Activation & Site Intelligence Brief</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+:root{--nv:#04003B;--n8:#2a2760;--n6:#5c5a87;--tl:#0d9488;--td:#0a7a70;--tc:#5eead4;--tb:#f0fdfa;
+--sk:#0284c7;--am:#f59e0b;--cr:#dc2626;--sl:#64748b;--sll:#94a3b8;--bd:#e2e8f0;--bg:#fafbfc;--cd:#fff}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Inter',-apple-system,sans-serif;background:var(--bg);color:var(--nv);-webkit-font-smoothing:antialiased}
+.hd{background:linear-gradient(135deg,var(--nv),var(--n8));color:#fff;padding:44px 48px 36px}
+.ey{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:1.5px;color:var(--tc);margin-bottom:10px}
+.hd h1{font-size:24px;font-weight:800;letter-spacing:-.5px;margin-bottom:8px}
+.hd-sub{font-size:13px;color:rgba(255,255,255,.5);line-height:1.6}
+.hd-badge{display:inline-block;padding:4px 12px;border-radius:4px;font-size:11px;font-weight:700;background:rgba(220,38,38,.2);color:#fca5a5;margin-top:12px;text-transform:uppercase;letter-spacing:.5px}
+
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));background:var(--cd);border-bottom:1px solid var(--bd)}
+.stat{padding:18px 20px;border-right:1px solid var(--bd)}.stat:last-child{border-right:none}
+.sv{font-size:28px;font-weight:800;line-height:1}.sv.t{color:var(--tl)}.sv.r{color:var(--cr)}
+.sl{font-size:9px;color:var(--sl);text-transform:uppercase;letter-spacing:.5px;margin-top:3px;font-weight:600}
+
+.sc{padding:28px 48px}.st{font-size:17px;font-weight:700;margin-bottom:4px}
+.sd{font-size:13px;color:var(--sl);margin-bottom:18px;max-width:720px;line-height:1.6}
+.cb{background:var(--cd);border:1px solid var(--bd);border-radius:8px;padding:24px;margin-bottom:24px}
+.cb canvas{max-height:380px}
+
+.tk{background:var(--tb);border:1px solid #99f6e4;border-radius:8px;padding:20px 24px;margin:0 48px 24px}
+.tk h3{font-size:14px;font-weight:700;color:var(--td);margin-bottom:8px}
+.tk-list{font-size:13px;color:var(--n6);line-height:1.8}
+.tk-list strong{color:var(--nv)}
+
+.dt{width:100%;border-collapse:collapse;font-size:11px}
+.dt th{text-align:left;padding:8px 8px;font-size:9px;font-weight:700;color:var(--sl);text-transform:uppercase;letter-spacing:.5px;border-bottom:2px solid var(--bd);background:var(--bg);position:sticky;top:0;z-index:10}
+.dt td{padding:6px 8px;border-bottom:1px solid #f1f5f9}.dt tr:nth-child(even){background:#f8fafc}
+.dt tr:hover{background:var(--tb)}
+
+.sp-fast{background:#dcfce7;color:#166534;padding:2px 8px;border-radius:3px;font-weight:700;font-size:11px}
+.sp-good{background:#dbeafe;color:#1e40af;padding:2px 8px;border-radius:3px;font-weight:700;font-size:11px}
+.sp-mod{background:#fef3c7;color:#92400e;padding:2px 8px;border-radius:3px;font-weight:600;font-size:11px}
+.sp-slow{background:#fee2e2;color:#991b1b;padding:2px 8px;border-radius:3px;font-weight:600;font-size:11px}
+
+.ex-elite{background:var(--nv);color:#fff;padding:2px 8px;border-radius:3px;font-weight:700;font-size:11px}
+.ex-high{background:var(--tl);color:#fff;padding:2px 8px;border-radius:3px;font-weight:700;font-size:11px}
+.ex-mod{background:var(--sk);color:#fff;padding:2px 8px;border-radius:3px;font-weight:600;font-size:11px}
+.ex-low{background:var(--sll);color:#fff;padding:2px 8px;border-radius:3px;font-weight:600;font-size:11px}
+
+.psm-box{display:grid;grid-template-columns:repeat(3,1fr);gap:0;text-align:center;background:var(--cd);border:1px solid var(--bd);border-radius:8px;overflow:hidden;margin-bottom:24px}
+.psm-col{padding:24px 16px;border-right:1px solid var(--bd)}.psm-col:last-child{border-right:none}
+.psm-label{font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px}
+.psm-val{font-size:36px;font-weight:800;line-height:1}
+.psm-note{font-size:11px;color:var(--sll);margin-top:4px}
+
+.dn{font-size:11px;color:var(--sll);margin-top:10px;font-style:italic}
+.ft{padding:20px 48px;background:var(--nv);color:rgba(255,255,255,.3);font-size:11px}
+@media(max-width:900px){.hd,.sc,.tk{padding-left:16px;padding-right:16px}.stats{grid-template-columns:repeat(3,1fr)}}
+</style></head><body>
+
+<div class="hd">
+<div class="ey">Ora Clinical Intelligence &bull; Internal Brief</div>
+<h1>OCUL101-002 (STAT) — Site Activation & Recruitment Intelligence</h1>
+<div class="hd-sub">Internal data package supporting Ora's bid for Oculgen's treatment-naïve nAMD specialty CRO engagement. Grounded in Ora's Veeva CTM data: 24 US retinal studies, 622 SIV milestones, 177 unique US retina sites.</div>
+<div class="hd-badge">Internal — Do Not Share</div>
+</div>
+
+<div class="stats">
+<div class="stat"><div class="sv t">177</div><div class="sl">US Retina Sites in Network</div></div>
+<div class="stat"><div class="sv t">102</div><div class="sl">Multi-Study Experienced</div></div>
+<div class="stat"><div class="sv t">72</div><div class="sl">3+ Retina Studies</div></div>
+<div class="stat"><div class="sv">622</div><div class="sl">SIV Milestones Analyzed</div></div>
+<div class="stat"><div class="sv">24</div><div class="sl">US Retina Programs</div></div>
+<div class="stat"><div class="sv">4</div><div class="sl">Fast Activators (≤M1.5)</div></div>
+<div class="stat"><div class="sv">8</div><div class="sl">Elite (4+ studies, ≤M3)</div></div>
+</div>
+
+<div class="tk">
+<h3>Key Takeaways for Oculgen</h3>
+<div class="tk-list">
+<strong>1. We can move fast — our data proves it.</strong> Across 24 US retina programs, Ora has activated up to 22 sites in a single month (Study 2) and routinely achieves 10–18 SIVs per month during peak activation. 30 sites in 30 days is not realistic — but <strong>30 sites in 8–10 weeks is achievable</strong> based on our historical performance.<br><br>
+<strong>2. We already know these sites.</strong> Ora has 177 US retina sites with SIV history, 102 with multi-study experience. We can <strong>waive formal feasibility questionnaires</strong> for sites where we have historical activation, enrollment, and screen-fail data — replacing a 3–4 week process with site confirmation during qualification. This is a structural time advantage no other bidder can offer.<br><br>
+<strong>3. PSM reality: 0.52 exceeds all published treatment-naïve nAMD benchmarks.</strong> Across 10 landmark trials (TENAYA, HAWK, PULSAR, VIEW, etc.), the US enrollment-weighted average is <strong>0.32 p/s/m</strong>. The industry maximum is 0.42 (Sandoz biosimilar). No treatment-naïve nAMD trial has achieved 0.52 at the US level. We recommend planning at <strong>0.32–0.35 as the expected case</strong>, with 0.42–0.50 as an aggressive upside achievable with Ora's full recruitment toolkit.<br><br>
+<strong>4. Site selection is the enrollment strategy.</strong> By selecting the 30 fastest-activating, highest-enrolling sites from our 177-site network — weighted by activation speed, enrollment history, and competitive landscape — we structurally de-risk both start-up and recruitment.
+</div></div>
+
+<div class="sc">
+<div class="st">Historical SIV Velocity — US Retina Programs</div>
+<div class="sd">New SIVs per month across Ora's US retina Phase 1b–3 programs (studies with ≥10 US sites). Month 1 = first SIV in each program. Peak activation months highlighted.</div>
+<div class="cb">
+<canvas id="velChart" style="max-height:400px"></canvas>
+<div class="dn">Source: Ora Veeva CTM, SIV Actual Finish Date. US sites only.</div>
+</div></div>
+
+
+<div class="sc">
+<div class="st">Site Activation Timeline — Milestone Chain Analysis</div>
+<div class="sd">End-to-end site activation measured from Site Selected to SIV Actual Finish, across 308 US retina activation records (nAMD, GA, DME, RVO) in the Ora Veeva database. Ora will target 25th percentile performance (top quartile) for the Oculgen engagement by selecting proven fast-activating sites and applying skip-feasibility efficiencies.</div>
+
+<div class="cb">
+<div style="display:grid;grid-template-columns:repeat(5,1fr);gap:0;text-align:center;margin-bottom:24px">
+<div style="padding:20px 12px;border-right:1px solid var(--bd)">
+<div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--sll);margin-bottom:6px">10th Percentile</div>
+<div style="font-size:36px;font-weight:800;color:var(--sll);line-height:1">43d</div>
+<div style="font-size:10px;color:var(--sll);margin-top:2px">1.4 months</div>
+</div>
+<div style="padding:20px 12px;border-right:1px solid var(--bd);background:var(--tb)">
+<div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--td);margin-bottom:6px">25th Percentile ★</div>
+<div style="font-size:36px;font-weight:800;color:var(--tl);line-height:1">63d</div>
+<div style="font-size:10px;color:var(--td);margin-top:2px;font-weight:600">2.1 months — OUR TARGET</div>
+</div>
+<div style="padding:20px 12px;border-right:1px solid var(--bd)">
+<div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--sl);margin-bottom:6px">Median (50th)</div>
+<div style="font-size:36px;font-weight:800;color:var(--sl);line-height:1">95d</div>
+<div style="font-size:10px;color:var(--sll);margin-top:2px">3.1 months</div>
+</div>
+<div style="padding:20px 12px;border-right:1px solid var(--bd)">
+<div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--am);margin-bottom:6px">75th Percentile</div>
+<div style="font-size:36px;font-weight:800;color:var(--am);line-height:1">149d</div>
+<div style="font-size:10px;color:var(--sll);margin-top:2px">4.9 months</div>
+</div>
+<div style="padding:20px 12px">
+<div style="font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.5px;color:var(--cr);margin-bottom:6px">Sample Size</div>
+<div style="font-size:36px;font-weight:800;color:var(--nv);line-height:1">308</div>
+<div style="font-size:10px;color:var(--sll);margin-top:2px">US retina activations</div>
+</div>
+</div>
+
+<div style="font-size:13px;font-weight:600;color:var(--nv);margin-bottom:12px">Milestone Step Durations (25th percentile)</div>
+<div style="display:flex;align-items:center;gap:0;margin-bottom:20px;flex-wrap:wrap">
+<div style="background:var(--nv);color:#fff;padding:12px 16px;border-radius:6px 0 0 6px;text-align:center;min-width:120px">
+<div style="font-size:9px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;opacity:.6">Site Selected</div>
+</div>
+<div style="background:var(--tb);border:1px solid #99f6e4;padding:8px 14px;text-align:center;min-width:90px">
+<div style="font-size:18px;font-weight:800;color:var(--tl)">35d</div>
+<div style="font-size:9px;color:var(--sl);font-weight:500">→ Contract</div>
+<div style="font-size:8px;color:var(--td);font-weight:600">~20d w/ skip-feas</div>
+</div>
+<div style="background:#f0f9ff;border:1px solid #bae6fd;padding:8px 14px;text-align:center;min-width:90px">
+<div style="font-size:18px;font-weight:800;color:var(--sk)">8d</div>
+<div style="font-size:9px;color:var(--sl);font-weight:500">→ IRB Approval</div>
+<div style="font-size:8px;color:var(--sk)">central IRB</div>
+</div>
+<div style="background:#faf5ff;border:1px solid #e9d5ff;padding:8px 14px;text-align:center;min-width:90px">
+<div style="font-size:18px;font-weight:800;color:#8b5cf6">17d</div>
+<div style="font-size:9px;color:var(--sl);font-weight:500">→ SIV</div>
+<div style="font-size:8px;color:#8b5cf6">scheduling</div>
+</div>
+<div style="background:#fff7ed;border:1px solid #fed7aa;padding:8px 14px;text-align:center;min-width:90px">
+<div style="font-size:18px;font-weight:800;color:var(--am)">28d</div>
+<div style="font-size:9px;color:var(--sl);font-weight:500">→ First Patient</div>
+<div style="font-size:8px;color:var(--am)">recruitment</div>
+</div>
+<div style="background:var(--tl);color:#fff;padding:12px 16px;border-radius:0 6px 6px 0;text-align:center;min-width:120px">
+<div style="font-size:9px;font-weight:600;text-transform:uppercase;letter-spacing:.5px;opacity:.7">FSFV</div>
+<div style="font-size:14px;font-weight:800;margin-top:2px">~88 days total</div>
+</div>
+</div>
+<div class="dn">25th percentile = top quartile performance. n=308 for total chain, n=123–278 per step. US retina studies only (nAMD, GA, DME, RVO). Skip-feasibility estimate based on eliminating 2-week questionnaire cycle by using historical site data for selection.</div>
+</div></div>
+
+<div class="sc">
+<div class="st">Repeat Top-Quartile Retina Performers</div>
+<div class="sd">US retina sites that have activated in the top quartile (≤63 days Site Selected → SIV) across two or more Ora retina studies. These are the sites to prioritize for Oculgen's 30-site nAMD network.</div>
+<div class="cb" style="overflow-x:auto">
+<table class="dt" style="min-width:750px">
+<thead><tr>
+<th>Organization</th>
+<th style="text-align:center">Times in P25</th>
+<th style="text-align:center">Avg Activation (days)</th>
+<th style="text-align:center">Best (days)</th>
+<th>Retina Studies</th>
+</tr></thead>
+<tbody>
+<tr><td style="font-weight:600">Texas Retina Associates</td><td style="text-align:center"><span class="ex-mod">4</span></td><td style="text-align:center;font-weight:700;color:var(--tl)">38</td><td style="text-align:center">20</td><td style="font-size:10px;color:var(--sl)">SPIAM-301, ANX007-GA, BP44241, EBS-105</td></tr>
+<tr><td style="font-weight:600">Bay Area Retina Associates</td><td style="text-align:center"><span class="ex-mod">4</span></td><td style="text-align:center;font-weight:700;color:var(--tl)">48</td><td style="text-align:center">22</td><td style="font-size:10px;color:var(--sl)">SPIAM-301, BP43445, BP43464, ANX007-GA</td></tr>
+<tr><td style="font-weight:600">Mississippi Retina Associates</td><td style="text-align:center"><span class="ex-mod">3</span></td><td style="text-align:center;font-weight:700;color:var(--tl)">33</td><td style="text-align:center">14</td><td style="font-size:10px;color:var(--sl)">HLX04-wAMD, BP44241, BP44175</td></tr>
+<tr><td style="font-weight:600">Cumberland Valley Retina Consultants</td><td style="text-align:center"><span class="ex-mod">3</span></td><td style="text-align:center;font-weight:700;color:var(--tl)">37</td><td style="text-align:center">19</td><td style="font-size:10px;color:var(--sl)">ANX007-GA, HLX04-wAMD, EBS-105</td></tr>
+<tr><td style="font-weight:600">Verum Research LLC</td><td style="text-align:center"><span class="ex-mod">3</span></td><td style="text-align:center;font-weight:700;color:var(--tl)">47</td><td style="text-align:center">29</td><td style="font-size:10px;color:var(--sl)">ANX007-GA, BP43445, BP43464</td></tr>
+<tr><td style="font-weight:600">Austin Clinical Research LLC</td><td style="text-align:center"><span class="ex-mod">3</span></td><td style="text-align:center;font-weight:700;color:var(--tl)">47</td><td style="text-align:center">41</td><td style="font-size:10px;color:var(--sl)">4D-150, EBS-105, BP43445</td></tr>
+<tr><td style="font-weight:600">Sierra Eye Associates</td><td style="text-align:center"><span class="ex-low">2</span></td><td style="text-align:center;font-weight:700;color:var(--tl)">34</td><td style="text-align:center">10</td><td style="font-size:10px;color:var(--sl)">4D-150-C001, ANX007-GA</td></tr>
+<tr><td style="font-weight:600">Ophthalmic Consultants of Boston</td><td style="text-align:center"><span class="ex-low">2</span></td><td style="text-align:center;font-weight:700;color:var(--tl)">28</td><td style="text-align:center">18</td><td style="font-size:10px;color:var(--sl)">4D-150-C001, ANX007-GA</td></tr>
+<tr><td style="font-weight:600">Florida Eye Associates</td><td style="text-align:center"><span class="ex-low">2</span></td><td style="text-align:center;font-weight:700;color:var(--tl)">38</td><td style="text-align:center">20</td><td style="font-size:10px;color:var(--sl)">4D-150-C001, BP43464</td></tr>
+<tr><td style="font-weight:600">Retina Vitreous Associates of Florida</td><td style="text-align:center"><span class="ex-low">2</span></td><td style="text-align:center;font-weight:700;color:var(--tl)">38</td><td style="text-align:center">20</td><td style="font-size:10px;color:var(--sl)">4D-150-C002, BP43445</td></tr>
+<tr><td style="font-weight:600">Retina Specialty Institute</td><td style="text-align:center"><span class="ex-low">2</span></td><td style="text-align:center;font-weight:700;color:var(--tl)">36</td><td style="text-align:center">21</td><td style="font-size:10px;color:var(--sl)">4D-150-C002, ANX007-GA</td></tr>
+<tr><td style="font-weight:600">Retina Consultants of San Diego</td><td style="text-align:center"><span class="ex-low">2</span></td><td style="text-align:center;font-weight:700;color:var(--tl)">44</td><td style="text-align:center">26</td><td style="font-size:10px;color:var(--sl)">EBS-105, ANX007-GA</td></tr>
+<tr><td style="font-weight:600">Erie Retina Research LLC</td><td style="text-align:center"><span class="ex-low">2</span></td><td style="text-align:center;font-weight:700;color:var(--tl)">44</td><td style="text-align:center">32</td><td style="font-size:10px;color:var(--sl)">4D-150-C002, BP44241</td></tr>
+</tbody>
+</table>
+<div class="dn">Top quartile = Site Selected → SIV in ≤63 days. US retina sites only (nAMD, GA, DME, RVO studies). Only sites with 2+ top-quartile activations shown.</div>
+</div></div>
+
+<div class="tk">
+<h3>The 25th Percentile Argument for Oculgen</h3>
+<div class="tk-list">
+<strong style="color:var(--cr)">Oculgen asks:</strong> 30 sites activated in 30 days.<br>
+<strong style="color:var(--nv)">Our data says:</strong> Our 10th percentile for retina is 43 days — achievable for individual sites, but not for 30 simultaneously. Our 25th percentile for retina is 63 days (2.1 months) — and we can commit to this across all 30 sites by applying three structural advantages:<br><br>
+
+<strong>1. Skip-Feasibility (saves ~14 days).</strong> For sites in our network, we already have historical activation timelines, enrollment performance, screen-fail rates, PI capability, and IRB pathway data. Instead of issuing 30 cold feasibility questionnaires (2–3 week cycle), we pre-populate site dossiers from our database and have each site confirm/update during a qualification call. This compresses Site Selected → Contract from 35 days (retina P25) to an estimated 20 days.<br><br>
+
+<strong>2. Site selection bias toward repeat fast performers.</strong> The table above shows 13 retina sites that have activated in the top quartile across multiple Ora retina studies (nAMD, GA, DME, RVO) — these aren't outliers, they're operationally fast organizations. We select 30 sites from this pool plus our broader retina network, weighted by activation speed, nAMD enrollment history, and competitive landscape.<br><br>
+
+<strong>3. Parallel activation tracks.</strong> Central IRB (7 days at P25), contracts initiated concurrently with feasibility confirmation (not sequentially), and SIV scheduling locked during IRB review.<br><br>
+
+<strong style="color:var(--tl)">Projected result:</strong> 25th percentile with skip-feasibility efficiencies = <strong>~48–55 days to SIV</strong> for the fastest wave, <strong>~63 days for the full 30-site network</strong>. First SIVs by Week 6–7, all 30 by Week 9–11. This is 1.5× faster than retina industry median and gets Oculgen operational before October 2026.
+</div></div>
+
+<div class="sc">
+<div class="st">Study-Level Activation Summary</div>
+<div class="sd">Activation metrics for each US retina program with ≥6 sites. Avg Sites/Month = total sites ÷ activation window. Peak = highest single-month SIV volume.</div>
+<div class="cb" style="overflow-x:auto">
+<table class="dt" style="min-width:900px">
+<thead><tr>
+<th>Study</th><th>Indication</th><th>Phase</th><th style="text-align:center">US Sites</th><th style="text-align:center">Window (mo)</th>
+<th style="text-align:center">Avg Sites/Mo</th><th style="text-align:center">Peak Month</th><th style="text-align:center">Peak At</th>
+<th style="text-align:center">First 3 Mo</th><th style="text-align:center">Avg PSM</th>
+</tr></thead>
+<tbody><tr>
+        <td style="font-weight:600">BP44175</td>
+        <td>Diabetic Macular Edema (DME)</td>
+        <td style="text-align:center">Phase I</td>
+        <td style="text-align:center;font-weight:700">63</td>
+        <td style="text-align:center">35.5</td>
+        <td style="text-align:center;font-weight:600">1.8</td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">9</td>
+        <td style="text-align:center">Month 2</td>
+        <td style="text-align:center">16 (25%)</td>
+        <td style="text-align:center">0.143</td>
+    </tr>
+<tr>
+        <td style="font-weight:600">BP43445</td>
+        <td>Diabetic Macular Edema (DME)</td>
+        <td style="text-align:center">Phase II</td>
+        <td style="text-align:center;font-weight:700">57</td>
+        <td style="text-align:center">17.8</td>
+        <td style="text-align:center;font-weight:600">3.2</td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">18</td>
+        <td style="text-align:center">Month 4</td>
+        <td style="text-align:center">9 (16%)</td>
+        <td style="text-align:center">0.282</td>
+    </tr>
+<tr>
+        <td style="font-weight:600">ANX007-GA-01</td>
+        <td>Geographic Atrophy</td>
+        <td style="text-align:center">Phase II</td>
+        <td style="text-align:center;font-weight:700">54</td>
+        <td style="text-align:center">11.9</td>
+        <td style="text-align:center;font-weight:600">4.5</td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">12</td>
+        <td style="text-align:center">Month 4</td>
+        <td style="text-align:center">8 (15%)</td>
+        <td style="text-align:center">—</td>
+    </tr>
+<tr>
+        <td style="font-weight:600">BP41321</td>
+        <td>Diabetic Retinopathy</td>
+        <td style="text-align:center">Phase II</td>
+        <td style="text-align:center;font-weight:700">45</td>
+        <td style="text-align:center">21.2</td>
+        <td style="text-align:center;font-weight:600">2.1</td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">9</td>
+        <td style="text-align:center">Month 2</td>
+        <td style="text-align:center">16 (36%)</td>
+        <td style="text-align:center">0.150</td>
+    </tr>
+<tr>
+        <td style="font-weight:600">BP44241</td>
+        <td>Macular Edema due to Retinal Vein O</td>
+        <td style="text-align:center">Phase Ib</td>
+        <td style="text-align:center;font-weight:700">43</td>
+        <td style="text-align:center">10.6</td>
+        <td style="text-align:center;font-weight:600">4.1</td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">15</td>
+        <td style="text-align:center">Month 2</td>
+        <td style="text-align:center">28 (65%)</td>
+        <td style="text-align:center">0.199</td>
+    </tr>
+<tr>
+        <td style="font-weight:600">Stealth SPIAM-202</td>
+        <td>Age-Related Macular Degeneration wi</td>
+        <td style="text-align:center">Phase II</td>
+        <td style="text-align:center;font-weight:700">42</td>
+        <td style="text-align:center">22.3</td>
+        <td style="text-align:center;font-weight:600">1.9</td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">9</td>
+        <td style="text-align:center">Month 5</td>
+        <td style="text-align:center">14 (33%)</td>
+        <td style="text-align:center">0.174</td>
+    </tr>
+<tr>
+        <td style="font-weight:600">SPIAM-301</td>
+        <td>Dry AMD</td>
+        <td style="text-align:center">Phase III</td>
+        <td style="text-align:center;font-weight:700">38</td>
+        <td style="text-align:center">5.5</td>
+        <td style="text-align:center;font-weight:600">6.9</td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">10</td>
+        <td style="text-align:center">Month 2</td>
+        <td style="text-align:center">18 (47%)</td>
+        <td style="text-align:center">—</td>
+    </tr>
+<tr>
+        <td style="font-weight:600">HLX04-O-wAMD</td>
+        <td>Wet AMD</td>
+        <td style="text-align:center">Phase III</td>
+        <td style="text-align:center;font-weight:700">37</td>
+        <td style="text-align:center">19.8</td>
+        <td style="text-align:center;font-weight:600">1.9</td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">10</td>
+        <td style="text-align:center">Month 19</td>
+        <td style="text-align:center">1 (3%)</td>
+        <td style="text-align:center">—</td>
+    </tr>
+<tr>
+        <td style="font-weight:600">KVD001-201</td>
+        <td>Diabetic Macular Edema (DME)</td>
+        <td style="text-align:center">Phase IIa</td>
+        <td style="text-align:center;font-weight:700">34</td>
+        <td style="text-align:center">14.6</td>
+        <td style="text-align:center;font-weight:600">2.3</td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">10</td>
+        <td style="text-align:center">Month 4</td>
+        <td style="text-align:center">11 (32%)</td>
+        <td style="text-align:center">—</td>
+    </tr>
+<tr>
+        <td style="font-weight:600">4DMT/4D-150-C001</td>
+        <td>Wet AMD</td>
+        <td style="text-align:center">Phase I</td>
+        <td style="text-align:center;font-weight:700">26</td>
+        <td style="text-align:center">20.1</td>
+        <td style="text-align:center;font-weight:600">1.3</td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">3</td>
+        <td style="text-align:center">Month 6</td>
+        <td style="text-align:center">4 (15%)</td>
+        <td style="text-align:center">—</td>
+    </tr>
+<tr>
+        <td style="font-weight:600">BP40899</td>
+        <td>Diabetic Macular Edema (DME)</td>
+        <td style="text-align:center">Phase I</td>
+        <td style="text-align:center;font-weight:700">25</td>
+        <td style="text-align:center">38.0</td>
+        <td style="text-align:center;font-weight:600">0.7</td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">8</td>
+        <td style="text-align:center">Month 2</td>
+        <td style="text-align:center">15 (60%)</td>
+        <td style="text-align:center">—</td>
+    </tr>
+<tr>
+        <td style="font-weight:600">COG2201</td>
+        <td>Geographic Atrophy</td>
+        <td style="text-align:center">Phase II</td>
+        <td style="text-align:center;font-weight:700">20</td>
+        <td style="text-align:center">6.0</td>
+        <td style="text-align:center;font-weight:600">3.3</td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">4</td>
+        <td style="text-align:center">Month 2</td>
+        <td style="text-align:center">9 (45%)</td>
+        <td style="text-align:center">—</td>
+    </tr>
+<tr>
+        <td style="font-weight:600">BP43464</td>
+        <td>Diabetic Macular Edema (DME)</td>
+        <td style="text-align:center">Phase II</td>
+        <td style="text-align:center;font-weight:700">17</td>
+        <td style="text-align:center">11.6</td>
+        <td style="text-align:center;font-weight:600">1.5</td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">9</td>
+        <td style="text-align:center">Month 4</td>
+        <td style="text-align:center">5 (29%)</td>
+        <td style="text-align:center">1.051</td>
+    </tr>
+<tr>
+        <td style="font-weight:600">4D-150-C002</td>
+        <td>Diabetic Macular Edema (DME)</td>
+        <td style="text-align:center">Phase II</td>
+        <td style="text-align:center;font-weight:700">15</td>
+        <td style="text-align:center">4.7</td>
+        <td style="text-align:center;font-weight:600">3.2</td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">5</td>
+        <td style="text-align:center">Month 5</td>
+        <td style="text-align:center">7 (47%)</td>
+        <td style="text-align:center">—</td>
+    </tr>
+<tr>
+        <td style="font-weight:600">BI 1497-0001</td>
+        <td>Geographic Atrophy</td>
+        <td style="text-align:center">Phase I</td>
+        <td style="text-align:center;font-weight:700">14</td>
+        <td style="text-align:center">2.8</td>
+        <td style="text-align:center;font-weight:600">5.0</td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">7</td>
+        <td style="text-align:center">Month 1</td>
+        <td style="text-align:center">13 (93%)</td>
+        <td style="text-align:center">0.751</td>
+    </tr>
+<tr>
+        <td style="font-weight:600">BP40923</td>
+        <td>Neovascular (Wet) Age-Related Macul</td>
+        <td style="text-align:center">Phase I</td>
+        <td style="text-align:center;font-weight:700">14</td>
+        <td style="text-align:center">26.6</td>
+        <td style="text-align:center;font-weight:600">0.5</td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">4</td>
+        <td style="text-align:center">Month 1</td>
+        <td style="text-align:center">8 (57%)</td>
+        <td style="text-align:center">0.128</td>
+    </tr>
+<tr>
+        <td style="font-weight:600">ADVM-022-02</td>
+        <td>Neovascular (Wet) Age-Related Macul</td>
+        <td style="text-align:center">Observational</td>
+        <td style="text-align:center;font-weight:700">13</td>
+        <td style="text-align:center">7.6</td>
+        <td style="text-align:center;font-weight:600">1.7</td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">6</td>
+        <td style="text-align:center">Month 8</td>
+        <td style="text-align:center">6 (46%)</td>
+        <td style="text-align:center">—</td>
+    </tr>
+<tr>
+        <td style="font-weight:600">ACDN-01-001</td>
+        <td>Stargardt's Disease</td>
+        <td style="text-align:center">Phase I</td>
+        <td style="text-align:center;font-weight:700">11</td>
+        <td style="text-align:center">26.4</td>
+        <td style="text-align:center;font-weight:600">0.4</td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">3</td>
+        <td style="text-align:center">Month 1</td>
+        <td style="text-align:center">4 (36%)</td>
+        <td style="text-align:center">—</td>
+    </tr>
+<tr>
+        <td style="font-weight:600">ADVM-022-01</td>
+        <td>Neovascular (Wet) Age-Related Macul</td>
+        <td style="text-align:center">Phase I</td>
+        <td style="text-align:center;font-weight:700">11</td>
+        <td style="text-align:center">18.7</td>
+        <td style="text-align:center;font-weight:600">0.6</td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">4</td>
+        <td style="text-align:center">Month 2</td>
+        <td style="text-align:center">6 (55%)</td>
+        <td style="text-align:center">0.146</td>
+    </tr>
+<tr>
+        <td style="font-weight:600">ADVM 022-07 OPTIC-EXT</td>
+        <td>Neovascular (Wet) Age-Related Macul</td>
+        <td style="text-align:center">Phase I</td>
+        <td style="text-align:center;font-weight:700">10</td>
+        <td style="text-align:center">19.2</td>
+        <td style="text-align:center;font-weight:600">0.5</td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">2</td>
+        <td style="text-align:center">Month 8</td>
+        <td style="text-align:center">3 (30%)</td>
+        <td style="text-align:center">—</td>
+    </tr>
+<tr>
+        <td style="font-weight:600">EBS-105-02</td>
+        <td>Diabetic Macular Edema (DME)</td>
+        <td style="text-align:center">Phase Ib</td>
+        <td style="text-align:center;font-weight:700">10</td>
+        <td style="text-align:center">2.7</td>
+        <td style="text-align:center;font-weight:600">3.7</td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">6</td>
+        <td style="text-align:center">Month 1</td>
+        <td style="text-align:center">9 (90%)</td>
+        <td style="text-align:center">—</td>
+    </tr>
+<tr>
+        <td style="font-weight:600">AAV039-101</td>
+        <td>Stargardt's Disease</td>
+        <td style="text-align:center">Phase Ib</td>
+        <td style="text-align:center;font-weight:700">9</td>
+        <td style="text-align:center">9.6</td>
+        <td style="text-align:center;font-weight:600">0.9</td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">2</td>
+        <td style="text-align:center">Month 1</td>
+        <td style="text-align:center">3 (33%)</td>
+        <td style="text-align:center">—</td>
+    </tr>
+<tr>
+        <td style="font-weight:600">GBV-102-003</td>
+        <td>Diabetic Macular Edema (DME)</td>
+        <td style="text-align:center">Phase IIa</td>
+        <td style="text-align:center;font-weight:700">6</td>
+        <td style="text-align:center">0.4</td>
+        <td style="text-align:center;font-weight:600">6.0</td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">6</td>
+        <td style="text-align:center">Month 1</td>
+        <td style="text-align:center">6 (100%)</td>
+        <td style="text-align:center">—</td>
+    </tr>
+</tbody>
+</table></div></div>
+
+<div class="sc">
+<div class="st">PSM Reality Check — nAMD & Retina Benchmarks</div>
+<div class="sd">Oculgen targets 0.52 randomized/site/month for treatment-naïve nAMD. Our historical data provides context for calibrating realistic expectations.</div>
+<div class="psm-box" style="grid-template-columns:repeat(4,1fr)">
+<div class="psm-col"><div class="psm-label" style="color:var(--cr)">Oculgen Target</div><div class="psm-val" style="color:var(--cr)">0.52</div><div class="psm-note">1.6× industry average</div></div>
+<div class="psm-col"><div class="psm-label" style="color:var(--am)">Industry Max (US)</div><div class="psm-val" style="color:var(--am)">0.42</div><div class="psm-note">Sandoz biosimilar Ph3</div></div>
+<div class="psm-col"><div class="psm-label" style="color:var(--tl)">Industry Avg (US)</div><div class="psm-val" style="color:var(--tl)">0.32</div><div class="psm-note">weighted across 10 landmark trials</div></div>
+<div class="psm-col"><div class="psm-label" style="color:var(--sk)">Industry Range</div><div class="psm-val" style="color:var(--sk)">0.26–0.42</div><div class="psm-note">US sites, treatment-naïve Ph2-3</div></div>
+</div>
+
+<div class="cb" style="overflow-x:auto">
+<div style="font-size:13px;font-weight:600;color:var(--nv);margin-bottom:12px">Industry Treatment-Naïve nAMD PSM Benchmarks (10 Landmark Trials)</div>
+<table class="dt" style="min-width:800px">
+<thead><tr>
+<th>Study</th><th>Product</th><th>Phase</th><th style="text-align:center">N</th><th style="text-align:center">Global Sites</th>
+<th style="text-align:center">US Sites</th><th style="text-align:center">Enrollment Window</th><th style="text-align:center">Global PSM</th><th style="text-align:center">US PSM</th>
+</tr></thead>
+<tbody>
+<tr><td style="font-weight:600">TENAYA</td><td>Faricimab</td><td>Phase III</td><td style="text-align:center">671</td><td style="text-align:center">141</td><td style="text-align:center">63</td><td style="text-align:center">15 mo</td><td style="text-align:center">0.317</td><td style="text-align:center;font-weight:600">0.317</td></tr>
+<tr><td style="font-weight:600">LUCERNE</td><td>Faricimab</td><td>Phase III</td><td style="text-align:center">658</td><td style="text-align:center">142</td><td style="text-align:center">—</td><td style="text-align:center">14 mo</td><td style="text-align:center">0.331</td><td style="text-align:center">—</td></tr>
+<tr><td style="font-weight:600">HAWK</td><td>Brolucizumab</td><td>Phase III</td><td style="text-align:center">1,078</td><td style="text-align:center">166</td><td style="text-align:center">59</td><td style="text-align:center">20 mo</td><td style="text-align:center">0.325</td><td style="text-align:center;font-weight:600">0.325</td></tr>
+<tr><td style="font-weight:600">HARRIER</td><td>Brolucizumab</td><td>Phase III</td><td style="text-align:center">739</td><td style="text-align:center">116</td><td style="text-align:center">—</td><td style="text-align:center">20 mo</td><td style="text-align:center">0.319</td><td style="text-align:center">—</td></tr>
+<tr><td style="font-weight:600">PULSAR</td><td>Aflibercept 8mg</td><td>Phase III</td><td style="text-align:center">1,009</td><td style="text-align:center">186</td><td style="text-align:center">72</td><td style="text-align:center">19 mo</td><td style="text-align:center">0.286</td><td style="text-align:center;font-weight:600">0.286</td></tr>
+<tr><td style="font-weight:600">VIEW 1</td><td>Aflibercept 2mg</td><td>Phase III</td><td style="text-align:center">1,217</td><td style="text-align:center">154</td><td style="text-align:center">154</td><td style="text-align:center">22 mo</td><td style="text-align:center">0.359</td><td style="text-align:center;font-weight:600;color:var(--tl)">0.359</td></tr>
+<tr><td style="font-weight:600">VIEW 2</td><td>Aflibercept 2mg</td><td>Phase III</td><td style="text-align:center">1,240</td><td style="text-align:center">186</td><td style="text-align:center">—</td><td style="text-align:center">26 mo</td><td style="text-align:center">0.256</td><td style="text-align:center">—</td></tr>
+<tr><td style="font-weight:600">ShORe (OPT-302)</td><td>Sozinibercept</td><td>Phase III</td><td style="text-align:center">990</td><td style="text-align:center">180</td><td style="text-align:center">75</td><td style="text-align:center">21 mo</td><td style="text-align:center">0.262</td><td style="text-align:center;font-weight:600">0.262</td></tr>
+<tr><td style="font-weight:600">Sandoz Biosimilar</td><td>Ranibizumab BS</td><td>Phase III</td><td style="text-align:center">485</td><td style="text-align:center">82</td><td style="text-align:center">25</td><td style="text-align:center">14 mo</td><td style="text-align:center">0.422</td><td style="text-align:center;font-weight:600;color:var(--am)">0.423</td></tr>
+<tr><td style="font-weight:600">MERLIN</td><td>Aflibercept q4w</td><td>Phase IIIb</td><td style="text-align:center">689</td><td style="text-align:center">120</td><td style="text-align:center">85</td><td style="text-align:center">18 mo</td><td style="text-align:center">0.319</td><td style="text-align:center;font-weight:600">0.319</td></tr>
+<tr style="background:var(--tb);border-top:2px solid var(--tl)">
+<td colspan="6" style="font-weight:700;color:var(--td)">Enrollment-Weighted Average (US sites)</td>
+<td></td><td style="text-align:center;font-weight:800;color:var(--nv)">0.313</td><td style="text-align:center;font-weight:800;color:var(--tl)">0.321</td></tr>
+</tbody>
+</table>
+<div class="dn" style="margin-top:12px">PSM = randomized patients ÷ (sites × enrollment months). US PSM estimated assuming proportional enrollment by site count. All studies required treatment-naïve (anti-VEGF naïve) study eye. Source: ClinicalTrials.gov registry data + published enrollment timelines.</div>
+</div>
+
+<div class="cb">
+<div class="sd" style="margin-bottom:0;max-width:none">
+<strong style="color:var(--cr)">Bottom line:</strong> Oculgen's 0.52 p/s/m target is <strong>1.6× the industry weighted average</strong> for treatment-naïve nAMD (0.32) and exceeds the highest US PSM ever achieved in a landmark treatment-naïve nAMD trial (Sandoz biosimilar at 0.42). No treatment-naïve nAMD trial in the published record has achieved 0.52 p/s/m at the US level.<br><br>
+<strong style="color:var(--nv)">Recommended scenario planning:</strong><br>
+&bull; <strong>Conservative (0.25–0.30):</strong> consistent with PULSAR/ShORe pace — realistic if competitive pressure compresses enrollment<br>
+&bull; <strong>Expected (0.32–0.35):</strong> matches TENAYA/HAWK/MERLIN industry average — achievable with Ora's pre-screening and site selection advantage<br>
+&bull; <strong>Aggressive (0.42–0.50):</strong> exceeds all published benchmarks — requires all recruitment levers working (competitor capture, referral networks, zero site activation lag) — present as upside, not base case
+</div></div></div>
+
+<div class="sc">
+<div class="st">Top 40 US Retina Sites — Ranked by Experience & Activation Speed</div>
+<div class="sd">Sites ranked by number of Ora retina studies and activation timeline (Site Selected → SIV). P25 = 25th percentile activation for sites with 4+ studies; Best = fastest single activation for sites with fewer. These sites have existing Ora relationships and historical performance data enabling accelerated start-up.</div>
+<div class="cb" style="overflow-x:auto">
+<table class="dt" style="min-width:950px">
+<thead><tr>
+<th>Organization</th><th>PI</th><th>Location</th><th style="text-align:center">Retina Studies</th>
+<th style="text-align:center">P25 / Best Activation</th><th style="text-align:center">Median Activation</th>
+<th style="text-align:center">Fastest (days)</th><th style="text-align:center">Total Enrolled</th><th style="text-align:center">Total Screened</th>
+</tr></thead>
+<tbody><tr>
+        <td style="font-weight:600;color:var(--nv)">Retina Consultants of Texas</td>
+        <td>Robert Wong</td>
+        <td>Austin, TX</td>
+        <td style="text-align:center"><span class="ex-elite">12</span></td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">72d<span style="font-size:9px;color:var(--sll)"></span></td>
+        <td style="text-align:center"><span class="sp-mod">106d</span></td>
+        <td style="text-align:center;font-weight:600">54d</td>
+        <td style="text-align:center">31</td>
+        <td style="text-align:center">92</td>
+    </tr>
+<tr>
+        <td style="font-weight:600;color:var(--nv)">Austin Clinical Research LLC</td>
+        <td>Fuad Makkouk</td>
+        <td>Austin, TX</td>
+        <td style="text-align:center"><span class="ex-elite">9</span></td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">51d<span style="font-size:9px;color:var(--sll)"></span></td>
+        <td style="text-align:center"><span class="sp-good">71d</span></td>
+        <td style="text-align:center;font-weight:600">41d</td>
+        <td style="text-align:center">54</td>
+        <td style="text-align:center">111</td>
+    </tr>
+<tr>
+        <td style="font-weight:600;color:var(--nv)">Cumberland Valley Retina Consultants</td>
+        <td>Allen Hu</td>
+        <td>Hagerstown, MD</td>
+        <td style="text-align:center"><span class="ex-elite">9</span></td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">56d<span style="font-size:9px;color:var(--sll)"></span></td>
+        <td style="text-align:center"><span class="sp-good">89d</span></td>
+        <td style="text-align:center;font-weight:600">19d</td>
+        <td style="text-align:center">239</td>
+        <td style="text-align:center">434</td>
+    </tr>
+<tr>
+        <td style="font-weight:600;color:var(--nv)">Verum Research LLC</td>
+        <td>Albert Edwards</td>
+        <td>Eugene, OR</td>
+        <td style="text-align:center"><span class="ex-elite">9</span></td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">56d<span style="font-size:9px;color:var(--sll)"></span></td>
+        <td style="text-align:center"><span class="sp-good">70d</span></td>
+        <td style="text-align:center;font-weight:600">29d</td>
+        <td style="text-align:center">33</td>
+        <td style="text-align:center">54</td>
+    </tr>
+<tr>
+        <td style="font-weight:600;color:var(--nv)">Bay Area Retina Associates</td>
+        <td>Roger Goldberg</td>
+        <td>Walnut Creek, CA</td>
+        <td style="text-align:center"><span class="ex-elite">8</span></td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">60d<span style="font-size:9px;color:var(--sll)"></span></td>
+        <td style="text-align:center"><span class="sp-good">64d</span></td>
+        <td style="text-align:center;font-weight:600">22d</td>
+        <td style="text-align:center">57</td>
+        <td style="text-align:center">102</td>
+    </tr>
+<tr>
+        <td style="font-weight:600;color:var(--nv)">Texas Retina Associates</td>
+        <td>Robert Wang</td>
+        <td>Plano, TX</td>
+        <td style="text-align:center"><span class="ex-high">7</span></td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">22d<span style="font-size:9px;color:var(--sll)"></span></td>
+        <td style="text-align:center"><span class="sp-fast">62d</span></td>
+        <td style="text-align:center;font-weight:600">20d</td>
+        <td style="text-align:center">34</td>
+        <td style="text-align:center">65</td>
+    </tr>
+<tr>
+        <td style="font-weight:600;color:var(--nv)">Retina Vitreous Associates of Florida</td>
+        <td>David Eichenbaum</td>
+        <td>St. Petersburg, FL</td>
+        <td style="text-align:center"><span class="ex-high">7</span></td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">55d<span style="font-size:9px;color:var(--sll)"></span></td>
+        <td style="text-align:center"><span class="sp-mod">138d</span></td>
+        <td style="text-align:center;font-weight:600">20d</td>
+        <td style="text-align:center">18</td>
+        <td style="text-align:center">60</td>
+    </tr>
+<tr>
+        <td style="font-weight:600;color:var(--nv)">Sierra Eye Associates</td>
+        <td>Arshad Khanani</td>
+        <td>Reno, NV</td>
+        <td style="text-align:center"><span class="ex-high">6</span></td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">58d<span style="font-size:9px;color:var(--sll)"></span></td>
+        <td style="text-align:center"><span class="sp-slow">238d</span></td>
+        <td style="text-align:center;font-weight:600">10d</td>
+        <td style="text-align:center">52</td>
+        <td style="text-align:center">125</td>
+    </tr>
+<tr>
+        <td style="font-weight:600;color:var(--nv)">Retinal Consultants Medical Group</td>
+        <td>Joel Pearlman</td>
+        <td>Sacramento, CA</td>
+        <td style="text-align:center"><span class="ex-high">6</span></td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">92d<span style="font-size:9px;color:var(--sll)"></span></td>
+        <td style="text-align:center"><span class="sp-slow">156d</span></td>
+        <td style="text-align:center;font-weight:600">54d</td>
+        <td style="text-align:center">40</td>
+        <td style="text-align:center">80</td>
+    </tr>
+<tr>
+        <td style="font-weight:600;color:var(--nv)">Emanuelli Research and Development Center LLC</td>
+        <td>Andres Emanuelli</td>
+        <td>Arecibo, PR</td>
+        <td style="text-align:center"><span class="ex-high">6</span></td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">115d<span style="font-size:9px;color:var(--sll)"></span></td>
+        <td style="text-align:center"><span class="sp-slow">155d</span></td>
+        <td style="text-align:center;font-weight:600">62d</td>
+        <td style="text-align:center">31</td>
+        <td style="text-align:center">59</td>
+    </tr>
+<tr>
+        <td style="font-weight:600;color:var(--nv)">Erie Retina Research LLC</td>
+        <td>David Almeida</td>
+        <td>Erie, PA</td>
+        <td style="text-align:center"><span class="ex-high">5</span></td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">55d<span style="font-size:9px;color:var(--sll)"></span></td>
+        <td style="text-align:center"><span class="sp-mod">105d</span></td>
+        <td style="text-align:center;font-weight:600">32d</td>
+        <td style="text-align:center">30</td>
+        <td style="text-align:center">76</td>
+    </tr>
+<tr>
+        <td style="font-weight:600;color:var(--nv)">Florida Retina Institute</td>
+        <td>Eduardo Uchiyama</td>
+        <td>Osprey, FL</td>
+        <td style="text-align:center"><span class="ex-high">5</span></td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">80d<span style="font-size:9px;color:var(--sll)"></span></td>
+        <td style="text-align:center"><span class="sp-good">93d</span></td>
+        <td style="text-align:center;font-weight:600">59d</td>
+        <td style="text-align:center">17</td>
+        <td style="text-align:center">32</td>
+    </tr>
+<tr>
+        <td style="font-weight:600;color:var(--nv)">Mid Atlantic Retina</td>
+        <td>Jason Hsu</td>
+        <td>Cherry Hill, NJ</td>
+        <td style="text-align:center"><span class="ex-high">5</span></td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">109d<span style="font-size:9px;color:var(--sll)"></span></td>
+        <td style="text-align:center"><span class="sp-mod">127d</span></td>
+        <td style="text-align:center;font-weight:600">43d</td>
+        <td style="text-align:center">13</td>
+        <td style="text-align:center">36</td>
+    </tr>
+<tr>
+        <td style="font-weight:600;color:var(--nv)">Ophthalmic Consultants of Boston</td>
+        <td>Jeffrey Heier</td>
+        <td>Boston, MA</td>
+        <td style="text-align:center"><span class="ex-mod">4</span></td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">39d<span style="font-size:9px;color:var(--sll)"></span></td>
+        <td style="text-align:center"><span class="sp-good">83d</span></td>
+        <td style="text-align:center;font-weight:600">18d</td>
+        <td style="text-align:center">20</td>
+        <td style="text-align:center">38</td>
+    </tr>
+<tr>
+        <td style="font-weight:600;color:var(--nv)">Florida Eye Associates</td>
+        <td>Vrinda Hershberger</td>
+        <td>Melbourne, FL</td>
+        <td style="text-align:center"><span class="ex-mod">4</span></td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">55d<span style="font-size:9px;color:var(--sll)"></span></td>
+        <td style="text-align:center"><span class="sp-good">72d</span></td>
+        <td style="text-align:center;font-weight:600">20d</td>
+        <td style="text-align:center">22</td>
+        <td style="text-align:center">37</td>
+    </tr>
+<tr>
+        <td style="font-weight:600;color:var(--nv)">Retina Foundation of the Southwest</td>
+        <td>Richard Lane</td>
+        <td>San Antonio, TX</td>
+        <td style="text-align:center"><span class="ex-mod">4</span></td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">56d<span style="font-size:9px;color:var(--sll)"></span></td>
+        <td style="text-align:center"><span class="sp-good">75d</span></td>
+        <td style="text-align:center;font-weight:600">55d</td>
+        <td style="text-align:center">5</td>
+        <td style="text-align:center">15</td>
+    </tr>
+<tr>
+        <td style="font-weight:600;color:var(--nv)">Retina Consultants of San Diego</td>
+        <td>Nikolas London</td>
+        <td>Poway, CA</td>
+        <td style="text-align:center"><span class="ex-mod">4</span></td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">62d<span style="font-size:9px;color:var(--sll)"></span></td>
+        <td style="text-align:center"><span class="sp-mod">128d</span></td>
+        <td style="text-align:center;font-weight:600">26d</td>
+        <td style="text-align:center">8</td>
+        <td style="text-align:center">16</td>
+    </tr>
+<tr>
+        <td style="font-weight:600;color:var(--nv)">Center for Retina and Macular Disease</td>
+        <td>Suk Jin Moon</td>
+        <td>Winter Haven, FL</td>
+        <td style="text-align:center"><span class="ex-mod">4</span></td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">64d<span style="font-size:9px;color:var(--sll)"></span></td>
+        <td style="text-align:center"><span class="sp-mod">108d</span></td>
+        <td style="text-align:center;font-weight:600">63d</td>
+        <td style="text-align:center">8</td>
+        <td style="text-align:center">24</td>
+    </tr>
+<tr>
+        <td style="font-weight:600;color:var(--nv)">Piedmont Eye Center</td>
+        <td>Golnaz Javey</td>
+        <td>Lynchburg, VA</td>
+        <td style="text-align:center"><span class="ex-mod">4</span></td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">71d<span style="font-size:9px;color:var(--sll)"></span></td>
+        <td style="text-align:center"><span class="sp-good">93d</span></td>
+        <td style="text-align:center;font-weight:600">69d</td>
+        <td style="text-align:center">24</td>
+        <td style="text-align:center">46</td>
+    </tr>
+<tr>
+        <td style="font-weight:600;color:var(--nv)">Western Carolina Retinal Associates</td>
+        <td>William Bridges</td>
+        <td>Asheville, NC</td>
+        <td style="text-align:center"><span class="ex-mod">4</span></td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">72d<span style="font-size:9px;color:var(--sll)"></span></td>
+        <td style="text-align:center"><span class="sp-mod">140d</span></td>
+        <td style="text-align:center;font-weight:600">42d</td>
+        <td style="text-align:center">21</td>
+        <td style="text-align:center">36</td>
+    </tr>
+<tr>
+        <td style="font-weight:600;color:var(--nv)">Barnet Dulaney Perkins Eye Center</td>
+        <td>Suhail Alam</td>
+        <td>Sun City, AZ</td>
+        <td style="text-align:center"><span class="ex-mod">4</span></td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">72d<span style="font-size:9px;color:var(--sll)"></span></td>
+        <td style="text-align:center"><span class="sp-mod">97d</span></td>
+        <td style="text-align:center;font-weight:600">43d</td>
+        <td style="text-align:center">10</td>
+        <td style="text-align:center">17</td>
+    </tr>
+<tr>
+        <td style="font-weight:600;color:var(--nv)">Emerson Clinical Research Institute</td>
+        <td>Khurram Malik</td>
+        <td>Falls Church, VA</td>
+        <td style="text-align:center"><span class="ex-mod">4</span></td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">79d<span style="font-size:9px;color:var(--sll)"></span></td>
+        <td style="text-align:center"><span class="sp-good">89d</span></td>
+        <td style="text-align:center;font-weight:600">70d</td>
+        <td style="text-align:center">10</td>
+        <td style="text-align:center">40</td>
+    </tr>
+<tr>
+        <td style="font-weight:600;color:var(--nv)">Rand Eye Institute</td>
+        <td>Carl Danzig</td>
+        <td>Deerfield Beach, FL</td>
+        <td style="text-align:center"><span class="ex-mod">4</span></td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">84d<span style="font-size:9px;color:var(--sll)"></span></td>
+        <td style="text-align:center"><span class="sp-mod">123d</span></td>
+        <td style="text-align:center;font-weight:600">32d</td>
+        <td style="text-align:center">10</td>
+        <td style="text-align:center">21</td>
+    </tr>
+<tr>
+        <td style="font-weight:600;color:var(--nv)">Mississippi Retina Associates</td>
+        <td>Michael Borne</td>
+        <td>Madison, MS</td>
+        <td style="text-align:center"><span class="ex-mod">3</span></td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">14d<span style="font-size:9px;color:var(--sll)"> (best)</span></td>
+        <td style="text-align:center"><span class="sp-fast">29d</span></td>
+        <td style="text-align:center;font-weight:600">14d</td>
+        <td style="text-align:center">2</td>
+        <td style="text-align:center">6</td>
+    </tr>
+<tr>
+        <td style="font-weight:600;color:var(--nv)">Retina Specialty Institute</td>
+        <td>Sunil Gupta</td>
+        <td>Pensacola, FL</td>
+        <td style="text-align:center"><span class="ex-mod">3</span></td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">21d<span style="font-size:9px;color:var(--sll)"> (best)</span></td>
+        <td style="text-align:center"><span class="sp-fast">50d</span></td>
+        <td style="text-align:center;font-weight:600">21d</td>
+        <td style="text-align:center">19</td>
+        <td style="text-align:center">43</td>
+    </tr>
+<tr>
+        <td style="font-weight:600;color:var(--nv)">Retina Research Institute of Texas</td>
+        <td>Sunil Patel</td>
+        <td>Abilene, TX</td>
+        <td style="text-align:center"><span class="ex-mod">3</span></td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">42d<span style="font-size:9px;color:var(--sll)"> (best)</span></td>
+        <td style="text-align:center"><span class="sp-good">68d</span></td>
+        <td style="text-align:center;font-weight:600">42d</td>
+        <td style="text-align:center">18</td>
+        <td style="text-align:center">29</td>
+    </tr>
+<tr>
+        <td style="font-weight:600;color:var(--nv)">Wagner Macula & Retina Center</td>
+        <td>Kapil Kapoor</td>
+        <td>Norfolk, VA</td>
+        <td style="text-align:center"><span class="ex-mod">3</span></td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">50d<span style="font-size:9px;color:var(--sll)"> (best)</span></td>
+        <td style="text-align:center"><span class="sp-good">93d</span></td>
+        <td style="text-align:center;font-weight:600">50d</td>
+        <td style="text-align:center">5</td>
+        <td style="text-align:center">22</td>
+    </tr>
+<tr>
+        <td style="font-weight:600;color:var(--nv)">Retina Consultants of Minnesota</td>
+        <td>Wilkin Parke</td>
+        <td>Edina, MN</td>
+        <td style="text-align:center"><span class="ex-mod">3</span></td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">51d<span style="font-size:9px;color:var(--sll)"> (best)</span></td>
+        <td style="text-align:center"><span class="sp-fast">56d</span></td>
+        <td style="text-align:center;font-weight:600">51d</td>
+        <td style="text-align:center">16</td>
+        <td style="text-align:center">29</td>
+    </tr>
+<tr>
+        <td style="font-weight:600;color:var(--nv)">Retina Consultants of Houston</td>
+        <td>Charles Wykoff</td>
+        <td>The Woodland, TX</td>
+        <td style="text-align:center"><span class="ex-mod">3</span></td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">53d<span style="font-size:9px;color:var(--sll)"> (best)</span></td>
+        <td style="text-align:center"><span class="sp-mod">117d</span></td>
+        <td style="text-align:center;font-weight:600">53d</td>
+        <td style="text-align:center">10</td>
+        <td style="text-align:center">36</td>
+    </tr>
+<tr>
+        <td style="font-weight:600;color:var(--nv)">Medical Center Ophthalmology Associates</td>
+        <td>Michael Singer</td>
+        <td>San Antonio, TX</td>
+        <td style="text-align:center"><span class="ex-mod">3</span></td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">55d<span style="font-size:9px;color:var(--sll)"> (best)</span></td>
+        <td style="text-align:center"><span class="sp-fast">58d</span></td>
+        <td style="text-align:center;font-weight:600">55d</td>
+        <td style="text-align:center">2</td>
+        <td style="text-align:center">9</td>
+    </tr>
+<tr>
+        <td style="font-weight:600;color:var(--nv)">University Retina and Macula Associates</td>
+        <td>Veeral Sheth</td>
+        <td>Oak Forest, IL</td>
+        <td style="text-align:center"><span class="ex-mod">3</span></td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">56d<span style="font-size:9px;color:var(--sll)"> (best)</span></td>
+        <td style="text-align:center"><span class="sp-fast">63d</span></td>
+        <td style="text-align:center;font-weight:600">56d</td>
+        <td style="text-align:center">10</td>
+        <td style="text-align:center">31</td>
+    </tr>
+<tr>
+        <td style="font-weight:600;color:var(--nv)">Valley Retina Institute PA</td>
+        <td>Victor Gonzalez</td>
+        <td>McAllen, TX</td>
+        <td style="text-align:center"><span class="ex-mod">3</span></td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">64d<span style="font-size:9px;color:var(--sll)"> (best)</span></td>
+        <td style="text-align:center"><span class="sp-mod">102d</span></td>
+        <td style="text-align:center;font-weight:600">64d</td>
+        <td style="text-align:center">5</td>
+        <td style="text-align:center">14</td>
+    </tr>
+<tr>
+        <td style="font-weight:600;color:var(--nv)">Retinal Research Institute LLC</td>
+        <td>Neal Palejwala</td>
+        <td>Phoenix, AZ</td>
+        <td style="text-align:center"><span class="ex-mod">3</span></td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">71d<span style="font-size:9px;color:var(--sll)"> (best)</span></td>
+        <td style="text-align:center"><span class="sp-mod">139d</span></td>
+        <td style="text-align:center;font-weight:600">71d</td>
+        <td style="text-align:center">4</td>
+        <td style="text-align:center">12</td>
+    </tr>
+<tr>
+        <td style="font-weight:600;color:var(--nv)">Tennessee Retina PC</td>
+        <td>Eric Schneider</td>
+        <td>Nashville, TN</td>
+        <td style="text-align:center"><span class="ex-mod">3</span></td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">74d<span style="font-size:9px;color:var(--sll)"> (best)</span></td>
+        <td style="text-align:center"><span class="sp-mod">114d</span></td>
+        <td style="text-align:center;font-weight:600">74d</td>
+        <td style="text-align:center">10</td>
+        <td style="text-align:center">35</td>
+    </tr>
+<tr>
+        <td style="font-weight:600;color:var(--nv)">Vitreo Retinal Associates</td>
+        <td>Christine Kay</td>
+        <td>Gainesville, FL</td>
+        <td style="text-align:center"><span class="ex-mod">3</span></td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">76d<span style="font-size:9px;color:var(--sll)"> (best)</span></td>
+        <td style="text-align:center"><span class="sp-mod">100d</span></td>
+        <td style="text-align:center;font-weight:600">76d</td>
+        <td style="text-align:center">8</td>
+        <td style="text-align:center">19</td>
+    </tr>
+<tr>
+        <td style="font-weight:600;color:var(--nv)">Charleston Neuroscience Institute LLC</td>
+        <td>Eric Jablon</td>
+        <td>Beaufort, SC</td>
+        <td style="text-align:center"><span class="ex-mod">3</span></td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">100d<span style="font-size:9px;color:var(--sll)"> (best)</span></td>
+        <td style="text-align:center"><span class="sp-mod">114d</span></td>
+        <td style="text-align:center;font-weight:600">100d</td>
+        <td style="text-align:center">5</td>
+        <td style="text-align:center">15</td>
+    </tr>
+<tr>
+        <td style="font-weight:600;color:var(--nv)">California Eye Specialists Medical Group INC</td>
+        <td>Payam Amini</td>
+        <td>Pasadena, CA</td>
+        <td style="text-align:center"><span class="ex-low">2</span></td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">27d<span style="font-size:9px;color:var(--sll)"> (best)</span></td>
+        <td style="text-align:center"><span class="sp-slow">209d</span></td>
+        <td style="text-align:center;font-weight:600">27d</td>
+        <td style="text-align:center">6</td>
+        <td style="text-align:center">21</td>
+    </tr>
+<tr>
+        <td style="font-weight:600;color:var(--nv)">Retina-Vitreous Associates Medical Group</td>
+        <td>Firas Rahhal</td>
+        <td>Beverly Hills, CA</td>
+        <td style="text-align:center"><span class="ex-low">2</span></td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">40d<span style="font-size:9px;color:var(--sll)"> (best)</span></td>
+        <td style="text-align:center"><span class="sp-good">74d</span></td>
+        <td style="text-align:center;font-weight:600">40d</td>
+        <td style="text-align:center">9</td>
+        <td style="text-align:center">25</td>
+    </tr>
+<tr>
+        <td style="font-weight:600;color:var(--nv)">Retina and Vitreous Associates of Kentucky</td>
+        <td>Miguel Busquets</td>
+        <td>Lexington, KY</td>
+        <td style="text-align:center"><span class="ex-low">2</span></td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">44d<span style="font-size:9px;color:var(--sll)"> (best)</span></td>
+        <td style="text-align:center"><span class="sp-mod">105d</span></td>
+        <td style="text-align:center;font-weight:600">44d</td>
+        <td style="text-align:center">7</td>
+        <td style="text-align:center">8</td>
+    </tr>
+<tr>
+        <td style="font-weight:600;color:var(--nv)">Retina Vitreous Center PLLC</td>
+        <td>Sandeep Shah</td>
+        <td>Edmond, OK</td>
+        <td style="text-align:center"><span class="ex-low">2</span></td>
+        <td style="text-align:center;font-weight:700;color:var(--tl)">45d<span style="font-size:9px;color:var(--sll)"> (best)</span></td>
+        <td style="text-align:center"><span class="sp-mod">120d</span></td>
+        <td style="text-align:center;font-weight:600">45d</td>
+        <td style="text-align:center">7</td>
+        <td style="text-align:center">18</td>
+    </tr>
+<tr style="background:var(--tb);border-top:3px solid var(--tl)">
+        <td style="font-weight:700;color:var(--td)" colspan="3">Average (Top 40 Sites)</td>
+        <td style="text-align:center;font-weight:700;color:var(--td)">4.5</td>
+        <td style="text-align:center;font-weight:800;color:var(--tl)">60d</td>
+        <td style="text-align:center;font-weight:700;color:var(--td)">102d</td>
+        <td style="text-align:center;font-weight:700;color:var(--td)">45d</td>
+        <td style="text-align:center;font-weight:700;color:var(--td)">23.2</td>
+        <td style="text-align:center">—</td>
+    </tr>
+</tbody>
+</table>
+<div class="dn">Activation = Site Selected → SIV (Actual Finish dates from Ora Veeva CTM). P25 shown for sites with ≥4 retina studies; Best shown for sites with &lt;4 studies (marked with *). US retina sites only. Sorted by: most studies first, then fastest P25/Best.</div>
+</div></div>
+
+<div class="tk">
+<h3>Skip-Feasibility Differentiator</h3>
+<div class="tk-list">
+For the top 40 sites above, Ora already has: historical activation timelines (site selected → SIV → FSI), enrollment performance (patients screened, enrolled, PSM), screen-fail rates, PI and coordinator contact information, MSA status, and IRB pathway history.<br><br>
+<strong>Proposal positioning:</strong> Instead of issuing 30 feasibility questionnaires (3–4 weeks), Ora proposes a <strong>data-driven site qualification</strong> process: present each site with their own historical dossier, have the site confirm/update during a qualification call, and move directly to activation. This saves ~3 weeks from the critical path — time Oculgen cannot afford to lose given the October 2026 Part B start.<br><br>
+This is a capability no other bidder can replicate without building it from scratch.
+</div></div>
+
+<div class="sc">
+<div class="st">Strategy Notes — Accelerating Treatment-Naïve Recruitment</div>
+<div class="cb">
+<div class="sd" style="margin-bottom:0;max-width:none">
+<strong style="color:var(--nv)">1. Site selection IS the recruitment strategy.</strong> Weight site selection toward: (a) sites with the richest newly-diagnosed referral pipelines (optometry networks, health system integrations, retina centers with high new-patient volume), (b) sites with demonstrated fast activation from Ora data, (c) sites with less treatment-naïve competition from the major competitor trial.<br><br>
+<strong style="color:var(--nv)">2. Pre-screening is non-negotiable.</strong> Current 86–90% screen fail is destroying efficiency. A central pre-screening/contact center that triages on naïve status, lesion characteristics, and willingness before the formal screening visit is the single highest-impact intervention. Target: reduce on-site screen fail from ~88% to ≤50%.<br><br>
+<strong style="color:var(--nv)">3. Competitor screen-fail capture.</strong> The major competitor (screening ~3,000 for ~2,000) will generate ~1,000 screen fails + decliners. Build a systematic capture pathway: site-level protocols for offering STAT to competitor screen-fails, geographic positioning near competitor sites but not overlapping, and rapid consent-to-screen conversion for warm referrals.<br><br>
+<strong style="color:var(--nv)">4. Compensation must be competitive.</strong> Treatment-naïve nAMD patients have an approved standard of care readily available. Site and patient compensation must reflect the opportunity cost of delaying treatment to participate — if the competitor pays more, patients will go there.<br><br>
+<strong style="color:var(--nv)">5. Speed-to-consent wins.</strong> The naïve window closes the moment a patient receives their first anti-VEGF injection. Every day from diagnosis to consent is a day the patient might start standard therapy. The recruitment infrastructure must minimize this gap: same-week referral-to-screening, streamlined consent, and site coordinator training on the urgency of the naïve window.
+</div></div></div>
+
+<div class="ft">Ora Clinical Intelligence — OCUL101-002 (STAT) Internal Brief — August 2026 — Data: Ora Veeva CTM (24 US retina programs, 622 SIV milestones, 177 sites) — INTERNAL / DO NOT DISTRIBUTE</div>
+
+<script>
+new Chart(document.getElementById('velChart').getContext('2d'),{
+    type:'bar',
+    data:{
+        labels:["Month 1", "Month 2", "Month 3", "Month 4", "Month 5", "Month 6", "Month 7", "Month 8", "Month 9", "Month 10"],
+        datasets:[{label:'Study 1 — Dry AMD Ph3 (n=38)',data:[5, 10, 3, 10, 6, 4, 0, 0, 0, 0],backgroundColor:'#0d948825',borderColor:'#0d9488',borderWidth:2,borderRadius:4,barPercentage:0.8,categoryPercentage:0.88},
+{label:'Study 2 — GA Ph2 (n=54)',data:[1, 3, 4, 12, 4, 12, 7, 2, 1, 6],backgroundColor:'#0284c725',borderColor:'#0284c7',borderWidth:2,borderRadius:4,barPercentage:0.8,categoryPercentage:0.88},
+{label:'Study 3 — DME Ph2 (n=57)',data:[3, 2, 4, 18, 6, 2, 3, 3, 5, 0],backgroundColor:'#f59e0b25',borderColor:'#f59e0b',borderWidth:2,borderRadius:4,barPercentage:0.8,categoryPercentage:0.88},
+{label:'Study 4 — Retinal Ph1b (n=43)',data:[2, 15, 11, 2, 4, 0, 2, 4, 0, 0],backgroundColor:'#8b5cf625',borderColor:'#8b5cf6',borderWidth:2,borderRadius:4,barPercentage:0.8,categoryPercentage:0.88},
+{label:'Study 5 — AMD Ph2 (n=42)',data:[5, 2, 7, 7, 9, 2, 3, 1, 1, 1],backgroundColor:'#ec489925',borderColor:'#ec4899',borderWidth:2,borderRadius:4,barPercentage:0.8,categoryPercentage:0.88},
+{label:'Study 6 — DME Ph1 (n=63)',data:[7, 9, 0, 2, 3, 0, 0, 0, 1, 0],backgroundColor:'#64748b25',borderColor:'#64748b',borderWidth:2,borderRadius:4,barPercentage:0.8,categoryPercentage:0.88},
+]
+    },
+    options:{
+        responsive:true,
+        maintainAspectRatio:true,
+        aspectRatio:2.2,
+        plugins:{legend:{display:true,position:'bottom',labels:{font:{size:11},boxWidth:14,padding:12}}},
+        scales:{
+            y:{beginAtZero:true,max:20,title:{display:true,text:'New SIVs per Month',font:{size:11,weight:'600'},color:'#64748b'},grid:{color:'#f1f5f9'},ticks:{font:{size:11}}},
+            x:{grid:{display:false},ticks:{font:{size:12,weight:'600'},color:'#04003B'}}
+        }
+    }
+});
+</script></body></html>

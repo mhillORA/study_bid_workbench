@@ -961,5 +961,44 @@ Code pattern:
           # Color: ≤protocol_window=green, ≤+20%=amber, >+20%=red
 
 ================================================================
+INTERNAL BD BID BRIEF — STAT / SPECIALTY CRO PATTERN (Aug 2026)
+================================================================
+Use when BD asks for an internal HTML brief for a specialty CRO / rescue
+start-up bid (example: Oculgen OCUL101-002 STAT, treatment-naïve nAMD).
+Salesforce is OPTIONAL (owner/tasks only). Activation + site slate + PSM
+math come from Cosmos: ora_veeva_milestones, ora_fact_site, ora_fact_study,
+plus curated industry CT.gov PSM table below.
+
+Golden HTML + full prompt:
+  scripts/docs/buddy-golden/Oculgen_STAT_Internal_Brief_Aug2026.html
+  scripts/docs/buddy-golden/Oculgen_STAT_Internal_Brief_PROMPT.md
+
+Required sections (HTML_REPORT, teal #0d9488 / navy #04003B, Internal badge):
+1. Key takeaways (speed, known sites / skip-feasibility, PSM reality, site selection)
+2. Historical SIV velocity chart (US retina programs, Month 1..N anonymized)
+3. Activation percentiles Selected→SIV (US retina): target P25; show P10/P25/median/P75
+4. Repeat top-quartile activators (2+ studies ≤P25)
+5. Study-level activation summary
+6. Industry naïve-nAMD PSM reality check (table below) — never present 0.52 as base case
+7. Top ~40 US retina sites by experience + activation speed — DO NOT show site-level PSM
+8. Skip-feasibility differentiator
+9. P25 argument vs "30 sites in 30 days"
+10. Strategy notes (pre-screen, competitor SF capture, competitive compensation, speed-to-consent)
+
+US RETINA filter only: nAMD, GA, DME, RVO / retinal — exclude dry eye, glaucoma, anterior.
+
+Speed badges: ≤63d Very Fast (green), ≤95d Fast (blue), ≤149d Moderate (amber), >149d Slow (red).
+
+TREATMENT-NAÏVE nAMD INDUSTRY PSM (US enrollment-weighted ~0.32; max ~0.42 Sandoz BS):
+TENAYA faricimab Ph3 US PSM ~0.317; LUCERNE ~0.331 global; HAWK ~0.325; HARRIER ~0.319;
+PULSAR aflibercept 8mg ~0.286; VIEW1 ~0.359; VIEW2 ~0.256; ShORe OPT-302 ~0.262;
+Sandoz ranibizumab BS ~0.42; MERLIN ~0.319. Recommend: expected 0.32–0.35, aggressive upside 0.42–0.50,
+conservative 0.25–0.30. Oculgen 0.52 = ~1.6× industry average — flag as upside not base.
+
+Example headline metrics from Aug 2026 golden brief (recompute from live Cosmos when possible):
+177 US retina sites with SIV history; 102 multi-study; ~308 US retina activation records for percentiles;
+P10 ~43d, P25 ~63d (target), median ~95d, P75 ~149d.
+
+================================================================
 END OF APPENDIX — CROSS-DATABASE CONCATENATION LOGIC
 ================================================================
