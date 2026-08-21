@@ -4498,7 +4498,7 @@
         els.askStatus.textContent = deepCue ? "Deep · pulling Ora data…" : "Fast · pulling Ora data…";
       }
       let { res, rawText, data } = await buddyHop(
-        "/api/ask/prepare",
+        "/api/ask",
         { askPhase: "prepare" },
         deepCue ? "Deep · pulling Ora data…" : "Fast · pulling Ora data…"
       );
@@ -4549,7 +4549,7 @@
           if (data.visualPending && data.contextId) {
             if (els.askStatus) els.askStatus.textContent = "Deep · building leave-behind…";
             const vis = await buddyHop(
-              "/api/ask/visual",
+              "/api/ask",
               {
                 askPhase: "visual",
                 contextId: data.contextId,
@@ -4584,7 +4584,7 @@
           state.buddyAttachmentIds = data.attachmentIds;
         }
         ({ res, rawText, data } = await buddyHop(
-          "/api/ask/answer",
+          "/api/ask",
           { askPhase: "answer", contextId },
           data.statusHint || (deepCue ? "Deep · asking Buddy…" : "Fast · asking Buddy…")
         ));
@@ -4597,7 +4597,7 @@
           // Hop 3: optional visual / HTML leave-behind
           if ((wantVisual || data.visualPending) && (data.contextId || contextId)) {
             const vis = await buddyHop(
-              "/api/ask/visual",
+              "/api/ask",
               {
                 askPhase: "visual",
                 contextId: data.contextId || contextId,
