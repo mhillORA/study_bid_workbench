@@ -1121,30 +1121,43 @@
     return `${base}${path}`;
   }
 
-  /** External Buddy Function App base (from /api/buddy/session). Empty = same-origin SWA /api. */
+  /**
+   * External Function App hop is OFF until Azure Portal CORS allows the SWA origin.
+   * Right now OPTIONS /api/ask returns 204 with no Access-Control-* headers, so the
+   * browser blocks (often shows as HTTP 405) and nothing reaches Foundry.
+   * Flip to true only after: Function App → CORS → add the SWA hostname.
+   */
+  const BUDDY_USE_EXTERNAL_API = window.BUDDY_USE_EXTERNAL_API === true;
+
   const DEFAULT_BUDDY_API_BASE =
     "https://ora-buddy-api-hrdbgqh9cvaub5ft.eastus2-01.azurewebsites.net";
 
   function buddyApiBase() {
+    if (!BUDDY_USE_EXTERNAL_API) return "";
     return String(
       state.buddyApiBase || window.BUDDY_API_BASE || DEFAULT_BUDDY_API_BASE || ""
     ).replace(/\/$/, "");
   }
 
+  /** Always same-origin SWA /api unless external CORS is explicitly enabled. */
   function buddyAskUrl(path) {
-    const ext = buddyApiBase();
     const p = path.startsWith("/") ? path : `/${path}`;
-    // Prefer external Function App whenever we have a base (session token added in buddyHop).
-    if (ext && state.buddySessionToken) {
-      return `${ext}${p.startsWith("/api") ? p : `/api${p}`}`;
+    const apiPath = p.startsWith("/api") ? p : `/api${p}`;
+    if (BUDDY_USE_EXTERNAL_API && state.buddySessionToken && buddyApiBase()) {
+      return `${buddyApiBase()}${apiPath}`;
     }
-    if (ext && state._buddyPreferExternal) {
-      return `${ext}${p.startsWith("/api") ? p : `/api${p}`}`;
-    }
-    return apiUrl(p.startsWith("/api") ? p : `/api${p}`);
+    return apiUrl(apiPath);
   }
 
   async function ensureBuddySession() {
+    // Same-origin only — skip mint so we never steer the browser at the Function App.
+    if (!BUDDY_USE_EXTERNAL_API) {
+      state.buddySessionToken = null;
+      state.buddyApiBase = "";
+      state._buddyPreferExternal = false;
+      state.buddySessionExpiresAt = 0;
+      return { ok: true, token: null, apiBase: "", external: false, useLocalApi: true };
+    }
     const now = Date.now();
     if (
       state.buddySessionToken &&
@@ -1178,7 +1191,6 @@
           : now + (Number(data.expiresIn) || 3600) * 1000;
         return { ok: true, token: data.token, apiBase, external: true };
       }
-      // Mint failed (usually BUDDY_SESSION_SECRET missing on SWA) — stay on SWA /api.
       state.buddySessionToken = null;
       state.buddyApiBase = "";
       state._buddyPreferExternal = false;
@@ -2469,6 +2481,54 @@
       return "ack";
     }
     return null;
+  }
+
+  /** Pure arithmetic like "2+2" / "10 * 3?" — no network. */
+  function tryLocalMathAnswer(question) {
+    const q = String(question || "")
+      .trim()
+      .replace(/^(what(?:'s| is)|whats|calculate|compute)\s+/i, "")
+      .replace(/[?.!]+$/g, "")
+      .trim();
+    const m = q.match(/^(\d+(?:\.\d+)?)\s*([+\-*/x×])\s*(\d+(?:\.\d+)?)$/);
+    if (!m) return null;
+    const a = Number(m[1]);
+    const b = Number(m[3]);
+    if (!Number.isFinite(a) || !Number.isFinite(b)) return null;
+    const op = m[2] === "x" || m[2] === "×" ? "*" : m[2];
+    let r;
+    if (op === "+") r = a + b;
+    else if (op === "-") r = a - b;
+    else if (op === "*") r = a * b;
+    else if (op === "/") r = b === 0 ? null : a / b;
+    else return null;
+    if (r == null || !Number.isFinite(r)) return null;
+    // Prefer clean integers when exact
+    if (Number.isInteger(r)) return String(r);
+    const rounded = Math.round(r * 1e10) / 1e10;
+    return String(rounded);
+  }
+
+  /** Everyday AI (math/weather/chitchat) — skip prepare/Cosmos hops. Mirrors api buddyRouter. */
+  function looksLikeLightBuddyAsk(question) {
+    const q = String(question || "").trim();
+    if (!q || q.length > 400) return false;
+    if (state.buddyPendingTask?.type) return false;
+    const lower = q.toLowerCase();
+    if (
+      /\b(ora|cosmos|psm|trialhub|ct\.?\s*gov|clinicaltrials|veeva|feasibility|hlbp|ballpark|sponsor|indication|enroll(?:ment|ed|ing)?|screen(?:ed|ing|fail)?|site\s*score|portfolio|budget|bid|pricing|fee|revenue|alcon|nct-?\d|dry\s*eye|glaucoma|retina|amd|dme|ted\b|cataract|ophthalm|buddy context|opportunity|o-\d{3,}|studies\b|study\b|client|protocol|scorecard|ops dashboard|netsuite)\b/i.test(
+        lower
+      )
+    ) {
+      return false;
+    }
+    if (/\b(html|visual|dashboard|leave-?behind|powerpoint|pptx|docx|excel|spreadsheet)\b/i.test(lower)) {
+      return false;
+    }
+    if (/^(?:please\s+)?(?:open|go to|show|switch to|navigate to|take me to)\s+/i.test(q)) {
+      return false;
+    }
+    return true;
   }
 
   function greetingReply(kind) {
@@ -4155,6 +4215,18 @@
       return;
     }
 
+    // Trivial arithmetic — answer locally (no SWA/Function App hop).
+    if (!pendingFiles.length) {
+      const localMath = tryLocalMathAnswer(question);
+      if (localMath != null) {
+        pushAssistant(`[[h]]Answer[[/h]] [[i]]${localMath}[[/i]]`);
+        if (els.askStatus) els.askStatus.textContent = "Instant";
+        persistBuddyHistory();
+        paintBuddyChat();
+        return;
+      }
+    }
+
     if (!pendingFiles.length && isBuddyDoMode() && matchHlbpStart(question)) {
       startBlankHlbp();
       openBuddy();
@@ -4493,15 +4565,60 @@
         }
       }
 
+      // Light asks (2+2, weather, etc.): one-shot — skip prepare/Cosmos entirely.
+      const lightAsk =
+        !pendingFiles.length &&
+        !deepCue &&
+        !compareAsk &&
+        compareStudyIds.length < 2 &&
+        !fillFollowUp &&
+        !reconcileFollowUp &&
+        looksLikeLightBuddyAsk(question);
+
+      let res;
+      let rawText;
+      let data;
+
+      if (lightAsk) {
+        ({ res, rawText, data } = await buddyHop(
+          "/api/ask",
+          { askPhase: "auto" },
+          externalBuddy ? "Fast · Function App…" : "Fast · SWA…"
+        ));
+        if (/sign in to your account|login\.microsoftonline|AADSTS/i.test(rawText)) {
+          pushAssistant(
+            "Your session expired — sign in again (refresh the page), then retry. Buddy cannot answer while Azure AD is asking for login."
+          );
+        } else if (data.answer) {
+          applyAskResult(data, res);
+        } else if (!res.ok) {
+          const where = externalBuddy ? "Function App" : "SWA (45s gateway)";
+          pushAssistant(
+            `Buddy could not answer via ${where} (HTTP ${res.status || "?"}). Try again in a moment.`
+          );
+          if (els.askStatus) els.askStatus.textContent = externalBuddy ? "Function App" : "SWA";
+        } else {
+          pushAssistant(
+            data.error ||
+              "Buddy returned an empty answer. Try rephrasing, or refresh if your session expired."
+          );
+        }
+        state.buddyBusy = false;
+        state._askController = null;
+        if (els.btnAskStop) els.btnAskStop.hidden = true;
+        paintBuddyChat();
+        return;
+      }
+
       // Hop 1: pull Ora / Cosmos (no Foundry)
       if (els.askStatus) {
         els.askStatus.textContent = deepCue ? "Deep · pulling Ora data…" : "Fast · pulling Ora data…";
       }
-      let { res, rawText, data } = await buddyHop(
+      ({ res, rawText, data } = await buddyHop(
         "/api/ask",
         { askPhase: "prepare" },
         deepCue ? "Deep · pulling Ora data…" : "Fast · pulling Ora data…"
-      );
+      ));
 
       if (/sign in to your account|login\.microsoftonline|AADSTS/i.test(rawText)) {
         pushAssistant(

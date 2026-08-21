@@ -1577,63 +1577,6 @@ app.http("ask", {
   handler: async (request, context) => handleAskRequest(request, context, { requireCopilotKey: false })
 });
 
-/** Prepare only — Cosmos/intel pack, no Foundry (SWA hop 1). */
-app.http("askPrepare", {
-  methods: ["POST", "OPTIONS"],
-  authLevel: "anonymous",
-  route: "ask/prepare",
-  handler: async (request, context) => {
-    if (request.method === "OPTIONS") {
-      return handleAskRequest(request, context, { requireCopilotKey: false });
-    }
-    const body = await request.json().catch(() => ({}));
-    const fakeReq = {
-      method: "POST",
-      headers: request.headers,
-      json: async () => ({ ...body, askPhase: "prepare" })
-    };
-    return handleAskRequest(fakeReq, context, { requireCopilotKey: false });
-  }
-});
-
-/** Answer from prepare pack — one Foundry call (SWA hop 2). */
-app.http("askAnswer", {
-  methods: ["POST", "OPTIONS"],
-  authLevel: "anonymous",
-  route: "ask/answer",
-  handler: async (request, context) => {
-    if (request.method === "OPTIONS") {
-      return handleAskRequest(request, context, { requireCopilotKey: false });
-    }
-    const body = await request.json().catch(() => ({}));
-    const fakeReq = {
-      method: "POST",
-      headers: request.headers,
-      json: async () => ({ ...body, askPhase: "answer" })
-    };
-    return handleAskRequest(fakeReq, context, { requireCopilotKey: false });
-  }
-});
-
-/** Visual / HTML report from prepare pack — Deep Foundry only (SWA hop 3). */
-app.http("askVisual", {
-  methods: ["POST", "OPTIONS"],
-  authLevel: "anonymous",
-  route: "ask/visual",
-  handler: async (request, context) => {
-    if (request.method === "OPTIONS") {
-      return handleAskRequest(request, context, { requireCopilotKey: false });
-    }
-    const body = await request.json().catch(() => ({}));
-    const fakeReq = {
-      method: "POST",
-      headers: request.headers,
-      json: async () => ({ ...body, askPhase: "visual" })
-    };
-    return handleAskRequest(fakeReq, context, { requireCopilotKey: false });
-  }
-});
-
 /** Copilot Studio entry — same Buddy context builder; requires x-copilot-key. */
 app.http("copilotAsk", {
   methods: ["POST", "OPTIONS"],
