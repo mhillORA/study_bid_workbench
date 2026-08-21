@@ -3491,10 +3491,14 @@
       };
     }
     if (htmlReport) {
+      const titleHint = String(opts.documentTitle || "").trim();
+      const safeName = titleHint
+        ? `${titleHint.replace(/[^\w.\- ]+/g, "").trim().slice(0, 80) || "leavebehind"}.html`
+        : `ora-leavebehind-${new Date().toISOString().slice(0, 10)}.html`;
       turn.htmlReport = {
         id: `h-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
         html: htmlReport,
-        filename: `ora-report-${new Date().toISOString().slice(0, 10)}.html`,
+        filename: safeName,
         exports: Array.isArray(exports) ? exports.filter((e) => e && e.contentBase64) : []
       };
     }
@@ -4384,15 +4388,21 @@
           content: String(t.content || "").slice(0, 4000)
         }));
       const askController = state._askController;
-      // Mint session so leave-behind can use Function App; chat hops stay on SWA.
+      // Function App CORS is live — prefer it for all asks (SWA hard-caps ~45s → gateway).
       const session = await ensureBuddySession();
-      const canExternalVisual = Boolean(session.external && session.apiBase && session.token);
+      const canExternal = Boolean(session.external && session.apiBase && session.token);
       if (els.askStatus) {
-        els.askStatus.textContent = deepCue ? "Deep · SWA…" : "Fast · SWA…";
+        els.askStatus.textContent = canExternal
+          ? deepCue
+            ? "Deep · Function App…"
+            : "Fast · Function App…"
+          : deepCue
+            ? "Deep · SWA (45s)…"
+            : "Fast · SWA (45s)…";
       }
-      if (deepCue && !canExternalVisual) {
+      if (!canExternal) {
         console.warn(
-          "[Buddy] Visuals need Function App session. Set BUDDY_SESSION_SECRET on SWA + Function App CORS.",
+          "[Buddy] No Function App session — SWA ~45s gateway risk. Set BUDDY_SESSION_SECRET on SWA.",
           session.mintError || null
         );
       }
@@ -4468,7 +4478,9 @@
       };
 
       async function buddyHop(path, bodyExtra, statusText, hopOpts = {}) {
-        const useExternal = Boolean(hopOpts.external && canExternalVisual && state.buddySessionToken);
+        // Prefer Function App whenever session exists (CORS fixed). Pass external:false to force SWA.
+        const preferExternal = hopOpts.external !== false;
+        const useExternal = Boolean(preferExternal && canExternal && state.buddySessionToken);
         if (els.askStatus && statusText) els.askStatus.textContent = statusText;
         const hopController =
           typeof AbortController !== "undefined" ? new AbortController() : null;
@@ -4513,11 +4525,26 @@
             return buddyHop(path, { ...bodyExtra, _sessionRetry: true }, statusText, hopOpts);
           }
         }
+        // SWA gateway (502/504) — one retry on Function App if we have a session.
+        if (
+          !useExternal &&
+          canExternal &&
+          state.buddySessionToken &&
+          (res.status === 502 || res.status === 504 || res.status === 500) &&
+          !bodyExtra?._swaGatewayRetry
+        ) {
+          return buddyHop(
+            path,
+            { ...bodyExtra, _swaGatewayRetry: true },
+            statusText ? `${statusText} · retry Function App…` : "Retry · Function App…",
+            { ...hopOpts, external: true }
+          );
+        }
         return { res, rawText, data, usedExternal: useExternal };
       }
 
       async function runVisualHop(contextId, priorAnswer) {
-        const status = canExternalVisual
+        const status = canExternal
           ? "Deep · leave-behind (Function App)…"
           : "Deep · leave-behind (SWA 45s)…";
         const vis = await buddyHop(
@@ -4536,9 +4563,9 @@
         }
         if (!vis.res.ok || vis.data.softDeadline || vis.data.ok === false) {
           pushAssistant(
-            canExternalVisual
-              ? "Chat is ready — the leave-behind still timed out on the Function App. Say “spin up the visual” to retry."
-              : "Chat is ready — HTML leave-behinds need the Function App (SWA cuts off at ~45s). On Azure: set BUDDY_SESSION_SECRET on SWA, and CORS on ora-buddy-api for this site. Then say “spin up the visual”."
+            canExternal
+              ? "Chat is ready — the leave-behind still timed out. Say “spin up the visual” to retry."
+              : "Chat is ready — HTML leave-behinds need the Function App (SWA cuts off at ~45s). Set BUDDY_SESSION_SECRET on SWA, then retry."
           );
         }
         return false;
@@ -4625,7 +4652,7 @@
         ({ res, rawText, data } = await buddyHop(
           "/api/ask",
           { askPhase: "auto" },
-          "Fast · SWA…"
+          canExternal ? "Fast · Function App…" : "Fast · SWA…"
         ));
         if (/sign in to your account|login\.microsoftonline|AADSTS/i.test(rawText)) {
           pushAssistant(
@@ -4634,10 +4661,11 @@
         } else if (data.answer) {
           applyAskResult(data, res);
         } else if (!res.ok) {
+          const where = canExternal ? "Function App" : "SWA";
           pushAssistant(
-            `Buddy could not answer via SWA (HTTP ${res.status || "?"}). Try again in a moment.`
+            `Buddy could not answer via ${where} (HTTP ${res.status || "?"}). Try again in a moment.`
           );
-          if (els.askStatus) els.askStatus.textContent = "SWA";
+          if (els.askStatus) els.askStatus.textContent = where;
         } else {
           pushAssistant(
             data.error ||
@@ -4653,12 +4681,24 @@
 
       // Hop 1: pull Ora / Cosmos (no Foundry)
       if (els.askStatus) {
-        els.askStatus.textContent = deepCue ? "Deep · pulling Ora data…" : "Fast · pulling Ora data…";
+        els.askStatus.textContent = canExternal
+          ? deepCue
+            ? "Deep · pulling Ora data…"
+            : "Fast · pulling Ora data…"
+          : deepCue
+            ? "Deep · SWA pull…"
+            : "Fast · SWA pull…";
       }
       ({ res, rawText, data } = await buddyHop(
         "/api/ask",
         { askPhase: "prepare" },
-        deepCue ? "Deep · pulling Ora data…" : "Fast · pulling Ora data…"
+        canExternal
+          ? deepCue
+            ? "Deep · pulling Ora data…"
+            : "Fast · pulling Ora data…"
+          : deepCue
+            ? "Deep · SWA pull…"
+            : "Fast · SWA pull…"
       ));
 
       if (/sign in to your account|login\.microsoftonline|AADSTS/i.test(rawText)) {
@@ -4675,10 +4715,11 @@
 
       // Prepare may short-circuit (instant/light shouldn't hit prepare often; if pack failed, fall back)
       if (!res.ok && !data.contextId && !data.answer) {
+        const where = canExternal ? "Function App" : "SWA";
         pushAssistant(
-          `Buddy could not finish prepare via SWA (HTTP ${res.status || "?"}). Try again in a moment.`
+          `Buddy could not finish prepare via ${where} (HTTP ${res.status || "?"}). Try again in a moment.`
         );
-        if (els.askStatus) els.askStatus.textContent = "SWA";
+        if (els.askStatus) els.askStatus.textContent = where;
       } else if (data.answer && !data.contextId) {
         // Unexpected full answer from prepare path
         applyAskResult(data, res);
@@ -4705,9 +4746,11 @@
           }
         } else if (!res.ok) {
           pushAssistant(
-            "Buddy hit a gateway timeout before finishing. Ask again with a shorter question."
+            canExternal
+              ? `Buddy hit an error before finishing (HTTP ${res.status || "?"}). Try again.`
+              : "Buddy hit a gateway timeout on SWA (~45s). Refresh, confirm BUDDY_SESSION_SECRET is on the Static Web App, and retry — status should say Function App."
           );
-          if (els.askStatus) els.askStatus.textContent = "Fast";
+          if (els.askStatus) els.askStatus.textContent = canExternal ? "Function App" : "SWA";
         } else {
           pushAssistant(
             data.error ||
@@ -4741,9 +4784,11 @@
           }
         } else if (!res.ok) {
           pushAssistant(
-            "Buddy hit a gateway timeout before finishing. Ask again with a shorter question."
+            canExternal
+              ? `Buddy hit an error before finishing (HTTP ${res.status || "?"}). Try again.`
+              : "Buddy hit a gateway timeout on SWA (~45s). Refresh, confirm BUDDY_SESSION_SECRET is on the Static Web App, and retry — status should say Function App."
           );
-          if (els.askStatus) els.askStatus.textContent = "Fast";
+          if (els.askStatus) els.askStatus.textContent = canExternal ? "Function App" : "SWA";
         } else {
           pushAssistant(
             data.error ||
