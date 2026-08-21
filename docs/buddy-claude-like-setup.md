@@ -51,7 +51,7 @@ Add:
 
 | Name | Value |
 |---|---|
-| `BUDDY_API_BASE` | `https://ora-buddy-api-hrdbgqh9cvaub5ft.eastus2-01.azurewebsites.net` |
+| `BUDDY_API_BASE` | `https://ora-buddy-api-hrdbgqh9cvaub5ft.eastus2-01.azurewebsites.net` (**must** include `https://` — host-only becomes a relative path and 405s) |
 | `BUDDY_SESSION_SECRET` | **Exact same** string as on the Function App |
 
 ### Make a secret (bash / Git Bash / WSL / macOS)

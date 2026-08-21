@@ -1100,12 +1100,17 @@ app.http("buddySession", {
           request
         );
       }
-      const apiBase = String(
+      // Host-only env (no https://) becomes a relative URL in the browser → 405 on SWA.
+      let apiBase = String(
         process.env.BUDDY_API_BASE ||
           "https://ora-buddy-api-hrdbgqh9cvaub5ft.eastus2-01.azurewebsites.net"
       )
         .trim()
-        .replace(/\/$/, "");
+        .replace(/\/$/, "")
+        .replace(/^\/+/, "");
+      if (apiBase && !/^https?:\/\//i.test(apiBase)) {
+        apiBase = `https://${apiBase}`;
+      }
       return json(
         200,
         {
@@ -1648,12 +1653,16 @@ app.http("buddyAskBridge", {
       return handleAskRequest(request, context, { requireCopilotKey: false });
     }
 
-    const faBase = String(
+    let faBase = String(
       process.env.BUDDY_API_BASE ||
         "https://ora-buddy-api-hrdbgqh9cvaub5ft.eastus2-01.azurewebsites.net"
     )
       .trim()
-      .replace(/\/$/, "");
+      .replace(/\/$/, "")
+      .replace(/^\/+/, "");
+    if (faBase && !/^https?:\/\//i.test(faBase)) {
+      faBase = `https://${faBase}`;
+    }
 
     // No FA configured — fall through to local SWA ask (45s).
     if (!faBase || !sessionSecret()) {

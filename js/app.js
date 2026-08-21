@@ -1129,10 +1129,25 @@
   const DEFAULT_BUDDY_API_BASE =
     "https://ora-buddy-api-hrdbgqh9cvaub5ft.eastus2-01.azurewebsites.net";
 
+  /** Host-only env values become relative URLs → 405 on SWA. Always force absolute https. */
+  function normalizeBuddyApiBase(raw) {
+    let s = String(raw || "")
+      .trim()
+      .replace(/\/$/, "");
+    if (!s) return "";
+    if (/^https?:\/\//i.test(s)) return s;
+    // Strip accidental leading slashes from pasted hostnames
+    s = s.replace(/^\/+/, "");
+    if (/^[a-z0-9.-]+\.[a-z]{2,}(\/|$)/i.test(s) || /azurewebsites\.net/i.test(s)) {
+      return `https://${s}`;
+    }
+    return s;
+  }
+
   function buddyApiBaseRaw() {
-    return String(
+    return normalizeBuddyApiBase(
       state.buddyApiBase || window.BUDDY_API_BASE || DEFAULT_BUDDY_API_BASE || ""
-    ).replace(/\/$/, "");
+    );
   }
 
   function buddyAskUrl(path, { external = false } = {}) {
@@ -1177,9 +1192,10 @@
         body: JSON.stringify({ user: state.entraUser || undefined })
       });
       const data = await res.json().catch(() => ({}));
-      const apiBase = String(
+      // SWA app setting often pastes host-only → relative URL → 405 on white-river/.../ora-buddy-api...
+      const apiBase = normalizeBuddyApiBase(
         data.apiBase || window.BUDDY_API_BASE || DEFAULT_BUDDY_API_BASE || ""
-      ).replace(/\/$/, "");
+      );
       if (data.ok && data.token && apiBase) {
         // Mint succeeded — use Function App. Do NOT CORS-probe-and-discard (that
         // falsely told people the SWA secret was missing).
@@ -4879,7 +4895,7 @@
           pushAssistant(
             canExternal
               ? `Buddy hit an error before finishing (HTTP ${res.status || "?"}). Try again.`
-              : "Buddy hit a gateway timeout on SWA (~45s). Refresh, confirm BUDDY_SESSION_SECRET is on the Static Web App, and retry — status should say Function App."
+              : `Buddy hit a gateway on SWA (~45s). Status should say Function App. Mint: ${session.mintError || "n/a"}. If secret is set, check Portal → ora-buddy-api → CORS allows this site, then hard-refresh.`
           );
           if (els.askStatus) els.askStatus.textContent = canExternal ? "Function App" : "SWA";
         } else {
@@ -4917,7 +4933,7 @@
           pushAssistant(
             canExternal
               ? `Buddy hit an error before finishing (HTTP ${res.status || "?"}). Try again.`
-              : "Buddy hit a gateway timeout on SWA (~45s). Refresh, confirm BUDDY_SESSION_SECRET is on the Static Web App, and retry — status should say Function App."
+              : `Buddy hit a gateway on SWA (~45s). Status should say Function App. Mint: ${session.mintError || "n/a"}. If secret is set, check Portal → ora-buddy-api → CORS allows this site, then hard-refresh.`
           );
           if (els.askStatus) els.askStatus.textContent = canExternal ? "Function App" : "SWA";
         } else {
