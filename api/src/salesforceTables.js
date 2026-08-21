@@ -349,12 +349,52 @@ function closeInYear(closeDate, year) {
   return closeYear(closeDate) === year;
 }
 
+/**
+ * SF opportunity dollars for Buddy: Total Ora Net Revenue — never standard Amount (contract).
+ * Override with SF_OPP_REVENUE_FIELD if the API name differs in the org.
+ */
+const SF_OPP_REVENUE_FIELD_CANDIDATES = [
+  process.env.SF_OPP_REVENUE_FIELD,
+  "Total_Ora_Net_Revenue__c",
+  "Total_Ora_Net_Rev__c",
+  "Ora_Net_Revenue__c",
+  "Total_Ora_Net_Revenue"
+].filter(Boolean);
+
+function pickOppRevenue(o) {
+  if (!o || typeof o !== "object") return { value: null, field: null };
+  for (const f of SF_OPP_REVENUE_FIELD_CANDIDATES) {
+    if (o[f] != null && o[f] !== "") {
+      const n = Number(o[f]);
+      if (Number.isFinite(n)) return { value: n, field: f };
+    }
+  }
+  for (const k of Object.keys(o)) {
+    if (/^total_?ora_?net_?rev/i.test(k) || /total.?ora.?net.?revenue/i.test(k)) {
+      if (o[k] != null && o[k] !== "") {
+        const n = Number(o[k]);
+        if (Number.isFinite(n)) return { value: n, field: k };
+      }
+    }
+  }
+  return { value: null, field: null };
+}
+
+function oppRevenueNumber(o) {
+  const picked = pickOppRevenue(o);
+  return picked.value != null && Number.isFinite(picked.value) ? picked.value : 0;
+}
+
 function mapOppRow(o, accountNameById = null) {
+  const rev = pickOppRevenue(o);
   return {
     id: o.id || o.Id,
     name: o.Name,
     stage: o.StageName,
-    amount: o.Amount != null ? Number(o.Amount) : null,
+    // amount = Total Ora Net Revenue (not Amount / contract)
+    amount: rev.value,
+    amountField: rev.field || "Total_Ora_Net_Revenue__c",
+    contractAmount: o.Amount != null ? Number(o.Amount) : null,
     closeDate: o.CloseDate || null,
     accountId: o.AccountId || null,
     accountName: (accountNameById && o.AccountId && accountNameById.get(o.AccountId)) || null,
@@ -386,7 +426,7 @@ async function buildSalesforceBuddyContext(getDb, ops = {}) {
   const out = {
     source: "salesforce_cosmos",
     note:
-      "Live Salesforce mirrors in Cosmos (ora_sf_*). Aggregates scan ALL opportunity rows — not a sample. Prefer this pack for CRM/pipeline; portfolio.byClient is Ora bid fees only.",
+      "Live Salesforce mirrors in Cosmos (ora_sf_*). Opportunity dollars = Total Ora Net Revenue (Total_Ora_Net_Revenue__c) — never Amount/contract. Aggregates scan ALL opportunity rows. Prefer this pack for CRM/pipeline; portfolio.byClient is Ora bid fees only.",
     counts,
     query: { nameHint, clientName, intent },
     accounts: [],
@@ -409,7 +449,8 @@ async function buildSalesforceBuddyContext(getDb, ops = {}) {
     // Full lean scan of opportunities (6k rows is fine for Cosmos SQL)
     const allOpps = await queryAll(
       database.container("ora_sf_opportunity"),
-      `SELECT c.id, c.Name, c.StageName, c.Amount, c.CloseDate, c.AccountId, c.OwnerName, c.IsClosed, c.IsWon
+      `SELECT c.id, c.Name, c.StageName, c.Amount, c.Total_Ora_Net_Revenue__c, c.CloseDate,
+              c.AccountId, c.OwnerName, c.IsClosed, c.IsWon
        FROM c WHERE c.docType = @t`,
       [{ name: "@t", value: "ora_sf_opportunity" }]
     );
@@ -418,6 +459,7 @@ async function buildSalesforceBuddyContext(getDb, ops = {}) {
     let openAmount = 0;
     let closedWonCount = 0;
     let closedWonAmount = 0;
+    let revenueFieldHits = 0;
     const byStage = {};
     const openByOwner = {};
     const wonByYear = {};
@@ -426,7 +468,9 @@ async function buildSalesforceBuddyContext(getDb, ops = {}) {
     for (const o of allOpps) {
       const stage = String(o.StageName || "Unknown");
       byStage[stage] = (byStage[stage] || 0) + 1;
-      const amt = Number(o.Amount) || 0;
+      const rev = pickOppRevenue(o);
+      if (rev.field) revenueFieldHits += 1;
+      const amt = rev.value != null ? rev.value : 0;
       const open = isOppOpen(o);
       if (open) {
         openCount += 1;
@@ -455,7 +499,11 @@ async function buildSalesforceBuddyContext(getDb, ops = {}) {
     out.pipelineSummary = {
       universe: allOpps.length,
       scannedAll: true,
-      sampleNote: "NOT a sample — counts cover every ora_sf_opportunity row in Cosmos.",
+      revenueField: "Total_Ora_Net_Revenue__c",
+      revenueFieldLabel: "Total Ora Net Revenue",
+      revenueFieldHits,
+      sampleNote:
+        "NOT a sample — counts cover every ora_sf_opportunity row. Dollars = Total Ora Net Revenue (not Amount/contract).",
       openCount,
       openAmountSum: Math.round(openAmount),
       closedWonCount,
@@ -522,25 +570,26 @@ async function buildSalesforceBuddyContext(getDb, ops = {}) {
         const owner = String(o.OwnerName || "Unknown");
         if (!byOwnerYear[owner]) byOwnerYear[owner] = { owner, n: 0, amountSum: 0 };
         byOwnerYear[owner].n += 1;
-        byOwnerYear[owner].amountSum += Number(o.Amount) || 0;
+        byOwnerYear[owner].amountSum += oppRevenueNumber(o);
       }
       out.yearSlice = {
         year: intent.year,
         calendar: true,
+        revenueField: "Total_Ora_Net_Revenue__c",
         closedWonCount: yearWon.length,
-        closedWonAmountSum: Math.round(yearWon.reduce((s, o) => s + (Number(o.Amount) || 0), 0)),
+        closedWonAmountSum: Math.round(yearWon.reduce((s, o) => s + oppRevenueNumber(o), 0)),
         openWithCloseDateInYear: yearOpen.length,
         closedWonByOwner: Object.values(byOwnerYear)
           .sort((a, b) => b.amountSum - a.amountSum)
           .slice(0, 25)
           .map((r) => ({ ...r, amountSum: Math.round(r.amountSum) })),
-        note: `Filtered ALL ${allOpps.length} Cosmos opportunities by CloseDate year=${intent.year}.`
+        note: `Filtered ALL ${allOpps.length} Cosmos opportunities by CloseDate year=${intent.year}. Dollars = Total Ora Net Revenue (not Amount/contract).`
       };
     }
 
     out.filteredOpportunities = filtered
       .slice()
-      .sort((a, b) => (Number(b.Amount) || 0) - (Number(a.Amount) || 0))
+      .sort((a, b) => oppRevenueNumber(b) - oppRevenueNumber(a))
       .slice(0, 40)
       .map((o) => mapOppRow(o, accountNameById));
 
@@ -629,6 +678,7 @@ async function buildSalesforceBuddyContext(getDb, ops = {}) {
   out.elapsedMs = Date.now() - started;
   out.rules = [
     "CRITICAL: pipelineSummary.scannedAll=true means counts are over EVERY Cosmos opportunity — never call this a sample of 200.",
+    "CRITICAL: Opportunity dollars / revenue / pipeline $ = Total Ora Net Revenue (Total_Ora_Net_Revenue__c). NEVER use Amount (contract value) for SF revenue.",
     "CRITICAL: Never ask the user for a Salesforce CSV / export when counts > 0. Answer from this pack (openAccounts, filteredOpportunities, yearSlice, pipelineSummary).",
     "Open pipeline = pipelineSummary.openCount / openAccounts / opportunities where isOpen. Closed Won for a year = yearSlice when query.intent.year is set.",
     "PRIORITY: CRM/pipeline/owner/tier/AR → this pack. portfolio.byClient = Ora uploaded bid fees only — different source.",

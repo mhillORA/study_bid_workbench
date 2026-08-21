@@ -47,7 +47,8 @@ const PORTFOLIO_RULES =
   "use context.portfolio.byClient: studyCount + grandTotal (or serviceFees). That is Ora bid/service-fee dollars from uploaded budgets — NOT the sponsor's corporate revenue, CHF/USD billions, 10-K filings, or web market caps. " +
   "Label clearly as Ora fees / bid totals. Sort by grandTotal (fallback serviceFees). Cite studiesWithMoneyCount when some clients lack money. " +
   "When the user asks about Salesforce / CRM / pipeline / opportunities / stages / amounts / Activity Requests / account owner / tier / Ora grouping — " +
-  "use context.intelligence.salesforceData (and sponsorCrosswalk). Do NOT substitute portfolio.byClient for CRM pipeline Amount/Stage. " +
+  "use context.intelligence.salesforceData (and sponsorCrosswalk). SF revenue dollars = Total Ora Net Revenue (amount in the pack / pipelineSummary openAmountSum) — NEVER Amount/contract. " +
+  "Do NOT substitute portfolio.byClient for CRM pipeline revenue/Stage. " +
   "If salesforceData.counts show rows > 0, you HAVE Salesforce data — lead with it for those asks. " +
   "Only use web company revenue when they explicitly ask for the sponsor's own company revenue, biggest pharma by market revenue, filings, or similar public facts. " +
   "If context.moneyIntent is \"ora_earned\", you MUST use portfolio byClient and MUST NOT web-search sponsor corporate revenue. " +
@@ -112,7 +113,7 @@ const INTELLIGENCE_RULES = [
   "• Ops briefing (section status, fill requests, what to do next) → workingStudy.sectionStatus / requests / drivers; suggest NAVIGATE:ops or NAVIGATE:reviews.",
   "• Legacy recruitment board / anterior overview (no indication) → legacyAnterior trust + topByEnrolled / counts. If enrollmentIncluded or htmlTable present, list enrollment; never ask user to paste the table.",
   "• Sponsor already in SF? BD owner / tier / Ora grouping? → intelligence.sponsorCrosswalk (sf_owner, tier, ora_grouping). Crosswalk dashboard (no sponsor named) → intelligence.crosswalkOverview (totalCount, statusRank, tierRank, noSfMatchSample).",
-  "• Salesforce Accounts / Opportunities / Activity Requests (ARs) → intelligence.salesforceData. Use pipelineSummary (scannedAll=true over ALL Cosmos opps), openAccounts, filteredOpportunities, yearSlice, ownerBreakdown. NEVER call pipelineSummary a 200-row sample. NEVER ask for a Salesforce CSV/export when counts > 0 — answer from the pack. Prefer this over portfolio.byClient for CRM/pipeline/owner/tier/AR. If yearSlice.closedWonCount is 0, say zero for that year (offer closedWonByYear). For HTML visuals include Owner on every row.",
+  "• Salesforce Accounts / Opportunities / Activity Requests (ARs) → intelligence.salesforceData. Use pipelineSummary (scannedAll=true over ALL Cosmos opps), openAccounts, filteredOpportunities, yearSlice, ownerBreakdown. SF $ = Total Ora Net Revenue — never Amount/contract. NEVER call pipelineSummary a 200-row sample. NEVER ask for a Salesforce CSV/export when counts > 0 — answer from the pack. Prefer this over portfolio.byClient for CRM/pipeline/owner/tier/AR. If yearSlice.closedWonCount is 0, say zero for that year (offer closedWonByYear). For HTML visuals include Owner on every row.",
   "• NCT lookup → intelligence.nctLookup (TrialHub) and/or intelligence.ctgovNct / ctgov.",
   "• CT.gov dashboard / registry overview (no indication named) → intelligence.ctgovOverview (totalCount, indicationRank, statusRank, recentSample, countryRank). If totalCount > 0 you HAVE data — never say CT.gov is empty.",
   "• CT.gov by indication → intelligence.ctgov (trialCount, sample, recruitingSample).",
@@ -1599,14 +1600,21 @@ function formatCosmosFactsBlock(context) {
       if (sf.pipelineSummary) {
         const ps = sf.pipelineSummary;
         sfLines.push(
-          `pipelineSummary (FULL SCAN universe=${ps.universe ?? "—"} scannedAll=${ps.scannedAll === true}): ` +
-            `openOpps=${ps.openCount ?? "—"} · openAmountSum=${
+          `pipelineSummary (FULL SCAN universe=${ps.universe ?? "—"} scannedAll=${ps.scannedAll === true}; $ field=${
+            ps.revenueFieldLabel || "Total Ora Net Revenue"
+          }): ` +
+            `openOpps=${ps.openCount ?? "—"} · openOraNetRevenueSum=${
               ps.openAmountSum == null ? "—" : ps.openAmountSum
-            } · closedWonAllYears=${ps.closedWonCount ?? "—"} · closedWonAmountSum=${
+            } · closedWonAllYears=${ps.closedWonCount ?? "—"} · closedWonOraNetRevenueSum=${
               ps.closedWonAmountSum == null ? "—" : ps.closedWonAmountSum
             }`
         );
         if (ps.sampleNote) sfLines.push(`  note: ${ps.sampleNote}`);
+        if (ps.revenueFieldHits === 0 && (ps.universe || 0) > 0) {
+          sfLines.push(
+            "  WARN: No Total_Ora_Net_Revenue__c values on Cosmos opps yet — re-run Ingest SF. Do NOT fall back to Amount/contract."
+          );
+        }
         for (const s of (ps.stageCounts || []).slice(0, 12)) {
           sfLines.push(`  - stage ${s.stage}: ${s.n}`);
         }
@@ -1653,7 +1661,7 @@ function formatCosmosFactsBlock(context) {
         sfLines.push(`  - AR ${ar.name || ar.id || "?"} | status=${ar.status || "—"}`);
       }
       sfLines.push(
-        "RULE: scannedAll=true → these are FULL Cosmos totals, not a sample. NEVER ask for CSV/export. NEVER say you lack year filters when yearSlice is present. Answer open/Closed Won/owner from openAccounts / filteredOpportunities / yearSlice. Never use portfolio.byClient as SF Amount."
+        "RULE: scannedAll=true → FULL Cosmos totals. SF $ = Total Ora Net Revenue only — never Amount/contract. NEVER ask for CSV/export. Answer open/Closed Won/owner from openAccounts / filteredOpportunities / yearSlice. Never use portfolio.byClient as SF revenue."
       );
     }
     blocks.push(sfLines.join("\n"));

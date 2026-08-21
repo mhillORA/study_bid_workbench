@@ -536,6 +536,7 @@ const LEAN_OBJECT_FIELDS = {
     "AccountId",
     "StageName",
     "Amount",
+    "Total_Ora_Net_Revenue__c",
     "CloseDate",
     "Owner.Name",
     "OwnerId",
