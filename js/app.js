@@ -1144,8 +1144,18 @@
     return apiUrl(apiPath);
   }
 
-  /** Mint JWT for Function App visual hops. No-op if SWA secret missing. */
+  /** Mint JWT for Function App. No-op if SWA secret missing. */
   async function ensureBuddySession() {
+    if (state._buddyExternalDisabled) {
+      return {
+        ok: true,
+        token: null,
+        apiBase: "",
+        external: false,
+        useLocalApi: true,
+        mintError: "external_disabled"
+      };
+    }
     const now = Date.now();
     if (
       state.buddySessionToken &&
@@ -1171,6 +1181,22 @@
         data.apiBase || window.BUDDY_API_BASE || DEFAULT_BUDDY_API_BASE || ""
       ).replace(/\/$/, "");
       if (data.ok && data.token && apiBase) {
+        // CORS probe — don't steer the browser at FA if preflight won't allow this origin.
+        const corsOk = await probeBuddyExternalCors(apiBase);
+        if (!corsOk) {
+          console.warn("[Buddy] Function App CORS probe failed — staying on SWA", apiBase);
+          state._buddyExternalDisabled = true;
+          state.buddySessionToken = null;
+          state.buddyApiBase = "";
+          return {
+            ok: true,
+            token: null,
+            apiBase: "",
+            external: false,
+            useLocalApi: true,
+            mintError: "cors_probe_failed"
+          };
+        }
         state.buddySessionToken = data.token;
         state.buddyApiBase = apiBase;
         state._buddyPreferExternal = true;
@@ -1206,6 +1232,37 @@
         mintError: String(err.message || err)
       };
     }
+  }
+
+  /** Browser preflight must allow this page's origin against the Function App. */
+  async function probeBuddyExternalCors(apiBase) {
+    const base = String(apiBase || "").replace(/\/$/, "");
+    if (!base) return false;
+    try {
+      const r = await fetch(`${base}/api/ask`, {
+        method: "OPTIONS",
+        headers: {
+          "Access-Control-Request-Method": "POST",
+          "Access-Control-Request-Headers": "authorization,content-type"
+        }
+      });
+      if (!(r.status === 204 || r.status === 200)) return false;
+      const acao = String(r.headers.get("access-control-allow-origin") || "").replace(/\/$/, "");
+      const here = String(window.location.origin || "").replace(/\/$/, "");
+      return acao === "*" || (acao && here && acao === here);
+    } catch (err) {
+      console.warn("[Buddy] CORS probe error", err);
+      return false;
+    }
+  }
+
+  function disableBuddyExternal(reason) {
+    console.warn("[Buddy] disabling Function App hops:", reason);
+    state._buddyExternalDisabled = true;
+    state.buddySessionToken = null;
+    state.buddyApiBase = "";
+    state._buddyPreferExternal = false;
+    state.buddySessionExpiresAt = 0;
   }
 
   const STUDY_HEADER_FIELDS = [
@@ -4478,8 +4535,10 @@
       };
 
       async function buddyHop(path, bodyExtra, statusText, hopOpts = {}) {
-        // Prefer Function App whenever session exists (CORS fixed). Pass external:false to force SWA.
-        const preferExternal = hopOpts.external !== false;
+        // Prefer Function App whenever session exists. Pass external:false to force SWA.
+        // Visuals use same-origin /api/buddy/ask bridge (hopOpts.bridge) — avoids FA CORS 405.
+        const useBridge = Boolean(hopOpts.bridge);
+        const preferExternal = !useBridge && hopOpts.external !== false;
         const useExternal = Boolean(preferExternal && canExternal && state.buddySessionToken);
         if (els.askStatus && statusText) els.askStatus.textContent = statusText;
         const hopController =
@@ -4488,7 +4547,8 @@
         if (askController && hopController) {
           askController.signal.addEventListener("abort", onAbort, { once: true });
         }
-        const hopTimeoutMs = useExternal ? externalHopTimeoutMs : swaHopTimeoutMs;
+        // Bridge is same-origin SWA but waits on FA upstream — give it the long timeout.
+        const hopTimeoutMs = useExternal || useBridge ? externalHopTimeoutMs : swaHopTimeoutMs;
         const hopTimer = hopController
           ? setTimeout(() => hopController.abort(), hopTimeoutMs)
           : null;
@@ -4496,14 +4556,33 @@
         if (useExternal && state.buddySessionToken) {
           headers.Authorization = `Bearer ${state.buddySessionToken}`;
         }
+        const url = useBridge
+          ? apiUrl("/api/buddy/ask")
+          : buddyAskUrl(path, { external: useExternal });
         let res;
         try {
-          res = await fetch(buddyAskUrl(path, { external: useExternal }), {
+          res = await fetch(url, {
             method: "POST",
             headers,
             signal: hopController ? hopController.signal : askController?.signal,
             body: JSON.stringify({ ...askPayload, ...bodyExtra })
           });
+        } catch (fetchErr) {
+          if (hopTimer) clearTimeout(hopTimer);
+          if (askController && hopController) {
+            askController.signal.removeEventListener("abort", onAbort);
+          }
+          // Browser CORS / network failure on FA — disable and retry SWA once.
+          if (useExternal && !bodyExtra?._corsRetry) {
+            disableBuddyExternal(String(fetchErr.message || fetchErr));
+            return buddyHop(
+              path,
+              { ...bodyExtra, _corsRetry: true },
+              statusText ? `${statusText} · SWA fallback…` : "SWA fallback…",
+              { ...hopOpts, external: false, bridge: hopOpts.bridge }
+            );
+          }
+          throw fetchErr;
         } finally {
           if (hopTimer) clearTimeout(hopTimer);
           if (askController && hopController) {
@@ -4525,9 +4604,28 @@
             return buddyHop(path, { ...bodyExtra, _sessionRetry: true }, statusText, hopOpts);
           }
         }
+        // FA 405 (CORS/method stack) — fall back to same-origin bridge or SWA.
+        if (useExternal && res.status === 405 && !bodyExtra?._method405Retry) {
+          disableBuddyExternal(`HTTP 405 from ${url}`);
+          if (hopOpts.bridge !== false && (bodyExtra?.askPhase === "visual" || hopOpts.wantBridge)) {
+            return buddyHop(
+              path,
+              { ...bodyExtra, _method405Retry: true },
+              "Deep · leave-behind (bridge)…",
+              { external: false, bridge: true }
+            );
+          }
+          return buddyHop(
+            path,
+            { ...bodyExtra, _method405Retry: true },
+            statusText ? `${statusText} · SWA…` : "SWA…",
+            { ...hopOpts, external: false, bridge: false }
+          );
+        }
         // SWA gateway (502/504) — one retry on Function App if we have a session.
         if (
           !useExternal &&
+          !useBridge &&
           canExternal &&
           state.buddySessionToken &&
           (res.status === 502 || res.status === 504 || res.status === 500) &&
@@ -4537,17 +4635,16 @@
             path,
             { ...bodyExtra, _swaGatewayRetry: true },
             statusText ? `${statusText} · retry Function App…` : "Retry · Function App…",
-            { ...hopOpts, external: true }
+            { ...hopOpts, external: true, bridge: false }
           );
         }
-        return { res, rawText, data, usedExternal: useExternal };
+        return { res, rawText, data, usedExternal: useExternal, usedBridge: useBridge };
       }
 
       async function runVisualHop(contextId, priorAnswer) {
-        const status = canExternal
-          ? "Deep · leave-behind (Function App)…"
-          : "Deep · leave-behind (SWA 45s)…";
-        const vis = await buddyHop(
+        // Prefer same-origin bridge → FA (no browser CORS). Direct FA if bridge unavailable.
+        const status = "Deep · leave-behind…";
+        let vis = await buddyHop(
           "/api/ask",
           {
             askPhase: "visual",
@@ -4555,17 +4652,39 @@
             priorAnswer
           },
           status,
-          { external: true }
+          { bridge: true, external: false, wantBridge: true }
         );
+        if (
+          !vis.data.answer &&
+          !vis.data.htmlReport &&
+          !(vis.data.exports && vis.data.exports.length) &&
+          canExternal &&
+          state.buddySessionToken &&
+          !state._buddyExternalDisabled &&
+          (vis.res.status === 405 || vis.res.status === 404 || !vis.res.ok)
+        ) {
+          vis = await buddyHop(
+            "/api/ask",
+            {
+              askPhase: "visual",
+              contextId,
+              priorAnswer,
+              _bridgeFallback: true
+            },
+            "Deep · leave-behind (Function App)…",
+            { bridge: false, external: true }
+          );
+        }
         if (vis.data.answer || vis.data.htmlReport || (vis.data.exports && vis.data.exports.length)) {
           applyAskResult(vis.data, vis.res);
           return true;
         }
         if (!vis.res.ok || vis.data.softDeadline || vis.data.ok === false) {
           pushAssistant(
-            canExternal
-              ? "Chat is ready — the leave-behind still timed out. Say “spin up the visual” to retry."
-              : "Chat is ready — HTML leave-behinds need the Function App (SWA cuts off at ~45s). Set BUDDY_SESSION_SECRET on SWA, then retry."
+            `Chat is ready — the leave-behind failed (HTTP ${vis.res.status || "?"}). ` +
+              (vis.res.status === 405
+                ? "Visual route hit HTTP 405 — hard-refresh and retry; if it persists, Function App CORS/methods need a redeploy."
+                : "Say “spin up the visual” to retry.")
           );
         }
         return false;

@@ -45,7 +45,7 @@ const { parseBuddyActions } = require("./buddyActions");
 const { maybeHuntAndRetry, toolTraceFromPrefetch } = require("./buddyHunt");
 const { storeAttachments, loadAttachments } = require("./buddyAttachmentVault");
 const { storeAskPack, loadAskPack } = require("./buddyAskPack");
-const { mintBuddySession, assertBuddySession } = require("./buddySession");
+const { mintBuddySession, assertBuddySession, buddySessionRequired, sessionSecret } = require("./buddySession");
 const {
   loadDeptContexts,
   saveDeptContexts,
@@ -99,20 +99,23 @@ function corsHeaders(request = null) {
         .trim()
         .replace(/\/$/, "")
     : "";
+  // Prefer echoing the browser Origin when it matches allow-list (required for CORS).
   let origin = "*";
   if (allowed) {
-    origin = allowed;
-    if (reqOrigin && reqOrigin === allowed) origin = reqOrigin;
+    origin = reqOrigin && reqOrigin === allowed ? reqOrigin : allowed;
+  } else if (reqOrigin) {
+    origin = reqOrigin;
   }
-  const headers = {
+  return {
     "Access-Control-Allow-Origin": origin,
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Access-Control-Allow-Headers":
       "content-type, authorization, x-copilot-key, x-buddy-session",
-    "Access-Control-Max-Age": "86400"
+    "Access-Control-Max-Age": "86400",
+    Vary: "Origin"
+    // No Allow-Credentials — Buddy uses Bearer tokens, not cookies. ACAC on POST
+    // while platform OPTIONS omits it confuses some browsers.
   };
-  if (origin !== "*") headers["Access-Control-Allow-Credentials"] = "true";
-  return headers;
 }
 
 function json(status, body, request = null) {
@@ -1575,6 +1578,158 @@ app.http("ask", {
   authLevel: "anonymous",
   route: "ask",
   handler: async (request, context) => handleAskRequest(request, context, { requireCopilotKey: false })
+});
+
+/**
+ * Nested aliases — some clients/caches still POST /api/ask/visual|answer|prepare.
+ * Flex/CORS stacks have returned 405 on these when missing; keep thin wrappers.
+ */
+app.http("askVisual", {
+  methods: ["POST", "OPTIONS"],
+  authLevel: "anonymous",
+  route: "ask/visual",
+  handler: async (request, context) => {
+    if (request.method === "OPTIONS") return optionsOk(request);
+    const body = await request.json().catch(() => ({}));
+    const fakeReq = {
+      method: "POST",
+      headers: request.headers,
+      json: async () => ({ ...body, askPhase: "visual" })
+    };
+    return handleAskRequest(fakeReq, context, { requireCopilotKey: false });
+  }
+});
+
+app.http("askAnswer", {
+  methods: ["POST", "OPTIONS"],
+  authLevel: "anonymous",
+  route: "ask/answer",
+  handler: async (request, context) => {
+    if (request.method === "OPTIONS") return optionsOk(request);
+    const body = await request.json().catch(() => ({}));
+    const fakeReq = {
+      method: "POST",
+      headers: request.headers,
+      json: async () => ({ ...body, askPhase: "answer" })
+    };
+    return handleAskRequest(fakeReq, context, { requireCopilotKey: false });
+  }
+});
+
+app.http("askPrepare", {
+  methods: ["POST", "OPTIONS"],
+  authLevel: "anonymous",
+  route: "ask/prepare",
+  handler: async (request, context) => {
+    if (request.method === "OPTIONS") return optionsOk(request);
+    const body = await request.json().catch(() => ({}));
+    const fakeReq = {
+      method: "POST",
+      headers: request.headers,
+      json: async () => ({ ...body, askPhase: "prepare" })
+    };
+    return handleAskRequest(fakeReq, context, { requireCopilotKey: false });
+  }
+});
+
+/**
+ * Same-origin bridge (SWA → Function App). Browser never CORS-calls the FA for visuals.
+ * On the Function App itself (BUDDY_REQUIRE_SESSION=1), this just runs ask locally.
+ */
+app.http("buddyAskBridge", {
+  methods: ["POST", "OPTIONS"],
+  authLevel: "anonymous",
+  route: "buddy/ask",
+  handler: async (request, context) => {
+    if (request.method === "OPTIONS") return optionsOk(request);
+
+    // Already on the long-running Function App — handle in-process.
+    if (buddySessionRequired()) {
+      return handleAskRequest(request, context, { requireCopilotKey: false });
+    }
+
+    const faBase = String(
+      process.env.BUDDY_API_BASE ||
+        "https://ora-buddy-api-hrdbgqh9cvaub5ft.eastus2-01.azurewebsites.net"
+    )
+      .trim()
+      .replace(/\/$/, "");
+
+    // No FA configured — fall through to local SWA ask (45s).
+    if (!faBase || !sessionSecret()) {
+      return handleAskRequest(request, context, { requireCopilotKey: false });
+    }
+
+    let bodyText = "";
+    try {
+      bodyText = await request.text();
+    } catch (_) {
+      bodyText = "{}";
+    }
+
+    const user = signedInUserFromRequest(request, null);
+    const minted = mintBuddySession({
+      email: user?.email,
+      name: user?.displayName || user?.firstName,
+      userId: user?.userId || user?.email
+    });
+    if (!minted.ok) {
+      return handleAskRequest(
+        {
+          method: "POST",
+          headers: request.headers,
+          json: async () => {
+            try {
+              return JSON.parse(bodyText || "{}");
+            } catch {
+              return {};
+            }
+          }
+        },
+        context,
+        { requireCopilotKey: false }
+      );
+    }
+
+    const ac = typeof AbortController !== "undefined" ? new AbortController() : null;
+    const timer = ac ? setTimeout(() => ac.abort(), 110000) : null;
+    try {
+      const upstream = await fetch(`${faBase}/api/ask`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${minted.token}`
+        },
+        body: bodyText || "{}",
+        signal: ac ? ac.signal : undefined
+      });
+      const text = await upstream.text();
+      let parsed = null;
+      try {
+        parsed = text ? JSON.parse(text) : {};
+      } catch {
+        parsed = { ok: false, answer: text.slice(0, 500), error: "upstream_non_json" };
+      }
+      return json(upstream.status, parsed, request);
+    } catch (err) {
+      context.warn?.("buddyAskBridge upstream failed", err);
+      return json(
+        200,
+        {
+          ok: false,
+          answer:
+            "Leave-behind bridge could not reach the Function App in time. Try again, or ask without asking for a visual first.",
+          error: String(err.message || err).slice(0, 200),
+          provider: "error",
+          modelTier: "fast",
+          softDeadline: true
+        },
+        request
+      );
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
 });
 
 /** Copilot Studio entry — same Buddy context builder; requires x-copilot-key. */
