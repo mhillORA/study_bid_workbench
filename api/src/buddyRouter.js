@@ -253,6 +253,47 @@ function isCatalogAsk(question) {
   );
 }
 
+/**
+ * Everyday / general AI asks — Foundry answers, Cosmos stays out.
+ * Anything without Ora/workbench domain cues goes here (weather, math, hi, trivia…).
+ */
+function isGeneralKnowledgeAsk(question, { hasOkUpload = false, body = null } = {}) {
+  if (hasOkUpload) return false;
+  if (body?.pendingTask?.type) return false;
+  if (body?.reconcileFollowUp || body?.fillFollowUp) return false;
+  if (body?.compareMode || (Array.isArray(body?.compareStudyIds) && body.compareStudyIds.length >= 2)) {
+    return false;
+  }
+  const q = String(question || "").trim();
+  if (!q) return false;
+
+  // Report / visual production needs the full stack
+  try {
+    if (wantsHtmlVisual(q) || wantsDocumentExport(q)) return false;
+  } catch (_) {
+    /* ignore */
+  }
+
+  const lower = q.toLowerCase();
+
+  // Ora / workbench domain → pull Cosmos
+  if (
+    /\b(ora|cosmos|psm|trialhub|ct\.?\s*gov|clinicaltrials|veeva|feasibility|hlbp|ballpark|sponsor|indication|enroll(?:ment|ed|ing)?|screen(?:ed|ing|fail)?|site\s*score|portfolio|budget|bid|pricing|fee|revenue|alcon|nct-?\d|dry\s*eye|glaucoma|retina|amd|dme|ted\b|cataract|ophthalm|buddy context|opportunity|o-\d{3,}|studies\b|study\b|client|protocol|scorecard|ops dashboard|netsuite)\b/i.test(
+      lower
+    )
+  ) {
+    return false;
+  }
+
+  // Navigate / fill intents are handled elsewhere — if they look like workbench, not general
+  if (/^(?:please\s+)?(?:open|go to|show|switch to|navigate to|take me to)\s+/i.test(q)) {
+    return false;
+  }
+
+  // No Ora cues → Buddy is still AI (Foundry), just without Cosmos
+  return true;
+}
+
 function isAttachmentAnalyzeVerb(question, hasOkUpload) {
   return (
     hasOkUpload &&
@@ -272,7 +313,8 @@ function pickPrimaryIntent(ctx) {
     hasOkUpload,
     attachmentAnalyzeVerb,
     answerFocus,
-    pendingTask
+    pendingTask,
+    generalKnowledgeAsk
   } = ctx;
 
   if (workflow === "teach") return "teach";
@@ -280,6 +322,7 @@ function pickPrimaryIntent(ctx) {
   if (compareAsk) return "compare_studies";
   if (fillFollowUp || pendingTask?.type === "fill" || pendingTask?.type === "hlbp") return "fill_fields";
   if (docExportAsk) return "document_export";
+  if (generalKnowledgeAsk) return "general_chat";
   if (workflow === "hybrid") return "hybrid";
   if (workflow === "budget") return "budget";
   if (workflow === "feasibility") return "feasibility";
@@ -360,8 +403,15 @@ function pickTools(ctx) {
     visualAsk,
     moneyIntent,
     hasOkUpload,
-    buddyMode
+    buddyMode,
+    generalKnowledgeAsk
   } = ctx;
+
+  // General knowledge / math — Foundry only, no Cosmos packs
+  if (intent === "general_chat" || generalKnowledgeAsk) {
+    return ["web_search"];
+  }
+
   const tools = new Set(["cosmos_default"]);
 
   if (cosmosReconciliation || intent === "reconcile") {
@@ -474,12 +524,14 @@ function routeBuddyAsk(input) {
       (hasOkUpload && /\b(create|make|produce|build|generate|draft|export|write)\b/i.test(question)));
   const docExportAsk =
     !attachmentAnalyzeVerb && (wantsDocumentExport(question) || Boolean(visualAsk && hasOkUpload));
+  const generalKnowledgeAsk = isGeneralKnowledgeAsk(question, { hasOkUpload });
+  if (generalKnowledgeAsk) reasons.push("general_knowledge_no_cosmos");
 
   const early = {
     workflow,
     moneyIntent,
-    depth,
-    skipHeavyPortfolio,
+    depth: generalKnowledgeAsk ? "fast" : depth,
+    skipHeavyPortfolio: generalKnowledgeAsk ? true : skipHeavyPortfolio,
     externalFeedAsk,
     catalogAsk,
     cosmosReconciliation,
@@ -489,6 +541,7 @@ function routeBuddyAsk(input) {
     fillFollowUp,
     visualAsk,
     docExportAsk,
+    generalKnowledgeAsk,
     buddyMode,
     pendingTask
   };
@@ -558,13 +611,14 @@ function routeBuddyAsk(input) {
     docExportAsk,
     hasOkUpload,
     attachmentAnalyzeVerb,
-    answerFocus,
+    answerFocus: generalKnowledgeAsk ? "chat" : answerFocus,
     pendingTask,
-    skipHeavyPortfolio,
-    needsFullIntel,
+    skipHeavyPortfolio: generalKnowledgeAsk ? true : skipHeavyPortfolio,
+    needsFullIntel: generalKnowledgeAsk ? false : needsFullIntel,
     visualAsk,
     moneyIntent,
-    buddyMode
+    buddyMode,
+    generalKnowledgeAsk
   };
 
   const intent = pickPrimaryIntent(routeCtx);
@@ -579,6 +633,7 @@ function routeBuddyAsk(input) {
 
   let confidence = "high";
   if (workflow === "auto" && intent === "general") confidence = "medium";
+  if (intent === "general_chat") confidence = "high";
   if (intent === "analyze_attachment" && cosmosReconciliation) confidence = "high";
   if (pendingTask?.type && !reconcileVerbInQuestion(question) && !isAffirmativeFollowUp(question)) {
     if (pendingTask.type === "reconcile" && intent === "reconcile") confidence = "high";
@@ -588,26 +643,27 @@ function routeBuddyAsk(input) {
     phase: "full",
     intent,
     tools,
-    depth,
+    depth: generalKnowledgeAsk ? "fast" : depth,
     workflow,
     moneyIntent,
     buddyMode,
-    answerFocus,
-    studyId,
-    forcePortfolio,
-    crossStudy,
+    answerFocus: generalKnowledgeAsk ? "chat" : answerFocus,
+    studyId: generalKnowledgeAsk ? null : studyId,
+    forcePortfolio: generalKnowledgeAsk ? false : forcePortfolio,
+    crossStudy: generalKnowledgeAsk ? false : crossStudy,
     compareAsk,
     cosmosReconciliation,
     reconcileFollowUp,
     attachmentAnalyzeVerb,
     attachmentDriven,
     fillFollowUp,
-    skipHeavyPortfolio,
+    skipHeavyPortfolio: generalKnowledgeAsk ? true : skipHeavyPortfolio,
     externalFeedAsk,
     catalogAsk,
-    needsFullIntel,
+    needsFullIntel: generalKnowledgeAsk ? false : needsFullIntel,
     visualAsk,
     docExportAsk,
+    generalKnowledgeAsk,
     pendingTask,
     suggestedPendingTask,
     confidence,
@@ -625,5 +681,6 @@ module.exports = {
   lastAssistantAskedForFill,
   reconcileVerbInQuestion,
   inferSuggestedPendingTask,
-  wantsLegacyAnteriorFetch
+  wantsLegacyAnteriorFetch,
+  isGeneralKnowledgeAsk
 };

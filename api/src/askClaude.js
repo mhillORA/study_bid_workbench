@@ -283,6 +283,20 @@ function buddyInstructionsBase() {
 }
 
 function systemPromptFor(context) {
+  // Light lane: math / trivia / everyday — no Ora mega-prompt
+  if (context?.generalKnowledge || context?.answerFocus === "general_chat") {
+    const user = context?.user;
+    const name = user?.firstName ? ` Address ${user.firstName} by name if they greeted you.` : "";
+    return (
+      `You are Buddy, Ora Clinical's sharp assistant in the Study Bid Workbench.` +
+      ` This ask is everyday / general (weather, math, news, chitchat, trivia) — you are still the AI: answer helpfully.` +
+      ` Use web search when you need live facts (weather, news, current events).` +
+      ` Do NOT invent Ora clinical/PSM/portfolio numbers. Do NOT claim you queried Cosmos.` +
+      ` Be warm, brief, and correct. For math: exact form when clean, plus a short decimal.` +
+      ` FORMAT: no markdown # or **; use [[h]]…[[/h]] and [[i]]…[[/i]] sparingly.` +
+      name
+    );
+  }
   const base = buddyInstructionsBase();
   const protocols =
     " Machine protocols: for tab navigation end with NAVIGATE:<sectionId> (hub,buddy,hlbp,ops,studies,versions,intelligence,scorecard,buddy-context,overview,recruitment,clinops,monitoring,smo,summary,reviews,formulas,upload)." +
@@ -1979,14 +1993,22 @@ function withApiVersion(url, apiVersion) {
 /** Remember which Foundry api-version worked — avoid burning 5 serial tries per ask. */
 let _foundryApiVersionCache = null;
 
-function foundryTimeoutMs(tier) {
+function foundryTimeoutMs(tier, deadlineAt = null) {
   const envFast = Number(process.env.BUDDY_FOUNDRY_TIMEOUT_MS || process.env.BUDDY_FOUNDRY_FAST_TIMEOUT_MS);
   const envDeep = Number(process.env.BUDDY_FOUNDRY_DEEP_TIMEOUT_MS);
-  // Deep needs headroom for HTML_REPORT; stay under typical SWA gateway (~100–230s).
+  // SWA API requests hard-cap at ~45s. One Foundry call must finish with margin.
+  let base;
   if (tier === "deep") {
-    return Number.isFinite(envDeep) && envDeep > 5000 ? envDeep : 95000;
+    base = Number.isFinite(envDeep) && envDeep > 5000 ? envDeep : 28000;
+  } else {
+    base = Number.isFinite(envFast) && envFast > 5000 ? envFast : 25000;
   }
-  return Number.isFinite(envFast) && envFast > 5000 ? envFast : 50000;
+  if (deadlineAt != null) {
+    const left = Math.max(0, Number(deadlineAt) - Date.now() - 2500);
+    if (left < 4000) return Math.max(2500, left);
+    base = Math.min(base, left);
+  }
+  return base;
 }
 
 /**
@@ -1994,12 +2016,22 @@ function foundryTimeoutMs(tier) {
  * URL shape:
  *   {project}/agents/{name}/endpoint/protocols/openai/responses?api-version=...
  */
-async function askFoundryAgent({ question, context, history, tier = "deep", agent: agentOverride = null }) {
+async function askFoundryAgent({
+  question,
+  context,
+  history,
+  tier = "deep",
+  agent: agentOverride = null,
+  deadlineAt = null
+}) {
   const agent = agentOverride || foundryAgentConfig(tier);
   if (!agent.enabled) {
     throw new Error(
       `Foundry agent not configured (${agent.reason}, tier=${tier}). Set AZURE_OPENAI_ENDPOINT to the project URL, AZURE_OPENAI_API_KEY, and FOUNDRY_AGENT_NAME_FAST=BudgetBuddy / FOUNDRY_AGENT_NAME_DEEP=BudgetBuddy2.`
     );
+  }
+  if (deadlineAt != null && Number(deadlineAt) - Date.now() < 3000) {
+    throw new Error(`Foundry skipped — ask deadline (${Math.round((deadlineAt - Date.now()) / 1000)}s left)`);
   }
 
   // Dedicated agent URL already binds model + tools. Do NOT send model / agent_reference /
@@ -2044,12 +2076,17 @@ async function askFoundryAgent({ question, context, history, tier = "deep", agen
     "2024-12-01-preview"
   ].filter((v, i, arr) => v && arr.indexOf(v) === i);
 
-  const timeoutMs = foundryTimeoutMs(tier);
+  const timeoutMs = foundryTimeoutMs(tier, deadlineAt);
   const failures = [];
   for (const apiVersion of versions) {
+    if (deadlineAt != null && Number(deadlineAt) - Date.now() < 2500) {
+      failures.push(`deadline → ${Math.round((deadlineAt - Date.now()) / 1000)}s left`);
+      break;
+    }
     const url = withApiVersion(agent.url, apiVersion);
     const ac = typeof AbortController !== "undefined" ? new AbortController() : null;
-    const timer = ac ? setTimeout(() => ac.abort(), timeoutMs) : null;
+    const attemptMs = foundryTimeoutMs(tier, deadlineAt);
+    const timer = ac ? setTimeout(() => ac.abort(), attemptMs) : null;
     let res;
     try {
       res = await fetch(url, {
@@ -2066,8 +2103,9 @@ async function askFoundryAgent({ question, context, history, tier = "deep", agen
       const aborted =
         fetchErr?.name === "AbortError" || /aborted|timeout/i.test(String(fetchErr?.message || ""));
       failures.push(
-        `${apiVersion} → ${aborted ? `timeout ${timeoutMs}ms` : String(fetchErr.message || fetchErr).slice(0, 120)}`
+        `${apiVersion} → ${aborted ? `timeout ${attemptMs}ms` : String(fetchErr.message || fetchErr).slice(0, 120)}`
       );
+      // Timeout or network abort: do not burn more api-versions against the SWA clock.
       if (aborted) break;
       continue;
     }
@@ -2098,7 +2136,7 @@ async function askFoundryAgent({ question, context, history, tier = "deep", agen
         agent: agent.name,
         via: `agent_responses_stream:${apiVersion}`,
         streamed: true,
-        timeoutMs
+        timeoutMs: attemptMs
       };
     }
 
@@ -2350,12 +2388,25 @@ async function askAi(opts) {
   const workflow = opts.context?.workflow || "auto";
   const wantsVisual =
     Boolean(opts.context?.wantsHtmlVisual) || Boolean(opts.context?.wantsDocumentExport);
+  const deadlineAt =
+    opts.deadlineAt != null
+      ? Number(opts.deadlineAt)
+      : Date.now() + Number(process.env.BUDDY_ASK_DEADLINE_MS || 38000);
+  const msLeft = () => Math.max(0, deadlineAt - Date.now());
   let tier =
     opts.tier ||
     inferModelTier(opts.question, opts.body || {}, workflow);
   // Visuals / docs need Deep (BudgetBuddy2) — Fast truncates HTML under gateway limits
   if (wantsVisual) tier = "deep";
   if (tier !== "fast" && tier !== "deep") tier = "fast";
+
+  const visualRetryOn =
+    String(process.env.BUDDY_VISUAL_RETRY || "")
+      .trim()
+      .toLowerCase() === "1" ||
+    String(process.env.BUDDY_VISUAL_RETRY || "")
+      .trim()
+      .toLowerCase() === "true";
 
   const tryProvider = async (label, fn) => {
     try {
@@ -2377,37 +2428,28 @@ async function askAi(opts) {
       context: ctx,
       history: opts.history,
       tier: t,
-      agent: foundryAgentConfig(t)
+      agent: foundryAgentConfig(t),
+      deadlineAt
     });
 
   let result = null;
   if (status.active === "foundry_agent") {
     result = await tryProvider(`foundry_agent_${tier}`, () => callFoundry(tier, opts.context));
 
-    // Visual ask: Deep timed out/failed entirely — one slim Deep shot
-    if (wantsVisual && !result && foundryAgentConfig("deep").enabled) {
+    // Optional second Deep shot for visuals — OFF by default (stacked Deep = SWA 500).
+    if (
+      wantsVisual &&
+      visualRetryOn &&
+      msLeft() > 35000 &&
+      (!result || !answerHasHtmlReport(result.answer)) &&
+      foundryAgentConfig("deep").enabled
+    ) {
       const visualCtx = {
         ...slimContextForRetry(opts.context),
         wantsHtmlVisual: true,
         wantsDocumentExport: Boolean(opts.context?.wantsDocumentExport),
         priorAttempt: {
-          note: "Prior Foundry call failed. Emit a complete HTML_REPORT_START…END feasibility/leave-behind document now."
-        }
-      };
-      result = await tryProvider("foundry_agent_deep_visual_slim", () =>
-        callFoundry("deep", visualCtx)
-      );
-    }
-
-    // Visual miss: Deep answered chat-only — one slim Deep retry that MUST emit HTML_REPORT
-    if (wantsVisual && result && !answerHasHtmlReport(result.answer) && foundryAgentConfig("deep").enabled) {
-      const visualCtx = {
-        ...slimContextForRetry(opts.context),
-        wantsHtmlVisual: true,
-        wantsDocumentExport: Boolean(opts.context?.wantsDocumentExport),
-        priorAttempt: {
-          tier,
-          note: "Prior reply had no HTML_REPORT. This turn MUST emit HTML_REPORT_START … HTML_REPORT_END with a complete HTML document after a 2–4 line chat summary."
+          note: "Prior Foundry call missed HTML_REPORT. Emit a complete HTML_REPORT_START…END document now."
         }
       };
       const visualRetry = await tryProvider("foundry_agent_deep_visual_retry", () =>
@@ -2425,13 +2467,22 @@ async function askAi(opts) {
       }
     }
 
-    // Only escalate Fast→Deep when Fast produced NOTHING usable (non-visual asks).
+    // Escalate Fast→Deep only when Fast failed quickly AND we still have budget.
+    // A timed-out Fast + full Deep was the main SWA gateway 500 pattern.
     const fastEmpty =
       !result ||
       result.provider === "error" ||
       !String(result.answer || "").trim() ||
       /^i could not complete/i.test(String(result.answer || "").trim());
-    if (!wantsVisual && tier === "fast" && fastEmpty && foundryAgentConfig("deep").enabled) {
+    const fastWasTimeout = /timeout|deadline|aborted/i.test(String(lastErr?.message || ""));
+    if (
+      !wantsVisual &&
+      tier === "fast" &&
+      fastEmpty &&
+      !fastWasTimeout &&
+      msLeft() > 38000 &&
+      foundryAgentConfig("deep").enabled
+    ) {
       const deepCtx = {
         ...(opts.context || {}),
         priorAttempt: {
@@ -2452,9 +2503,10 @@ async function askAi(opts) {
         };
       }
     }
-    // Last resort: Fast with trimmed context (chat asks only)
+    // Last resort: Fast with trimmed context (chat asks only) — only with budget left
     if (
       !wantsVisual &&
+      msLeft() > 20000 &&
       (!result || result.provider === "error" || !String(result.answer || "").trim())
     ) {
       const slimCtx = slimContextForRetry(opts.context);
@@ -2474,7 +2526,8 @@ async function askAi(opts) {
       ...result,
       tier: result.escalated ? "deep" : tier,
       modelTier: result.escalated ? "deep" : tier,
-      attempts: attempts.length ? attempts : undefined
+      attempts: attempts.length ? attempts : undefined,
+      deadlineMsLeft: msLeft()
     };
   }
 

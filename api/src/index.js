@@ -39,11 +39,12 @@ const {
 } = require("./rfpPricing");
 const { normalizeBuddyAttachments } = require("./buddyAttachments");
 const { buildBuddyDocExports, wantsDocumentExport } = require("./buddyDocExport");
-const { routeBuddyAsk, isCompareTwoStudiesQuestion, isCrossStudyQuestion } = require("./buddyRouter");
+const { routeBuddyAsk, isCompareTwoStudiesQuestion, isCrossStudyQuestion, isGeneralKnowledgeAsk } = require("./buddyRouter");
 const { fetchBuddyIntelligence, fetchBuddyPortfolio } = require("./buddyCosmosFetch");
 const { parseBuddyActions } = require("./buddyActions");
 const { maybeHuntAndRetry, toolTraceFromPrefetch } = require("./buddyHunt");
 const { storeAttachments, loadAttachments } = require("./buddyAttachmentVault");
+const { storeAskPack, loadAskPack } = require("./buddyAskPack");
 const {
   loadDeptContexts,
   saveDeptContexts,
@@ -93,6 +94,20 @@ function json(status, body) {
     },
     jsonBody: body
   };
+}
+
+/** Soft Buddy reply when SWA would otherwise kill us with a gateway 500. */
+function buddyDeadlineReply(reason) {
+  return json(200, {
+    ok: false,
+    answer:
+      "I ran out of time before the gateway cut me off. Ask again with a shorter question, or split visuals into a follow-up (“spin up a visual” after the chat answer).",
+    error: String(reason || "ask_deadline").slice(0, 200),
+    provider: "error",
+    modelTier: "fast",
+    answerFocus: "error",
+    softDeadline: true
+  });
 }
 
 function headerGet(request, name) {
@@ -1456,6 +1471,63 @@ app.http("ask", {
   handler: async (request, context) => handleAskRequest(request, context, { requireCopilotKey: false })
 });
 
+/** Prepare only — Cosmos/intel pack, no Foundry (SWA hop 1). */
+app.http("askPrepare", {
+  methods: ["POST", "OPTIONS"],
+  authLevel: "anonymous",
+  route: "ask/prepare",
+  handler: async (request, context) => {
+    if (request.method === "OPTIONS") {
+      return handleAskRequest(request, context, { requireCopilotKey: false });
+    }
+    const body = await request.json().catch(() => ({}));
+    const fakeReq = {
+      method: "POST",
+      headers: request.headers,
+      json: async () => ({ ...body, askPhase: "prepare" })
+    };
+    return handleAskRequest(fakeReq, context, { requireCopilotKey: false });
+  }
+});
+
+/** Answer from prepare pack — one Foundry call (SWA hop 2). */
+app.http("askAnswer", {
+  methods: ["POST", "OPTIONS"],
+  authLevel: "anonymous",
+  route: "ask/answer",
+  handler: async (request, context) => {
+    if (request.method === "OPTIONS") {
+      return handleAskRequest(request, context, { requireCopilotKey: false });
+    }
+    const body = await request.json().catch(() => ({}));
+    const fakeReq = {
+      method: "POST",
+      headers: request.headers,
+      json: async () => ({ ...body, askPhase: "answer" })
+    };
+    return handleAskRequest(fakeReq, context, { requireCopilotKey: false });
+  }
+});
+
+/** Visual / HTML report from prepare pack — Deep Foundry only (SWA hop 3). */
+app.http("askVisual", {
+  methods: ["POST", "OPTIONS"],
+  authLevel: "anonymous",
+  route: "ask/visual",
+  handler: async (request, context) => {
+    if (request.method === "OPTIONS") {
+      return handleAskRequest(request, context, { requireCopilotKey: false });
+    }
+    const body = await request.json().catch(() => ({}));
+    const fakeReq = {
+      method: "POST",
+      headers: request.headers,
+      json: async () => ({ ...body, askPhase: "visual" })
+    };
+    return handleAskRequest(fakeReq, context, { requireCopilotKey: false });
+  }
+});
+
 /** Copilot Studio entry — same Buddy context builder; requires x-copilot-key. */
 app.http("copilotAsk", {
   methods: ["POST", "OPTIONS"],
@@ -1463,6 +1535,195 @@ app.http("copilotAsk", {
   route: "copilot/ask",
   handler: async (request, context) => handleAskRequest(request, context, { requireCopilotKey: true })
 });
+
+/**
+ * Phase 2/3 of two-phase ask: load Cosmos pack and call Foundry once.
+ */
+async function handleAskFromPack({
+  request,
+  context,
+  body,
+  askPhase,
+  askDeadlineAt,
+  msLeft,
+  requireCopilotKey
+}) {
+  const pack = await loadAskPack(getDb, body.contextId);
+  if (!pack?.context) {
+    return json(200, {
+      ok: false,
+      answer:
+        "That Buddy prepare pack expired or was not found. Ask again — I’ll pull Ora data fresh.",
+      error: "ask_pack_missing",
+      provider: "error",
+      modelTier: "fast",
+      answerFocus: "error",
+      phase: askPhase
+    });
+  }
+
+  if (msLeft() < 4000) return buddyDeadlineReply("ask_deadline_before_foundry");
+
+  const question = String(body.question || pack.question || "").trim();
+  const history = Array.isArray(body.history)
+    ? body.history
+    : Array.isArray(pack.history)
+      ? pack.history
+      : [];
+  const meta = pack.meta || {};
+  const visualAsk = askPhase === "visual" || Boolean(meta.visualAsk);
+  const docExportAsk = askPhase === "visual" || Boolean(meta.docExportAsk);
+
+  let contextPayload = {
+    ...pack.context,
+    wantsHtmlVisual: askPhase === "visual" ? true : false,
+    wantsDocumentExport: askPhase === "visual" ? Boolean(meta.docExportAsk) : false,
+    askPhase,
+    priorChatAnswer: body.priorAnswer ? String(body.priorAnswer).slice(0, 12000) : null
+  };
+
+  if (askPhase === "visual") {
+    contextPayload = {
+      ...contextPayload,
+      wantsHtmlVisual: true,
+      note:
+        (contextPayload.note || "") +
+        " VISUAL PHASE: Emit HTML_REPORT_START…END with a complete leave-behind after a 2–4 line chat summary. priorChatAnswer may already cover the narrative."
+    };
+  }
+
+  const modelTier =
+    askPhase === "visual" || visualAsk && askPhase !== "answer"
+      ? "deep"
+      : meta.modelTier === "deep"
+        ? "deep"
+        : "fast";
+  // Chat answer hop stays Fast unless user explicitly asked deep and this isn't a deferred visual.
+  const tier =
+    askPhase === "visual"
+      ? "deep"
+      : meta.forceDeepChat || meta.modelTier === "deep"
+        ? "deep"
+        : "fast";
+
+  const firstResult = await askAi({
+    question,
+    context: contextPayload,
+    history,
+    tier,
+    body,
+    deadlineAt: askDeadlineAt
+  });
+
+  let huntOut = await maybeHuntAndRetry({
+    askAi,
+    context: contextPayload,
+    firstResult,
+    question,
+    history,
+    tier,
+    body,
+    initialToolTrace: meta.initialToolTrace || [],
+    toolDeps: {
+      getDb,
+      buildPortfolioContext,
+      loadLiveContext,
+      loadDeptContexts,
+      buildDeptContextForAsk
+    }
+  });
+  if (huntOut.evidence?.cleanAnswer) {
+    huntOut = {
+      ...huntOut,
+      result: { ...huntOut.result, answer: huntOut.evidence.cleanAnswer }
+    };
+  }
+
+  const result = huntOut.result;
+  let answer = result.answer;
+  let docExports = [];
+  let reportTitle = null;
+  const runExport =
+    askPhase === "visual" ||
+    (/HTML_REPORT_START/i.test(String(answer || "")) && askPhase === "answer");
+
+  if (result.provider !== "error" && runExport) {
+    try {
+      const built = await buildBuddyDocExports(answer, question, {
+        wantsHtmlVisual: askPhase === "visual" || Boolean(meta.visualAsk),
+        wantsDocumentExport: Boolean(meta.docExportAsk),
+        intelligence: contextPayload.intelligence,
+        portfolio: contextPayload.portfolio,
+        clientStudy: contextPayload.workingStudy || null
+      });
+      if (built.html) {
+        answer = `${built.answer}\n\nHTML_REPORT_START\n${built.html}\nHTML_REPORT_END`;
+        reportTitle = built.title;
+        docExports = built.exports || [];
+      }
+    } catch (exportErr) {
+      context.warn?.("buddy doc export failed", exportErr);
+    }
+  }
+
+  const actionParse = parseBuddyActions(answer);
+  const llm = providerStatus();
+  const visualPending =
+    askPhase === "answer" && Boolean(meta.visualAsk || meta.docExportAsk);
+
+  return json(200, {
+    ok: result.provider !== "error",
+    phase: askPhase,
+    contextId: pack.contextId || body.contextId,
+    answer: actionParse.cleanAnswer || answer,
+    rawAnswer: answer,
+    actions: actionParse.actions,
+    htmlReport: actionParse.htmlReport,
+    evidence: huntOut.evidence,
+    hunted: Boolean(huntOut.hunted),
+    visualPending,
+    visualAsk: Boolean(meta.visualAsk),
+    suggestedPendingTask: meta.suggestedPendingTask || null,
+    attachmentSessionId: meta.attachmentSessionId || null,
+    attachmentIds: meta.attachmentIds || [],
+    model: result.model,
+    deployment: llm.deployment || result.model || null,
+    displayName: llm.displayName || null,
+    provider: result.provider,
+    agentError: result.agentError || result.error || null,
+    answerFocus: meta.answerFocus || contextPayload.answerFocus || null,
+    workflow: meta.workflow || contextPayload.workflow || "auto",
+    modelTier: result.modelTier || tier || modelTier,
+    escalated: Boolean(result.escalated),
+    agent: result.agent || null,
+    documentTitle: reportTitle,
+    exports: docExports.map((e) =>
+      e.contentBase64
+        ? {
+            format: e.format,
+            filename: e.filename,
+            mimeType: e.mimeType,
+            contentBase64: e.contentBase64
+          }
+        : { format: e.format, ok: false, error: e.error }
+    ),
+    portfolioMatched: contextPayload.portfolio?.matchedStudyCount ?? null,
+    databaseStudyCount: contextPayload.portfolio?.databaseStudyCount ?? null,
+    intelligenceAttached: Boolean(
+      contextPayload.intelligence &&
+        contextPayload.intelligence.source === "ora_clinical_intelligence" &&
+        !contextPayload.intelligence.error
+    ),
+    intelligenceQuery: contextPayload.intelligence?.query || null,
+    buddyDebug: {
+      phase: askPhase,
+      routerIntent: meta.routerIntent || null,
+      twoPhase: true,
+      msLeft: msLeft()
+    },
+    greetedAs: contextPayload.user?.firstName || null
+  });
+}
 
 async function handleAskRequest(request, context, { requireCopilotKey }) {
   if (request.method === "OPTIONS") {
@@ -1475,6 +1736,12 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       }
     };
   }
+
+  // SWA hard-caps each /api request at ~45s. Stay under that or the client sees HTTP 500.
+  const askDeadlineAt =
+    Date.now() +
+    Math.max(15000, Number(process.env.BUDDY_ASK_DEADLINE_MS || 38000) || 38000);
+  const msLeft = () => Math.max(0, askDeadlineAt - Date.now());
 
   try {
     if (requireCopilotKey) {
@@ -1499,7 +1766,74 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         answerFocus: "error"
       });
     }
-    let uploaded = await normalizeBuddyAttachments(body.attachments);
+
+    const askPhase = String(body?.askPhase || body?.phase || "auto").toLowerCase();
+
+    // Two-phase: answer / visual reuse a prepare pack (each hop under SWA 45s).
+    if (
+      (askPhase === "answer" || askPhase === "visual") &&
+      body?.contextId
+    ) {
+      return await handleAskFromPack({
+        request,
+        context,
+        body,
+        askPhase,
+        askDeadlineAt,
+        msLeft,
+        requireCopilotKey
+      });
+    }
+
+    // "hi" alone — tiny Foundry-free reply (still Buddy voice). Anything more
+    // (weather, math, "hey what's…") goes through Foundry light lane below.
+    {
+      const q0 = String(body?.question || "")
+        .toLowerCase()
+        .replace(/[?.!]+$/g, "")
+        .trim();
+      const hasAtt =
+        (Array.isArray(body?.attachments) && body.attachments.length > 0) ||
+        (Array.isArray(body?.priorAttachments) && body.priorAttachments.length > 0) ||
+        (Array.isArray(body?.attachmentIds) && body.attachmentIds.length > 0) ||
+        Boolean(body?.attachmentSessionId);
+      if (
+        q0 &&
+        !hasAtt &&
+        !body?.pendingTask?.type &&
+        /^(hi+|hello|hey+|yo|hiya|howdy|good\s+(morning|afternoon|evening)|thanks|thank\s+you|thx|ty|cheers|bye|goodbye|see\s+ya|ok|okay|cool|great|got\s+it)$/i.test(
+          q0
+        )
+      ) {
+        const user = signedInUserFromRequest(request, body.user || null);
+        const name = user?.firstName || "";
+        const hi = name ? `Hi ${name}` : "Hi";
+        let answer = `${hi} — Buddy here. What do you need?`;
+        if (/^(thanks|thank\s+you|thx|ty|cheers)$/i.test(q0)) answer = "Anytime — what else do you need?";
+        else if (/^(bye|goodbye|see\s+ya)$/i.test(q0)) answer = "Later — I’m here when you need me.";
+        else if (/^(ok|okay|cool|great|got\s+it)$/i.test(q0)) answer = "Got it. What’s next?";
+        return json(200, {
+          ok: true,
+          answer,
+          provider: "instant",
+          modelTier: "fast",
+          agent: "Buddy",
+          answerFocus: "chat",
+          greetedAs: name || null
+        });
+      }
+    }
+
+    let uploaded = { files: [], errors: [] };
+    try {
+      uploaded = await normalizeBuddyAttachments(body.attachments);
+    } catch (attErr) {
+      context.warn?.("normalizeBuddyAttachments failed", attErr);
+      uploaded = {
+        files: [],
+        errors: [String(attErr.message || attErr).slice(0, 200)]
+      };
+    }
     let hasOkUpload = (uploaded.files || []).some((f) => f.ok && f.text);
     const history = body.history || [];
     let attachmentSessionId = body.attachmentSessionId || null;
@@ -1555,6 +1889,47 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         "Please review the attached file(s). Extract key specs, summarize what you found, list gaps, and answer based on the file content.";
     }
     if (!question) return json(400, { error: "question is required (or attach a file)" });
+
+    // Everyday AI (weather, math, news, chitchat+) — Foundry Fast, zero Cosmos
+    if (!hasOkUpload && isGeneralKnowledgeAsk(question, { hasOkUpload: false, body })) {
+      const user = signedInUserFromRequest(request, body.user || null);
+      const historyLite = Array.isArray(history) ? history.slice(-6) : [];
+      if (msLeft() < 4000) return buddyDeadlineReply("ask_deadline_light");
+      const lightResult = await askAi({
+        question,
+        history: historyLite,
+        tier: "fast",
+        body,
+        deadlineAt: askDeadlineAt,
+        context: {
+          user,
+          answerFocus: "general_chat",
+          generalKnowledge: true,
+          workflow: "auto",
+          buddyMode: "chat",
+          askedAt: new Date().toISOString(),
+          note: "Everyday AI ask — answer as Buddy; use web search if needed; no Cosmos packs."
+        }
+      });
+      return json(200, {
+        ok: lightResult.provider !== "error",
+        answer: lightResult.answer,
+        provider: lightResult.provider,
+        agent: lightResult.agent || null,
+        model: lightResult.model,
+        modelTier: "fast",
+        answerFocus: "general_chat",
+        workflow: "auto",
+        phase: "light",
+        buddyDebug: {
+          routerIntent: "general_chat",
+          routerTools: ["web_search"],
+          generalKnowledge: true,
+          cosmosSkipped: true
+        },
+        greetedAs: user?.firstName || null
+      });
+    }
 
     // Route with hints (may refine after client directory from portfolio).
     let hints = inferAskHints(question, body, []);
@@ -1906,7 +2281,13 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
     }
 
     const openStudyId = body.studyId ? String(body.studyId).trim() : null;
-    const modelTier = routerDepth;
+    // Chat hop stays Fast; Deep is reserved for /ask/visual (or explicit deep cue without visual deferral).
+    const forceDeepChat =
+      !visualAsk &&
+      !docExportAsk &&
+      (routerDepth === "deep" ||
+        /\b(go deeper|think harder|deep dive|terra)\b/i.test(question));
+    const modelTier = forceDeepChat ? "deep" : "fast";
     const contextPayload = {
       askedAt: new Date().toISOString(),
       source: requireCopilotKey ? "copilot_studio" : "workbench",
@@ -2089,20 +2470,91 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       buildDeptContextForAsk
     };
 
+    // Phase 1 (prepare): persist pack and return — Foundry runs on /ask/answer.
+    if (askPhase === "prepare") {
+      const stored = await storeAskPack(getDb, {
+        question,
+        history: Array.isArray(history) ? history.slice(-8) : [],
+        context: contextPayload,
+        meta: {
+          visualAsk: Boolean(visualAsk),
+          docExportAsk: Boolean(docExportAsk),
+          modelTier,
+          forceDeepChat: Boolean(forceDeepChat),
+          answerFocus,
+          workflow: buddyWorkflow,
+          routerIntent,
+          routerTools,
+          suggestedPendingTask: suggestedPendingTask || null,
+          attachmentSessionId: attachmentSessionId || null,
+          attachmentIds: (vaultFileMeta.filter((f) => f.id) || []).map((f) => f.id),
+          initialToolTrace,
+          portfolioMatched: portfolio?.matchedStudyCount ?? null,
+          databaseStudyCount: portfolio?.databaseStudyCount ?? null
+        }
+      });
+      if (!stored.stored) {
+        return json(200, {
+          ok: false,
+          phase: "prepare",
+          answer:
+            "I pulled the ask together but could not stash the prepare pack. Try again in a moment.",
+          error: stored.error || "ask_pack_store_failed",
+          provider: "error",
+          modelTier: "fast"
+        });
+      }
+      return json(200, {
+        ok: true,
+        phase: "prepare",
+        contextId: stored.contextId,
+        visualAsk: Boolean(visualAsk),
+        docExportAsk: Boolean(docExportAsk),
+        modelTier,
+        answerFocus,
+        workflow: buddyWorkflow,
+        attachmentSessionId: attachmentSessionId || null,
+        attachmentIds: (vaultFileMeta.filter((f) => f.id) || []).map((f) => f.id),
+        portfolioMatched: portfolio?.matchedStudyCount ?? null,
+        databaseStudyCount: portfolio?.databaseStudyCount ?? null,
+        intelligenceAttached: Boolean(
+          intelligence && intelligence.source === "ora_clinical_intelligence" && !intelligence.error
+        ),
+        buddyDebug: {
+          routerIntent,
+          routerTools,
+          phase: "prepare",
+          msLeft: msLeft()
+        },
+        statusHint: visualAsk
+          ? "Ora data ready — answering, then building your visual…"
+          : "Ora data ready — asking Buddy…"
+      });
+    }
+
+    if (msLeft() < 5000) return buddyDeadlineReply("ask_deadline_after_prepare");
+
+    // Legacy one-shot: one Foundry call; defer HTML visuals to a follow-up hop.
+    const deferVisual = Boolean(visualAsk || docExportAsk);
+    const chatContext = deferVisual
+      ? { ...contextPayload, wantsHtmlVisual: false, wantsDocumentExport: false }
+      : contextPayload;
+
     // Stack: Node hunts Cosmos / TrialHub / CT.gov → Foundry Fast or Terra answers.
     // Soft-fail: never throws for model/provider errors.
     const firstResult = await askAi({
       question,
-      context: contextPayload,
+      context: chatContext,
       history,
       tier: modelTier,
-      body
+      body,
+      deadlineAt: askDeadlineAt
     });
 
     // If Foundry answer is weak/ungrounded, gap-fill Cosmos packs and ask Foundry once more.
     let huntOut = await maybeHuntAndRetry({
       askAi,
-      context: contextPayload,
+      context: chatContext,
       firstResult,
       question,
       history,
@@ -2129,8 +2581,10 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
     let answer = result.answer;
     let docExports = [];
     let reportTitle = null;
+    let contextIdForVisual = null;
     try {
       if (
+        !deferVisual &&
         result.provider !== "error" &&
         (visualAsk || docExportAsk || /HTML_REPORT_START/i.test(String(answer || "")))
       ) {
@@ -2147,6 +2601,24 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
           reportTitle = built.title;
           docExports = built.exports || [];
         }
+      } else if (deferVisual && result.provider !== "error") {
+        const stored = await storeAskPack(getDb, {
+          question,
+          history: Array.isArray(history) ? history.slice(-8) : [],
+          context: contextPayload,
+          meta: {
+            visualAsk: true,
+            docExportAsk: Boolean(docExportAsk),
+            modelTier: "deep",
+            answerFocus,
+            workflow: buddyWorkflow,
+            routerIntent,
+            suggestedPendingTask: suggestedPendingTask || null,
+            attachmentSessionId: attachmentSessionId || null,
+            attachmentIds: (vaultFileMeta.filter((f) => f.id) || []).map((f) => f.id)
+          }
+        });
+        if (stored.stored) contextIdForVisual = stored.contextId;
       }
     } catch (exportErr) {
       context.warn?.("buddy doc export failed", exportErr);
@@ -2180,6 +2652,10 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       escalated: Boolean(result.escalated),
       agent: result.agent || null,
       documentTitle: reportTitle,
+      visualPending: Boolean(deferVisual && contextIdForVisual),
+      visualAsk: Boolean(visualAsk),
+      contextId: contextIdForVisual,
+      phase: deferVisual ? "answer_deferred_visual" : "auto",
       exports: docExports.map((e) =>
         e.contentBase64
           ? {
@@ -2244,7 +2720,9 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
           intelligence?.query?.indication ||
           intelligence?.indicationBenchmark?.indicationRequested ||
           null,
-        reconciliationPack: intelligence?.attachedFrom === "cosmos_reconciliation"
+        reconciliationPack: intelligence?.attachedFrom === "cosmos_reconciliation",
+        phase: deferVisual ? "auto_defer_visual" : "auto",
+        msLeft: msLeft()
       },
       greetedAs: user?.firstName || user?.displayName || null
     });

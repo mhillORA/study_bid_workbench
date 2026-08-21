@@ -2355,6 +2355,49 @@
     return resolveSectionId(m[1]);
   }
 
+  /** Hi / thanks / bye — answer instantly, no /api/ask. */
+  function matchGreetingOnly(question) {
+    const q = String(question || "")
+      .toLowerCase()
+      .replace(/[?.!]+$/g, "")
+      .trim();
+    if (!q || q.length > 100) return null;
+    if (
+      /^(hi+|hello|hey+|yo|hiya|howdy|good\s+(morning|afternoon|evening)|sup|what'?s\s+up|whats\s+up)(\s+[a-z']+){0,4}$/.test(
+        q
+      )
+    ) {
+      return "hello";
+    }
+    if (/^(thanks|thank\s+you|thx|ty|cheers)(\s+[a-z']+){0,3}$/.test(q)) {
+      return "thanks";
+    }
+    if (/^(bye|goodbye|see\s+ya|later|gotta\s+go)$/.test(q)) {
+      return "bye";
+    }
+    if (/^(ok|okay|cool|great|perfect|got\s+it|sounds\s+good|awesome|nice)(\s+[a-z']+){0,2}$/.test(q)) {
+      return "ack";
+    }
+    return null;
+  }
+
+  function greetingReply(kind) {
+    const name =
+      String(state.entraUser?.givenName || state.entraUser?.firstName || "").trim() ||
+      String(state.entraUser?.displayName || "")
+        .trim()
+        .split(/\s+/)[0] ||
+      "";
+    const hi = name ? `Hi ${name}` : "Hi";
+    if (kind === "thanks") return "Anytime — what else do you need?";
+    if (kind === "bye") return "Later — I’m here when you need me.";
+    if (kind === "ack") return "Got it. What’s next?";
+    const studyBit = hasOpenStudy()
+      ? ` You’ve got [[i]]${state.study.studyId}[[/i]] open.`
+      : " You’re in all-studies / portfolio mode.";
+    return `${hi} — Buddy here.${studyBit} Ask me about fees, feasibility, sites, or drop a file.`;
+  }
+
   function normalizeFieldToken(s) {
     return String(s || "")
       .toLowerCase()
@@ -4013,6 +4056,15 @@
       return;
     }
 
+    const greetOnly = !pendingFiles.length ? matchGreetingOnly(question) : null;
+    if (greetOnly) {
+      pushAssistant(greetingReply(greetOnly));
+      if (els.askStatus) els.askStatus.textContent = "Instant";
+      state.buddyBusy = false;
+      paintBuddyChat();
+      return;
+    }
+
     if (!pendingFiles.length && isBuddyDoMode() && matchHlbpStart(question)) {
       startBlankHlbp();
       openBuddy();
@@ -4153,115 +4205,126 @@
           content: String(t.content || "").slice(0, 4000)
         }));
       const askController = state._askController;
-      // Keep the browser from being the limiting factor on long deep-dive asks.
-      // SWA/API infrastructure may still impose its own ceiling, but Buddy itself
-      // should not abort after ~110s when the model is still working.
-      const askTimeoutMs = Math.max(
-        110000,
-        Number(window.BUDDY_ASK_TIMEOUT_MS || document.body?.dataset?.buddyAskTimeoutMs || 900000) || 900000
+      // Each SWA /api hop must finish under ~45s. Client orchestrates prepare → answer → visual.
+      const hopTimeoutMs = Math.max(
+        50000,
+        Number(window.BUDDY_ASK_HOP_TIMEOUT_MS || 55000) || 55000
       );
-      const askTimer = askController
-        ? setTimeout(() => askController.abort(), askTimeoutMs)
-        : null;
-      let res;
-      try {
-        res = await fetch(apiUrl("/api/ask"), {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          signal: askController ? askController.signal : undefined,
-          body: JSON.stringify({
-            question,
-            buddyMode: "chat",
-            buddyWorkflow: state.buddyWorkflow || "auto",
-            buddyDept: "auto",
-            pendingTask: state.buddyPendingTask || undefined,
-            studyId: wantPortfolio ? undefined : (state.study.studyId || undefined),
-            studySnapshot: wantPortfolio ? undefined : leanStudySnapshot(state.study),
-            portfolio: true,
-            noStudy: portfolioMode || undefined,
-            compareMode: Boolean(compareAsk || compareStudyIds.length >= 2) || undefined,
-            compareStudyIds: compareStudyIds.length >= 2 ? compareStudyIds : undefined,
-            activeTab: state.sectionId,
-            activeTabLabel: (SBW.sections.find((s) => s.id === state.sectionId) || {}).label || state.sectionId,
-            sectionLocks: wantPortfolio ? [] : state.locks || [],
-            editableFields: wantPortfolio ? [] : catalog.slice(0, 120),
-            fieldsByTab: wantPortfolio ? undefined : catalogByTab(catalog.slice(0, 120)),
-            fillFollowUp: Boolean(fillFollowUp),
-            reconcileFollowUp: reconcileFollowUp || undefined,
-            priorAttachments: priorAttachmentsPayload,
-            attachmentSessionId: state.buddyAttachmentSessionId || undefined,
-            attachmentIds:
-              reconcileFollowUp && !pendingFiles.length && state.buddyAttachmentIds?.length
-                ? state.buddyAttachmentIds
-                : undefined,
-            user: state.entraUser || undefined,
-            intelligenceHint: {
-              indication: String(
-                state.intelligence.indication ||
-                  state.scorecard.indication ||
-                  state.study.indication ||
-                  ""
-              ).trim() || undefined,
-              country: state.intelligence.globalRegion
-                ? "Global"
-                : (
-                    (state.intelligence.countries || []).join(", ") ||
-                    (state.scorecard.globalRegion
-                      ? "Global"
-                      : (state.scorecard.countries || []).join(", "))
-                  ) || undefined,
-              countries: state.intelligence.globalRegion
+      const askPayload = {
+        question,
+        buddyMode: "chat",
+        buddyWorkflow: state.buddyWorkflow || "auto",
+        buddyDept: "auto",
+        pendingTask: state.buddyPendingTask || undefined,
+        studyId: wantPortfolio ? undefined : (state.study.studyId || undefined),
+        studySnapshot: wantPortfolio ? undefined : leanStudySnapshot(state.study),
+        portfolio: true,
+        noStudy: portfolioMode || undefined,
+        compareMode: Boolean(compareAsk || compareStudyIds.length >= 2) || undefined,
+        compareStudyIds: compareStudyIds.length >= 2 ? compareStudyIds : undefined,
+        activeTab: state.sectionId,
+        activeTabLabel: (SBW.sections.find((s) => s.id === state.sectionId) || {}).label || state.sectionId,
+        sectionLocks: wantPortfolio ? [] : state.locks || [],
+        editableFields: wantPortfolio ? [] : catalog.slice(0, 120),
+        fieldsByTab: wantPortfolio ? undefined : catalogByTab(catalog.slice(0, 120)),
+        fillFollowUp: Boolean(fillFollowUp),
+        reconcileFollowUp: reconcileFollowUp || undefined,
+        priorAttachments: priorAttachmentsPayload,
+        attachmentSessionId: state.buddyAttachmentSessionId || undefined,
+        attachmentIds:
+          reconcileFollowUp && !pendingFiles.length && state.buddyAttachmentIds?.length
+            ? state.buddyAttachmentIds
+            : undefined,
+        user: state.entraUser || undefined,
+        intelligenceHint: {
+          indication: String(
+            state.intelligence.indication ||
+              state.scorecard.indication ||
+              state.study.indication ||
+              ""
+          ).trim() || undefined,
+          country: state.intelligence.globalRegion
+            ? "Global"
+            : (
+                (state.intelligence.countries || []).join(", ") ||
+                (state.scorecard.globalRegion
+                  ? "Global"
+                  : (state.scorecard.countries || []).join(", "))
+              ) || undefined,
+          countries: state.intelligence.globalRegion
+            ? undefined
+            : state.intelligence.countries?.length
+              ? state.intelligence.countries
+              : state.scorecard.globalRegion
                 ? undefined
-                : state.intelligence.countries?.length
-                  ? state.intelligence.countries
-                  : state.scorecard.globalRegion
-                    ? undefined
-                    : state.scorecard.countries,
-              global: state.intelligence.globalRegion || state.scorecard.globalRegion || undefined
-            },
-            legacyHint: {
-              indication: String(
-                state.intelligence.indication ||
-                  state.scorecard.indication ||
-                  state.study.indication ||
-                  ""
-              ).trim() || undefined
-            },
-            includeLegacyEnrollment: Boolean(state.scorecard.includeLegacy) || undefined,
-            history: historyPayload,
-            attachments: attachmentsPayload
-          })
-        });
-      } finally {
-        if (askTimer) clearTimeout(askTimer);
-      }
-      const rawText = await res.text();
-      let data = {};
-      try {
-        data = rawText ? JSON.parse(rawText) : {};
-      } catch (_) {
-        data = {};
-      }
-      if (/sign in to your account|login\.microsoftonline|AADSTS/i.test(rawText)) {
-        pushAssistant(
-          "Your session expired — sign in again (refresh the page), then retry. Buddy cannot answer while Azure AD is asking for login."
-        );
-        if (els.askStatus) els.askStatus.textContent = "";
-      } else if (data.answer) {
-        applyBuddyAnswer(data.answer, data.exports, {
-          reconcileDone: Boolean(reconcileFollowUp),
-          actions: data.actions,
-          htmlReport: data.htmlReport,
-          evidence: data.evidence
-        });
-        if (data.suggestedPendingTask?.type) {
-          setBuddyPendingTask(data.suggestedPendingTask);
+                : state.scorecard.countries,
+          global: state.intelligence.globalRegion || state.scorecard.globalRegion || undefined
+        },
+        legacyHint: {
+          indication: String(
+            state.intelligence.indication ||
+              state.scorecard.indication ||
+              state.study.indication ||
+              ""
+          ).trim() || undefined
+        },
+        includeLegacyEnrollment: Boolean(state.scorecard.includeLegacy) || undefined,
+        history: historyPayload,
+        attachments: attachmentsPayload
+      };
+
+      async function buddyHop(path, bodyExtra, statusText) {
+        if (els.askStatus && statusText) els.askStatus.textContent = statusText;
+        const hopController =
+          typeof AbortController !== "undefined" ? new AbortController() : null;
+        const onAbort = () => hopController && hopController.abort();
+        if (askController && hopController) {
+          askController.signal.addEventListener("abort", onAbort, { once: true });
         }
+        const hopTimer = hopController
+          ? setTimeout(() => hopController.abort(), hopTimeoutMs)
+          : null;
+        let res;
+        try {
+          res = await fetch(apiUrl(path), {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            signal: hopController ? hopController.signal : askController?.signal,
+            body: JSON.stringify({ ...askPayload, ...bodyExtra })
+          });
+        } finally {
+          if (hopTimer) clearTimeout(hopTimer);
+          if (askController && hopController) {
+            askController.signal.removeEventListener("abort", onAbort);
+          }
+        }
+        const rawText = await res.text();
+        let data = {};
+        try {
+          data = rawText ? JSON.parse(rawText) : {};
+        } catch (_) {
+          data = {};
+        }
+        return { res, rawText, data };
+      }
+
+      function applyAskResult(data, res, { softLabel } = {}) {
         if (data.attachmentSessionId) {
           state.buddyAttachmentSessionId = data.attachmentSessionId;
         }
         if (Array.isArray(data.attachmentIds) && data.attachmentIds.length) {
           state.buddyAttachmentIds = data.attachmentIds;
+        }
+        if (data.suggestedPendingTask?.type) {
+          setBuddyPendingTask(data.suggestedPendingTask);
+        }
+        if (data.answer) {
+          applyBuddyAnswer(data.answer, data.exports, {
+            reconcileDone: Boolean(reconcileFollowUp),
+            actions: data.actions,
+            htmlReport: data.htmlReport,
+            evidence: data.evidence
+          });
         }
         persistBuddyHistory();
         paintBuddyModelLabel();
@@ -4280,11 +4343,13 @@
                 ? "Deep↑"
                 : "Deep"
               : "Fast";
-          const soft = data.provider === "error" || data.ok === false || !res.ok ? " · degraded" : "";
+          const soft =
+            softLabel ||
+            (data.provider === "error" || data.ok === false || (res && !res.ok)
+              ? " · degraded"
+              : "");
           const intentNote = data.buddyDebug?.routerIntent ? ` · ${data.buddyDebug.routerIntent}` : "";
-          const actionNote =
-            data.buddyDebug?.actionCount > 0 ? ` · ${data.buddyDebug.actionCount} action(s)` : "";
-          const huntNote = data.hunted ? " · hunted" : "";
+          const phaseNote = data.phase ? ` · ${data.phase}` : "";
           const agentNote = data.agent ? ` · ${data.agent}` : "";
           const wfNote = data.workflow && data.workflow !== "auto" ? ` · ${data.workflow}` : "";
           const intelBits = [];
@@ -4294,32 +4359,145 @@
             ? ` · Intel${intelBits.length ? ` ${intelBits.join(" / ")}` : ""}`
             : "";
           if (data.answerFocus === "portfolio" && data.databaseStudyCount != null) {
-            els.askStatus.textContent = `${tierLabel}${agentNote}${intentNote}${actionNote}${huntNote}${intelNote} · Cosmos ${data.portfolioMatched ?? "?"} / ${data.databaseStudyCount}${wfNote}${soft}`;
+            els.askStatus.textContent = `${tierLabel}${agentNote}${intentNote}${phaseNote}${intelNote} · Cosmos ${data.portfolioMatched ?? "?"} / ${data.databaseStudyCount}${wfNote}${soft}`;
           } else if (portfolioMode) {
-            els.askStatus.textContent = `${tierLabel}${agentNote}${intentNote}${actionNote}${huntNote}${intelNote}${wfNote}${soft}`;
+            els.askStatus.textContent = `${tierLabel}${agentNote}${intentNote}${phaseNote}${intelNote}${wfNote}${soft}`;
           } else {
             els.askStatus.textContent = hasOpenStudy()
-              ? `${tierLabel}${agentNote}${intentNote}${actionNote}${huntNote}${intelNote} · ${state.study.studyId}${wfNote}${soft}`
-              : `${tierLabel}${agentNote}${intentNote}${actionNote}${huntNote}${intelNote}${wfNote}${soft}`;
+              ? `${tierLabel}${agentNote}${intentNote}${phaseNote}${intelNote} · ${state.study.studyId}${wfNote}${soft}`
+              : `${tierLabel}${agentNote}${intentNote}${phaseNote}${intelNote}${wfNote}${soft}`;
           }
         }
+      }
+
+      // Hop 1: pull Ora / Cosmos (no Foundry)
+      if (els.askStatus) {
+        els.askStatus.textContent = deepCue ? "Deep · pulling Ora data…" : "Fast · pulling Ora data…";
+      }
+      let { res, rawText, data } = await buddyHop(
+        "/api/ask/prepare",
+        { askPhase: "prepare" },
+        deepCue ? "Deep · pulling Ora data…" : "Fast · pulling Ora data…"
+      );
+
+      if (/sign in to your account|login\.microsoftonline|AADSTS/i.test(rawText)) {
+        pushAssistant(
+          "Your session expired — sign in again (refresh the page), then retry. Buddy cannot answer while Azure AD is asking for login."
+        );
+        if (els.askStatus) els.askStatus.textContent = "";
         state.buddyBusy = false;
         state._askController = null;
         if (els.btnAskStop) els.btnAskStop.hidden = true;
         paintBuddyChat();
         return;
-      } else if (!res.ok) {
-        // Gateway/timeout often returns HTML 500/502/504 — never leave the user with a dead 500.
+      }
+
+      // Prepare may short-circuit (instant/light shouldn't hit prepare often; if pack failed, fall back)
+      if (!res.ok && !data.contextId && !data.answer) {
         pushAssistant(
-          "Buddy hit a gateway timeout before finishing. Ask again with a shorter question — Fast answers first; say “go deeper” only if you need a full dump."
+          "Buddy hit a gateway timeout pulling data. Try a shorter question, or ask again in a moment."
         );
         if (els.askStatus) els.askStatus.textContent = "Fast";
+      } else if (data.answer && !data.contextId) {
+        // Unexpected full answer from prepare path
+        applyAskResult(data, res);
+        state.buddyBusy = false;
+        state._askController = null;
+        if (els.btnAskStop) els.btnAskStop.hidden = true;
+        paintBuddyChat();
+        return;
+      } else if (!data.contextId) {
+        // Fall back to legacy one-shot ask
+        ({ res, rawText, data } = await buddyHop(
+          "/api/ask",
+          { askPhase: "auto" },
+          deepCue ? "Deep · asking Buddy…" : "Fast · asking Buddy…"
+        ));
+        if (/sign in to your account|login\.microsoftonline|AADSTS/i.test(rawText)) {
+          pushAssistant(
+            "Your session expired — sign in again (refresh the page), then retry."
+          );
+        } else if (data.answer) {
+          applyAskResult(data, res);
+          if (data.visualPending && data.contextId) {
+            if (els.askStatus) els.askStatus.textContent = "Deep · building leave-behind…";
+            const vis = await buddyHop(
+              "/api/ask/visual",
+              {
+                askPhase: "visual",
+                contextId: data.contextId,
+                priorAnswer: data.answer
+              },
+              "Deep · building leave-behind…"
+            );
+            if (vis.data.answer || vis.data.htmlReport || (vis.data.exports && vis.data.exports.length)) {
+              applyAskResult(vis.data, vis.res, { softLabel: "" });
+            }
+          }
+        } else if (!res.ok) {
+          pushAssistant(
+            "Buddy hit a gateway timeout before finishing. Ask again with a shorter question."
+          );
+          if (els.askStatus) els.askStatus.textContent = "Fast";
+        } else {
+          pushAssistant(
+            data.error ||
+              "Buddy returned an empty answer. Try rephrasing, or refresh if your session expired."
+          );
+          if (els.askStatus) els.askStatus.textContent = "Fast";
+        }
       } else {
-        pushAssistant(
-          data.error ||
-            "Buddy returned an empty answer. Try rephrasing, or refresh if your session expired."
-        );
-        if (els.askStatus) els.askStatus.textContent = "Fast";
+        // Hop 2: Foundry chat answer
+        const contextId = data.contextId;
+        const wantVisual = Boolean(data.visualAsk || data.docExportAsk);
+        if (data.attachmentSessionId) {
+          state.buddyAttachmentSessionId = data.attachmentSessionId;
+        }
+        if (Array.isArray(data.attachmentIds) && data.attachmentIds.length) {
+          state.buddyAttachmentIds = data.attachmentIds;
+        }
+        ({ res, rawText, data } = await buddyHop(
+          "/api/ask/answer",
+          { askPhase: "answer", contextId },
+          data.statusHint || (deepCue ? "Deep · asking Buddy…" : "Fast · asking Buddy…")
+        ));
+        if (/sign in to your account|login\.microsoftonline|AADSTS/i.test(rawText)) {
+          pushAssistant(
+            "Your session expired — sign in again (refresh the page), then retry."
+          );
+        } else if (data.answer) {
+          applyAskResult(data, res);
+          // Hop 3: optional visual / HTML leave-behind
+          if ((wantVisual || data.visualPending) && (data.contextId || contextId)) {
+            const vis = await buddyHop(
+              "/api/ask/visual",
+              {
+                askPhase: "visual",
+                contextId: data.contextId || contextId,
+                priorAnswer: data.answer
+              },
+              "Deep · building leave-behind…"
+            );
+            if (vis.data.answer || vis.data.htmlReport || (vis.data.exports && vis.data.exports.length)) {
+              applyAskResult(vis.data, vis.res);
+            } else if (!vis.res.ok) {
+              pushAssistant(
+                "Chat answer is ready — the leave-behind visual timed out. Ask me to “spin up the visual” again."
+              );
+            }
+          }
+        } else if (!res.ok) {
+          pushAssistant(
+            "Buddy hit a gateway timeout before finishing. Ask again with a shorter question."
+          );
+          if (els.askStatus) els.askStatus.textContent = "Fast";
+        } else {
+          pushAssistant(
+            data.error ||
+              "Buddy returned an empty answer. Try rephrasing, or refresh if your session expired."
+          );
+          if (els.askStatus) els.askStatus.textContent = "Fast";
+        }
       }
     } catch (err) {
       const aborted = err && (err.name === "AbortError" || /aborted/i.test(String(err.message || "")));
@@ -4327,7 +4505,7 @@
         aborted
           ? state._askStopped
             ? "Stopped."
-            : "Buddy took too long (gateway limit). Try a simpler Fast ask, or split the question — say “go deeper” for Deep analysis."
+            : "Buddy took too long on that hop. Try a simpler ask — chat first; visuals come second."
           : `Could not reach Buddy. ${String(err.message || err)}`
       );
       state._askStopped = false;
