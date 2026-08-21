@@ -277,7 +277,7 @@ function isSalesforceDataQuestion(question) {
     /\b(who owns|account owner|bd owner|tier)\b/.test(q) ||
     /\b(accounts? in (sf|salesforce)|sf accounts?)\b/.test(q) ||
     /\b(bd activity|activity requests?)\b/.test(q) ||
-    /\b(crm|account tier|sf owner)\b/.test(q)
+    /\b(crm|account tier|sf owner|closed\s*won|closed\s*lost)\b/.test(q)
   );
 }
 
@@ -290,13 +290,90 @@ function extractSfNameHint(question) {
   return null;
 }
 
+/** Parse SF opportunity ask intent from natural language. */
+function extractSfOppIntent(question) {
+  const q = String(question || "").toLowerCase();
+  const yearMatch =
+    q.match(/\b(?:calendar|fy|fiscal|cy)?\s*(20\d{2})\b/) ||
+    q.match(/\b(20\d{2})\s*(?:calendar|fy|fiscal)?\b/);
+  let year = yearMatch ? Number(yearMatch[1] || yearMatch[2]) : null;
+  if (!year && /\b(this year|calendar year|ytd|year to date)\b/.test(q)) {
+    year = new Date().getUTCFullYear();
+  }
+  if (/\bcalendar\b/.test(q) && !year) year = new Date().getUTCFullYear();
+
+  const closedWon = /\bclosed\s*[- ]?won\b/.test(q);
+  const closedLost = /\bclosed\s*[- ]?lost\b/.test(q);
+  const openOnly =
+    (/\bopen\b/.test(q) || /\bpipeline\b/.test(q) || /\bactive\b/.test(q)) &&
+    !closedWon &&
+    !closedLost &&
+    !/\bclosed\b/.test(q);
+  const accountsWithOpen =
+    /\baccounts?\b/.test(q) &&
+    (/\bopen\b/.test(q) || /\bpipeline\b/.test(q) || /\bopportunit/.test(q));
+  const byOwner = /\b(owner|rep|ae|bd lead|who(?:'s| is) doing|by owner)\b/.test(q);
+
+  return {
+    year,
+    openOnly: openOnly || accountsWithOpen,
+    closedWon,
+    closedLost,
+    accountsWithOpen,
+    byOwner,
+    calendar: /\bcalendar\b/.test(q)
+  };
+}
+
+function isOppOpen(o) {
+  if (o.IsClosed === true || o.IsClosed === "true") return false;
+  const stage = String(o.StageName || "").toLowerCase();
+  if (/^closed\b/.test(stage)) return false;
+  return true;
+}
+
+function isOppClosedWon(o) {
+  if (o.IsWon === true || o.IsWon === "true") return true;
+  return /^closed\s*won$/i.test(String(o.StageName || "").trim());
+}
+
+function closeYear(closeDate) {
+  if (!closeDate) return null;
+  const s = String(closeDate);
+  const m = s.match(/^(\d{4})/);
+  return m ? Number(m[1]) : null;
+}
+
+function closeInYear(closeDate, year) {
+  if (!year) return true;
+  return closeYear(closeDate) === year;
+}
+
+function mapOppRow(o, accountNameById = null) {
+  return {
+    id: o.id || o.Id,
+    name: o.Name,
+    stage: o.StageName,
+    amount: o.Amount != null ? Number(o.Amount) : null,
+    closeDate: o.CloseDate || null,
+    accountId: o.AccountId || null,
+    accountName: (accountNameById && o.AccountId && accountNameById.get(o.AccountId)) || null,
+    owner: o.OwnerName || null,
+    isClosed: o.IsClosed === true || o.IsClosed === "true",
+    isWon: o.IsWon === true || o.IsWon === "true",
+    isOpen: isOppOpen(o)
+  };
+}
+
 /**
- * Bounded SF pack for Buddy asks.
+ * Bounded SF pack for Buddy asks — aggregates over ALL Cosmos opp rows (not a 200-row sample).
  */
-async function buildSalesforceBuddyContext(getDb, opts = {}) {
+async function buildSalesforceBuddyContext(getDb, ops = {}) {
+  const opts = ops || {};
   const question = String(opts.question || "");
   const clientName = String(opts.clientName || opts.sponsor || "").trim() || null;
   const nameHint = extractSfNameHint(question) || clientName;
+  const intent = extractSfOppIntent(question);
   const database = getDb();
   const started = Date.now();
 
@@ -309,12 +386,15 @@ async function buildSalesforceBuddyContext(getDb, opts = {}) {
   const out = {
     source: "salesforce_cosmos",
     note:
-      "Live Salesforce mirrors in Cosmos (ora_sf_*). Objects synced: Account, Opportunity, Activity_Request__c. Prefer these after a tables sync. crosswalk still bridges Veeva/TrialHub names → sf_account_id.",
+      "Live Salesforce mirrors in Cosmos (ora_sf_*). Aggregates scan ALL opportunity rows — not a sample. Prefer this pack for CRM/pipeline; portfolio.byClient is Ora bid fees only.",
     counts,
-    query: { nameHint, clientName },
+    query: { nameHint, clientName, intent },
     accounts: [],
     opportunities: [],
-    activityRequests: []
+    activityRequests: [],
+    openAccounts: [],
+    filteredOpportunities: [],
+    ownerBreakdown: []
   };
 
   if (!anyData) {
@@ -326,38 +406,156 @@ async function buildSalesforceBuddyContext(getDb, opts = {}) {
   }
 
   try {
-    // Lightweight pipeline snapshot (always) so Buddy is not stuck on portfolio.byClient
-    try {
-      const openOpps = await queryAll(
-        database.container("ora_sf_opportunity"),
-        `SELECT TOP 200 c.Amount, c.StageName, c.IsClosed, c.IsWon
-         FROM c WHERE c.docType = @t`,
-        [{ name: "@t", value: "ora_sf_opportunity" }]
-      );
-      let openCount = 0;
-      let openAmount = 0;
-      const byStage = {};
-      for (const o of openOpps) {
-        const closed = o.IsClosed === true;
-        if (!closed) {
-          openCount += 1;
-          openAmount += Number(o.Amount) || 0;
+    // Full lean scan of opportunities (6k rows is fine for Cosmos SQL)
+    const allOpps = await queryAll(
+      database.container("ora_sf_opportunity"),
+      `SELECT c.id, c.Name, c.StageName, c.Amount, c.CloseDate, c.AccountId, c.OwnerName, c.IsClosed, c.IsWon
+       FROM c WHERE c.docType = @t`,
+      [{ name: "@t", value: "ora_sf_opportunity" }]
+    );
+
+    let openCount = 0;
+    let openAmount = 0;
+    let closedWonCount = 0;
+    let closedWonAmount = 0;
+    const byStage = {};
+    const openByOwner = {};
+    const wonByYear = {};
+    const openByAccountId = {};
+
+    for (const o of allOpps) {
+      const stage = String(o.StageName || "Unknown");
+      byStage[stage] = (byStage[stage] || 0) + 1;
+      const amt = Number(o.Amount) || 0;
+      const open = isOppOpen(o);
+      if (open) {
+        openCount += 1;
+        openAmount += amt;
+        const owner = String(o.OwnerName || "Unknown");
+        if (!openByOwner[owner]) openByOwner[owner] = { owner, n: 0, amountSum: 0 };
+        openByOwner[owner].n += 1;
+        openByOwner[owner].amountSum += amt;
+        const aid = o.AccountId;
+        if (aid) {
+          if (!openByAccountId[aid]) openByAccountId[aid] = { accountId: aid, n: 0, amountSum: 0 };
+          openByAccountId[aid].n += 1;
+          openByAccountId[aid].amountSum += amt;
         }
-        const st = String(o.StageName || "Unknown");
-        byStage[st] = (byStage[st] || 0) + 1;
       }
-      out.pipelineSummary = {
-        sampledOpps: openOpps.length,
-        openCount,
-        openAmountSum: Math.round(openAmount),
-        stageCounts: Object.entries(byStage)
-          .sort((a, b) => b[1] - a[1])
-          .slice(0, 12)
-          .map(([stage, n]) => ({ stage, n }))
-      };
-    } catch (_) {
-      /* optional */
+      if (isOppClosedWon(o)) {
+        closedWonCount += 1;
+        closedWonAmount += amt;
+        const y = closeYear(o.CloseDate) || "unknown";
+        if (!wonByYear[y]) wonByYear[y] = { year: y, n: 0, amountSum: 0 };
+        wonByYear[y].n += 1;
+        wonByYear[y].amountSum += amt;
+      }
     }
+
+    out.pipelineSummary = {
+      universe: allOpps.length,
+      scannedAll: true,
+      sampleNote: "NOT a sample — counts cover every ora_sf_opportunity row in Cosmos.",
+      openCount,
+      openAmountSum: Math.round(openAmount),
+      closedWonCount,
+      closedWonAmountSum: Math.round(closedWonAmount),
+      stageCounts: Object.entries(byStage)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 20)
+        .map(([stage, n]) => ({ stage, n })),
+      closedWonByYear: Object.values(wonByYear)
+        .sort((a, b) => String(b.year).localeCompare(String(a.year)))
+        .slice(0, 15)
+        .map((r) => ({ ...r, amountSum: Math.round(r.amountSum) })),
+      openByOwner: Object.values(openByOwner)
+        .sort((a, b) => b.amountSum - a.amountSum || b.n - a.n)
+        .slice(0, 25)
+        .map((r) => ({ ...r, amountSum: Math.round(r.amountSum) }))
+    };
+
+    // Resolve account names for open-pipeline accounts
+    const openAccountIds = Object.keys(openByAccountId);
+    const accountNameById = new Map();
+    if (openAccountIds.length) {
+      // Batch CONTAINS is awkward — pull accounts we need via id IN chunks, or full lean Name map
+      const acctRows = await queryAll(
+        database.container("ora_sf_account"),
+        `SELECT c.id, c.Name, c.OwnerName, c.Tier__c, c.Ora_Grouping__c FROM c WHERE c.docType = @t`,
+        [{ name: "@t", value: "ora_sf_account" }]
+      );
+      for (const a of acctRows) {
+        if (a.id) accountNameById.set(a.id, a.Name || null);
+      }
+      out.openAccounts = Object.values(openByAccountId)
+        .map((r) => ({
+          accountId: r.accountId,
+          accountName: accountNameById.get(r.accountId) || null,
+          openOppCount: r.n,
+          openAmountSum: Math.round(r.amountSum)
+        }))
+        .sort((a, b) => b.openAmountSum - a.openAmountSum || b.openOppCount - a.openOppCount)
+        .slice(0, 40);
+    }
+
+    // Filtered list for the ask
+    let filtered = allOpps;
+    if (intent.openOnly || intent.accountsWithOpen) {
+      filtered = filtered.filter(isOppOpen);
+    }
+    if (intent.closedWon) {
+      filtered = filtered.filter(isOppClosedWon);
+    }
+    if (intent.closedLost) {
+      filtered = filtered.filter((o) => /^closed\s*lost$/i.test(String(o.StageName || "")));
+    }
+    if (intent.year) {
+      filtered = filtered.filter((o) => closeInYear(o.CloseDate, intent.year));
+    }
+
+    // Year-specific closed-won rollup always when year asked
+    if (intent.year) {
+      const yearWon = allOpps.filter((o) => isOppClosedWon(o) && closeInYear(o.CloseDate, intent.year));
+      const yearOpen = allOpps.filter((o) => isOppOpen(o) && closeInYear(o.CloseDate, intent.year));
+      const byOwnerYear = {};
+      for (const o of yearWon) {
+        const owner = String(o.OwnerName || "Unknown");
+        if (!byOwnerYear[owner]) byOwnerYear[owner] = { owner, n: 0, amountSum: 0 };
+        byOwnerYear[owner].n += 1;
+        byOwnerYear[owner].amountSum += Number(o.Amount) || 0;
+      }
+      out.yearSlice = {
+        year: intent.year,
+        calendar: true,
+        closedWonCount: yearWon.length,
+        closedWonAmountSum: Math.round(yearWon.reduce((s, o) => s + (Number(o.Amount) || 0), 0)),
+        openWithCloseDateInYear: yearOpen.length,
+        closedWonByOwner: Object.values(byOwnerYear)
+          .sort((a, b) => b.amountSum - a.amountSum)
+          .slice(0, 25)
+          .map((r) => ({ ...r, amountSum: Math.round(r.amountSum) })),
+        note: `Filtered ALL ${allOpps.length} Cosmos opportunities by CloseDate year=${intent.year}.`
+      };
+    }
+
+    out.filteredOpportunities = filtered
+      .slice()
+      .sort((a, b) => (Number(b.Amount) || 0) - (Number(a.Amount) || 0))
+      .slice(0, 40)
+      .map((o) => mapOppRow(o, accountNameById));
+
+    out.filterMeta = {
+      intent,
+      matchedCount: filtered.length,
+      listedCount: out.filteredOpportunities.length,
+      truncated: filtered.length > out.filteredOpportunities.length,
+      note:
+        filtered.length === allOpps.length && !intent.openOnly && !intent.closedWon && !intent.year
+          ? "No stage/year filter inferred — listed top Amount opportunities. Ask open / Closed Won / year for a sharper cut."
+          : `Filter matched ${filtered.length} of ${allOpps.length} opportunities.`
+    };
+
+    out.ownerBreakdown = out.pipelineSummary.openByOwner;
 
     if (nameHint) {
       const accts = await queryAll(
@@ -381,92 +579,48 @@ async function buildSalesforceBuddyContext(getDb, opts = {}) {
 
       const accountIds = out.accounts.map((a) => a.id).filter(Boolean);
       if (accountIds.length) {
-        // Opportunities for matched accounts
         for (const aid of accountIds.slice(0, 5)) {
-          const opps = await queryAll(
-            database.container("ora_sf_opportunity"),
-            `SELECT TOP 12 c.id, c.Name, c.StageName, c.Amount, c.CloseDate, c.AccountId, c.OwnerName, c.Type, c.IsClosed, c.IsWon
-             FROM c WHERE c.docType = @t AND c.AccountId = @a`,
-            [
-              { name: "@t", value: "ora_sf_opportunity" },
-              { name: "@a", value: aid }
-            ]
-          );
-          out.opportunities.push(
-            ...opps.map((o) => ({
-              id: o.id,
-              name: o.Name,
-              stage: o.StageName,
-              amount: o.Amount,
-              closeDate: o.CloseDate,
-              accountId: o.AccountId,
-              owner: o.OwnerName,
-              isClosed: o.IsClosed,
-              isWon: o.IsWon
-            }))
-          );
+          const opps = allOpps.filter((o) => o.AccountId === aid);
+          out.opportunities.push(...opps.slice(0, 20).map((o) => mapOppRow(o, accountNameById)));
         }
-
-        // Activity requests — try Account__c then AccountId
         for (const aid of accountIds.slice(0, 5)) {
           let ars = await queryAll(
             database.container("ora_sf_activity_request"),
-            `SELECT TOP 10 * FROM c WHERE c.docType = @t AND (c.Account__c = @a OR c.AccountId = @a)`,
+            `SELECT TOP 10 c.id, c.Name, c.Subject__c, c.Status__c, c.Status, c.Account__c, c.AccountId
+             FROM c WHERE c.docType = @t AND (c.Account__c = @a OR c.AccountId = @a)`,
             [
               { name: "@t", value: "ora_sf_activity_request" },
               { name: "@a", value: aid }
             ]
           );
-          if (!ars.length) {
-            ars = await queryAll(
-              database.container("ora_sf_activity_request"),
-              `SELECT TOP 8 * FROM c WHERE c.docType = @t AND (CONTAINS(LOWER(c.Name), @n) OR CONTAINS(LOWER(c.Subject__c), @n))`,
-              [
-                { name: "@t", value: "ora_sf_activity_request" },
-                { name: "@n", value: String(nameHint).toLowerCase() }
-              ]
-            );
-          }
           for (const ar of ars) {
             out.activityRequests.push({
               id: ar.id || ar.Id,
               name: ar.Name || ar.Subject__c || ar.Subject,
               status: ar.Status__c || ar.Status,
-              accountId: ar.Account__c || ar.AccountId,
-              raw: undefined
+              accountId: ar.Account__c || ar.AccountId
             });
           }
         }
       }
+    } else if (intent.accountsWithOpen || intent.openOnly) {
+      out.accounts = out.openAccounts.slice(0, 15).map((a) => ({
+        id: a.accountId,
+        name: a.accountName,
+        openOppCount: a.openOppCount,
+        openAmountSum: a.openAmountSum
+      }));
+      out.opportunities = out.filteredOpportunities.slice(0, 25);
+    } else if (intent.closedWon || intent.year) {
+      out.opportunities = out.filteredOpportunities.slice(0, 25);
     } else {
-      // Overview samples when no account named
-      out.accounts = (
-        await queryAll(
-          database.container("ora_sf_account"),
-          `SELECT TOP 10 c.id, c.Name, c.OwnerName, c.Tier__c, c.Ora_Grouping__c FROM c WHERE c.docType = @t`,
-          [{ name: "@t", value: "ora_sf_account" }]
-        )
-      ).map((a) => ({
-        id: a.id,
-        name: a.Name,
-        owner: a.OwnerName,
-        tier: a.Tier__c,
-        oraGrouping: a.Ora_Grouping__c
+      out.accounts = out.openAccounts.slice(0, 10).map((a) => ({
+        id: a.accountId,
+        name: a.accountName,
+        openOppCount: a.openOppCount,
+        openAmountSum: a.openAmountSum
       }));
-      out.opportunities = (
-        await queryAll(
-          database.container("ora_sf_opportunity"),
-          `SELECT TOP 10 c.id, c.Name, c.StageName, c.Amount, c.CloseDate, c.OwnerName FROM c WHERE c.docType = @t`,
-          [{ name: "@t", value: "ora_sf_opportunity" }]
-        )
-      ).map((o) => ({
-        id: o.id,
-        name: o.Name,
-        stage: o.StageName,
-        amount: o.Amount,
-        closeDate: o.CloseDate,
-        owner: o.OwnerName
-      }));
+      out.opportunities = out.filteredOpportunities.slice(0, 15);
     }
   } catch (err) {
     out.error = String(err.message || err);
@@ -474,12 +628,12 @@ async function buildSalesforceBuddyContext(getDb, opts = {}) {
 
   out.elapsedMs = Date.now() - started;
   out.rules = [
-    "PRIORITY: When counts > 0, answer Account / Opportunity / AR / owner / tier / pipeline asks from this pack — NOT portfolio.byClient.",
-    "portfolio.byClient = Ora uploaded bid/service-fee dollars only. Salesforce Amount/Stage = CRM pipeline — different source; label which you use.",
-    "Cite Account Name, Owner, Tier__c → tier, Ora_Grouping__c → ora grouping.",
-    "Opportunities: Name, Stage, Amount, CloseDate — do not invent pipeline numbers.",
-    "Activity_Request__c rows are ARs — say Activity Request, not invent statuses.",
-    "We do not sync OpportunityLineItem or Product2 — do not invent line items/services.",
+    "CRITICAL: pipelineSummary.scannedAll=true means counts are over EVERY Cosmos opportunity — never call this a sample of 200.",
+    "CRITICAL: Never ask the user for a Salesforce CSV / export when counts > 0. Answer from this pack (openAccounts, filteredOpportunities, yearSlice, pipelineSummary).",
+    "Open pipeline = pipelineSummary.openCount / openAccounts / opportunities where isOpen. Closed Won for a year = yearSlice when query.intent.year is set.",
+    "PRIORITY: CRM/pipeline/owner/tier/AR → this pack. portfolio.byClient = Ora uploaded bid fees only — different source.",
+    "If yearSlice.closedWonCount is 0 for the requested year, say so plainly (no CSV ask). Offer other years from closedWonByYear.",
+    "For visuals/HTML_REPORT: use openAccounts, filteredOpportunities, ownerBreakdown, yearSlice — include Owner on every row.",
     "If counts are 0, tell the user to run Ingest SF + crosswalk on Data Status."
   ];
   return out;
@@ -506,6 +660,7 @@ module.exports = {
   runSalesforceTablesSync,
   getSalesforceTablesStatus,
   isSalesforceDataQuestion,
+  extractSfOppIntent,
   buildSalesforceBuddyContext,
   attachSalesforceData
 };

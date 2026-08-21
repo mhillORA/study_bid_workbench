@@ -87,7 +87,7 @@ const INTELLIGENCE_RULES = [
   "• Ops briefing (section status, fill requests, what to do next) → workingStudy.sectionStatus / requests / drivers; suggest NAVIGATE:ops or NAVIGATE:reviews.",
   "• Legacy recruitment board / anterior overview (no indication) → legacyAnterior trust + topByEnrolled / counts. If enrollmentIncluded or htmlTable present, list enrollment; never ask user to paste the table.",
   "• Sponsor already in SF? BD owner / tier / Ora grouping? → intelligence.sponsorCrosswalk (sf_owner, tier, ora_grouping). Crosswalk dashboard (no sponsor named) → intelligence.crosswalkOverview (totalCount, statusRank, tierRank, noSfMatchSample).",
-  "• Salesforce Accounts / Opportunities / Activity Requests (ARs) → intelligence.salesforceData (ora_sf_account / ora_sf_opportunity / ora_sf_activity_request). Prefer this over portfolio.byClient for CRM/pipeline/owner/tier/AR. Use pipelineSummary when present. If counts are 0, say Ingest SF + crosswalk is needed. Never invent pipeline Amount/Stage.",
+  "• Salesforce Accounts / Opportunities / Activity Requests (ARs) → intelligence.salesforceData. Use pipelineSummary (scannedAll=true over ALL Cosmos opps), openAccounts, filteredOpportunities, yearSlice, ownerBreakdown. NEVER call pipelineSummary a 200-row sample. NEVER ask for a Salesforce CSV/export when counts > 0 — answer from the pack. Prefer this over portfolio.byClient for CRM/pipeline/owner/tier/AR. If yearSlice.closedWonCount is 0, say zero for that year (offer closedWonByYear). For HTML visuals include Owner on every row.",
   "• NCT lookup → intelligence.nctLookup (TrialHub) and/or intelligence.ctgovNct / ctgov.",
   "• CT.gov dashboard / registry overview (no indication named) → intelligence.ctgovOverview (totalCount, indicationRank, statusRank, recentSample, countryRank). If totalCount > 0 you HAVE data — never say CT.gov is empty.",
   "• CT.gov by indication → intelligence.ctgov (trialCount, sample, recruitingSample).",
@@ -1557,36 +1557,61 @@ function formatCosmosFactsBlock(context) {
       if (sf.pipelineSummary) {
         const ps = sf.pipelineSummary;
         sfLines.push(
-          `pipelineSummary: openOpps≈${ps.openCount ?? "—"} · openAmountSum≈${
-            ps.openAmountSum == null ? "—" : ps.openAmountSum
-          } · sampled=${ps.sampledOpps ?? "—"}`
+          `pipelineSummary (FULL SCAN universe=${ps.universe ?? "—"} scannedAll=${ps.scannedAll === true}): ` +
+            `openOpps=${ps.openCount ?? "—"} · openAmountSum=${
+              ps.openAmountSum == null ? "—" : ps.openAmountSum
+            } · closedWonAllYears=${ps.closedWonCount ?? "—"} · closedWonAmountSum=${
+              ps.closedWonAmountSum == null ? "—" : ps.closedWonAmountSum
+            }`
         );
-        for (const s of (ps.stageCounts || []).slice(0, 8)) {
+        if (ps.sampleNote) sfLines.push(`  note: ${ps.sampleNote}`);
+        for (const s of (ps.stageCounts || []).slice(0, 12)) {
           sfLines.push(`  - stage ${s.stage}: ${s.n}`);
         }
+        for (const y of (ps.closedWonByYear || []).slice(0, 8)) {
+          sfLines.push(`  - closedWon year ${y.year}: n=${y.n} amountSum=${y.amountSum}`);
+        }
+        for (const o of (ps.openByOwner || []).slice(0, 10)) {
+          sfLines.push(`  - openByOwner ${o.owner}: n=${o.n} amountSum=${o.amountSum}`);
+        }
       }
-      for (const a of (sf.accounts || []).slice(0, 8)) {
+      if (sf.yearSlice) {
+        const ys = sf.yearSlice;
         sfLines.push(
-          `  - Account ${a.name || "?"} | owner=${a.owner || "—"} | tier=${a.tier || "—"} | grouping=${
-            a.oraGrouping || "—"
+          `yearSlice calendar ${ys.year}: closedWonCount=${ys.closedWonCount} · closedWonAmountSum=${ys.closedWonAmountSum} · ${ys.note || ""}`
+        );
+        for (const o of (ys.closedWonByOwner || []).slice(0, 12)) {
+          sfLines.push(`  - ${o.owner}: n=${o.n} amountSum=${o.amountSum}`);
+        }
+      }
+      if (sf.filterMeta) {
+        sfLines.push(
+          `filterMeta: matched=${sf.filterMeta.matchedCount} listed=${sf.filterMeta.listedCount} · ${
+            sf.filterMeta.note || ""
           }`
         );
       }
-      for (const o of (sf.opportunities || []).slice(0, 8)) {
+      for (const a of (sf.openAccounts || sf.accounts || []).slice(0, 15)) {
         sfLines.push(
-          `  - Opp ${o.name || "?"} | stage=${o.stage || "—"} | amount=${
-            o.amount == null ? "—" : o.amount
-          } | close=${o.closeDate || "—"} | owner=${o.owner || "—"}`
+          `  - Account ${a.name || a.accountName || "?"} | openOpps=${
+            a.openOppCount ?? "—"
+          } | openAmount=${a.openAmountSum ?? "—"} | owner=${a.owner || "—"} | tier=${a.tier || "—"}`
+        );
+      }
+      for (const o of (sf.filteredOpportunities || sf.opportunities || []).slice(0, 20)) {
+        sfLines.push(
+          `  - Opp ${o.name || "?"} | acct=${o.accountName || o.accountId || "—"} | stage=${
+            o.stage || "—"
+          } | amount=${o.amount == null ? "—" : o.amount} | close=${o.closeDate || "—"} | owner=${
+            o.owner || "—"
+          } | open=${o.isOpen === true ? "yes" : o.isOpen === false ? "no" : "—"}`
         );
       }
       for (const ar of (sf.activityRequests || []).slice(0, 6)) {
         sfLines.push(`  - AR ${ar.name || ar.id || "?"} | status=${ar.status || "—"}`);
       }
-      for (const s of (sf.services || []).slice(0, 6)) {
-        sfLines.push(`  - Service ${s.name || "?"} | code=${s.productCode || "—"} | family=${s.family || "—"}`);
-      }
       sfLines.push(
-        "RULE: If counts > 0 you HAVE Salesforce data — answer CRM/pipeline/owner/AR from these rows. Never use portfolio.byClient as a substitute for SF Amount/Stage. Never invent Amount/Stage/AR status."
+        "RULE: scannedAll=true → these are FULL Cosmos totals, not a sample. NEVER ask for CSV/export. NEVER say you lack year filters when yearSlice is present. Answer open/Closed Won/owner from openAccounts / filteredOpportunities / yearSlice. Never use portfolio.byClient as SF Amount."
       );
     }
     blocks.push(sfLines.join("\n"));
@@ -1816,9 +1841,15 @@ function contextJsonForModel(context) {
       salesforceData: intel.salesforceData
         ? {
             ...intel.salesforceData,
-            accounts: (intel.salesforceData.accounts || []).slice(0, 10),
-            opportunities: (intel.salesforceData.opportunities || []).slice(0, 12),
-            activityRequests: (intel.salesforceData.activityRequests || []).slice(0, 10)
+            accounts: (intel.salesforceData.accounts || []).slice(0, 20),
+            openAccounts: (intel.salesforceData.openAccounts || []).slice(0, 40),
+            opportunities: (intel.salesforceData.opportunities || []).slice(0, 30),
+            filteredOpportunities: (intel.salesforceData.filteredOpportunities || []).slice(0, 40),
+            activityRequests: (intel.salesforceData.activityRequests || []).slice(0, 10),
+            ownerBreakdown: (intel.salesforceData.ownerBreakdown || []).slice(0, 25),
+            yearSlice: intel.salesforceData.yearSlice || undefined,
+            filterMeta: intel.salesforceData.filterMeta || undefined,
+            pipelineSummary: intel.salesforceData.pipelineSummary || undefined
           }
         : undefined
     };
