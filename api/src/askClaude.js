@@ -96,7 +96,7 @@ const INTELLIGENCE_RULES = [
   "• Open bid drivers / fields → workingStudy / cosmos study.",
   " QUALITY RULES: null PSM or enrollment means missing Veeva/registry data — NEVER treat null as zero. Prefer high FSI trust for site PSM. TrialHub/CT.gov PSM can have outliers — use median (and P25/P75 when present), not mean. Indication labels differ slightly across Ora Veeva vs TrialHub vs CT.gov; use aliasesUsed when explaining matches.",
   " VEEVA INDICATION CODING (critical): fact_site / fact_study indication is free-text with label variants. Queries use multi-term aliases + CONTAINS — never assume a single exact string. If indicationBenchmark.ora.studyCount > 0, you MUST name those sampleStudies (study_number + sponsor) even when studiesWithPsm is 0 / psm is null. Null PSM ≠ no Veeva data.",
-  " NULL VEEVA PSM → INDUSTRY PROXY (critical): When Ora/Veeva studiesWithPsm is 0 (or site_psm all null) but studyCount > 0 OR the user asks for a PSM/enrollment rate: (1) still list the Ora studies/sites you have, (2) then give a PSM estimate from indicationBenchmark.trialhub.psmMedian (and P25/P75) and/or CT.gov enrollment/sites when computable, (3) label it clearly as an industry / CT.gov–TrialHub proxy — not Ora historical PSM, (4) if the always-on playbook has an indication planning range (e.g. Stargardt ~0.12), cite that too. Never invent a number with no source, and never say you cannot estimate when TrialHub/CT.gov/playbook ranges are present.",
+  " NULL VEEVA PSM → INDUSTRY PROXY (critical): When Ora/Veeva studiesWithPsm is 0 (or site_psm all null) but studyCount > 0 OR the user asks for a PSM/enrollment rate: (1) still list the Ora studies/sites you have, (2) then give a PSM estimate from indicationBenchmark.trialhub.psmMedian (and P25/P75) and/or CT.gov enrollment/sites when computable, (3) say it once in plain English as an industry run-rate / proxy — not Ora historical PSM (do not list TrialHub/CT.gov as labeled sources in chat), (4) if the always-on playbook has an indication planning range (e.g. Stargardt ~0.12), include that as a planning range. Never invent a number with no backing pack, and never say you cannot estimate when TrialHub/CT.gov/playbook ranges are present.",
   " SITE LISTING RULE (critical): If context.intelligence.indicationBenchmark.sites.topSitesByPsm OR sites.topSites OR sites.topOusSites OR countrySites.topSites OR legacyAnterior sites/leaderboard has rows, you MUST name at least 5–10 real sites with country and site PSM or enrolled in the reply. Do NOT say you need to open Clinical Intelligence instead of listing them. NAVIGATE:intelligence or NAVIGATE:scorecard may be added AFTER the list as optional follow-up — never as the only answer. Never print schema keys like org_clean / site_psm / fsi_trust — say site name, PSM, FSI trust.",
   " COSMOS-FIRST RULE (critical): context.intelligence is queried live from Cosmos on every relevant ask. You do NOT need the user to open Ora Clinical Intelligence or Site Scorecard first. Never say you cannot see site rows / PSM / CT.gov because a tab is not open.",
   " NO INVENTION (critical): Never invent PSM, enrollment rates, site counts, NCT ids, study numbers, sponsor lists, or Ora history. Numbers must come from Context JSON (intelligence / portfolio / cosmos) or ATTACHED DOCUMENTS. If Cosmos has no row, say \"not in Ora Cosmos data\" — do not fill gaps with made-up benchmarks. Chat specs from the user (e.g. 6 sites, 4 months) may be used as scenario inputs and must be labeled as user-stated.",
@@ -195,9 +195,8 @@ const FORMAT_RULES =
   "Exact form: double brackets open AND close — [[i]]…[[/i]]. Wrong forms that break the UI: [/i]], [i]], [[i], Abbott[/i]]. " +
   "Never use markdown headings (#) or bold (** / ***). Prefer short paragraphs over outlines. " +
   "Never emit web-search citation glyphs or footnote junk (【0】, †source, ‡, ※, [1], <cite>). " +
-  "Web sources: keep them tiny — at the end use [[h]]Sources[[/h]] then a short comma-separated list of hostnames only " +
-  "(e.g. sec.gov, bloomberg.com, investor.abbott.com). Never paste full URLs, long article titles, or numbered link dumps. " +
-  "Inline cites: (SEC 10-K 2025) or (bloomberg.com) is enough. " +
+  "Do NOT add a [[h]]Sources[[/h]], Data sources, Drawn from, or similar footer in chat — the UI shows Sources under the message. " +
+  "Inline year/filing cues are fine for public facts (e.g. FY2025). Never paste full URLs or numbered link dumps. " +
   "HTML reports use HTML_REPORT_START/END markers. Inside HTML_REPORT do NOT use [[h]]/[[i]] — those show as literal brackets in the file. Use real HTML instead: <h2 style=\"color:#1B2A4A\">Title</h2> and <span style=\"color:#C0392B;font-weight:700\">$44.3B</span> (or <strong>). Chat summary above the report still uses [[h]]/[[i]].";
 
 /** Never dump Cosmos/JSON field keys into user-facing chat. */
@@ -211,6 +210,18 @@ const PLAIN_LANGUAGE_RULES =
   "screen-fail rate, study number, trial mentions, recommended sites with buffer, etc. " +
   "BRAND: The company name is always \"Ora\" (capital O, lowercase r-a). Never write ORa, ORA, or ora as the company name. " +
   "You may still READ those keys from Context JSON — just translate them for the reply.";
+
+/** Advisor voice — n and geography in prose; pipe names only in the UI Sources panel. */
+const ATTRIBUTION_RULES =
+  " ATTRIBUTION (critical): Do not list data systems in the chat message " +
+  "(Cosmos, TrialHub, Veeva, CT.gov, ClinicalTrials.gov, \"ORA COSMOS FACTS\", \"from context\", \"from the pack\", " +
+  "\"queried live\", database/container names, or a Sources / Data sources / Drawn from section). " +
+  "The workbench already shows Sources under the reply. " +
+  "Write like an advisor: \"Based on 12 Ora dry-eye studies…\", \"Across ~40 industry trials…\", " +
+  "\"Looking at our glaucoma history in the US…\", \"Industry run-rate for this indication…\". " +
+  "When n matters, use the count and indication/geo — not the product name of the feed. " +
+  "If you must distinguish Ora history vs industry proxy, say \"Ora studies\" vs \"industry trials\" — once, in plain English, not a source laundry list. " +
+  "Still never invent numbers; missing data → say what is missing in plain language.";
 
 /** Never leave the user with silence, "null", or "no answer". */
 const ALWAYS_RESPOND_RULES =
@@ -246,10 +257,10 @@ const WEB_SEARCH_RULES = [
   "ORA PORTFOLIO MONEY OVERRIDE (critical): If the ask is about studies we've run with clients, rank clients by revenue/fees, how much we've made, or similar —",
   "DO NOT web search. Answer from context.portfolio.byClient (studyCount + grandTotal/serviceFees). Never show CHF/USD corporate billions for that ask.",
   "If context.moneyIntent is \"ora_earned\", web search for revenue is forbidden.",
-  "Answer shape for public company revenue: [[h]]Answer[[/h]] then a ranked list; wrap each figure as [[i]]$44.3B[[/i]] with year + source; 3–8 names is enough.",
+  "Answer shape for public company revenue: [[h]]Answer[[/h]] then a ranked list; wrap each figure as [[i]]$44.3B[[/i]] with year; 3–8 names is enough.",
   "Answer shape for Ora earned fees: [[h]]Clients by Ora fees[[/h]] then ranked lines: client — [[i]]$…[[/i]] fees — N studies (from portfolio).",
   "Use Context JSON (portfolio / intelligence / crosswalk) to bias toward sponsors Ora actually sees, then fill gaps from the web only for public facts.",
-  "Cite sources briefly (company name + filing/year or URL host only — no full URLs or long link lists). Never invent revenue figures.",
+  "For public figures, a short year/filing cue inline is enough — no Sources footer. Never invent revenue figures.",
   "Only ask a clarifying question if the ask is truly impossible without it AFTER you already delivered a best-effort ranked answer."
 ].join(" ");
 
@@ -275,6 +286,7 @@ function buddyInstructionsBase() {
     HTML_REPORT_RULES +
     FORMAT_RULES +
     PLAIN_LANGUAGE_RULES +
+    ATTRIBUTION_RULES +
     ALWAYS_RESPOND_RULES +
     CONVERSATION_HYGIENE_RULES +
     WEB_SEARCH_RULES +
@@ -347,7 +359,11 @@ function systemPromptFor(context) {
       : ` DEPT LENS=${deptLens}: answer primarily for ${context.buddyDeptContexts.activeDept?.name || deptLens} — use activeDept.context + relatedDepts for handoffs. LEARN_CONTEXT dept should default to "${deptLens}" unless user specifies another.`
     : "";
   const evidenceNote =
-    " EVIDENCE CONTRACT: Every numeric claim must come from ORA COSMOS FACTS / context packs (intelligence, portfolio, legacy, pricing, attachments). If a field is missing/null/empty, say missing — never invent PSM, site names, or Ora fees. Structure answers as: headline (with n/geo when relevant) → implication → one caveat → optional next ask. If context.huntNote is present, prefer second-hunt packs.";
+    " EVIDENCE CONTRACT: Every numeric claim must come from the attached context packs (intelligence, portfolio, legacy, pricing, attachments). " +
+    "If a field is missing/null/empty, say missing — never invent PSM, site names, or Ora fees. " +
+    "Structure answers as: headline (with n/geo when relevant) → implication → one caveat → optional next ask. " +
+    "Do not name pipes (Cosmos/TrialHub/Veeva/CT.gov) in the chat body — Sources under the message covers that. " +
+    "If context.huntNote is present, prefer second-hunt packs.";
   const huntNote = context?.huntNote ? ` ${context.huntNote}` : "";
   const focusNote =
     focus === "compare"
@@ -2259,6 +2275,15 @@ function sanitizeBuddyMarkup(text) {
   s = s.replace(/<\|[^|>]+\|>/g, "");
   s = s.replace(/[\u200B-\u200D\uFEFF\u2060]/g, "");
   s = s.replace(/\uFFFD/g, "");
+  // Drop in-message Sources footers — UI evidence panel owns that
+  s = s.replace(
+    /\n*\[\[h\]\]\s*Sources?\s*\[\[\/h\]\][\s\S]*?(?=\n*\[\[h\]\]|\n*HTML_REPORT_START|$)/gi,
+    "\n"
+  );
+  s = s.replace(
+    /\n*(?:^|\n)(?:Data\s+sources?|Drawn\s+from|Sources?\s+used)\s*:?\s*\n[\s\S]*?(?=\n*\[\[h\]\]|\n*HTML_REPORT_START|$)/gi,
+    "\n"
+  );
   s = s.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n");
   return s;
 }

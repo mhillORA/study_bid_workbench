@@ -441,7 +441,7 @@ function applyHardGrounding(answer, context = {}) {
     );
     if (text !== before && !/unverified|missing/i.test(text.slice(0, 200))) {
       text +=
-        "\n\n[[i]]Some performance figures were unmarked because Cosmos had no matching benchmark — do not treat them as Ora data.[[/i]]";
+        "\n\n[[i]]Some performance figures were unmarked because no matching benchmark was available — do not treat them as Ora history.[[/i]]";
     }
   }
 

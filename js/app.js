@@ -3526,8 +3526,8 @@
       .join("");
 
     return `<details class="buddy-evidence">
-      <summary>What Buddy used${ev.grounded === false ? " · check warnings" : ""}${okSrc.length ? ` · ${okSrc.length} source(s)` : ""}</summary>
-      ${srcBits ? `<p class="muted" style="margin:0.4rem 0 0.2rem;">Sources</p><ul>${srcBits}</ul>` : ""}
+      <      summary>Sources${ev.grounded === false ? " · check warnings" : ""}${okSrc.length ? ` · ${okSrc.length}` : ""}</summary>
+      ${srcBits ? `<ul>${srcBits}</ul>` : ""}
       ${gapBits ? `<p class="muted" style="margin:0.4rem 0 0.2rem;">Gaps</p><ul>${gapBits}</ul>` : ""}
       ${huntBits ? `<p class="muted" style="margin:0.4rem 0 0.2rem;">Second hunt</p><ul>${huntBits}</ul>` : ""}
       ${warnBits ? `<p class="muted" style="margin:0.4rem 0 0.2rem;">Grounding</p><ul>${warnBits}</ul>` : ""}
