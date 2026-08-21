@@ -253,12 +253,26 @@ async function getSalesforceSyncStatus(getDb) {
     withSfId = rows[0] || 0;
   } catch (_) {}
   const jwtKey = await diagnoseJwtPrivateKey(getDb);
+  const uname = String(cfg.username || "");
+  let usernameHint = null;
+  if (uname) {
+    const at = uname.indexOf("@");
+    if (at > 0) {
+      const local = uname.slice(0, at);
+      const domain = uname.slice(at + 1);
+      usernameHint =
+        (local.length <= 2 ? local[0] + "*" : local.slice(0, 2) + "***") + "@" + domain;
+    } else {
+      usernameHint = uname.slice(0, 2) + "***";
+    }
+  }
   return {
     configured: cfg.configured,
     loginUrl: cfg.loginUrl,
     tierField: cfg.tierField,
     groupingField: cfg.groupingField,
     usernameSet: Boolean(cfg.username),
+    usernameHint,
     clientIdSet: Boolean(cfg.clientId),
     privateKeySet: Boolean(cfg.envKeySet) || Boolean(jwtKey.cosmosKeySet) || Boolean(jwtKey.parseOk),
     keySource: jwtKey.source || cfg.keySource || null,

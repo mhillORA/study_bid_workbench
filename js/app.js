@@ -5523,7 +5523,9 @@
     const sfConfigured = sfWrap.configured === true;
     const sfMeta = `<p class="muted" style="margin:0.35rem 0 0;">Salesforce: ${
       sfConfigured ? "configured" : "not configured (set SF_* App Settings)"
-    }${sfLast ? ` · last sync ${escapeHtml(String(sfLast))}` : ""}${
+    }${sfWrap.usernameHint ? ` · user ${escapeHtml(String(sfWrap.usernameHint))}` : ""}${
+      sfLast ? ` · last sync ${escapeHtml(String(sfLast))}` : ""
+    }${
       sfWrap.crosswalkWithSfId != null
         ? ` · ${Number(sfWrap.crosswalkWithSfId).toLocaleString()} crosswalk Ids`
         : ""

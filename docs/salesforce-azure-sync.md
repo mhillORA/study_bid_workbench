@@ -122,10 +122,19 @@ If the tables sync hits the time budget, click **Sync SF tables** again — it c
 | `routines::unsupported` / DECODER | Azure mangled the PEM. Set `SF_JWT_PRIVATE_KEY_B64` to base64 of the whole `.key` file (see above). Do not paste the `.crt`. |
 | Tier field invalid | Confirm `SF_TIER_FIELD=Tier__c` |
 
-### Prove auth after the SF fix
+### Fix `invalid_app_access` on an **External Client App** (most common)
 
-Data Status → **Sync Salesforce now**.  
-`GET /api/salesforce/sync` should show `lastSuccessfulSync` set and `lastError` cleared. Then **Sync SF tables** for Buddy pipeline data.
+Setup → Quick Find → **External Client App Manager** → **Ora Intelligence Tool** → **Policies** → **Edit**:
+
+1. **OAuth Policies** → Permitted Users = **Admin approved users are pre-authorized** → Save (OK the dialog)
+2. Still under Policies → **App Policies** → **Select Permission Sets**  
+   Move a Permission Set from **Available** → **Selected** (the one assigned to `SF_USERNAME`)
+3. That Permission Set must actually be **assigned to the user** in Azure’s `SF_USERNAME`
+4. Save
+
+Optional shortcut while testing: Permitted Users = **All users may self-authorize** (less secure; JWT often still wants a pre-auth’d profile/perm set — prefer Selected Permission Sets).
+
+Also confirm Azure `SF_USERNAME` is the user’s Salesforce **Username** field (Setup → Users), not just Email if they differ.
 
 ## Security
 
