@@ -804,7 +804,7 @@ Data banner: 250+ studies, 1,900+ sites.
 PENDING WORKSTREAMS:
 - Claude-powered internal Q&A app for BD reps (priority after IT meeting)
 - BD Phase 3 Completion Targets report rebuild (using updated master crosswalk)
-- Cosmos DB pilot (data engineer loading — 5 collection exports prepared)
+- Cosmos DB live (bd-budgets) — Buddy on ora_veeva_* / ora_sf_* / TrialHub / CT.gov
 - Veeva data hygiene mandate (Ops leadership — active)
 - New Claude Project setup using this context document
 - EMR vendor exploration (Amaros, Viking — under consideration)
