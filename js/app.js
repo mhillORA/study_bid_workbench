@@ -3601,7 +3601,21 @@
     if (Array.isArray(opts.actions) && opts.actions.length) {
       for (const act of opts.actions) {
         if (!act || !act.type) continue;
-        if (act.type === "navigate" && act.sectionId) sectionId = act.sectionId;
+        if (act.type === "navigate" && act.sectionId) {
+          const wanted = resolveSectionId(act.sectionId);
+          const lastUser = [...(state.askHistory || [])]
+            .reverse()
+            .find((t) => t && t.role === "user");
+          const uq = String(lastUser?.content || "").toLowerCase();
+          const userAskedOpen =
+            /\b(open|go to|show|take me to|navigate to|switch to)\b/.test(uq) &&
+            ((wanted === "intelligence" && /intelligence|clinical intel/.test(uq)) ||
+              (wanted === "scorecard" && /scorecard|site score/.test(uq)) ||
+              (wanted !== "intelligence" && wanted !== "scorecard"));
+          const dataTabBounce =
+            (wanted === "intelligence" || wanted === "scorecard") && !userAskedOpen;
+          if (!dataTabBounce) sectionId = wanted;
+        }
         if (act.type === "create_study" && act.payload) created = { text, create: act.payload };
         if (act.type === "learn_context" && act.payload) learned = { text, learn: act.payload };
         if (act.type === "apply_patches" && Array.isArray(act.patches)) {
@@ -3611,7 +3625,21 @@
     } else {
       const navMatch = text.match(/\bNAVIGATE:([a-z0-9_-]+)\b/i);
       if (navMatch) {
-        sectionId = resolveSectionId(navMatch[1]);
+        const wanted = resolveSectionId(navMatch[1]);
+        // Ignore Intelligence/Scorecard jumps unless the user asked to open that tab —
+        // Buddy must answer PSM/site lists from Cosmos in chat, not bounce the UI.
+        const lastUser = [...(state.askHistory || [])]
+          .reverse()
+          .find((t) => t && t.role === "user");
+        const uq = String(lastUser?.content || "").toLowerCase();
+        const userAskedOpen =
+          /\b(open|go to|show|take me to|navigate to|switch to)\b/.test(uq) &&
+          ((wanted === "intelligence" && /intelligence|clinical intel/.test(uq)) ||
+            (wanted === "scorecard" && /scorecard|site score/.test(uq)) ||
+            (wanted !== "intelligence" && wanted !== "scorecard"));
+        const dataTabBounce =
+          (wanted === "intelligence" || wanted === "scorecard") && !userAskedOpen;
+        if (!dataTabBounce) sectionId = wanted;
         text = text.replace(/\s*NAVIGATE:[a-z0-9_-]+\s*/gi, "\n").trim();
       }
       created = extractCreateStudy(text);
