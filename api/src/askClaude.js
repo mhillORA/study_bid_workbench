@@ -61,7 +61,14 @@ const PORTFOLIO_RULES =
  */
 const INTELLIGENCE_RULES = [
   " INTELLIGENCE DATA CATALOG (Cosmos bd-budgets — reference tables, NOT budget line items):",
-  "1) ora_veeva_study / ora_veeva_site / ora_veeva_organization / ora_veeva_sponsor / ora_veeva_milestone — LIVE Vault API mirrors (Ingest Veeva). Canonical going forward.",
+  "1) ora_veeva_study / ora_veeva_site / ora_veeva_study_country / ora_veeva_organization / ora_veeva_sponsor / ora_veeva_metric / ora_veeva_subject / ora_veeva_milestone — LIVE Vault mirrors (Ingest Veeva).",
+  " FEASIBILITY CATEGORIZATION (Mike Watson Claude Report taxonomy — how Ora structures feasibility):",
+  "• Two grains: STUDY level (Study + Metrics + Milestone; study-country blank on metrics/milestones) and SITE level (Study Site + Metrics + Milestone; site not blank).",
+  "• Scope: Ora Project Code not blank (real Ora projects only).",
+  "• METRICS dimension (enrollment performance): Total Enrolled, Total Screened, Enrollment Rate (subjects/month), Screen Failure Rate (%), Drop Out Rate (%), Total Discontinued — planned vs actual.",
+  "• MILESTONE dimension (startup / timeline): FSI / FSFV / LSI / LSO / Site Selected / Contract Executed / IRB-EC / SIMV / Contract-Budget — planned vs actual dates.",
+  "• SUBJECTS sit under study + site (status / counts). GEOGRAPHY via study_country / site country.",
+  "When answering feasibility, organize by this taxonomy (study vs site grain; metrics vs milestones) — do not mash enrollment rates into startup timelines.",
   "1b) ora_fact_study / ora_fact_site — Buddy feasibility packs. When live Vault is synced, rows with source=veeva_live are preferred; older Mike Watson/Claude Excel rows are legacy fallback only.",
   "2) ora_veeva_milestones — startup gap wide rows. Prefer source=veeva_live (projected from milestone__v). Mike Watson Site Level Excel is legacy until live ingest.",
   "3) ora_trialhub_trials (live TrialHub uploads, upsert by NCT): competitive landscape / industry PSM. Key fields: nct, title, sponsor, indication, phase, status, patients, planned_sites, actual_sites, psm_common, th_actual_psm, recruit_days, countries, actual_start (Actual Start Date), in_ora_indication, lead_sponsor_type.",

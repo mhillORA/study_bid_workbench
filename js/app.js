@@ -5758,6 +5758,11 @@
     };
     const veevaLiveRows = [
       ["ora_veeva_study", "study__v", vvCount("ora_veeva_study") ?? vvFromHealth.studies],
+      [
+        "ora_veeva_study_country",
+        "study_country__v",
+        vvCount("ora_veeva_study_country") ?? vvFromHealth.studyCountries
+      ],
       ["ora_veeva_site", "site__v", vvCount("ora_veeva_site") ?? vvFromHealth.sites],
       [
         "ora_veeva_organization",
@@ -5765,6 +5770,16 @@
         vvCount("ora_veeva_organization") ?? vvFromHealth.organizations
       ],
       ["ora_veeva_sponsor", "sponsor__c", vvCount("ora_veeva_sponsor") ?? vvFromHealth.sponsors],
+      [
+        "ora_veeva_metric",
+        "metrics__ctms",
+        vvCount("ora_veeva_metric") ?? vvFromHealth.metrics
+      ],
+      [
+        "ora_veeva_subject",
+        "subject__clin",
+        vvCount("ora_veeva_subject") ?? vvFromHealth.subjects
+      ],
       [
         "ora_veeva_milestone",
         "milestone__v",

@@ -14,15 +14,27 @@ Live pull of Vault Clinical objects into Cosmos on Function App **`ora-buddy-api
 
 ## Containers (split)
 
-### Live Vault mirrors (canonical)
+### Live Vault mirrors (feasibility taxonomy)
 
-| Cosmos | Vault object |
-|---|---|
-| `ora_veeva_study` | `study__v` |
-| `ora_veeva_site` | `site__v` |
-| `ora_veeva_organization` | `organization__v` |
-| `ora_veeva_sponsor` | `sponsor__c` |
-| `ora_veeva_milestone` | `milestone__v` (~100k) |
+Ora categorizes feasibility like the Mike Watson Claude Reports:
+
+| Grain | Join | Typical filters |
+|---|---|---|
+| **Study level** | Study + Metrics + Milestone | Metric/Milestone study country blank; Ora Project Code set |
+| **Site level** | Study Site + Metrics + Milestone | Metric/Milestone site set; Ora Project Code set |
+
+| Cosmos | Vault object | Feasibility role |
+|---|---|---|
+| `ora_veeva_study` | `study__v` | Study grain |
+| `ora_veeva_study_country` | `study_country__v` | Geography |
+| `ora_veeva_site` | `site__v` | Site grain |
+| `ora_veeva_organization` | `organization__v` | Org / PI org |
+| `ora_veeva_sponsor` | `sponsor__c` | Sponsor |
+| `ora_veeva_metric` | `metrics__ctms` | Enrollment metrics (enrolled, screened, rates, SF%, dropout) |
+| `ora_veeva_subject` | `subject__clin` (fallback `subject__v`) | Subjects |
+| `ora_veeva_milestone` | `milestone__v` | Startup / timeline milestones |
+
+Optional `VEEVA_FEASIBILITY_FILTERS=1` narrows metric types to the report list; default is **full** pull.
 
 ### Buddy fact packs (projected from live)
 

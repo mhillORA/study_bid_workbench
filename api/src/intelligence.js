@@ -1458,9 +1458,12 @@ async function getIntelligenceHealth(getDb) {
     "ora_sf_activity_request",
     "ora_veeva_study",
     "ora_veeva_site",
+    "ora_veeva_study_country",
     "ora_veeva_organization",
     "ora_veeva_sponsor",
-    "ora_veeva_milestone"
+    "ora_veeva_milestone",
+    "ora_veeva_metric",
+    "ora_veeva_subject"
   ];
   const counts = {};
   for (const id of containers) {
@@ -1486,9 +1489,12 @@ async function getIntelligenceHealth(getDb) {
     ora_sf_activity_request: counts.ora_sf_activity_request,
     ora_veeva_study: counts.ora_veeva_study,
     ora_veeva_site: counts.ora_veeva_site,
+    ora_veeva_study_country: counts.ora_veeva_study_country,
     ora_veeva_organization: counts.ora_veeva_organization,
     ora_veeva_sponsor: counts.ora_veeva_sponsor,
-    ora_veeva_milestone: counts.ora_veeva_milestone
+    ora_veeva_milestone: counts.ora_veeva_milestone,
+    ora_veeva_metric: counts.ora_veeva_metric,
+    ora_veeva_subject: counts.ora_veeva_subject
   };
   const fixedOk = liveVault
     ? true
@@ -1555,13 +1561,16 @@ async function getIntelligenceHealth(getDb) {
     veeva: {
       studies: counts.ora_veeva_study,
       sites: counts.ora_veeva_site,
+      studyCountries: counts.ora_veeva_study_country,
       organizations: counts.ora_veeva_organization,
       sponsors: counts.ora_veeva_sponsor,
       milestones: counts.ora_veeva_milestone,
+      metrics: counts.ora_veeva_metric,
+      subjects: counts.ora_veeva_subject,
       livePreferred: liveVault,
       note: liveVault
-        ? "Live Vault mirrors (ora_veeva_*) preferred over Mike Watson Excel packs. Fact tables may include source=veeva_live projections."
-        : "Run Data Status → Ingest Veeva to create ora_veeva_* containers and replace Mike Watson Excel."
+        ? "Live Vault mirrors preferred. Feasibility taxonomy: study vs site grain × metrics (enrollment) × milestones (startup) × subjects/geography."
+        : "Run Data Status → Ingest Veeva for study, country, site, metrics, subjects, milestones (Mike Watson feasibility taxonomy)."
     },
     note: liveVault
       ? "Live Veeva Vault sync present — Excel fixed counts are legacy reference only."

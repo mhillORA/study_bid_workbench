@@ -1,16 +1,21 @@
 /**
  * Veeva Vault → Cosmos sync.
  *
- * Live mirrors (canonical going forward):
- *   ora_veeva_study, ora_veeva_site, ora_veeva_organization,
- *   ora_veeva_sponsor, ora_veeva_milestone
+ * Feasibility taxonomy (Mike Watson Claude Report — how Ora categorizes feasibility):
+ *   Study level  = Study + Metrics + Milestone (country blank on metrics/milestones)
+ *   Site level   = Study Site + Metrics + Milestone (site not blank; Ora Project Code)
+ * Dimensions: enrollment metrics, startup milestones, geography (study country), subjects.
  *
- * Also projects into legacy-shaped packs Buddy already reads:
+ * Live mirrors:
+ *   ora_veeva_study, ora_veeva_site, ora_veeva_study_country,
+ *   ora_veeva_organization, ora_veeva_sponsor,
+ *   ora_veeva_metric, ora_veeva_subject, ora_veeva_milestone
+ *
+ * Also projects:
  *   ora_fact_study, ora_fact_site  (source=veeva_live)
- *   ora_veeva_milestones           (wide site×study gaps when computable; source=veeva_live)
+ *   ora_veeva_milestones           (wide gaps from live milestone__v when synced)
  *
- * Mike Watson / Claude Excel packs remain until overwritten by live projection;
- * intelligence prefers source=veeva_live when present.
+ * Mike Watson Excel packs remain until overwritten; intelligence prefers source=veeva_live.
  */
 
 const {
@@ -21,7 +26,71 @@ const {
 } = require("./veevaClient");
 
 const SYNC_ID = "veeva_tables";
-const TIME_BUDGET_MS = Number(process.env.VEEVA_SYNC_BUDGET_MS || 110000);
+// Function App can run longer than SWA — leave room for milestone__v (~large).
+const TIME_BUDGET_MS = Number(process.env.VEEVA_SYNC_BUDGET_MS || 240000);
+
+/**
+ * Feasibility categorization (Mike Watson Claude Report [Study|Site] Level WIP).
+ * These are the dimensions Ora uses — not just sync filters.
+ */
+const FEASIBILITY_LEVELS = {
+  study: {
+    reportType: "Study with Metrics and Milestone",
+    grain: "study",
+    requires: ["study", "metrics", "milestones"],
+    filters: {
+      metricStudyCountryBlank: true,
+      milestoneStudyCountryBlank: true,
+      oraProjectCodeNotBlank: true
+    }
+  },
+  site: {
+    reportType: "Study Site with Metrics and Milestone",
+    grain: "site",
+    requires: ["site", "metrics", "milestones"],
+    filters: {
+      metricSiteNotBlank: true,
+      milestoneSiteNotBlank: true,
+      oraProjectCodeNotBlank: true
+    }
+  }
+};
+
+const FEASIBILITY_METRIC_TYPES = [
+  "Drop Out Rate (%)",
+  "Enrolment Rate (subjects per month)",
+  "Enrollment Rate (subjects per month)",
+  "Screen Failure Rate (%)",
+  "Total Enrolled",
+  "Total Screened",
+  "Total Discontinued"
+];
+
+/** Site-level milestone types from the Site Level report. */
+const FEASIBILITY_MILESTONE_TYPES_SITE = [
+  "First Subject First Visit In",
+  "First Subject In",
+  "First Subject Out",
+  "Last Subject First Visit In",
+  "Last Subject In",
+  "Last Subject Out",
+  "Site Selected",
+  "Site Contracts Executed",
+  "IRB/EC Approval",
+  "Site Initiation Monitoring Visit",
+  "Contract / Budget",
+  "Contract Executed"
+];
+
+/** Study-level milestone types from the Study Level report. */
+const FEASIBILITY_MILESTONE_TYPES_STUDY = [
+  "First Subject First Visit In",
+  "First Subject In",
+  "Last Subject First Visit In",
+  "Last Subject In",
+  "Last Subject Out",
+  "First Subject Out"
+];
 
 /** Live Vault object → Cosmos mirror (+ optional fact projection). */
 const VEEVA_TABLES = [
@@ -39,6 +108,7 @@ const VEEVA_TABLES = [
       "indication__v",
       "indication__c",
       "study_phase__v",
+      "study_type__v",
       "study_status__v",
       "status__v",
       "therapeutic_area__c",
@@ -46,6 +116,9 @@ const VEEVA_TABLES = [
       "number_of_sites__c",
       "country__c",
       "current_project_phase__c",
+      "route_of_administration__c",
+      "enrollment_method__c",
+      "ora_project_code__c",
       "modified_date__v"
     ],
     projectFact: "study"
@@ -63,16 +136,35 @@ const VEEVA_TABLES = [
       "study_name__v",
       "organization__clin",
       "country__v",
+      "study_country__v",
       "site_status__v",
       "status__v",
       "indication__c",
       "study_phase__c",
       "study_sponsor__c",
+      "location_city__v",
+      "location_stateprovince__v",
+      "principal_investigator__v",
       "no_subjects_enrolled__v",
       "site_selected_date__v",
+      "ora_project_code__c",
       "modified_date__v"
     ],
     projectFact: "site"
+  },
+  {
+    vaultObject: "study_country__v",
+    container: "ora_veeva_study_country",
+    docType: "ora_veeva_study_country",
+    fields: [
+      "id",
+      "name__v",
+      "study__v",
+      "country__v",
+      "status__v",
+      "study_status__v",
+      "modified_date__v"
+    ]
   },
   {
     vaultObject: "organization__v",
@@ -95,6 +187,44 @@ const VEEVA_TABLES = [
     fields: ["id", "name__v", "status__v", "modified_date__v"]
   },
   {
+    // CTMS Metrics — enrollment performance dimension of feasibility
+    vaultObject: "metrics__ctms",
+    container: "ora_veeva_metric",
+    docType: "ora_veeva_metric",
+    fields: [
+      "id",
+      "name__v",
+      "status__v",
+      "metric_type__v",
+      "metrics_type__v",
+      "planned__v",
+      "actual__v",
+      "study__v",
+      "study_country__v",
+      "site__v",
+      "modified_date__v"
+    ],
+    feasibilityMetricFilter: true
+  },
+  {
+    // Subjects — subject counts / status under study + site
+    vaultObject: "subject__clin",
+    container: "ora_veeva_subject",
+    docType: "ora_veeva_subject",
+    fields: [
+      "id",
+      "name__v",
+      "status__v",
+      "subject_status__v",
+      "study__v",
+      "study_country__v",
+      "site__v",
+      "arm__v",
+      "modified_date__v"
+    ]
+  },
+  {
+    // Startup / timeline dimension of feasibility (study + site grain)
     vaultObject: "milestone__v",
     container: "ora_veeva_milestone",
     docType: "ora_veeva_milestone",
@@ -121,6 +251,56 @@ const VEEVA_TABLES = [
     projectFact: "milestone"
   }
 ];
+
+/** Drop unknown fields from VQL until the query succeeds (Vault configs differ). */
+async function vqlSelectResilient(session, vaultObject, fields, { whereExtra = "", watermark = null } = {}) {
+  let active = [...fields];
+  const dropped = [];
+  for (let attempt = 0; attempt < 12; attempt++) {
+    if (!active.length) {
+      throw new Error(`No queryable fields left for ${vaultObject}`);
+    }
+    let q = `SELECT ${active.join(", ")} FROM ${vaultObject}`;
+    const wheres = [];
+    if (watermark) wheres.push(`modified_date__v > '${watermark}'`);
+    if (whereExtra) wheres.push(`(${whereExtra})`);
+    if (wheres.length) q += ` WHERE ${wheres.join(" AND ")}`;
+    try {
+      const pulled = await vqlQuery(session, q, {});
+      return { ...pulled, fieldsUsed: active, fieldsDropped: dropped };
+    } catch (err) {
+      const msg = String(err.message || err);
+      const m =
+        msg.match(/Unknown (?:field|Field)\s+['`]?([a-z0-9_]+)['`]?/i) ||
+        msg.match(/Invalid (?:field|Field)\s+['`]?([a-z0-9_]+)['`]?/i) ||
+        msg.match(/field\s+['`]([a-z0-9_]+)['`]/i) ||
+        msg.match(/\b([a-z][a-z0-9_]*(?:__v|__c|__clin|__ctms|__vs))\b.*(?:not found|unknown|invalid)/i);
+      const bad = m && active.includes(m[1]) ? m[1] : null;
+      if (bad) {
+        active = active.filter((f) => f !== bad);
+        dropped.push(bad);
+        continue;
+      }
+      // If WHERE references a missing field (e.g. metric_type), clear filter once
+      if (whereExtra && /WHERE|metric_type|metrics_type/i.test(msg) && attempt === 0) {
+        whereExtra = "";
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error(`VQL field fallback exhausted for ${vaultObject}`);
+}
+
+function feasibilityMetricWhere() {
+  if (String(process.env.VEEVA_FEASIBILITY_FILTERS || "").trim() !== "1") return "";
+  // Prefer CONTAINS on name/type — Vault picklist API names vary by tenant
+  const bits = FEASIBILITY_METRIC_TYPES.map((t) => {
+    const esc = String(t).replace(/'/g, "\\'");
+    return `TONAME(metric_type__v) = '${esc}' OR name__v = '${esc}'`;
+  });
+  return bits.join(" OR ");
+}
 
 async function ensureContainer(database, containerId, partitionPath = "/id") {
   try {
@@ -454,18 +634,32 @@ async function runVeevaTablesSync(getDb, opts = {}) {
       )
     : VEEVA_TABLES;
 
-  // Sponsors/orgs first helps fact projection
+  // Sponsors/orgs → study → country → site → milestones → metrics → subjects
+  // Milestones before subjects so startup timelines are not starved by subject volume.
   tables.sort((a, b) => {
-    const rank = (t) =>
-      t.vaultObject === "sponsor__c"
-        ? 0
-        : t.vaultObject === "organization__v"
-          ? 1
-          : t.vaultObject === "study__v"
-            ? 2
-            : t.vaultObject === "site__v"
-              ? 3
-              : 4;
+    const rank = (t) => {
+      switch (t.vaultObject) {
+        case "sponsor__c":
+          return 0;
+        case "organization__v":
+          return 1;
+        case "study__v":
+          return 2;
+        case "study_country__v":
+          return 3;
+        case "site__v":
+          return 4;
+        case "milestone__v":
+          return 5;
+        case "metrics__ctms":
+          return 6;
+        case "subject__clin":
+        case "subject__v":
+          return 7;
+        default:
+          return 8;
+      }
+    };
     return rank(a) - rank(b);
   });
 
@@ -487,13 +681,10 @@ async function runVeevaTablesSync(getDb, opts = {}) {
     const t0 = Date.now();
     try {
       const container = await ensureContainer(database, table.container);
-      const fieldList = table.fields.join(", ");
-      let q = `SELECT ${fieldList} FROM ${table.vaultObject}`;
-      if (watermark) {
-        q += ` WHERE modified_date__v > '${watermark}'`;
-      }
-      const pulled = await vqlQuery(session, q, {
-        maxRecords: opts.maxRecords || null
+      const whereExtra = table.feasibilityMetricFilter ? feasibilityMetricWhere() : "";
+      const pulled = await vqlSelectResilient(session, table.vaultObject, table.fields, {
+        watermark,
+        whereExtra
       });
 
       let upserted = 0;
@@ -549,16 +740,62 @@ async function runVeevaTablesSync(getDb, opts = {}) {
         totalHint: pulled.total,
         pages: pulled.pages,
         truncated: pulled.truncated || incomplete,
+        fieldsDropped: pulled.fieldsDropped || [],
         errorCount: errors.length,
         errors: errors.slice(0, 5),
         elapsedMs: Date.now() - t0
       });
     } catch (err) {
+      const msg = String(err.message || err);
+      // Some Vaults use subject__v instead of subject__clin
+      if (
+        table.vaultObject === "subject__clin" &&
+        /subject__clin|Unknown object|INVALID_DATA|does not exist/i.test(msg)
+      ) {
+        try {
+          const alt = { ...table, vaultObject: "subject__v" };
+          const container = await ensureContainer(database, alt.container);
+          const pulled = await vqlSelectResilient(session, alt.vaultObject, alt.fields, {
+            watermark
+          });
+          let upserted = 0;
+          for (const rec of pulled.records) {
+            if (Date.now() - started > TIME_BUDGET_MS) {
+              incomplete = true;
+              break;
+            }
+            const doc = toMirrorDoc(rec, alt.docType, syncedAt);
+            if (!doc) continue;
+            await container.items.upsert(doc);
+            upserted += 1;
+          }
+          results.push({
+            object: "subject__v",
+            container: alt.container,
+            mode: watermark ? "delta" : "full",
+            fetched: pulled.records.length,
+            upserted,
+            note: "fell back from subject__clin",
+            fieldsDropped: pulled.fieldsDropped || [],
+            elapsedMs: Date.now() - t0
+          });
+          continue;
+        } catch (err2) {
+          results.push({
+            object: table.vaultObject,
+            container: table.container,
+            ok: false,
+            error: `${msg} | subject__v: ${err2.message || err2}`,
+            elapsedMs: Date.now() - t0
+          });
+          continue;
+        }
+      }
       results.push({
         object: table.vaultObject,
         container: table.container,
         ok: false,
-        error: String(err.message || err),
+        error: msg,
         elapsedMs: Date.now() - t0
       });
     }
@@ -566,7 +803,9 @@ async function runVeevaTablesSync(getDb, opts = {}) {
 
   let milestoneWide = null;
   const didMilestones = results.some(
-    (r) => r.object === "milestone__v" && (r.upserted > 0 || r.fetched > 0)
+    (r) =>
+      (r.object === "milestone__v" || r.container === "ora_veeva_milestone") &&
+      (r.upserted > 0 || r.fetched > 0)
   );
   if (didMilestones && Date.now() - started < TIME_BUDGET_MS) {
     try {
@@ -684,6 +923,10 @@ async function getVeevaSyncStatus(getDb) {
 module.exports = {
   SYNC_ID,
   VEEVA_TABLES,
+  FEASIBILITY_LEVELS,
+  FEASIBILITY_METRIC_TYPES,
+  FEASIBILITY_MILESTONE_TYPES_SITE,
+  FEASIBILITY_MILESTONE_TYPES_STUDY,
   runVeevaTablesSync,
   getVeevaSyncStatus,
   projectWideMilestones
