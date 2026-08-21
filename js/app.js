@@ -3481,7 +3481,7 @@
     return { text: cleaned, html: html || null };
   }
 
-  function pushAssistant(content, patches, htmlReport, exports, evidence) {
+  function pushAssistant(content, patches, htmlReport, exports, evidence, documentTitle) {
     const turn = { role: "assistant", content };
     if (patches && patches.length) {
       turn.proposal = {
@@ -3491,7 +3491,7 @@
       };
     }
     if (htmlReport) {
-      const titleHint = String(opts.documentTitle || "").trim();
+      const titleHint = String(documentTitle || "").trim();
       const safeName = titleHint
         ? `${titleHint.replace(/[^\w.\- ]+/g, "").trim().slice(0, 80) || "leavebehind"}.html`
         : `ora-leavebehind-${new Date().toISOString().slice(0, 10)}.html`;
@@ -3540,7 +3540,7 @@
       .join("");
 
     return `<details class="buddy-evidence">
-      <      summary>Sources${ev.grounded === false ? " · check warnings" : ""}${okSrc.length ? ` · ${okSrc.length}` : ""}</summary>
+      <summary>Sources${ev.grounded === false ? " · check warnings" : ""}${okSrc.length ? ` · ${okSrc.length}` : ""}</summary>
       ${srcBits ? `<ul>${srcBits}</ul>` : ""}
       ${gapBits ? `<p class="muted" style="margin:0.4rem 0 0.2rem;">Gaps</p><ul>${gapBits}</ul>` : ""}
       ${huntBits ? `<p class="muted" style="margin:0.4rem 0 0.2rem;">Second hunt</p><ul>${huntBits}</ul>` : ""}
@@ -3662,7 +3662,7 @@
           "I have field changes ready — switch to Do mode and ask me to apply them, or click Apply on the proposal below.";
         patches = extracted.patches;
       }
-      pushAssistant(text, patches, report.html, exports);
+      pushAssistant(text, patches, report.html, exports, opts.evidence, opts.documentTitle);
       if (opts.evidence) {
         const last = state.askHistory[state.askHistory.length - 1];
         if (last && last.role === "assistant") last.evidence = opts.evidence;
