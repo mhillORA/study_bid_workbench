@@ -1122,14 +1122,25 @@
   }
 
   /** External Buddy Function App base (from /api/buddy/session). Empty = same-origin SWA /api. */
+  const DEFAULT_BUDDY_API_BASE =
+    "https://ora-buddy-api-hrdbgqh9cvaub5ft.eastus2-01.azurewebsites.net";
+
   function buddyApiBase() {
-    return String(state.buddyApiBase || window.BUDDY_API_BASE || "").replace(/\/$/, "");
+    return String(
+      state.buddyApiBase || window.BUDDY_API_BASE || DEFAULT_BUDDY_API_BASE || ""
+    ).replace(/\/$/, "");
   }
 
   function buddyAskUrl(path) {
     const ext = buddyApiBase();
     const p = path.startsWith("/") ? path : `/${path}`;
-    if (ext) return `${ext}${p.startsWith("/api") ? p : `/api${p.replace(/^\/api/, "")}`}`;
+    // Prefer external Function App whenever we have a base (session token added in buddyHop).
+    if (ext && state.buddySessionToken) {
+      return `${ext}${p.startsWith("/api") ? p : `/api${p}`}`;
+    }
+    if (ext && state._buddyPreferExternal) {
+      return `${ext}${p.startsWith("/api") ? p : `/api${p}`}`;
+    }
     return apiUrl(p.startsWith("/api") ? p : `/api${p}`);
   }
 
@@ -1138,9 +1149,15 @@
     if (
       state.buddySessionToken &&
       state.buddySessionExpiresAt &&
-      state.buddySessionExpiresAt - now > 60_000
+      state.buddySessionExpiresAt - now > 60_000 &&
+      buddyApiBase()
     ) {
-      return { ok: true, token: state.buddySessionToken, apiBase: buddyApiBase() };
+      return {
+        ok: true,
+        token: state.buddySessionToken,
+        apiBase: buddyApiBase(),
+        external: true
+      };
     }
     try {
       const res = await fetch(apiUrl("/api/buddy/session"), {
@@ -1149,20 +1166,48 @@
         body: JSON.stringify({ user: state.entraUser || undefined })
       });
       const data = await res.json().catch(() => ({}));
-      if (data.ok && data.token && data.apiBase) {
+      const apiBase = String(
+        data.apiBase || window.BUDDY_API_BASE || DEFAULT_BUDDY_API_BASE || ""
+      ).replace(/\/$/, "");
+      if (data.ok && data.token && apiBase) {
         state.buddySessionToken = data.token;
-        state.buddyApiBase = String(data.apiBase).replace(/\/$/, "");
+        state.buddyApiBase = apiBase;
+        state._buddyPreferExternal = true;
         state.buddySessionExpiresAt = data.expiresAt
           ? Date.parse(data.expiresAt)
           : now + (Number(data.expiresIn) || 3600) * 1000;
-        return { ok: true, token: data.token, apiBase: state.buddyApiBase, external: true };
+        return { ok: true, token: data.token, apiBase, external: true };
       }
+      // Mint failed (usually BUDDY_SESSION_SECRET missing on SWA) — stay on SWA /api.
       state.buddySessionToken = null;
       state.buddyApiBase = "";
+      state._buddyPreferExternal = false;
       state.buddySessionExpiresAt = 0;
-      return { ok: true, token: null, apiBase: "", external: false, useLocalApi: true };
-    } catch (_) {
-      return { ok: true, token: null, apiBase: "", external: false, useLocalApi: true };
+      console.warn("[Buddy] session mint did not enable external API", {
+        status: res.status,
+        ok: data.ok,
+        hasToken: Boolean(data.token),
+        apiBase: data.apiBase || null,
+        error: data.error || null
+      });
+      return {
+        ok: true,
+        token: null,
+        apiBase: "",
+        external: false,
+        useLocalApi: true,
+        mintError: data.error || `session_http_${res.status}`
+      };
+    } catch (err) {
+      console.warn("[Buddy] session mint failed", err);
+      return {
+        ok: true,
+        token: null,
+        apiBase: "",
+        external: false,
+        useLocalApi: true,
+        mintError: String(err.message || err)
+      };
     }
   }
 
@@ -4252,7 +4297,22 @@
       const askController = state._askController;
       // External Function App can run longer; SWA hops must stay under ~45s.
       const session = await ensureBuddySession();
-      const externalBuddy = Boolean(session.external && session.apiBase);
+      const externalBuddy = Boolean(session.external && session.apiBase && session.token);
+      if (els.askStatus) {
+        els.askStatus.textContent = externalBuddy
+          ? deepCue
+            ? "Deep · Function App…"
+            : "Fast · Function App…"
+          : deepCue
+            ? "Deep · SWA (45s)…"
+            : "Fast · SWA (45s)…";
+      }
+      if (!externalBuddy) {
+        console.warn(
+          "[Buddy] Using SWA /api (45s limit). Set BUDDY_SESSION_SECRET + BUDDY_API_BASE on SWA.",
+          session.mintError || null
+        );
+      }
       const hopTimeoutMs = externalBuddy
         ? Math.max(120000, Number(window.BUDDY_ASK_HOP_TIMEOUT_MS || 180000) || 180000)
         : Math.max(50000, Number(window.BUDDY_ASK_HOP_TIMEOUT_MS || 55000) || 55000);
@@ -4457,10 +4517,14 @@
 
       // Prepare may short-circuit (instant/light shouldn't hit prepare often; if pack failed, fall back)
       if (!res.ok && !data.contextId && !data.answer) {
+        const where = externalBuddy ? "Function App" : "SWA (45s gateway)";
         pushAssistant(
-          "Buddy hit a gateway timeout pulling data. Try a shorter question, or ask again in a moment."
+          `Buddy could not finish prepare via ${where} (HTTP ${res.status || "?"}). ` +
+            (externalBuddy
+              ? "Try again in a moment — if this keeps happening, check Function App logs."
+              : "SWA still has a ~45s limit. On the Static Web App add BUDDY_API_BASE + BUDDY_SESSION_SECRET (same secret as the Function App), save, hard-refresh, and retry.")
         );
-        if (els.askStatus) els.askStatus.textContent = "Fast";
+        if (els.askStatus) els.askStatus.textContent = externalBuddy ? "Function App" : "SWA";
       } else if (data.answer && !data.contextId) {
         // Unexpected full answer from prepare path
         applyAskResult(data, res);
