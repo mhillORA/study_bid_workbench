@@ -1,0 +1,85 @@
+# Docs for the Azure Web Apps Deploy action: https://github.com/azure/functions-action
+# Buddy API lives in /api (not repo root).
+
+name: Build and deploy Node.js project to Azure Function App - ora-buddy-api
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "api/**"
+      - ".github/workflows/main_ora-buddy-api.yml"
+  workflow_dispatch:
+
+env:
+  AZURE_FUNCTIONAPP_PACKAGE_PATH: "api"
+  NODE_VERSION: "22"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout GitHub Action
+        uses: actions/checkout@v4
+
+      - name: Setup Node ${{ env.NODE_VERSION }} Environment
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: api/package-lock.json
+
+      - name: Resolve Project Dependencies Using Npm
+        working-directory: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
+        run: |
+          npm ci
+          npm run build --if-present
+          npm run test --if-present
+
+      - name: Zip artifact for deployment
+        working-directory: ${{ env.AZURE_FUNCTIONAPP_PACKAGE_PATH }}
+        run: zip -r ../release.zip .
+
+      - name: Upload artifact for deployment job
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-app
+          path: release.zip
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Download artifact from build job
+        uses: actions/download-artifact@v4
+        with:
+          name: node-app
+
+      - name: Unzip artifact for deployment
+        run: |
+          unzip release.zip -d deploy
+          rm release.zip
+
+      - name: Login to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZUREAPPSERVICE_CLIENTID_E7969C97C3E340F791EBF147C69786B5 }}
+          tenant-id: ${{ secrets.AZUREAPPSERVICE_TENANTID_CED0D7D47D80423594BB2DC9306AC055 }}
+          subscription-id: ${{ secrets.AZUREAPPSERVICE_SUBSCRIPTIONID_D4BEF586AD7948349C64B6ACB04F3622 }}
+
+      - name: Run Azure Functions Action
+        uses: Azure/functions-action@v1
+        id: fa
+        with:
+          app-name: ora-buddy-api
+          slot-name: Production
+          package: deploy
+          sku: flexconsumption
