@@ -56,3 +56,7 @@ UI: **Data Status → Ingest Veeva (full)**
 ## Note on SF App Settings
 
 Salesforce JWT settings (`SF_*`) belong on **`ora-buddy-api`** as well. If you don’t see them there, they may only be on SWA linked config — copy/add `SF_*` onto the Function App the same way as `VEEVA_*`.
+
+## UI routing
+
+Data Status **Ingest Veeva / SF** calls **`ora-buddy-api`** (Buddy session JWT), not the SWA managed API — so App Settings must be on the Function App. SWA alone will show “not configured” even when FA has `VEEVA_*`.

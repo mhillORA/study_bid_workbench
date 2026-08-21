@@ -1162,6 +1162,23 @@
     return apiUrl(apiPath);
   }
 
+  /**
+   * Veeva/SF App Settings live on ora-buddy-api (not SWA). Prefer FA when session mint works;
+   * falls back to same-origin SWA so local/dev still works.
+   */
+  async function intelligenceFaFetch(path, options = {}) {
+    const p = path.startsWith("/") ? path : `/${path}`;
+    const apiPath = p.startsWith("/api") ? p : `/api${p}`;
+    const session = await ensureBuddySession();
+    const headers = { ...(options.headers || {}) };
+    let url = apiUrl(apiPath);
+    if (session.external && session.apiBase && session.token) {
+      url = `${session.apiBase}${apiPath}`;
+      headers.Authorization = `Bearer ${session.token}`;
+    }
+    return fetch(url, { ...options, headers });
+  }
+
   /** Mint JWT for Function App. No-op if SWA secret missing. */
   async function ensureBuddySession() {
     if (state._buddyExternalDisabled) {
@@ -5051,9 +5068,11 @@
   async function loadIntelligenceHealth() {
     state.intelligence.loading = true;
     try {
-      const res = await fetch(apiUrl("/api/intelligence"));
+      const res = await intelligenceFaFetch("/api/intelligence");
       const data = await res.json().catch(() => ({}));
-      state.intelligence.health = res.ok ? data : { ok: false, error: data.error || `HTTP ${res.status}` };
+      state.intelligence.health = res.ok
+        ? data
+        : { ok: false, error: data.error || `HTTP ${res.status}` };
     } catch (err) {
       state.intelligence.health = { ok: false, error: String(err) };
     }
@@ -5063,12 +5082,12 @@
       if (sres.ok) state.intelligence.syncStatus = sdata;
     } catch (_) {}
     try {
-      const sfres = await fetch(apiUrl("/api/salesforce/sync"));
+      const sfres = await intelligenceFaFetch("/api/salesforce/sync");
       const sfdata = await sfres.json().catch(() => ({}));
       if (sfres.ok) state.intelligence.sfSyncStatus = sfdata;
     } catch (_) {}
     try {
-      const vres = await fetch(apiUrl("/api/veeva/sync"));
+      const vres = await intelligenceFaFetch("/api/veeva/sync");
       const vdata = await vres.json().catch(() => ({}));
       if (vres.ok) state.intelligence.veevaSyncStatus = vdata;
     } catch (_) {}
@@ -5164,13 +5183,17 @@
       "Ingesting Veeva Vault (study/site/org/sponsor/milestone) → Cosmos — may take a few minutes…";
     refreshDataStatusIfOpen();
     try {
-      const res = await fetch(apiUrl("/api/veeva/sync"), {
+      const res = await intelligenceFaFetch("/api/veeva/sync", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ full: true })
       });
       const data = await res.json().catch(() => ({}));
-      if (data.skipped) {
+      if (res.status === 401) {
+        state.intelligence.veevaMessage =
+          data.error ||
+          "Sign in required (or Buddy session mint failed) to run Veeva ingest on ora-buddy-api.";
+      } else if (data.skipped) {
         state.intelligence.veevaMessage =
           data.error || "Veeva not configured (set VEEVA_* on ora-buddy-api).";
       } else if (data.ok === false || (data.results || []).some((r) => r.error)) {
@@ -5214,7 +5237,7 @@
     state.intelligence.sfSyncMessage = "Refreshing sponsor crosswalk from Salesforce…";
     refreshDataStatusIfOpen();
     try {
-      const res = await fetch(apiUrl("/api/salesforce/sync"), {
+      const res = await intelligenceFaFetch("/api/salesforce/sync", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({})
@@ -5250,13 +5273,17 @@
       "Ingesting Accounts, Opportunities, Activity Requests → then refreshing crosswalk…";
     refreshDataStatusIfOpen();
     try {
-      const res = await fetch(apiUrl("/api/salesforce/sync"), {
+      const res = await intelligenceFaFetch("/api/salesforce/sync", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ tables: true, thenCrosswalk: true })
       });
       const data = await res.json().catch(() => ({}));
-      if (data.skipped) {
+      if (res.status === 401) {
+        state.intelligence.sfTablesMessage =
+          data.error ||
+          "Sign in required (or Buddy session mint failed) to run SF ingest on ora-buddy-api.";
+      } else if (data.skipped) {
         state.intelligence.sfTablesMessage =
           data.error || "Salesforce not configured (set SF_* App Settings).";
       } else if (data.ok === false || (data.results || []).some((r) => r.error)) {
@@ -5652,12 +5679,14 @@
       return `<div class="card wide"><h3>Data status</h3><p class="muted">Loading intelligence containers…</p></div>`;
     }
     if (h.ok === false && h.error) {
+      const errText = String(h.error).slice(0, 280);
       return `<div class="card wide"><h3>Data status</h3><p class="muted">Could not read intelligence containers: ${escapeHtml(
-        h.error
+        errText
       )}</p><button type="button" class="btn btn-secondary" id="btnIntelRefresh">Retry</button></div>`;
     }
     const counts = h.counts || {};
     const expected = h.expected || {};
+    const countsMatch = h.countsMatch !== false;
     const rows = Object.keys(expected)
       .map((id) => {
         const c = counts[id];
@@ -5785,7 +5814,9 @@
       : "";
     return `
       <div class="card wide">
-        <h3>Data status ${h.ok ? "· loaded" : "· check counts"}</h3>
+        <h3>Data status ${
+          h.ok === false && h.error ? "· error" : countsMatch ? "· loaded" : "· check counts"
+        }</h3>
         <p class="muted">Ora Veeva + TrialHub + Salesforce reference tables in Cosmos (<code>bd-budgets</code>). Buddy reads summaries from these.</p>
         <table class="table">
           <thead><tr><th>Container</th><th>Loaded</th><th>Expected</th><th>Status</th></tr></thead>

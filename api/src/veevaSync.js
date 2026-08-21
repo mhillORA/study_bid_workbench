@@ -604,6 +604,11 @@ async function runVeevaTablesSync(getDb, opts = {}) {
 async function getVeevaSyncStatus(getDb) {
   const cfg = veevaConfig();
   const database = getDb();
+  // Create empty mirrors so Data Status shows 0 instead of Cosmos NotFound noise.
+  for (const t of VEEVA_TABLES) {
+    await ensureContainer(database, t.container);
+  }
+  await ensureContainer(database, "ora_veeva_milestones", "/country");
   const sync = await readSyncState(database);
   const tables = [];
   for (const t of VEEVA_TABLES) {

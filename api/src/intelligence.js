@@ -1432,7 +1432,14 @@ async function safeCount(database, containerId) {
     );
     return rows[0] ?? 0;
   } catch (err) {
-    return { error: String(err.message || err) };
+    // Missing container (pre-first Veeva/SF ingest) → 0, not a fatal health failure.
+    // Never return full Cosmos SDK blobs — they blow SWA response size → HTTP 500 in UI.
+    const code = err && (err.code || err.statusCode);
+    const msg = String(err.message || err);
+    if (code === 404 || /NotFound|Resource Not Found|does not exist/i.test(msg)) {
+      return 0;
+    }
+    return { error: msg.slice(0, 180) };
   }
 }
 
@@ -1485,7 +1492,13 @@ async function getIntelligenceHealth(getDb) {
   };
   const fixedOk = liveVault
     ? true
-    : Object.keys(expected).every((id) => counts[id] === expected[id]);
+    : Object.keys(expected).every((id) => {
+        const c = counts[id];
+        return typeof c === "number" && c === expected[id];
+      });
+  const readErrors = Object.entries(counts)
+    .filter(([, v]) => v && typeof v === "object" && v.error)
+    .map(([id, v]) => `${id}: ${v.error}`);
   let syncState = null;
   try {
     const { resource } = await database.container("syncState").item("ctgov_ophthalmology", "ctgov_ophthalmology").read();
@@ -1516,10 +1529,13 @@ async function getIntelligenceHealth(getDb) {
   }
   return {
     dataset: DATASET,
-    ok: fixedOk,
+    // ok = health endpoint succeeded; countsMatch = Excel pack sizes still align (legacy check)
+    ok: true,
+    countsMatch: fixedOk,
     counts,
     expected,
     liveCounts,
+    readErrors: readErrors.length ? readErrors : undefined,
     trialhub: {
       count: counts.ora_trialhub_trials,
       note: "Grows via TrialHub .xlsx upload on this page — upsert by NCT, no duplicates."
@@ -1545,13 +1561,13 @@ async function getIntelligenceHealth(getDb) {
       livePreferred: liveVault,
       note: liveVault
         ? "Live Vault mirrors (ora_veeva_*) preferred over Mike Watson Excel packs. Fact tables may include source=veeva_live projections."
-        : "Run Data Status → Ingest Veeva to replace Mike Watson Excel with live Vault study/site/milestone."
+        : "Run Data Status → Ingest Veeva to create ora_veeva_* containers and replace Mike Watson Excel."
     },
     note: liveVault
       ? "Live Veeva Vault sync present — Excel fixed counts are legacy reference only."
       : fixedOk
-        ? "Core intelligence containers loaded."
-        : "Count mismatch or containers missing — run ingest/load_ora_intelligence.py or Ingest Veeva"
+        ? "Core intelligence containers loaded. Veeva live mirrors empty until Ingest Veeva."
+        : "Legacy Excel pack count mismatch — or run Ingest Veeva for live Vault."
   };
 }
 

@@ -46,7 +46,14 @@ const { parseBuddyActions } = require("./buddyActions");
 const { maybeHuntAndRetry, toolTraceFromPrefetch } = require("./buddyHunt");
 const { storeAttachments, loadAttachments } = require("./buddyAttachmentVault");
 const { storeAskPack, loadAskPack } = require("./buddyAskPack");
-const { mintBuddySession, assertBuddySession, buddySessionRequired, sessionSecret } = require("./buddySession");
+const {
+  mintBuddySession,
+  assertBuddySession,
+  buddySessionRequired,
+  sessionSecret,
+  bearerFromRequest,
+  verifyBuddySessionToken
+} = require("./buddySession");
 const {
   loadDeptContexts,
   saveDeptContexts,
@@ -79,11 +86,29 @@ function hasCopilotKey(request) {
   return Boolean(expected && !expected.includes("SET_IN") && got === expected);
 }
 
-/** Scheduler uses Copilot key; manual UI uses signed-in SWA principal. */
+/**
+ * Scheduler uses Copilot key; SWA UI uses signed-in principal;
+ * browser → Function App uses Buddy session JWT (VEEVA_*/SF_* live on ora-buddy-api).
+ */
 function authorizeCtgovSync(request) {
   if (hasCopilotKey(request)) return { ok: true, via: "copilot_key" };
   const user = signedInUserFromRequest(request, null);
   if (user && (user.email || user.userId)) return { ok: true, via: "swa_user", user };
+  const token = bearerFromRequest(request, headerGet);
+  if (token) {
+    const verified = verifyBuddySessionToken(token);
+    if (verified.ok) {
+      return {
+        ok: true,
+        via: "buddy_session",
+        user: {
+          email: verified.payload?.email || null,
+          userId: verified.payload?.sub || null,
+          displayName: verified.payload?.name || null
+        }
+      };
+    }
+  }
   return { ok: false };
 }
 
