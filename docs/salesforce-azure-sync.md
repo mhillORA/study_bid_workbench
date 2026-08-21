@@ -39,6 +39,11 @@ Endpoints:
 - `POST /api/salesforce/sync` — crosswalk refresh (signed-in or `x-copilot-key`)  
 - `POST /api/salesforce/sync` with `{ "dryRun": true }` — crosswalk count only  
 - `POST /api/salesforce/sync` with `{ "tables": true }` — full table pull for Buddy
+- `POST /api/salesforce/sync` with `{ "tables": true, "thenCrosswalk": true }` — tables + crosswalk (scheduler)
+
+## Schedule
+
+GitHub Actions **`intelligence-daily-sync.yml`** runs tables + crosswalk daily at **11:00 UTC (~6AM EST / ~7AM EDT)** against `ora-buddy-api` (`x-copilot-key` = `COPILOT_ASK_KEY` secret). SF tables are a full upsert of Account / Opportunity / `Activity_Request__c` (not a modified-date delta yet).
 
 ## Salesforce (already done checklist)
 

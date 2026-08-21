@@ -1,0 +1,136 @@
+name: Intelligence daily sync (CT.gov + Veeva + Salesforce)
+
+# Daily ~6:00 America/New_York standard time (EST = UTC−5 → 11:00 UTC).
+# During EDT (UTC−4) this fires at 7:00 local — accept seasonal shift or adjust cron.
+#
+# Hits Function App ora-buddy-api (VEEVA_*/SF_*/Cosmos live there).
+# Auth: COPILOT_ASK_KEY secret → x-copilot-key (same value as FA/SWA App Setting).
+# If the secret is missing, scheduled runs soft-skip (warning, exit 0); manual dispatch fails.
+
+on:
+  schedule:
+    - cron: "0 11 * * *"
+  workflow_dispatch:
+    inputs:
+      ctgov_full:
+        description: "CT.gov full backfill (usually leave false)"
+        type: boolean
+        default: false
+      veeva_full:
+        description: "Veeva full pull (usually leave false — use UI for backfill)"
+        type: boolean
+        default: false
+      skip_ctgov:
+        description: "Skip ClinicalTrials.gov"
+        type: boolean
+        default: false
+      skip_veeva:
+        description: "Skip Veeva"
+        type: boolean
+        default: false
+      skip_salesforce:
+        description: "Skip Salesforce tables + crosswalk"
+        type: boolean
+        default: false
+
+env:
+  DEFAULT_API_BASE: https://ora-buddy-api-hrdbgqh9cvaub5ft.eastus2-01.azurewebsites.net
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    name: POST CT.gov / Veeva / Salesforce deltas
+    timeout-minutes: 45
+    steps:
+      - name: Resolve API base + auth
+        id: prep
+        env:
+          COPILOT_ASK_KEY: ${{ secrets.COPILOT_ASK_KEY }}
+          ORA_BUDDY_API_URL: ${{ secrets.ORA_BUDDY_API_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${COPILOT_ASK_KEY:-}" ]; then
+            echo "::warning::Missing Actions secret COPILOT_ASK_KEY (same value as ora-buddy-api App Setting COPILOT_ASK_KEY)."
+            echo "Daily sync skipped. Sync from the signed-in app UI, or set the secret."
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+              exit 1
+            fi
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          BASE="${ORA_BUDDY_API_URL:-$DEFAULT_API_BASE}"
+          BASE="${BASE%/}"
+          echo "base=$BASE" >> "$GITHUB_OUTPUT"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "API base: $BASE"
+
+      - name: ClinicalTrials.gov delta
+        if: steps.prep.outputs.skip != 'true' && (github.event_name != 'workflow_dispatch' || inputs.skip_ctgov != true)
+        env:
+          COPILOT_ASK_KEY: ${{ secrets.COPILOT_ASK_KEY }}
+          API_BASE: ${{ steps.prep.outputs.base }}
+        run: |
+          set -euo pipefail
+          FULL="${{ github.event_name == 'workflow_dispatch' && inputs.ctgov_full || false }}"
+          BODY='{"full":false}'
+          if [ "$FULL" = "true" ]; then BODY='{"full":true}'; fi
+          URL="$API_BASE/api/ctgov/sync"
+          echo "POST $URL $BODY"
+          RESP=$(curl -sS -w "\n%{http_code}" -X POST "$URL" \
+            -H "Content-Type: application/json" \
+            -H "x-copilot-key: $COPILOT_ASK_KEY" \
+            -d "$BODY")
+          CODE=$(echo "$RESP" | tail -n1)
+          BODY_OUT=$(echo "$RESP" | sed '$d')
+          echo "$BODY_OUT"
+          if [ "$CODE" -lt 200 ] || [ "$CODE" -ge 300 ]; then
+            echo "HTTP $CODE"
+            exit 1
+          fi
+
+      - name: Veeva delta
+        if: steps.prep.outputs.skip != 'true' && (github.event_name != 'workflow_dispatch' || inputs.skip_veeva != true)
+        env:
+          COPILOT_ASK_KEY: ${{ secrets.COPILOT_ASK_KEY }}
+          API_BASE: ${{ steps.prep.outputs.base }}
+        run: |
+          set -euo pipefail
+          FULL="${{ github.event_name == 'workflow_dispatch' && inputs.veeva_full || false }}"
+          BODY='{}'
+          if [ "$FULL" = "true" ]; then BODY='{"full":true}'; fi
+          URL="$API_BASE/api/veeva/sync"
+          echo "POST $URL $BODY"
+          RESP=$(curl -sS -w "\n%{http_code}" -X POST "$URL" \
+            -H "Content-Type: application/json" \
+            -H "x-copilot-key: $COPILOT_ASK_KEY" \
+            -d "$BODY")
+          CODE=$(echo "$RESP" | tail -n1)
+          BODY_OUT=$(echo "$RESP" | sed '$d')
+          echo "$BODY_OUT"
+          if [ "$CODE" -lt 200 ] || [ "$CODE" -ge 300 ]; then
+            echo "HTTP $CODE"
+            exit 1
+          fi
+
+      - name: Salesforce tables + crosswalk
+        if: steps.prep.outputs.skip != 'true' && (github.event_name != 'workflow_dispatch' || inputs.skip_salesforce != true)
+        env:
+          COPILOT_ASK_KEY: ${{ secrets.COPILOT_ASK_KEY }}
+          API_BASE: ${{ steps.prep.outputs.base }}
+        run: |
+          set -euo pipefail
+          # Tables sync upserts Account / Opportunity / Activity_Request__c, then crosswalk.
+          BODY='{"tables":true,"thenCrosswalk":true}'
+          URL="$API_BASE/api/salesforce/sync"
+          echo "POST $URL $BODY"
+          RESP=$(curl -sS -w "\n%{http_code}" -X POST "$URL" \
+            -H "Content-Type: application/json" \
+            -H "x-copilot-key: $COPILOT_ASK_KEY" \
+            -d "$BODY")
+          CODE=$(echo "$RESP" | tail -n1)
+          BODY_OUT=$(echo "$RESP" | sed '$d')
+          echo "$BODY_OUT"
+          if [ "$CODE" -lt 200 ] || [ "$CODE" -ge 300 ]; then
+            echo "HTTP $CODE"
+            exit 1
+          fi

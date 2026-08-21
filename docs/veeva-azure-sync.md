@@ -59,6 +59,12 @@ Optional `VEEVA_FEASIBILITY_FILTERS=1` narrows metric types to the report list; 
 
 UI: **Data Status → Ingest Veeva (full)**
 
+## Schedule
+
+GitHub Actions workflow **`intelligence-daily-sync.yml`** posts delta daily at **11:00 UTC (~6AM EST / ~7AM EDT)** to `ora-buddy-api` with `x-copilot-key` (`COPILOT_ASK_KEY` Actions secret). Manual full backfill stays in the UI / `workflow_dispatch` with `veeva_full`.
+
+**Resume / empty mirrors:** Full ingest sorts empty containers first (metrics, milestones, subjects, …) before redoing sites. Incomplete runs do **not** advance `lastSuccessfulSync`, so history is not skipped. Re-click **Ingest Veeva (full)** until metrics/subjects/milestones show counts.
+
 ## Buddy / crosswalk behavior
 
 - Intelligence prefers `source=veeva_live` fact rows when `ora_veeva_study` has data  

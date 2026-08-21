@@ -1165,18 +1165,37 @@
   /**
    * Veeva/SF App Settings live on ora-buddy-api (not SWA). Prefer FA when session mint works;
    * falls back to same-origin SWA so local/dev still works.
+   * Pass requireExternal:true for long Veeva/SF ingest — SWA gateway ~45s → "Failed to fetch".
    */
   async function intelligenceFaFetch(path, options = {}) {
+    const { requireExternal = false, ...fetchOpts } = options;
     const p = path.startsWith("/") ? path : `/${path}`;
     const apiPath = p.startsWith("/api") ? p : `/api${p}`;
     const session = await ensureBuddySession();
-    const headers = { ...(options.headers || {}) };
+    const headers = { ...(fetchOpts.headers || {}) };
     let url = apiUrl(apiPath);
     if (session.external && session.apiBase && session.token) {
       url = `${session.apiBase}${apiPath}`;
       headers.Authorization = `Bearer ${session.token}`;
+    } else if (requireExternal) {
+      const why = session.mintError || "Buddy session mint failed";
+      throw new Error(
+        `ora-buddy-api session required (${why}). Sign in, confirm BUDDY_SESSION_SECRET on SWA, and Portal → ora-buddy-api → CORS allows this site.`
+      );
     }
-    return fetch(url, { ...options, headers });
+    return fetch(url, { ...fetchOpts, headers });
+  }
+
+  function formatVeevaFetchError(err) {
+    const msg = String(err?.message || err || "");
+    if (/Failed to fetch|NetworkError|Load failed|network/i.test(msg)) {
+      return (
+        "Browser lost the Function App connection (CORS, VPN, or request too long). " +
+        "Ingest now runs one Vault object per call — retry. " +
+        "Portal → ora-buddy-api → CORS must allow this site; hard-refresh after sign-in."
+      );
+    }
+    return msg;
   }
 
   /** Mint JWT for Function App. No-op if SWA secret missing. */
@@ -5180,55 +5199,112 @@
     if (state.intelligence.veevaBusy) return;
     state.intelligence.veevaBusy = true;
     state.intelligence.veevaMessage =
-      "Ingesting Veeva Vault (study/site/org/sponsor/milestone) → Cosmos — may take a few minutes…";
+      "Starting Veeva ingest (one object per request so the browser does not time out)…";
     refreshDataStatusIfOpen();
     try {
-      const res = await intelligenceFaFetch("/api/veeva/sync", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ full: true })
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.status === 401) {
+      const statusRes = await intelligenceFaFetch("/api/veeva/sync", { requireExternal: true });
+      const status = await statusRes.json().catch(() => ({}));
+      if (statusRes.status === 401) {
         state.intelligence.veevaMessage =
-          data.error ||
+          status.error ||
           "Sign in required (or Buddy session mint failed) to run Veeva ingest on ora-buddy-api.";
-      } else if (data.skipped) {
-        state.intelligence.veevaMessage =
-          data.error || "Veeva not configured (set VEEVA_* on ora-buddy-api).";
-      } else if (data.ok === false || (data.results || []).some((r) => r.error)) {
-        const bits = (data.results || []).map((r) =>
-          r.error
-            ? `${r.object}: ${r.error}`
-            : `${r.object}: ${r.upserted ?? 0}/${r.fetched ?? 0}`
-        );
-        state.intelligence.veevaMessage = [
-          "Veeva ingest issues",
-          bits.join(" · ") || data.error || `HTTP ${res.status}`,
-          data.elapsedMs ? `${Math.round(data.elapsedMs / 1000)}s` : ""
-        ]
-          .filter(Boolean)
-          .join(" · ");
-      } else {
-        const bits = (data.results || []).map(
-          (r) => `${r.object}: ${r.upserted ?? 0}/${r.fetched ?? 0}`
-        );
-        const mw = data.milestoneWide;
-        state.intelligence.veevaMessage = [
-          data.incomplete ? "Partial Veeva ingest (re-run)" : "Veeva ingest OK",
-          bits.join(" · "),
-          mw && mw.upserted != null ? `wide milestones ${mw.upserted}` : "",
-          data.elapsedMs ? `${Math.round(data.elapsedMs / 1000)}s` : ""
-        ]
-          .filter(Boolean)
-          .join(" · ");
+        return;
       }
+      if (status.configured === false) {
+        state.intelligence.veevaMessage =
+          status.error || "Veeva not configured (set VEEVA_* on ora-buddy-api).";
+        return;
+      }
+
+      const prefer = [
+        "metrics__ctms",
+        "milestone__v",
+        "subject__clin",
+        "study_country__v",
+        "sponsor__c",
+        "organization__v",
+        "study__v",
+        "site__v"
+      ];
+      const tables = Array.isArray(status.tables) ? [...status.tables] : [];
+      tables.sort((a, b) => {
+        const aEmpty = (a.count || 0) === 0 ? 0 : 1;
+        const bEmpty = (b.count || 0) === 0 ? 0 : 1;
+        if (aEmpty !== bEmpty) return aEmpty - bEmpty;
+        const ai = prefer.indexOf(a.vaultObject);
+        const bi = prefer.indexOf(b.vaultObject);
+        return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi);
+      });
+      const targets = tables.length
+        ? tables.map((t) => t.vaultObject)
+        : prefer;
+
+      const summaries = [];
+      let stopped = false;
+      for (let i = 0; i < targets.length; i++) {
+        const obj = targets[i];
+        const prior = tables.find((t) => t.vaultObject === obj);
+        state.intelligence.veevaMessage = `Veeva ${i + 1}/${targets.length}: ${obj}${
+          prior && prior.count != null ? ` (was ${prior.count})` : ""
+        }…`;
+        refreshDataStatusIfOpen();
+
+        let res;
+        let data = {};
+        try {
+          res = await intelligenceFaFetch("/api/veeva/sync", {
+            requireExternal: true,
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ full: true, only: [obj], prioritizeEmpty: true })
+          });
+          data = await res.json().catch(() => ({}));
+        } catch (chunkErr) {
+          summaries.push(`${obj}: ${formatVeevaFetchError(chunkErr)}`);
+          stopped = true;
+          break;
+        }
+
+        if (res.status === 401) {
+          summaries.push(`${obj}: unauthorized`);
+          stopped = true;
+          break;
+        }
+        if (data.skipped) {
+          summaries.push(`${obj}: ${data.error || "skipped"}`);
+          stopped = true;
+          break;
+        }
+        const row = (data.results || [])[0] || {};
+        if (row.error) {
+          summaries.push(`${obj}: ${row.error}`);
+        } else if (row.skipped) {
+          summaries.push(`${obj}: skipped(${row.reason || "budget"})`);
+          stopped = true;
+          break;
+        } else {
+          summaries.push(`${obj}: ${row.upserted ?? 0}/${row.fetched ?? 0}`);
+        }
+        if (data.incomplete) {
+          summaries.push("time budget — continue from next click");
+          stopped = true;
+          break;
+        }
+      }
+
+      state.intelligence.veevaMessage = [
+        stopped ? "Partial Veeva ingest" : "Veeva ingest OK",
+        summaries.join(" · ")
+      ]
+        .filter(Boolean)
+        .join(" — ");
       await loadIntelligenceHealth();
     } catch (err) {
-      state.intelligence.veevaMessage = `Veeva sync error: ${String(err)}`;
+      state.intelligence.veevaMessage = `Veeva sync error: ${formatVeevaFetchError(err)}`;
+    } finally {
+      state.intelligence.veevaBusy = false;
+      refreshDataStatusIfOpen();
     }
-    state.intelligence.veevaBusy = false;
-    refreshDataStatusIfOpen();
   }
 
   async function runSalesforceSyncManual() {
@@ -5274,6 +5350,7 @@
     refreshDataStatusIfOpen();
     try {
       const res = await intelligenceFaFetch("/api/salesforce/sync", {
+        requireExternal: true,
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ tables: true, thenCrosswalk: true })

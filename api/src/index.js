@@ -1491,26 +1491,23 @@ app.http("veevaSync", {
   route: "veeva/sync",
   handler: async (request, context) => {
     if (request.method === "OPTIONS") {
-      return {
-        status: 204,
-        headers: {
-          "Access-Control-Allow-Origin": "*",
-          "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-          "Access-Control-Allow-Headers": "content-type, x-copilot-key"
-        }
-      };
+      return optionsOk(request);
     }
     try {
       if (request.method === "GET") {
         const status = await getVeevaSyncStatus(getDb);
-        return json(200, status);
+        return json(200, status, request);
       }
 
       const auth = authorizeCtgovSync(request);
       if (!auth.ok) {
-        return json(401, {
-          error: "Unauthorized — sign in, or pass x-copilot-key (same as Copilot Ask key)"
-        });
+        return json(
+          401,
+          {
+            error: "Unauthorized — sign in, or pass x-copilot-key (same as Copilot Ask key)"
+          },
+          request
+        );
       }
 
       let body = {};
@@ -1533,23 +1530,33 @@ app.http("veevaSync", {
         body.full === true ||
         request.query.get("full") === "true" ||
         body.mode === "full";
+      const prioritizeEmpty =
+        body.prioritizeEmpty === true ||
+        body.resume === true ||
+        request.query.get("prioritizeEmpty") === "true" ||
+        request.query.get("resume") === "true";
       const result = await runVeevaTablesSync(getDb, {
         full,
         delta: !full,
         only,
+        prioritizeEmpty,
         triggeredBy
       });
       const errSummary = (result.results || [])
         .filter((r) => r.error)
         .map((r) => `${r.object}: ${r.error}`)
         .join(" · ");
-      return json(200, {
-        ...result,
-        error: result.ok ? undefined : errSummary || result.error || "Veeva sync failed"
-      });
+      return json(
+        200,
+        {
+          ...result,
+          error: result.ok ? undefined : errSummary || result.error || "Veeva sync failed"
+        },
+        request
+      );
     } catch (err) {
       context.error(err);
-      return json(500, { ok: false, error: String(err.message || err) });
+      return json(500, { ok: false, error: String(err.message || err) }, request);
     }
   }
 });

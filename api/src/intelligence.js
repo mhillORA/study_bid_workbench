@@ -235,6 +235,15 @@ function resolveIndicationGroup(raw) {
   if (!n) return null;
   if (AMBIGUOUS_INDICATION_TOKENS.has(n)) return null;
 
+  // Vault indication picklist API names: dry_eye__c → dry eye; devicesdry_eye__c → devicesdry eye
+  const fromPicklist = normText(
+    String(requested)
+      .replace(/__/g, " ")
+      .replace(/_/g, " ")
+      .replace(/\s+c$/i, "")
+  );
+  const compact = compactNorm(requested.replace(/__/g, " ").replace(/_/g, " ").replace(/\s+c$/i, ""));
+
   let best = null; // { index, score, matchedLabel }
 
   for (let i = 0; i < INDICATION_GROUPS.length; i++) {
@@ -242,14 +251,18 @@ function resolveIndicationGroup(raw) {
     for (const label of group) {
       const ng = normText(label);
       if (!ng) continue;
+      const lc = compactNorm(label);
       let score = 0;
-      if (ng === n) {
+      if (ng === n || (fromPicklist && ng === fromPicklist)) {
         score = 10000 + ng.length;
+      } else if (lc && compact && lc === compact && lc.length >= 6) {
+        // devicesdryeye ↔ Devices-Dry Eye (Vault often drops separators)
+        score = 9500 + lc.length;
       } else if (ng.length <= 3) {
-        // Short codes only when the query is exactly that code (DED, GA, RP, …)
-        if (n === ng) score = 9000 + ng.length;
-      } else if (phraseIncludes(n, ng)) {
-        // Query contains the label phrase — prefer longer labels
+        // Short codes ONLY when the whole query IS that code (DED, GA, RP, …)
+        if (n === ng || fromPicklist === ng) score = 9000 + ng.length;
+        else continue;
+      } else if (phraseIncludes(n, ng) || (fromPicklist && phraseIncludes(fromPicklist, ng))) {
         score = 8000 + ng.length;
       } else {
         continue;
@@ -266,7 +279,8 @@ function resolveIndicationGroup(raw) {
     index: best.index,
     family: familyIdForGroup(best.index),
     matchedLabel: best.matchedLabel,
-    preferred: preferredIndicationLabel(best.matchedLabel) || best.matchedLabel,
+    // Always surface the UI/canonical group head for Vault picklist → Buddy
+    preferred: group[0],
     labels: [...group]
   };
 }
@@ -289,6 +303,54 @@ function indicationAliases(raw) {
   // Exclusive: synonyms from THIS group only
   const out = new Set([requested, ...resolved.labels]);
   return [...out];
+}
+
+/**
+ * Vault study__v "Indication" picklist (indication__v) → canonical Buddy label.
+ * dry_eye__c → Dry Eye; devicesdry_eye__c → Devices-Dry Eye.
+ */
+function canonicalIndicationFromVaultPicklist(raw) {
+  if (raw == null) return "_unknown";
+  let s = raw;
+  if (Array.isArray(s)) s = s[0];
+  if (s && typeof s === "object") {
+    s = s.name__v || s.label || s.value || s.n || null;
+  }
+  s = String(s || "").trim();
+  if (!s) return "_unknown";
+  const resolved = resolveIndicationGroup(s);
+  if (resolved?.preferred) return resolved.preferred;
+  // Humanize leftover API names
+  const human = s
+    .replace(/__/g, " ")
+    .replace(/_/g, " ")
+    .replace(/\s+c$/i, "")
+    .trim();
+  if (!human) return "_unknown";
+  const titled = human.replace(/\b[a-z]/g, (ch) => ch.toUpperCase());
+  return titled || "_unknown";
+}
+
+/** Exact-match aliases including Vault picklist spellings + lowercase partitions. */
+function indicationQueryAliases(raw) {
+  const base = indicationAliases(raw);
+  const out = new Set(base);
+  for (const a of base) {
+    const n = normText(a);
+    if (!n) continue;
+    out.add(n);
+    out.add(n.replace(/\s+/g, "_"));
+    out.add(`${n.replace(/\s+/g, "_")}__c`);
+    const compact = compactNorm(a);
+    if (compact && compact.length >= 4) out.add(compact);
+  }
+  // Also accept the raw Vault picklist form of the preferred label
+  const preferred = resolveIndicationGroup(raw)?.preferred;
+  if (preferred) {
+    const slug = normText(preferred).replace(/\s+/g, "_");
+    out.add(`${slug}__c`);
+  }
+  return [...out].filter(Boolean);
 }
 
 /** True when a Cosmos/Veeva indication string belongs with the requested indication family only. */
@@ -1549,7 +1611,7 @@ async function getIntelligenceHealth(getDb) {
     ctgov: {
       count: counts.ora_ctgov_trials,
       sync: syncState,
-      note: "Growing feed — daily delta ~5AM Eastern; no fixed expected count."
+      note: "Growing feed — daily delta ~6AM EST; no fixed expected count."
     },
     salesforce: {
       accounts: counts.ora_sf_account,
@@ -1599,6 +1661,29 @@ function keepFactRowForSource(row, preferLive) {
   return src !== "veeva_live";
 }
 
+/** Query fact rows: when live Vault exists, pull source=veeva_live first (legacy TOP-N was drowning live). */
+async function queryFactRowsPreferLive(container, baseSql, baseParams, preferLive, mapRow) {
+  const run = async (sourceFilter) => {
+    let q = baseSql;
+    const params = [...baseParams];
+    if (sourceFilter === "veeva_live") {
+      q += ` AND c.source = @srcLive`;
+      params.push({ name: "@srcLive", value: "veeva_live" });
+    } else if (sourceFilter === "legacy") {
+      q += ` AND (NOT IS_DEFINED(c.source) OR c.source != @srcLive)`;
+      params.push({ name: "@srcLive", value: "veeva_live" });
+    }
+    return queryAll(container, q, params);
+  };
+  if (!preferLive) {
+    const rows = await run(null);
+    return rows.filter((r) => keepFactRowForSource(r, false));
+  }
+  let rows = await run("veeva_live");
+  if (!rows.length) rows = await run("legacy");
+  return mapRow ? rows.filter(mapRow) : rows;
+}
+
 async function lookupSponsorCrosswalk(database, sponsorOrClient) {
   if (!sponsorOrClient) return null;
   const needle = String(sponsorOrClient).trim();
@@ -1637,7 +1722,9 @@ async function benchmarkIndication(database, indication, country = null, opts = 
   const aliases = indicationAliases(indication);
   if (!aliases.length) return null;
   const countries = parseCountryFilter(country);
-  const preferred = preferredIndicationLabel(indication) || indication;
+  const resolved = resolveIndicationGroup(indication);
+  const preferred = (resolved && resolved.preferred) || preferredIndicationLabel(indication) || indication;
+  const queryAliases = indicationQueryAliases(preferred);
   const ousOnly = Boolean(opts.ousOnly);
   const relatedLabels = relatedIndicationLabels(preferred);
 
@@ -1664,10 +1751,10 @@ async function benchmarkIndication(database, indication, country = null, opts = 
     return true;
   };
 
-  // Pull studies for any alias (cross-partition)
+  // Pull studies — live Vault first (legacy TOP-N was drowning veeva_live picklist labels)
   const oraStudies = [];
-  for (const alias of aliases.slice(0, 8)) {
-    const rows = await queryAll(
+  for (const alias of queryAliases.slice(0, 12)) {
+    const rows = await queryFactRowsPreferLive(
       studyContainer,
       `SELECT c.study_number, c.sponsor, c.indication, c.phase, c.psm, c.study_rate_pt_mo,
               c.total_enrolled, c.enroll_months, c.n_contributing_sites, c.screen_fail_rate_recomputed,
@@ -1676,11 +1763,12 @@ async function benchmarkIndication(database, indication, country = null, opts = 
       [
         { name: "@t", value: "ora_fact_study" },
         { name: "@ind", value: alias }
-      ]
+      ],
+      preferLive
     );
     for (const r of rows) {
-      if (!keepFactRowForSource(r, preferLive)) continue;
       if (!passesGeo(r.countries, null)) continue;
+      if (!indicationCompatible(r.indication, preferred, aliases)) continue;
       mergeRow(oraStudies, r, (x) => x.study_number);
     }
   }
@@ -1719,11 +1807,20 @@ async function benchmarkIndication(database, indication, country = null, opts = 
       return (Number(b.total_enrolled) || 0) - (Number(a.total_enrolled) || 0);
     });
     for (const r of sorted) {
-      if (!keepFactRowForSource(r, preferLive)) continue;
+      if (preferLive && r.source && r.source !== "veeva_live" && !requirePsm) {
+        // still allow legacy sites when live empty — handled by queryFactRowsPreferLive
+      }
+      if (preferLive && r.source === "veeva_live") {
+        /* keep */
+      } else if (preferLive && r.source && r.source !== "veeva_live") {
+        /* skip unless no live — keepFact applied upstream */
+      }
+      if (!keepFactRowForSource(r, preferLive) && r.source) continue;
       if (ousOnly && r.country && isUsCountryName(r.country)) continue;
       if (countries && !countriesMatch(r.country, countries)) continue;
-      if (requirePsm && !(typeof r.site_psm === "number" && r.site_psm > 0)) continue;
+      // Medians: exclude PSM=0 (activated, never enrolled); still list with flag
       if (typeof r.site_psm === "number" && r.site_psm > 0) sitePsms.push(r.site_psm);
+      if (requirePsm && !(typeof r.site_psm === "number" && r.site_psm > 0)) continue;
       const orgName = String(r.org_clean || r.organization || "").trim();
       if (!orgName) continue;
       if (topSites.length < 40) {
@@ -1733,7 +1830,11 @@ async function benchmarkIndication(database, indication, country = null, opts = 
             country: r.country,
             indication: r.indication || null,
             site_psm: round(r.site_psm),
+            psm_zero_enrolled: r.site_psm === 0 || r.psm_zero_enrolled === true,
             total_enrolled: r.total_enrolled,
+            site_enroll_months: r.site_enroll_months ?? null,
+            fsi_date: r.fsi_date || null,
+            lsi_date: r.lsi_date || null,
             fsi_trust: r.fsi_trust,
             study_name: r.study_name,
             rankedBy:
@@ -1746,33 +1847,39 @@ async function benchmarkIndication(database, indication, country = null, opts = 
     }
   };
 
-  for (const alias of [...aliases, ...relatedLabels].slice(0, 6)) {
+  for (const alias of [...queryAliases, ...relatedLabels].slice(0, 10)) {
     const params = [
       { name: "@t", value: "ora_fact_site" },
       { name: "@ind", value: alias }
     ];
     let q = `SELECT TOP 400 c.org_clean, c.organization, c.country, c.indication, c.phase,
-              c.site_psm, c.total_enrolled, c.site_enroll_months, c.fsi_trust, c.study_name, c.source
+              c.site_psm, c.total_enrolled, c.site_enroll_months, c.fsi_trust, c.study_name, c.source,
+              c.fsi_date, c.lsi_date, c.psm_zero_enrolled
        FROM c WHERE c.docType = @t AND c.indication = @ind AND IS_DEFINED(c.site_psm) AND c.site_psm > 0`;
     const geo = countrySqlClause("c.country", countries, "geo");
     q += geo.sql;
     params.push(...geo.params);
-    pushSites(await queryAll(siteContainer, q, params), { requirePsm: true });
+    pushSites(await queryFactRowsPreferLive(siteContainer, q, params, preferLive), {
+      requirePsm: true
+    });
   }
 
   // Exact aliases WITHOUT PSM filter — ~80% of Veeva site_psm is null; still list real sites
-  for (const alias of [...aliases, ...relatedLabels].slice(0, 6)) {
+  for (const alias of [...queryAliases, ...relatedLabels].slice(0, 10)) {
     const params = [
       { name: "@t", value: "ora_fact_site" },
       { name: "@ind", value: alias }
     ];
     let q = `SELECT TOP 400 c.org_clean, c.organization, c.country, c.indication, c.phase,
-              c.site_psm, c.total_enrolled, c.site_enroll_months, c.fsi_trust, c.study_name, c.source
+              c.site_psm, c.total_enrolled, c.site_enroll_months, c.fsi_trust, c.study_name, c.source,
+              c.fsi_date, c.lsi_date, c.psm_zero_enrolled
        FROM c WHERE c.docType = @t AND c.indication = @ind`;
     const geo = countrySqlClause("c.country", countries, "geoExact");
     q += geo.sql;
     params.push(...geo.params);
-    pushSites(await queryAll(siteContainer, q, params), { requirePsm: false });
+    pushSites(await queryFactRowsPreferLive(siteContainer, q, params, preferLive), {
+      requirePsm: false
+    });
   }
 
   // Fuzzy CONTAINS — always run for known needles (Veeva indication is free-text; exact-only misses variants)
