@@ -652,6 +652,29 @@ async function projectSitePsmFromMilestones(database, opts = {}) {
   );
   const siteById = new Map(sites.map((s) => [s.id, s]));
 
+  // Fallback enrolled counts from subject__clin when site.no_subjects_enrolled__v is empty
+  const enrolledBySite = new Map();
+  try {
+    const subjects = await queryAll(
+      database.container("ora_veeva_subject"),
+      `SELECT c.site__v, c.study__v, c.subject_status__v, c.status__v, c.name__v
+       FROM c WHERE c.docType = @t AND IS_DEFINED(c.site__v) AND c.site__v != null`,
+      [{ name: "@t", value: "ora_veeva_subject" }]
+    );
+    for (const sub of subjects) {
+      const status = `${sub.subject_status__v || ""} ${sub.status__v || ""}`.toLowerCase();
+      // Count randomized/enrolled/active; skip screen-fail / withdrawn when labeled
+      if (/\bscreen\s*fail|withdrawn|discontinued|not enrolled\b/.test(status)) continue;
+      if (status && !/\benroll|random|active|completed|in treatment|dosed\b/.test(status)) {
+        // unlabeled status — still count as enrolled subject row (Vault often sparse)
+      }
+      const key = sub.site__v;
+      enrolledBySite.set(key, (enrolledBySite.get(key) || 0) + 1);
+    }
+  } catch (_) {
+    /* subjects optional */
+  }
+
   const ms = await queryAll(
     milestoneContainer,
     `SELECT c.site__v, c.study__v, c.name__v, c.milestone_type__v, c.actual_finish_date__v, c.actual_start_date__v
@@ -679,6 +702,7 @@ async function projectSitePsmFromMilestones(database, opts = {}) {
   let updated = 0;
   let withPsm = 0;
   let zeroPsm = 0;
+  let enrolledFromSubjects = 0;
   const maps = await loadNameMaps(database);
   const studyInd = new Map();
   try {
@@ -699,8 +723,14 @@ async function projectSitePsmFromMilestones(database, opts = {}) {
     const site = siteById.get(siteId);
     if (!site) continue;
     const months = siteEnrollMonthsFromFsiLsi(dates.fsi, dates.lsi);
-    const enrolled =
+    let enrolled =
       site.no_subjects_enrolled__v != null ? Number(site.no_subjects_enrolled__v) : null;
+    let enrolledSource = enrolled != null ? "site.no_subjects_enrolled__v" : null;
+    if (enrolled == null && enrolledBySite.has(siteId)) {
+      enrolled = enrolledBySite.get(siteId);
+      enrolledSource = "subject_count";
+      enrolledFromSubjects += 1;
+    }
     const sitePsm = months != null && enrolled != null ? computeSitePsm(enrolled, months) : null;
 
     const id = `live-${siteId}`;
@@ -735,6 +765,7 @@ async function projectSitePsmFromMilestones(database, opts = {}) {
       lsi_date: dates.lsi || base.lsi_date || null,
       site_enroll_months: months,
       total_enrolled: enrolled != null ? enrolled : base.total_enrolled ?? null,
+      enrolled_source: enrolledSource,
       site_psm: sitePsm,
       psm_zero_enrolled: sitePsm === 0,
       psm_formula: "total_enrolled / site_enroll_months (FSI→LSI, min 1 month)",
@@ -761,9 +792,68 @@ async function projectSitePsmFromMilestones(database, opts = {}) {
     updated,
     withPsm,
     zeroPsm,
+    enrolledFromSubjects,
     sitesWithFsiLsi: [...datesBySite.values()].filter((d) => d.fsi && d.lsi).length,
-    note: "site_psm = enrolled / months(FSI→LSI); PSM=0 flagged for median exclusion"
+    note: "site_psm = enrolled / months(FSI→LSI); enrolled may fall back to subject__clin counts"
   };
+}
+
+/**
+ * Roll site_psm up to ora_fact_study.psm (median of positive site PSMs for that study).
+ */
+async function projectStudyPsmFromSites(database, opts = {}) {
+  const syncedAt = opts.syncedAt || new Date().toISOString();
+  const siteFact = database.container("ora_fact_site");
+  const studyFact = await ensureContainer(database, "ora_fact_study", "/study_number");
+  const rows = await queryAll(
+    siteFact,
+    `SELECT c.veeva_study_id, c.study_name, c.site_psm, c.source
+     FROM c WHERE c.docType = @t AND IS_DEFINED(c.site_psm) AND c.site_psm > 0`,
+    [{ name: "@t", value: "ora_fact_site" }]
+  );
+  const byStudy = new Map();
+  for (const r of rows) {
+    if (r.source && r.source !== "veeva_live") continue;
+    const key = r.veeva_study_id || r.study_name;
+    if (!key) continue;
+    if (!byStudy.has(key)) byStudy.set(key, []);
+    byStudy.get(key).push(Number(r.site_psm));
+  }
+  let updated = 0;
+  for (const [key, psms] of byStudy.entries()) {
+    if (!psms.length) continue;
+    const sorted = [...psms].sort((a, b) => a - b);
+    const mid = Math.floor(sorted.length / 2);
+    const med =
+      sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+    const psm = Math.round(med * 1000) / 1000;
+    try {
+      const found = await queryAll(
+        studyFact,
+        `SELECT * FROM c WHERE c.docType = @t AND (c.veeva_study_id = @k OR c.study_number = @k OR c.id = @id)`,
+        [
+          { name: "@t", value: "ora_fact_study" },
+          { name: "@k", value: key },
+          { name: "@id", value: `live-${key}` }
+        ]
+      );
+      for (const doc of found) {
+        if (doc.source && doc.source !== "veeva_live") continue;
+        await studyFact.items.upsert({
+          ...doc,
+          psm,
+          psm_source: "median_site_psm",
+          studies_sites_with_psm: psms.length,
+          veevaSyncedAt: syncedAt,
+          importedAt: syncedAt
+        });
+        updated += 1;
+      }
+    } catch (_) {
+      /* continue */
+    }
+  }
+  return { updated, studiesWithSitePsm: byStudy.size };
 }
 
 async function loadNameMaps(database) {

@@ -62,9 +62,10 @@ const PORTFOLIO_RULES =
  */
 const INTELLIGENCE_RULES = [
   " JUST DO IT (critical): Never ask permission to calculate, proceed, look up, or continue. If inputs exist in context, run the math and answer now; state assumptions in one short line. Forbidden: \"Shall I proceed\", \"Want me to calculate\", \"I can run the numbers if you'd like\", \"Let me know if I should\". Only ask when a required input is truly missing — one question, then stop.",
+  " NO MAGIC WORDS (critical): Never invent a one-word trigger / passphrase / confirmation code. Natural language (yeah, yes, do it, go ahead, calculate PSM, list 40 sites) is enough. Do the work in the same turn.",
   " INTELLIGENCE DATA CATALOG (Cosmos bd-budgets — reference tables, NOT budget line items):",
-  "1) ora_veeva_study / ora_veeva_site / ora_veeva_study_country / ora_veeva_organization / ora_veeva_sponsor / ora_veeva_metric / ora_veeva_subject / ora_veeva_milestone — LIVE Vault mirrors (Ingest Veeva).",
-  " FEASIBILITY CATEGORIZATION (Mike Watson Claude Report taxonomy — how Ora structures feasibility):",
+  "1) ora_veeva_study / ora_veeva_site / ora_veeva_study_country / ora_veeva_organization / ora_veeva_sponsor / ora_veeva_metric / ora_veeva_subject / ora_veeva_milestone — LIVE Vault mirrors (Ingest Veeva). Buddy feasibility uses THESE — not ora_fact_*.",
+  " FEASIBILITY CATEGORIZATION (how Ora structures feasibility):",
   "• Two grains: STUDY level (Study + Metrics + Milestone; study-country blank on metrics/milestones) and SITE level (Study Site + Metrics + Milestone; site not blank).",
   "• Scope: Ora Project Code not blank (real Ora projects only).",
   "• METRICS dimension (enrollment performance): Total Enrolled, Total Screened, Enrollment Rate (subjects/month), Screen Failure Rate (%), Drop Out Rate (%), Total Discontinued — planned vs actual.",
@@ -74,11 +75,11 @@ const INTELLIGENCE_RULES = [
   " PSM (Patients per Site per Month) — CALCULATION RULES (critical):",
   " Definition: enrollment productivity = how many patients a site enrolls per month of active enrollment.",
   " DATE SOURCE (critical): FPFV / FSI and LPLV / LSI / LSO are MILESTONE dates — not study header fields.",
-  " They come from Vault milestone__v → Cosmos ora_veeva_milestone (and wide ora_veeva_milestones). Look at milestone type/name + actual finish/start dates.",
-  " Mapping: FPFV ≈ First Subject In / First Subject First Visit (FSI, fsi__ctms); LSI / LPFV-in ≈ Last Subject In (lsi__ctms); LPLV / LSO ≈ Last Subject Out (lso__ctms) — end of treatment, NOT the PSM enrollment window end unless specified.",
-  " SOURCE 1 — Veeva / Ora site-level (ora_fact_site.site_psm): site_psm = total_enrolled / site_enroll_months.",
+  " They come from Vault milestone__v → Cosmos ora_veeva_milestone. Look at milestone type/name + actual finish/start dates.",
+  " Mapping: FPFV ≈ First Subject In / First Subject First Visit (FSI); LSI / LPFV-in ≈ Last Subject In; LPLV / LSO ≈ Last Subject Out — end of treatment, NOT the PSM enrollment window end unless specified.",
+  " SOURCE 1 — Veeva / Ora site-level (computed live): site_psm = total_enrolled / site_enroll_months.",
   " site_enroll_months = months from site FSI milestone → site LSI milestone; if same month, site_enroll_months = 1 (never divide by zero).",
-  " When context shows fsi_date / lsi_date on a site row, those ARE milestone actuals projected onto the fact pack.",
+  " When context shows fsi_date / lsi_date on a site row, those ARE milestone actuals.",
   " This is PER SITE on a study — use for site ranking, site selection, Ora network comparison.",
   " SOURCE 2 — TrialHub study-level: use th_actual_psm / psm_common directly when present — do NOT recalculate.",
   " SOURCE 3 — TrialHub fallback only when PSM fields null: study_psm ≈ Patients / (Actual Sites × enrollment_months). Approximation (assumes all sites active full window → understates PSM).",
@@ -88,13 +89,11 @@ const INTELLIGENCE_RULES = [
   " Null PSM = missing milestone dates and/or enrolled count — not zero. Prefer medians. Pressure-test sponsor target PSM vs indicationBenchmark / playbook; flag if above industry median.",
   " Sensitivity tables: always include at least one PSM row below industry median (conservative).",
   " Planning landmarks (playbook): nAMD ~0.35 industry / ~0.14 US Ph2; dry eye US ~0.8; glaucoma US ~0.5; Stargardt ~0.12–0.16; GA ~0.25–0.35; DME ~0.30–0.40.",
-  "1b) ora_fact_study / ora_fact_site — Buddy feasibility packs. Indication on live rows comes from Vault study Indication picklist (indication__v). Prefer source=veeva_live; Mike Watson Excel is legacy fallback.",
-  "2) ora_veeva_milestones — startup gap wide rows. Prefer source=veeva_live (projected from milestone__v). Mike Watson Site Level Excel is legacy until live ingest.",
-  "3) ora_trialhub_trials (live TrialHub uploads, upsert by NCT): competitive landscape / industry PSM. Key fields: nct, title, sponsor, indication, phase, status, patients, planned_sites, actual_sites, psm_common, th_actual_psm, recruit_days, countries, actual_start (Actual Start Date), in_ora_indication, lead_sponsor_type.",
-  "4) ora_sponsor_crosswalk (~642): TrialHub/Veeva sponsor name → Salesforce. Match trialhub_veeva_sponsor to Vault sponsor__c / study sponsor names and SF accounts. Key fields: trialhub_veeva_sponsor, sf_account_name, sf_account_id, sf_owner, tier, ora_grouping, crosswalk_status.",
-  "5) ora_site_alias_table (~46): variant site names → canonical_name (already applied into org_clean where possible).",
-  "6) ora_ctgov_trials (ClinicalTrials.gov ophthalmology feed, daily delta ~6AM EST): public registry landscape.",
-  "7) ora_sf_account / ora_sf_opportunity / ora_sf_activity_request (live Salesforce mirrors).",
+  "2) ora_trialhub_trials (live TrialHub uploads, upsert by NCT): competitive landscape / industry PSM. Key fields: nct, title, sponsor, indication, phase, status, patients, planned_sites, actual_sites, psm_common, th_actual_psm, recruit_days, countries, actual_start (Actual Start Date), in_ora_indication, lead_sponsor_type.",
+  "3) ora_sponsor_crosswalk (~642): TrialHub/Veeva sponsor name → Salesforce. Match trialhub_veeva_sponsor to Vault sponsor__c / study sponsor names and SF accounts. Key fields: trialhub_veeva_sponsor, sf_account_name, sf_account_id, sf_owner, tier, ora_grouping, crosswalk_status.",
+  "4) ora_site_alias_table (~46): variant site names → canonical_name (already applied into org_clean where possible).",
+  "5) ora_ctgov_trials (ClinicalTrials.gov ophthalmology feed, daily delta ~6AM EST): public registry landscape.",
+  "6) ora_sf_account / ora_sf_opportunity / ora_sf_activity_request (live Salesforce mirrors).",
   " USE CASES — match the ask to the right source:",
   "• Indication picking is EXCLUSIVE: one ask → one indication family only. Dry Eye ≠ Dry AMD ≠ Wet AMD; Glaucoma ≠ Neuroprotection; CRVO ≠ BRVO ≠ RVO umbrella unless that exact label was asked. Never mash shared words (dry, macular, optic, retinal, glaucoma…). Use context.intelligence.query.indication / aliasesUsed; if ambiguous, ask which indication.",
   "• Feasibility / \"how fast do we enroll\" / typical PSM for an indication → context.intelligence.indicationBenchmark (Ora median PSM + TrialHub median psm_common + site medians). Prefer medians; cite studiesWithPsm / trialsWithPsm counts.",
@@ -127,9 +126,10 @@ const INTELLIGENCE_RULES = [
   "• RFP / pricing numbers from past bids → context.pricingScenarios when present (comparable service-fee ranges scaled to N). Cite comparableCount. Not a formal quote.",
   "• Open bid drivers / fields → workingStudy / cosmos study.",
   " QUALITY RULES: null PSM or enrollment means missing Veeva/registry data — NEVER treat null as zero. Prefer high FSI trust for site PSM. TrialHub/CT.gov PSM can have outliers — use median (and P25/P75 when present), not mean. Indication labels differ slightly across Ora Veeva vs TrialHub vs CT.gov; use aliasesUsed when explaining matches.",
-  " VEEVA INDICATION CODING (critical): Live indication comes from Vault Indication picklist (indication__v → fact.indication). Canonical labels (Dry Eye, Devices-Dry Eye, …). Queries use aliases + live-first source=veeva_live. If indicationBenchmark.ora.studyCount > 0, name those sampleStudies even when studiesWithPsm is 0. Null PSM ≠ no Veeva data.",
+  " VEEVA INDICATION CODING (critical): Live indication comes from Vault Indication picklist (indication__v on ora_veeva_study). Canonical labels (Dry Eye, Devices-Dry Eye, …). If indicationBenchmark.ora.studyCount > 0, name those sampleStudies even when studiesWithPsm is 0. Null PSM ≠ no Veeva data.",
   " NULL VEEVA PSM → INDUSTRY PROXY (critical): When Ora/Veeva studiesWithPsm is 0 (or site_psm all null) but studyCount > 0 OR the user asks for a PSM/enrollment rate: (1) still list the Ora studies/sites you have, (2) then give a PSM estimate from indicationBenchmark.trialhub.psmMedian (and P25/P75) and/or CT.gov enrollment/sites when computable, (3) say it once in plain English as an industry run-rate / proxy — not Ora historical PSM (do not list TrialHub/CT.gov as labeled sources in chat), (4) if the always-on playbook has an indication planning range (e.g. Stargardt ~0.12), include that as a planning range. Never invent a number with no backing pack, and never say you cannot estimate when TrialHub/CT.gov/playbook ranges are present.",
-  " SITE LISTING RULE (critical): If context.intelligence.indicationBenchmark.sites.topSitesByPsm OR sites.topSites OR sites.topOusSites OR countrySites.topSites OR legacyAnterior sites/leaderboard has rows, you MUST name at least 5–10 real sites with country and site PSM or enrolled in the reply. Answer in chat from Cosmos — do NOT open Clinical Intelligence or Site Scorecard to \"look it up\". Never emit NAVIGATE:intelligence or NAVIGATE:scorecard for a site/PSM ask. Never print schema keys like org_clean / site_psm / fsi_trust — say site name, PSM, FSI trust.",
+  " SITE LISTING RULE (critical): If context.intelligence.indicationBenchmark.sites.topSitesByPsm OR sites.topSites OR sites.topOusSites OR countrySites.topSites OR legacyAnterior sites/leaderboard has rows, you MUST list every site in those arrays (up to sites.returnedCount / sites.siteListLimit / the user's requested N — often 40). Never stop at 10 when more rows are present. Never say Cosmos only has ~10 sites if returnedCount is higher. Include country and site PSM or enrolled. Answer in chat from Cosmos — do NOT open Clinical Intelligence or Site Scorecard to \"look it up\". Never emit NAVIGATE:intelligence or NAVIGATE:scorecard for a site/PSM ask. Never print schema keys like org_clean / site_psm / fsi_trust — say site name, PSM, FSI trust.",
+  " CALCULATE PSM NOW (critical): When the user asks for PSM / enrollment rate / how many sites: lead with a number. Prefer indicationBenchmark.sites.sitePsmMedian, then ora.psmMedian, then trialhub.psmMedian, then context.enrollmentPlan.psm (already filled from those medians when the user did not state one). If patients + months exist, compute sitesExact = patients/(psm*months) and the 20% buffer — do not ask permission. If site rows have enrolled + months but missing site PSM, compute enrolled/months yourself.",
   " COSMOS-FIRST RULE (critical): context.intelligence is queried live from Cosmos on every relevant ask. You already have the site slate / PSM / TrialHub / milestones in Context JSON. Stay in Buddy chat. Never say you cannot see site rows because a tab is not open. Never tell the user to open a tab so you can answer.",
   " NO INVENTION (critical): Never invent PSM, enrollment rates, site counts, NCT ids, study numbers, sponsor lists, or Ora history. Numbers must come from Context JSON (intelligence / portfolio / cosmos) or ATTACHED DOCUMENTS. If Cosmos has no row, say \"not in Ora Cosmos data\" — do not fill gaps with made-up benchmarks. Chat specs from the user (e.g. 6 sites, 4 months) may be used as scenario inputs and must be labeled as user-stated.",
   " SOURCE PRIORITY: (1) ATTACHED DOCUMENTS for protocol/template/branding/narrative the user provided (2) ORA COSMOS FACTS / context.intelligence for Ora Veeva + TrialHub + CT.gov numbers (3) context.portfolio only for all-studies budget rollups when asked (4) web search only for public commercial facts. Do not let a document attachment replace Cosmos for industry/Ora performance numbers.",
@@ -179,16 +179,16 @@ function loadOraIntelligenceContext() {
   const liveBridge = [
     "PLATFORM LIVE STATE (highest priority — overrides outdated Excel/file architecture notes below):",
     "- Azure Cosmos DB (bd-budgets) IS LIVE for Buddy.",
-    "- VEEVA: Prefer live Vault mirrors. Study indication = Vault Indication picklist (indication__v),",
-    "  canonicalized to Ora labels (dry_eye__c → Dry Eye). Site PSM = enrolled / months(FSI→LSI), min 1 month.",
-    "  Fact packs ora_fact_study / ora_fact_site / ora_veeva_milestones with source=veeva_live preferred over",
-    "  Mike Watson Excel. TrialHub PSM (psm_common / th_actual_psm) is study-level — do not mix with site_psm unlabeled.",
+    "- VEEVA: Buddy feasibility reads ora_veeva_study / ora_veeva_site / ora_veeva_milestone directly.",
+    "  Study indication = Vault Indication picklist (indication__v), canonicalized (dry_eye__c → Dry Eye).",
+    "  Site PSM = enrolled / months(FSI→LSI from milestones), min 1 month. Do not use ora_fact_* for answers.",
+    "  TrialHub PSM (psm_common / th_actual_psm) is study-level — do not mix with site_psm unlabeled.",
     "- SALESFORCE: Prefer ora_sf_account / ora_sf_opportunity / ora_sf_activity_request + intelligence.salesforceData.",
-    "  sf_db_full.json and offline SF exports are LEGACY — do not ask for CSV/MCP when Cosmos SF counts > 0.",
+    "  Offline SF exports are LEGACY — do not ask for CSV when Cosmos SF counts > 0.",
     "  Crosswalk (ora_sponsor_crosswalk) still maps TrialHub/Veeva sponsor names → sf_account_id / owner / tier.",
     "- TrialHub grows via app upload (Intelligence → Upload TrialHub export); upsert by NCT.",
     "- CT.gov ophthalmology feed syncs via /api/ctgov/sync.",
-    "- Prefer Context JSON from this ask over stale \"Cosmos pilot\" / \"query Excel\" wording in older playbook text.",
+    "- Prefer Context JSON from this ask over stale \"query Excel\" wording in older playbook text.",
     "- Buddy Context tab appends SME notes live without redeploy."
   ].join("\n");
 
@@ -1256,8 +1256,9 @@ function formatCosmosFactsBlock(context) {
   if (intel.inventory && intel.inventory.counts) {
     const c = intel.inventory.counts;
     lines.push(
-      `Cosmos inventory: ora_fact_study=${c.ora_fact_study ?? "—"}, ora_fact_site=${c.ora_fact_site ?? "—"}, ` +
-        `ora_trialhub_trials=${c.ora_trialhub_trials ?? "—"}, ora_ctgov_trials=${c.ora_ctgov_trials ?? "—"}`
+      `Cosmos inventory: ora_veeva_study=${c.ora_veeva_study ?? "—"}, ora_veeva_site=${c.ora_veeva_site ?? "—"}, ` +
+        `ora_veeva_milestone=${c.ora_veeva_milestone ?? "—"}, ora_trialhub_trials=${c.ora_trialhub_trials ?? "—"}, ` +
+        `ora_ctgov_trials=${c.ora_ctgov_trials ?? "—"}`
     );
   }
 
@@ -1290,9 +1291,18 @@ function formatCosmosFactsBlock(context) {
     const sitesPsm = bm.sites?.topSitesByPsm || [];
     const sitesAll = bm.sites?.topSites || [];
     const sites = sitesPsm.length ? sitesPsm : sitesAll;
+    const siteFactCap = Math.min(
+      80,
+      Math.max(
+        sites.length || 0,
+        Number(bm.sites?.siteListLimit) || Number(bm.sites?.returnedCount) || 40
+      )
+    );
     if (Array.isArray(sites) && sites.length) {
-      lines.push("Top Ora sites (from Cosmos):");
-      for (const s of sites.slice(0, 15)) {
+      lines.push(
+        `Top Ora sites (from Cosmos; list up to ${siteFactCap} — returnedCount=${bm.sites?.returnedCount ?? sites.length}):`
+      );
+      for (const s of sites.slice(0, siteFactCap)) {
         lines.push(
           `  - ${s.org_clean || s.site || "?"} | ${s.country || "?"} | sitePSM=${
             s.site_psm == null ? "missing" : s.site_psm
@@ -1310,7 +1320,7 @@ function formatCosmosFactsBlock(context) {
     const ous = bm.sites?.topOusSites || [];
     if (Array.isArray(ous) && ous.length) {
       lines.push("Top OUS Ora sites:");
-      for (const s of ous.slice(0, 10)) {
+      for (const s of ous.slice(0, siteFactCap)) {
         lines.push(
           `  - ${s.org_clean || "?"} | ${s.country || "?"} | sitePSM=${
             s.site_psm == null ? "missing" : s.site_psm
@@ -1526,9 +1536,10 @@ function formatCosmosFactsBlock(context) {
     lines.push(
       `Country sites (${cs.countryFilterLabel || cs.country || (cs.countries || []).join(", ") || "—"}): sampleCount=${
         cs.sampleCount ?? cs.topSites.length
-      }`
+      }; list up to ${cs.returnedCount || cs.siteListLimit || cs.topSites.length}`
     );
-    for (const s of cs.topSites.slice(0, 12)) {
+    const countryCap = Math.min(80, cs.topSites.length);
+    for (const s of cs.topSites.slice(0, countryCap)) {
       lines.push(
         `  - ${s.org_clean || "?"} | ${s.country || "?"} | ${s.indication || "?"} | sitePSM=${
           s.site_psm == null ? "missing" : s.site_psm
@@ -1553,8 +1564,8 @@ function formatCosmosFactsBlock(context) {
     const thCount = inv.trialhub?.count ?? inv.counts?.ora_trialhub_trials ?? inv.ora_trialhub_trials;
     lines.push(
       `Cosmos inventory: CT.gov trials=${cgCount ?? "—"}, TrialHub trials=${thCount ?? "—"}, ` +
-        `Ora studies=${inv.counts?.ora_fact_study ?? inv.ora_fact_study ?? "—"}, Ora sites=${
-          inv.counts?.ora_fact_site ?? inv.ora_fact_site ?? "—"
+        `Ora studies=${inv.counts?.ora_veeva_study ?? inv.veeva?.studies ?? "—"}, Ora sites=${
+          inv.counts?.ora_veeva_site ?? inv.veeva?.sites ?? "—"
         }, SF accounts=${inv.counts?.ora_sf_account ?? inv.salesforce?.accounts ?? "—"}, ` +
         `SF opps=${inv.counts?.ora_sf_opportunity ?? inv.salesforce?.opportunities ?? "—"}, ` +
         `SF ARs=${inv.counts?.ora_sf_activity_request ?? inv.salesforce?.activityRequests ?? "—"}`
@@ -1757,12 +1768,17 @@ function contextJsonForModel(context) {
   ) {
     const intel = ctx.intelligence;
     const bm = intel.indicationBenchmark;
-    const siteCap =
-      ctx.workflow === "feasibility" ||
-      ctx.workflow === "hybrid" ||
-      ctx.answerFocus === "feasibility"
-        ? 20
-        : 15;
+    const siteCap = Math.min(
+      80,
+      Math.max(
+        25,
+        Number(bm?.sites?.siteListLimit) ||
+          Number(bm?.sites?.returnedCount) ||
+          Number(intel?.query?.siteListLimit) ||
+          Number(intel?.countrySites?.siteListLimit) ||
+          40
+      )
+    );
     const trimOverview = (o, sampleKey = "recentSample") => {
       if (!o || o.error) return o;
       const copy = { ...o };
@@ -1770,7 +1786,7 @@ function contextJsonForModel(context) {
       if (Array.isArray(copy.indicationRank)) copy.indicationRank = copy.indicationRank.slice(0, 15);
       if (Array.isArray(copy.statusRank)) copy.statusRank = copy.statusRank.slice(0, 10);
       if (Array.isArray(copy.sampleStudies)) copy.sampleStudies = copy.sampleStudies.slice(0, 10);
-      if (Array.isArray(copy.topSites)) copy.topSites = copy.topSites.slice(0, 10);
+      if (Array.isArray(copy.topSites)) copy.topSites = copy.topSites.slice(0, siteCap);
       if (Array.isArray(copy.noSfMatchSample)) copy.noSfMatchSample = copy.noSfMatchSample.slice(0, 10);
       if (copy.countryRank?.ranked) {
         copy.countryRank = { ranked: copy.countryRank.ranked.slice(0, 10) };
@@ -1823,6 +1839,9 @@ function contextJsonForModel(context) {
             sites: {
               sitesWithPsmSampled: bm.sites?.sitesWithPsmSampled,
               sitePsmMedian: bm.sites?.sitePsmMedian,
+              sitePsmP75: bm.sites?.sitePsmP75,
+              siteListLimit: bm.sites?.siteListLimit ?? siteCap,
+              returnedCount: bm.sites?.returnedCount,
               note: bm.sites?.note,
               topSitesByPsm: (bm.sites?.topSitesByPsm || []).slice(0, siteCap),
               topSites: (bm.sites?.topSites || bm.sites?.topSitesByPsm || []).slice(0, siteCap),
@@ -1861,7 +1880,7 @@ function contextJsonForModel(context) {
       countrySites: intel.countrySites
         ? {
             ...intel.countrySites,
-            topSites: (intel.countrySites.topSites || []).slice(0, 12)
+            topSites: (intel.countrySites.topSites || []).slice(0, siteCap)
           }
         : undefined,
       inventory: intel.inventory,

@@ -456,20 +456,48 @@ function claimMap(claims) {
   return map;
 }
 
-function firstNameFrom(displayName, email, givenName) {
+/** Known Entra emails whose local-part is a login id, not a given name. */
+const PREFERRED_FIRST_NAME_BY_EMAIL = {
+  "mhill@oraclinical.com": "Matthew"
+};
+
+function emailLocalPart(email) {
+  if (!email || !String(email).includes("@")) return "";
+  return String(email).split("@")[0].trim().toLowerCase();
+}
+
+/**
+ * Real given name only — never email local-part / login id (e.g. mhill).
+ * Prefer Entra given_name, then a human displayName, then a known email map.
+ */
+function firstNameFrom(displayName, email, givenName, userId) {
+  const preferred = PREFERRED_FIRST_NAME_BY_EMAIL[String(email || "").trim().toLowerCase()];
   if (givenName && String(givenName).trim()) {
-    return String(givenName).trim().split(/\s+/)[0];
+    const g = String(givenName).trim().split(/\s+/)[0];
+    if (g && !looksLikeLoginId(g, email, userId)) return g;
   }
   if (displayName && String(displayName).trim()) {
     const d = String(displayName).trim();
-    if (!d.includes("@")) return d.split(/[\s,]+/)[0];
+    if (!d.includes("@")) {
+      const first = d.split(/[\s,]+/)[0];
+      if (first && !looksLikeLoginId(first, email, userId)) return first;
+    }
   }
-  if (email && String(email).includes("@")) {
-    const local = String(email).split("@")[0];
-    const token = local.split(/[._-]/)[0];
-    if (token) return token.charAt(0).toUpperCase() + token.slice(1);
-  }
+  if (preferred) return preferred;
   return null;
+}
+
+function looksLikeLoginId(token, email, userId) {
+  const t = String(token || "").trim();
+  if (!t) return true;
+  const lower = t.toLowerCase();
+  const local = emailLocalPart(email);
+  if (local && lower === local) return true;
+  if (local && lower === local.split(/[._-]/)[0]) return true;
+  if (userId && lower === String(userId).trim().toLowerCase()) return true;
+  // Single camel/lower token matching typical AD short names (no space, starts lower)
+  if (/^[a-z][a-z0-9]{2,20}$/.test(t) && local && local.startsWith(lower)) return true;
+  return false;
 }
 
 /** Prefer SWA Easy Auth headers; never trust client-supplied identity alone. */
@@ -495,9 +523,10 @@ function signedInUserFromRequest(request, bodyUser) {
         claims.givenname ||
         claims["http://schemas.xmlsoap.org/ws/2005/05/identity/claims/givenname"] ||
         null;
-      const firstName = firstNameFrom(displayName, email, givenName);
+      const userId = raw.userId || headerGet(request, "x-ms-client-principal-id") || null;
+      const firstName = firstNameFrom(displayName, email, givenName, userId);
       return {
-        userId: raw.userId || headerGet(request, "x-ms-client-principal-id") || null,
+        userId,
         identityProvider: raw.identityProvider || headerGet(request, "x-ms-client-principal-idp") || "aad",
         email: email || null,
         displayName: displayName || email || null,
@@ -516,7 +545,7 @@ function signedInUserFromRequest(request, bodyUser) {
       identityProvider: headerGet(request, "x-ms-client-principal-idp") || "aad",
       email: headerName.includes("@") ? headerName : null,
       displayName: headerName,
-      firstName: firstNameFrom(headerName, headerName, null),
+      firstName: firstNameFrom(headerName, headerName, null, null),
       source: "swa_headers"
     };
   }
@@ -530,7 +559,7 @@ function signedInUserFromRequest(request, bodyUser) {
       identityProvider: bodyUser.identityProvider || "client",
       email,
       displayName,
-      firstName: bodyUser.firstName || firstNameFrom(displayName, email, null),
+      firstName: bodyUser.firstName || firstNameFrom(displayName, email, null, bodyUser.userId || null),
       source: "client_hint"
     };
   }

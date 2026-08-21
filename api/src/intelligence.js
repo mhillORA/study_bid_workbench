@@ -1,9 +1,8 @@
 /**
- * Ora Clinical Intelligence — Cosmos reference tables (Veeva + TrialHub).
- * Summaries only for Buddy; never dump full collections into the LLM context.
+ * Ora Clinical Intelligence — Cosmos reference tables (Veeva live + TrialHub + CT.gov).
+ * Buddy feasibility uses ora_veeva_* (+ milestone PSM). ora_fact_* kept but not queried.
  *
- * Containers: ora_fact_site, ora_fact_study, ora_trialhub_trials,
- *             ora_sponsor_crosswalk, ora_site_alias_table, ora_veeva_milestones
+ * Containers: ora_veeva_*, ora_trialhub_trials, ora_sponsor_crosswalk, ora_ctgov_trials, …
  * See docs/ora-intelligence.md
  */
 
@@ -1155,6 +1154,49 @@ function rankCountriesFromTrials(trials, opts = {}) {
   };
 }
 
+/** Finish enrollment math once patients + months + psm are known. */
+function finalizeEnrollmentPlan(plan) {
+  const out = { ...(plan || {}) };
+  const patients = out.patients;
+  const months = out.months;
+  const psm = out.psm;
+  if (patients && months && psm && psm > 0 && months > 0) {
+    const exact = patients / (psm * months);
+    out.sitesExact = round(exact, 2);
+    out.sitesCeil = Math.ceil(exact);
+    out.sitesRecommendedWith20pctBuffer = Math.ceil(exact * 1.2);
+    out.patientsPerSiteOverWindow = round(psm * months, 2);
+    out.formula = "sites = patients / (psm * months); buffer = ceil(sites * 1.2)";
+  }
+  return out;
+}
+
+/**
+ * When the user asks for sites/PSM math but did not state a PSM, fill from
+ * Ora site median → Ora study median → TrialHub median so Buddy can calculate.
+ */
+function enrichEnrollmentPlanWithBenchmark(plan, indicationBenchmark) {
+  if (!plan) return null;
+  let out = { ...plan };
+  if (out.psm == null || !(out.psm > 0)) {
+    const siteMed = indicationBenchmark?.sites?.sitePsmMedian;
+    const oraMed = indicationBenchmark?.ora?.psmMedian;
+    const thMed = indicationBenchmark?.trialhub?.psmMedian;
+    if (typeof siteMed === "number" && siteMed > 0) {
+      out.psm = siteMed;
+      out.psmSource = "ora_site_median";
+    } else if (typeof oraMed === "number" && oraMed > 0) {
+      out.psm = oraMed;
+      out.psmSource = "ora_study_median";
+    } else if (typeof thMed === "number" && thMed > 0) {
+      out.psm = thMed;
+      out.psmSource = "trialhub_median";
+    }
+  }
+  out = finalizeEnrollmentPlan(out);
+  return out;
+}
+
 /** Parse N patients / months / PSM from a planning question. */
 function extractEnrollmentPlan(question) {
   const q = String(question || "");
@@ -1180,16 +1222,17 @@ function extractEnrollmentPlan(question) {
     q.match(new RegExp(String.raw`\bassume\s+${num}\b`, "i")) ||
     q.match(new RegExp(String.raw`\bat\s+${num}\s*psm\b`, "i"));
   if (psmMatch) psm = Number(psmMatch[1]);
-  const out = { patients, months, psm };
-  if (patients && months && psm && psm > 0 && months > 0) {
-    const exact = patients / (psm * months);
-    out.sitesExact = round(exact, 2);
-    out.sitesCeil = Math.ceil(exact);
-    out.sitesRecommendedWith20pctBuffer = Math.ceil(exact * 1.2);
-    out.patientsPerSiteOverWindow = round(psm * months, 2);
-    out.formula = "sites = patients / (psm * months); buffer = ceil(sites * 1.2)";
-  }
-  return out;
+  return finalizeEnrollmentPlan({ patients, months, psm });
+}
+
+/** site_psm = enrolled / months when stored PSM is missing but inputs exist. */
+function deriveSitePsm(row) {
+  if (typeof row?.site_psm === "number" && !Number.isNaN(row.site_psm)) return row.site_psm;
+  const enrolled = Number(row?.total_enrolled);
+  const months = Number(row?.site_enroll_months);
+  if (!(enrolled >= 0) || !(months > 0)) return null;
+  if (enrolled === 0) return 0;
+  return round(enrolled / months);
 }
 
 function wantsOusOnly(question) {
@@ -1197,6 +1240,23 @@ function wantsOusOnly(question) {
   return /\b(ous|outside\s+(of\s+)?(the\s+)?u\.?s\.?a?|ex-?us|non-?us|exclud(?:e|ing)\s+(the\s+)?u\.?s|international\s+only|ex-america)\b/.test(
     q
   );
+}
+
+/**
+ * How many named sites the user wants listed (e.g. "top 40 sites", "give me 40").
+ * Default null = use feasibility default cap in callers.
+ */
+function extractSiteListLimit(question) {
+  const q = String(question || "");
+  const m =
+    q.match(/\b(?:top|list|give\s+me|show\s+me|need|want|recommend(?:ed)?)\s+(\d{1,3})\s+sites?\b/i) ||
+    q.match(/\b(\d{1,3})\s+sites?\b/i) ||
+    q.match(/\bsite\s+(?:list|slate|leaderboard)\s+(?:of\s+)?(\d{1,3})\b/i);
+  if (!m) return null;
+  const n = Number(m[1]);
+  if (!Number.isFinite(n) || n < 1) return null;
+  // Hard ceiling so context stays bounded
+  return Math.min(80, Math.max(5, Math.floor(n)));
 }
 
 /** Substring needles for fuzzy Cosmos — ONLY phrases from the resolved exclusive group. */
@@ -1632,13 +1692,13 @@ async function getIntelligenceHealth(getDb) {
       livePreferred: liveVault,
       note: liveVault
         ? "Live Vault mirrors preferred. Feasibility taxonomy: study vs site grain × metrics (enrollment) × milestones (startup) × subjects/geography."
-        : "Run Data Status → Ingest Veeva for study, country, site, metrics, subjects, milestones (Mike Watson feasibility taxonomy)."
+        : "Run Data Status → Ingest Veeva for study, country, site, metrics, subjects, milestones."
     },
     note: liveVault
-      ? "Live Veeva Vault sync present — Excel fixed counts are legacy reference only."
+      ? "Live Veeva Vault sync present — Buddy feasibility uses ora_veeva_* (not ora_fact_*)."
       : fixedOk
         ? "Core intelligence containers loaded. Veeva live mirrors empty until Ingest Veeva."
-        : "Legacy Excel pack count mismatch — or run Ingest Veeva for live Vault."
+        : "Veeva live mirrors empty — run Ingest Veeva."
   };
 }
 
@@ -1727,11 +1787,13 @@ async function benchmarkIndication(database, indication, country = null, opts = 
   const queryAliases = indicationQueryAliases(preferred);
   const ousOnly = Boolean(opts.ousOnly);
   const relatedLabels = relatedIndicationLabels(preferred);
+  const siteListLimit = Math.min(
+    80,
+    Math.max(25, Number(opts.siteListLimit) || Number(opts.siteCap) || 40)
+  );
 
-  const studyContainer = database.container("ora_fact_study");
-  const siteContainer = database.container("ora_fact_site");
   const thContainer = database.container("ora_trialhub_trials");
-  const preferLive = await prefersLiveVeevaFacts(database);
+  const { loadVeevaLiveFeasibility } = require("./veevaLiveIntel");
 
   const mergeRow = (list, row, keyFn) => {
     const k = keyFn(row);
@@ -1751,26 +1813,27 @@ async function benchmarkIndication(database, indication, country = null, opts = 
     return true;
   };
 
-  // Pull studies — live Vault first (legacy TOP-N was drowning veeva_live picklist labels)
-  const oraStudies = [];
-  for (const alias of queryAliases.slice(0, 12)) {
-    const rows = await queryFactRowsPreferLive(
-      studyContainer,
-      `SELECT c.study_number, c.sponsor, c.indication, c.phase, c.psm, c.study_rate_pt_mo,
-              c.total_enrolled, c.enroll_months, c.n_contributing_sites, c.screen_fail_rate_recomputed,
-              c.lifecycle_state, c.countries, c.source
-       FROM c WHERE c.docType = @t AND c.indication = @ind`,
-      [
-        { name: "@t", value: "ora_fact_study" },
-        { name: "@ind", value: alias }
-      ],
-      preferLive
-    );
-    for (const r of rows) {
-      if (!passesGeo(r.countries, null)) continue;
-      if (!indicationCompatible(r.indication, preferred, aliases)) continue;
-      mergeRow(oraStudies, r, (x) => x.study_number);
+  const matchesIndication = (ind) => {
+    if (indicationCompatible(ind, preferred, aliases)) return true;
+    for (const rel of relatedLabels) {
+      if (indicationCompatible(ind, rel, indicationAliases(rel))) return true;
     }
+    return false;
+  };
+
+  // Live Vault only — ora_fact_* ignored for Buddy feasibility
+  let livePack = { studies: [], sites: [], note: null, error: null };
+  try {
+    livePack = await loadVeevaLiveFeasibility(database);
+  } catch (err) {
+    livePack = { studies: [], sites: [], error: String(err.message || err) };
+  }
+
+  const oraStudies = [];
+  for (const r of livePack.studies || []) {
+    if (!matchesIndication(r.indication)) continue;
+    if (!passesGeo(r.countries, null)) continue;
+    mergeRow(oraStudies, r, (x) => x.study_number || x.id);
   }
 
   const thTrials = [];
@@ -1793,7 +1856,7 @@ async function benchmarkIndication(database, indication, country = null, opts = 
     }
   }
 
-  // Site PSM for aliases (cap scan — prefer high trust); optional country partition(s)
+  // Site PSM from milestones (already computed on live pack)
   const sitePsms = [];
   const topSites = [];
   const pushSites = (rows, { requirePsm = true } = {}) => {
@@ -1807,23 +1870,14 @@ async function benchmarkIndication(database, indication, country = null, opts = 
       return (Number(b.total_enrolled) || 0) - (Number(a.total_enrolled) || 0);
     });
     for (const r of sorted) {
-      if (preferLive && r.source && r.source !== "veeva_live" && !requirePsm) {
-        // still allow legacy sites when live empty — handled by queryFactRowsPreferLive
-      }
-      if (preferLive && r.source === "veeva_live") {
-        /* keep */
-      } else if (preferLive && r.source && r.source !== "veeva_live") {
-        /* skip unless no live — keepFact applied upstream */
-      }
-      if (!keepFactRowForSource(r, preferLive) && r.source) continue;
       if (ousOnly && r.country && isUsCountryName(r.country)) continue;
       if (countries && !countriesMatch(r.country, countries)) continue;
-      // Medians: exclude PSM=0 (activated, never enrolled); still list with flag
+      if (!matchesIndication(r.indication)) continue;
       if (typeof r.site_psm === "number" && r.site_psm > 0) sitePsms.push(r.site_psm);
       if (requirePsm && !(typeof r.site_psm === "number" && r.site_psm > 0)) continue;
       const orgName = String(r.org_clean || r.organization || "").trim();
       if (!orgName) continue;
-      if (topSites.length < 40) {
+      if (topSites.length < siteListLimit) {
         if (!topSites.some((x) => x.org_clean === orgName && x.country === r.country)) {
           topSites.push({
             org_clean: orgName,
@@ -1837,6 +1891,7 @@ async function benchmarkIndication(database, indication, country = null, opts = 
             lsi_date: r.lsi_date || null,
             fsi_trust: r.fsi_trust,
             study_name: r.study_name,
+            source: r.source || "ora_veeva_site",
             rankedBy:
               typeof r.site_psm === "number" && r.site_psm > 0
                 ? "site_psm"
@@ -1847,67 +1902,16 @@ async function benchmarkIndication(database, indication, country = null, opts = 
     }
   };
 
-  for (const alias of [...queryAliases, ...relatedLabels].slice(0, 10)) {
-    const params = [
-      { name: "@t", value: "ora_fact_site" },
-      { name: "@ind", value: alias }
-    ];
-    let q = `SELECT TOP 400 c.org_clean, c.organization, c.country, c.indication, c.phase,
-              c.site_psm, c.total_enrolled, c.site_enroll_months, c.fsi_trust, c.study_name, c.source,
-              c.fsi_date, c.lsi_date, c.psm_zero_enrolled
-       FROM c WHERE c.docType = @t AND c.indication = @ind AND IS_DEFINED(c.site_psm) AND c.site_psm > 0`;
-    const geo = countrySqlClause("c.country", countries, "geo");
-    q += geo.sql;
-    params.push(...geo.params);
-    pushSites(await queryFactRowsPreferLive(siteContainer, q, params, preferLive), {
-      requirePsm: true
-    });
-  }
+  pushSites(livePack.sites || [], { requirePsm: true });
+  pushSites(livePack.sites || [], { requirePsm: false });
 
-  // Exact aliases WITHOUT PSM filter — ~80% of Veeva site_psm is null; still list real sites
-  for (const alias of [...queryAliases, ...relatedLabels].slice(0, 10)) {
-    const params = [
-      { name: "@t", value: "ora_fact_site" },
-      { name: "@ind", value: alias }
-    ];
-    let q = `SELECT TOP 400 c.org_clean, c.organization, c.country, c.indication, c.phase,
-              c.site_psm, c.total_enrolled, c.site_enroll_months, c.fsi_trust, c.study_name, c.source,
-              c.fsi_date, c.lsi_date, c.psm_zero_enrolled
-       FROM c WHERE c.docType = @t AND c.indication = @ind`;
-    const geo = countrySqlClause("c.country", countries, "geoExact");
-    q += geo.sql;
-    params.push(...geo.params);
-    pushSites(await queryFactRowsPreferLive(siteContainer, q, params, preferLive), {
-      requirePsm: false
-    });
-  }
-
-  // Fuzzy CONTAINS — always run for known needles (Veeva indication is free-text; exact-only misses variants)
+  // Fuzzy TrialHub only (Veeva already full-scanned in memory)
   let fuzzyUsed = [];
   {
     const needles = indicationContainsNeedles(preferred);
     for (const needle of needles.slice(0, 6)) {
       if (!needle || needle.length < 4) continue;
       fuzzyUsed.push(needle);
-      {
-        const rows = await queryAll(
-          studyContainer,
-          `SELECT TOP 80 c.study_number, c.sponsor, c.indication, c.phase, c.psm, c.study_rate_pt_mo,
-                  c.total_enrolled, c.enroll_months, c.n_contributing_sites, c.screen_fail_rate_recomputed,
-                  c.lifecycle_state, c.countries, c.source
-           FROM c WHERE c.docType = @t AND CONTAINS(LOWER(c.indication), @n)`,
-          [
-            { name: "@t", value: "ora_fact_study" },
-            { name: "@n", value: needle.toLowerCase() }
-          ]
-        );
-        for (const r of rows) {
-          if (!keepFactRowForSource(r, preferLive)) continue;
-          if (!passesGeo(r.countries, null)) continue;
-          if (!indicationCompatible(r.indication, preferred, aliases)) continue;
-          mergeRow(oraStudies, r, (x) => x.study_number);
-        }
-      }
       {
         const rows = await queryAll(
           thContainer,
@@ -1930,40 +1934,6 @@ async function benchmarkIndication(database, indication, country = null, opts = 
           mergeRow(thTrials, r, (x) => x.nct);
         }
       }
-      {
-        const params = [
-          { name: "@t", value: "ora_fact_site" },
-          { name: "@n", value: needle.toLowerCase() }
-        ];
-        // Include null-PSM rows — Stargardt / IRD / neuroprotection often lack site_psm
-        let q = `SELECT TOP 400 c.org_clean, c.organization, c.country, c.indication, c.phase,
-                  c.site_psm, c.total_enrolled, c.site_enroll_months, c.fsi_trust, c.study_name, c.source
-           FROM c WHERE c.docType = @t AND CONTAINS(LOWER(c.indication), @n)`;
-        const geo = countrySqlClause("c.country", countries, "geo");
-        q += geo.sql;
-        params.push(...geo.params);
-        const siteFuzzy = (await queryAll(siteContainer, q, params)).filter((r) =>
-          indicationCompatible(r.indication, preferred, aliases)
-        );
-        pushSites(siteFuzzy, { requirePsm: false });
-      }
-    }
-  }
-
-  // Still empty on PSM sites? pull related-label sites without PSM filter
-  if (!topSites.length) {
-    for (const alias of relatedLabels.slice(0, 4)) {
-      const params = [
-        { name: "@t", value: "ora_fact_site" },
-        { name: "@ind", value: alias }
-      ];
-      let q = `SELECT TOP 200 c.org_clean, c.organization, c.country, c.indication, c.phase,
-                c.site_psm, c.total_enrolled, c.site_enroll_months, c.fsi_trust, c.study_name, c.source
-         FROM c WHERE c.docType = @t AND c.indication = @ind`;
-      const geo = countrySqlClause("c.country", countries, "geo2");
-      q += geo.sql;
-      params.push(...geo.params);
-      pushSites(await queryAll(siteContainer, q, params), { requirePsm: false });
     }
   }
 
@@ -2002,10 +1972,12 @@ async function benchmarkIndication(database, indication, country = null, opts = 
       psmP75: round(percentile(oraPsm, 75)),
       note:
         oraStudies.length && !oraPsm.length
-          ? "Veeva has studies for this indication but site/study PSM is missing (null ≠ 0). List study_number, sponsor, enrolled — do NOT say there is no Veeva data."
+          ? "Veeva has studies for this indication but site PSM is missing (need FSI+LSI milestones and enrolled). List study_number, sponsor, enrolled — do NOT say there is no Veeva data."
           : oraStudies.length
-            ? "From ora_fact_study (Veeva). Prefer median PSM when studiesWithPsm > 0."
-            : "No ora_fact_study rows matched aliases / CONTAINS needles.",
+            ? "From ora_veeva_study (+ site PSM median from FSI→LSI milestones). Prefer median PSM when studiesWithPsm > 0."
+            : livePack.error
+              ? `Veeva live load error: ${livePack.error}`
+              : "No ora_veeva_study rows matched this indication.",
       sampleStudies: [...oraStudies]
         .sort((a, b) => {
           const pa = typeof a.psm === "number" ? a.psm : -1;
@@ -2073,16 +2045,27 @@ async function benchmarkIndication(database, indication, country = null, opts = 
       sitesWithPsmSampled: sitePsms.length,
       sitePsmMedian: round(median(sitePsms)),
       sitePsmP75: round(percentile(sitePsms, 75)),
-      topSitesByPsm: sitesWithPsm.slice(0, 25),
-      topSites: topSites.slice(0, 25),
-      topOusSites: ousSites.slice(0, 25),
+      siteListLimit,
+      returnedCount: Math.min(siteListLimit, topSites.length),
+      topSitesByPsm: sitesWithPsm.slice(0, siteListLimit),
+      topSites: topSites.slice(0, siteListLimit),
+      topOusSites: ousSites.slice(0, siteListLimit),
       countryFilter: countries,
       countryFilterLabel: countries ? countries.join(", ") : ousOnly ? "OUS (ex-US)" : "Global",
       note: sitesWithPsm.length
-        ? "Ranked by site_psm when present; FSI trust breaks ties. Null-PSM sites also listed in topSites."
+        ? `Ora Veeva named sites from ora_veeva_* (up to ${siteListLimit}). PSM = enrolled / months(FSI→LSI milestones). Never say Cosmos only has 10 if returnedCount is higher.`
         : topSites.length
-          ? "No site_psm in Veeva for this indication — listed real org_clean rows ranked by total_enrolled / presence. This IS the site slate; do not say there is no leaderboard."
-          : "No Ora Veeva site rows for this indication. Use trialhub.countryRank for OUS country priorities; do not invent PI names."
+          ? `No computable site PSM yet (missing FSI/LSI or enrolled) — listed ${Math.min(siteListLimit, topSites.length)} real org rows from ora_veeva_site. This IS the site slate.`
+          : "No Ora Veeva site rows for this indication. Use trialhub.countryRank + ctgov country ranks to prioritize geographies; do not invent PI names.",
+      dataSource: "ora_veeva_site+milestone",
+      livePackNote: livePack.note || undefined,
+      harmonize: {
+        veeva: "Named Ora sites (org + country + site PSM) — primary slate for site selection.",
+        trialhub:
+          "Study-level industry landscape + countryRank / recruitingSample — not site-level PSM. Use to fill country mix when Veeva slate is short of the requested N.",
+        ctgov:
+          "Registry trials + countries — public landscape. Use country frequencies / recruiting trials to complement; do not invent site names from CT.gov unless facilities are in context."
+      }
     },
     startupTimelines
   };
@@ -2303,40 +2286,19 @@ async function trialhubOverview(database, country = null) {
   }
 }
 
-/** Ora/Veeva feed-wide snapshot (ora_fact_study + ora_fact_site) when no indication named. */
+/** Ora/Veeva feed-wide snapshot from live mirrors (ora_veeva_*), not ora_fact_*. */
 async function veevaOverview(database) {
   try {
-    const studyCountRows = await queryAll(
-      database.container("ora_fact_study"),
-      "SELECT VALUE COUNT(1) FROM c WHERE c.docType = @t",
-      [{ name: "@t", value: "ora_fact_study" }]
-    );
-    const siteCountRows = await queryAll(
-      database.container("ora_fact_site"),
-      "SELECT VALUE COUNT(1) FROM c WHERE c.docType = @t",
-      [{ name: "@t", value: "ora_fact_site" }]
-    );
-    const studies = await queryAll(
-      database.container("ora_fact_study"),
-      `SELECT TOP 100 c.study_number, c.sponsor, c.indication, c.phase, c.psm, c.total_enrolled,
-              c.n_contributing_sites, c.enroll_months, c.lifecycle_state, c.countries
-       FROM c WHERE c.docType = @t`,
-      [{ name: "@t", value: "ora_fact_study" }]
-    );
-    const sites = await queryAll(
-      database.container("ora_fact_site"),
-      `SELECT TOP 80 c.org_clean, c.country, c.indication, c.site_psm, c.total_enrolled, c.fsi_trust, c.study_name
-       FROM c WHERE c.docType = @t`,
-      [{ name: "@t", value: "ora_fact_site" }]
-    );
-
+    const { loadVeevaLiveFeasibility } = require("./veevaLiveIntel");
+    const pack = await loadVeevaLiveFeasibility(database);
+    const studies = pack.studies || [];
+    const sites = pack.sites || [];
     const byIndication = {};
     const psmVals = [];
     for (const s of studies) {
       const ind = s.indication || "_unknown";
       byIndication[ind] = (byIndication[ind] || 0) + 1;
-      const psm = s.psm != null ? Number(s.psm) : null;
-      if (psm != null && !Number.isNaN(psm) && psm > 0) psmVals.push(psm);
+      if (typeof s.psm === "number" && s.psm > 0) psmVals.push(s.psm);
     }
     psmVals.sort((a, b) => a - b);
     const mid = (arr) => (arr.length ? arr[Math.floor(arr.length / 2)] : null);
@@ -2347,41 +2309,46 @@ async function veevaOverview(database) {
     const topSites = [...sites]
       .filter((s) => s.org_clean)
       .sort((a, b) => (b.site_psm || 0) - (a.site_psm || 0))
-      .slice(0, 12)
+      .slice(0, 40)
       .map((s) => ({
         org_clean: s.org_clean,
         country: s.country,
         indication: s.indication,
         site_psm: s.site_psm,
         total_enrolled: s.total_enrolled,
+        site_enroll_months: s.site_enroll_months,
+        fsi_date: s.fsi_date,
+        lsi_date: s.lsi_date,
         fsi_trust: s.fsi_trust,
         study_name: s.study_name
       }));
-    const sampleStudies = studies.slice(0, 15).map((s) => ({
-      study_number: s.study_number,
-      sponsor: s.sponsor,
-      indication: s.indication,
-      phase: s.phase,
-      psm: s.psm,
-      total_enrolled: s.total_enrolled
-    }));
+    const sampleStudies = [...studies]
+      .sort((a, b) => (b.psm || 0) - (a.psm || 0))
+      .slice(0, 15)
+      .map((s) => ({
+        study_number: s.study_number,
+        sponsor: s.sponsor,
+        indication: s.indication,
+        phase: s.phase,
+        psm: s.psm,
+        total_enrolled: s.total_enrolled
+      }));
 
-    const studyCount = studyCountRows[0] ?? 0;
-    const siteCount = siteCountRows[0] ?? 0;
     return {
       scope: "ora_veeva",
-      studyCount,
-      siteCount,
+      studyCount: pack.studyCount ?? studies.length,
+      siteCount: pack.siteCount ?? sites.length,
       sampleStudyCount: studies.length,
-      studiesWithPsm: psmVals.length,
+      studiesWithPsm: pack.studiesWithPsm ?? psmVals.length,
+      sitesWithPsm: pack.sitesWithPsm ?? null,
       psmMedian: mid(psmVals),
       indicationRank,
       sampleStudies,
       topSites,
       note:
-        studyCount > 0 || siteCount > 0
-          ? "Live from Cosmos ora_fact_study / ora_fact_site (Ora Veeva). Use for Veeva/Ora-history dashboards even with no indication. Ranks from sample window; studyCount/siteCount are full container."
-          : "Ora Veeva containers are empty — run intelligence ingest."
+        studies.length || sites.length
+          ? "Live from ora_veeva_study / ora_veeva_site / ora_veeva_milestone. Site PSM = enrolled / months(FSI→LSI). ora_fact_* not used."
+          : "Ora Veeva mirrors are empty — run Ingest Veeva."
     };
   } catch (err) {
     return { error: String(err.message || err), studyCount: 0, siteCount: 0 };
@@ -2760,6 +2727,7 @@ async function buildIntelligenceContext(getDb, opts = {}) {
   const qIndication = extractIndicationFromQuestion(question);
   const ousOnly = wantsOusOnly(question);
   const enrollmentPlan = extractEnrollmentPlan(question);
+  const siteListLimitAsked = extractSiteListLimit(question);
   const startYear = extractYearFromQuestion(question);
   const therapeuticFilter = extractTherapeuticFilterFromQuestion(question);
   const wantsStartedList = /\b(all|every|list|tell me|show me|give me)\b/i.test(question);
@@ -2823,7 +2791,8 @@ async function buildIntelligenceContext(getDb, opts = {}) {
       salesforceIntent: wantsSalesforce,
       startYear: startYear || null,
       therapeuticFilter: therapeuticFilter || null,
-      enrollmentPlan
+      enrollmentPlan,
+      siteListLimit: siteListLimitAsked || 40
     }
   };
 
@@ -2855,7 +2824,8 @@ async function buildIntelligenceContext(getDb, opts = {}) {
       const ind = resolvedIndication || qIndication;
       if (ind) {
         out.indicationBenchmark = await benchmarkIndication(database, ind, resolvedCountries, {
-          ousOnly
+          ousOnly,
+          siteListLimit: siteListLimitAsked || 40
         });
         out.ctgov = await ctgovByIndication(database, ind, resolvedCountries);
         if (out.ctgov && !out.ctgov.error) {
@@ -2869,41 +2839,40 @@ async function buildIntelligenceContext(getDb, opts = {}) {
           });
         }
       } else if (resolvedCountries) {
-        // Country-only: prefer sites with PSM, then fall back to any sites in-country
-        const params = [{ name: "@t", value: "ora_fact_site" }];
-        let q = `SELECT TOP 80 c.org_clean, c.country, c.indication, c.site_psm, c.total_enrolled, c.fsi_trust, c.study_name
-           FROM c WHERE c.docType = @t AND IS_DEFINED(c.site_psm) AND c.site_psm > 0`;
-        const geo = countrySqlClause("c.country", resolvedCountries, "geo");
-        q += geo.sql;
-        params.push(...geo.params);
-        let rows = await queryAll(database.container("ora_fact_site"), q, params);
-        if (!rows.length) {
-          const params2 = [{ name: "@t", value: "ora_fact_site" }];
-          let q2 = `SELECT TOP 80 c.org_clean, c.country, c.indication, c.site_psm, c.total_enrolled, c.fsi_trust, c.study_name
-             FROM c WHERE c.docType = @t`;
-          const geo2 = countrySqlClause("c.country", resolvedCountries, "geo2");
-          q2 += geo2.sql;
-          params2.push(...geo2.params);
-          rows = await queryAll(database.container("ora_fact_site"), q2, params2);
+        // Country-only: live Veeva sites with milestone PSM
+        const { loadVeevaLiveFeasibility } = require("./veevaLiveIntel");
+        let pack = { sites: [] };
+        try {
+          pack = await loadVeevaLiveFeasibility(database);
+        } catch (_) {
+          pack = { sites: [] };
         }
-        const sorted = [...rows].sort((a, b) => (b.site_psm || 0) - (a.site_psm || 0));
+        const sorted = [...(pack.sites || [])]
+          .filter((s) => countriesMatch(s.country, resolvedCountries))
+          .sort((a, b) => (b.site_psm || 0) - (a.site_psm || 0));
+        const countrySiteCap = Math.min(80, Math.max(25, siteListLimitAsked || 40));
         out.countrySites = {
           countries: resolvedCountries,
           country: resolvedCountries.join(", "),
           sampleCount: sorted.length,
-          topSites: sorted.slice(0, 12).map((s) => ({
+          siteListLimit: countrySiteCap,
+          returnedCount: Math.min(countrySiteCap, sorted.length),
+          topSites: sorted.slice(0, countrySiteCap).map((s) => ({
             org_clean: s.org_clean,
             country: s.country,
             indication: s.indication,
             site_psm: s.site_psm,
             total_enrolled: s.total_enrolled,
+            site_enroll_months: s.site_enroll_months,
+            fsi_date: s.fsi_date,
+            lsi_date: s.lsi_date,
             fsi_trust: s.fsi_trust,
             study_name: s.study_name
           })),
           note:
             sorted.length && sorted.every((s) => s.site_psm == null || s.site_psm === 0)
-              ? "Sites listed; site_psm missing for this geo slice — still name sites, do not invent PSM."
-              : undefined
+              ? "Sites from ora_veeva_site; site PSM missing (need FSI+LSI + enrolled) — still name sites."
+              : "Sites from ora_veeva_*; PSM = enrolled / months(FSI→LSI)."
         };
       }
 
@@ -2943,8 +2912,31 @@ async function buildIntelligenceContext(getDb, opts = {}) {
       }
     }
 
-    if (enrollmentPlan && (enrollmentPlan.sitesExact != null || enrollmentPlan.patients)) {
-      out.enrollmentPlan = enrollmentPlan;
+    if (enrollmentPlan && (enrollmentPlan.sitesExact != null || enrollmentPlan.patients || enrollmentPlan.months)) {
+      out.enrollmentPlan = enrichEnrollmentPlanWithBenchmark(
+        enrollmentPlan,
+        out.indicationBenchmark
+      );
+      if (out.query) out.query.enrollmentPlan = out.enrollmentPlan;
+    } else if (
+      out.indicationBenchmark &&
+      (/\bpsm\b|patients?\s*per\s*site|enrol(?:l)?ment\s+rate|how\s+fast|sites?\s+needed/i.test(
+        question
+      ) ||
+        siteListLimitAsked)
+    ) {
+      // PSM / site-count ask with no patients/months yet — still surface the benchmark PSM to calculate from
+      const filled = enrichEnrollmentPlanWithBenchmark(
+        { patients: null, months: null, psm: null },
+        out.indicationBenchmark
+      );
+      if (filled?.psm != null) {
+        out.enrollmentPlan = {
+          ...filled,
+          note: "PSM filled from indicationBenchmark median — use for site math when the user gives patients/months, or cite as the indication PSM."
+        };
+        if (out.query) out.query.enrollmentPlan = out.enrollmentPlan;
+      }
     }
 
     const who = sponsor || clientName;
@@ -3342,6 +3334,7 @@ module.exports = {
   indicationFamily,
   indicationCompatible,
   resolveIndicationGroup,
+  canonicalIndicationFromVaultPicklist,
   phraseIncludes,
   extractIndicationFromQuestion,
   extractCountryFromQuestion,
@@ -3360,6 +3353,8 @@ module.exports = {
   preferredIndicationLabel,
   indicationContainsNeedles,
   extractEnrollmentPlan,
+  extractSiteListLimit,
+  enrichEnrollmentPlanWithBenchmark,
   wantsOusOnly,
   rankCountriesFromTrials
 };
