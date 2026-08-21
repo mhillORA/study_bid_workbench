@@ -521,20 +521,6 @@ async function queryFullObject(session, objectName, opts = {}) {
     throw new Error(`${objectName} is not queryable or has no fields`);
   }
   let fieldSet = new Set(desc.fields);
-  if (objectName === "OpportunityLineItem") {
-    for (const must of [
-      "OpportunityId",
-      "Product2Id",
-      "PricebookEntryId",
-      "Quantity",
-      "TotalPrice",
-      "UnitPrice",
-      "Name",
-      "ProductCode"
-    ]) {
-      if ((desc.allQueryable || []).includes(must)) fieldSet.add(must);
-    }
-  }
   const fieldList = [...fieldSet];
   const soql = `SELECT ${fieldList.join(",")} FROM ${objectName}`;
   try {
@@ -560,9 +546,17 @@ async function queryFullObject(session, objectName, opts = {}) {
 async function fetchAccountsByIds(session, ids, opts = {}) {
   const tierField = opts.tierField || session.tierField || "Tier__c";
   const groupingField = opts.groupingField || session.groupingField || "Ora_Grouping__c";
-  const unique = [...new Set((ids || []).map((id) => String(id || "").trim()).filter(Boolean))];
+  // Only real Salesforce Ids (15/18). Crosswalk junk → MALFORMED_QUERY / 400.
+  const unique = [
+    ...new Set(
+      (ids || [])
+        .map((id) => String(id || "").trim())
+        .filter((id) => /^[a-zA-Z0-9]{15}([a-zA-Z0-9]{3})?$/.test(id))
+    )
+  ];
   const byId = new Map();
-  const chunkSize = 100;
+  if (!unique.length) return byId;
+  const chunkSize = 80;
 
   async function queryChunk(chunk, fields) {
     const inList = chunk.map((id) => `'${id.replace(/'/g, "\\'")}'`).join(",");
@@ -570,44 +564,33 @@ async function fetchAccountsByIds(session, ids, opts = {}) {
     return soqlQuery(session, soql);
   }
 
+  // Prefer lean fields first — IsDeleted often 400s on Account for non-admin / some APIs.
+  const fieldAttempts = [
+    ["Id", "Name", "Owner.Name", tierField, groupingField],
+    ["Id", "Name", "Owner.Name", tierField],
+    ["Id", "Name", "Owner.Name", groupingField],
+    ["Id", "Name", "Owner.Name"],
+    ["Id", "Name", "OwnerId", tierField, groupingField],
+    ["Id", "Name", "OwnerId"],
+    ["Id", "Name"]
+  ];
+
   for (let i = 0; i < unique.length; i += chunkSize) {
     const chunk = unique.slice(i, i + chunkSize);
-    let fields = ["Id", "Name", "IsDeleted", "Owner.Name", tierField, groupingField];
-    let records;
-    try {
-      records = await queryChunk(chunk, fields);
-    } catch (err) {
-      const msg = String(err.message || err);
-      // Drop custom fields that aren't visible / don't exist, retry leaner
-      if (msg.includes(groupingField)) {
-        fields = fields.filter((f) => f !== groupingField);
-        try {
-          records = await queryChunk(chunk, fields);
-        } catch (err2) {
-          if (String(err2.message || err2).includes(tierField)) {
-            fields = fields.filter((f) => f !== tierField);
-            records = await queryChunk(chunk, fields);
-          } else {
-            throw err2;
-          }
-        }
-      } else if (msg.includes(tierField)) {
-        fields = fields.filter((f) => f !== tierField);
-        try {
-          records = await queryChunk(chunk, fields);
-        } catch (err2) {
-          if (String(err2.message || err2).includes(groupingField)) {
-            fields = fields.filter((f) => f !== groupingField);
-            records = await queryChunk(chunk, fields);
-          } else {
-            throw err2;
-          }
-        }
-      } else {
-        throw err;
+    let records = null;
+    let lastErr = null;
+    for (const fields of fieldAttempts) {
+      const clean = [...new Set(fields.filter(Boolean))];
+      try {
+        records = await queryChunk(chunk, clean);
+        lastErr = null;
+        break;
+      } catch (err) {
+        lastErr = err;
       }
     }
-    for (const r of records) {
+    if (lastErr) throw lastErr;
+    for (const r of records || []) {
       const id = r.Id;
       if (!id) continue;
       byId.set(id, {

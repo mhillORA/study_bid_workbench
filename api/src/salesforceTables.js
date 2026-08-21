@@ -1,7 +1,6 @@
 /**
  * Full Salesforce table sync → Cosmos + Buddy context packs.
- * Containers: ora_sf_account, ora_sf_opportunity, ora_sf_activity_request,
- *             ora_sf_opportunity_line, ora_sf_services (Product2)
+ * Objects (user-confirmed): Account, Opportunity, Activity_Request__c only.
  */
 
 const {
@@ -20,13 +19,7 @@ const SF_TABLES = [
     sfObject: "Activity_Request__c",
     container: "ora_sf_activity_request",
     docType: "ora_sf_activity_request"
-  },
-  {
-    sfObject: "OpportunityLineItem",
-    container: "ora_sf_opportunity_line",
-    docType: "ora_sf_opportunity_line"
-  },
-  { sfObject: "Product2", container: "ora_sf_services", docType: "ora_sf_services" }
+  }
 ];
 
 async function ensureContainer(database, containerId) {
@@ -298,14 +291,12 @@ async function buildSalesforceBuddyContext(getDb, opts = {}) {
   const out = {
     source: "salesforce_cosmos",
     note:
-      "Live Salesforce mirrors in Cosmos (ora_sf_*). Prefer these for Account / Opportunity / AR / services questions after a tables sync. crosswalk still bridges Veeva/TrialHub names → sf_account_id.",
+      "Live Salesforce mirrors in Cosmos (ora_sf_*). Objects synced: Account, Opportunity, Activity_Request__c. Prefer these after a tables sync. crosswalk still bridges Veeva/TrialHub names → sf_account_id.",
     counts,
     query: { nameHint, clientName },
     accounts: [],
     opportunities: [],
-    activityRequests: [],
-    opportunityLines: [],
-    services: []
+    activityRequests: []
   };
 
   if (!anyData) {
@@ -395,55 +386,6 @@ async function buildSalesforceBuddyContext(getDb, opts = {}) {
             });
           }
         }
-
-        const oppIds = [...new Set(out.opportunities.map((o) => o.id))].slice(0, 10);
-        for (const oid of oppIds) {
-          const lines = await queryAll(
-            database.container("ora_sf_opportunity_line"),
-            `SELECT TOP 15 c.id, c.Name, c.OpportunityId, c.Product2Id, c.Quantity, c.UnitPrice, c.TotalPrice, c.ProductCode
-             FROM c WHERE c.docType = @t AND c.OpportunityId = @o`,
-            [
-              { name: "@t", value: "ora_sf_opportunity_line" },
-              { name: "@o", value: oid }
-            ]
-          );
-          out.opportunityLines.push(
-            ...lines.map((l) => ({
-              id: l.id,
-              name: l.Name,
-              opportunityId: l.OpportunityId,
-              product2Id: l.Product2Id,
-              quantity: l.Quantity,
-              unitPrice: l.UnitPrice,
-              totalPrice: l.TotalPrice,
-              productCode: l.ProductCode
-            }))
-          );
-        }
-
-        const productIds = [
-          ...new Set(out.opportunityLines.map((l) => l.product2Id).filter(Boolean))
-        ].slice(0, 15);
-        for (const pid of productIds) {
-          const services = await queryAll(
-            database.container("ora_sf_services"),
-            `SELECT TOP 5 c.id, c.Name, c.ProductCode, c.Family, c.Description, c.IsActive
-             FROM c WHERE c.docType = @t AND c.id = @p`,
-            [
-              { name: "@t", value: "ora_sf_services" },
-              { name: "@p", value: pid }
-            ]
-          );
-          out.services.push(
-            ...services.map((s) => ({
-              id: s.id,
-              name: s.Name,
-              productCode: s.ProductCode,
-              family: s.Family,
-              isActive: s.IsActive
-            }))
-          );
-        }
       }
     } else {
       // Overview samples when no account named
@@ -483,8 +425,8 @@ async function buildSalesforceBuddyContext(getDb, opts = {}) {
   out.rules = [
     "Cite Account Name, Owner, Tier__c → tier, Ora_Grouping__c → ora grouping.",
     "Opportunities: Name, Stage, Amount, CloseDate — do not invent pipeline numbers.",
-    "Services come from Product2 (ora_sf_services) via opportunity line items.",
     "Activity_Request__c rows are ARs — say Activity Request, not invent statuses.",
+    "We do not sync OpportunityLineItem or Product2 — do not invent line items/services.",
     "If counts are 0, tell the user to run Sync SF tables on the Intelligence tab."
   ];
   return out;

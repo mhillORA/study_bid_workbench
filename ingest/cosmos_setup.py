@@ -37,8 +37,6 @@ CONTAINERS = [
     {"id": "ora_sf_account", "partition_key": "/id"},
     {"id": "ora_sf_opportunity", "partition_key": "/id"},
     {"id": "ora_sf_activity_request", "partition_key": "/id"},
-    {"id": "ora_sf_opportunity_line", "partition_key": "/id"},
-    {"id": "ora_sf_services", "partition_key": "/id"},
     # Watermarks / cursors for scheduled sync jobs.
     {"id": "syncState", "partition_key": "/id"},
 ]

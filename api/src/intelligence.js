@@ -2539,7 +2539,7 @@ async function buildIntelligenceContext(getDb, opts = {}) {
       "TrialHub vs Ora vs CT.gov indication labels may differ; aliasesUsed lists what was queried.",
       "Prefer fsi_trust=high when comparing site_psm.",
       "ctgov = ClinicalTrials.gov ophthalmology feed (daily delta).",
-      "salesforce / salesforceData = Cosmos mirrors of SF Account, Opportunity, Activity_Request__c, OpportunityLineItem, Product2 (ora_sf_services). Use for pipeline / owner / AR / services asks after tables sync.",
+      "salesforce / salesforceData = Cosmos mirrors of SF Account, Opportunity, Activity_Request__c only. Use for pipeline / owner / AR asks after tables sync.",
       "ctgovOverview / trialhubOverview / veevaOverview / crosswalkOverview = feed-wide snapshots when no indication was named — use for dashboards. Never say a feed is missing if its totalCount/studyCount > 0 or recentSample has rows.",
       "When countryFilter is set (array), site/CT.gov/TrialHub results match ANY of those countries. Null/Global = all geographies.",
       "For OUS / outside-US asks: use trialhub.countryRankOus (or countryRank) for ranked countries with trialMentions counts — that IS the country leaderboard.",

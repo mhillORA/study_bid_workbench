@@ -30,8 +30,8 @@ Separate button / POST mode pulls whole SF objects into Cosmos for Buddy Q&A:
 | Account | `ora_sf_account` |
 | Opportunity | `ora_sf_opportunity` |
 | `Activity_Request__c` | `ora_sf_activity_request` |
-| OpportunityLineItem | `ora_sf_opportunity_line` |
-| Product2 (services) | `ora_sf_services` |
+
+(Only these three — not OpportunityLineItem / Product2.)
 
 Endpoints:
 

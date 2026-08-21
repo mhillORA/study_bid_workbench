@@ -83,7 +83,7 @@ const INTELLIGENCE_RULES = [
   "• Ops briefing (section status, fill requests, what to do next) → workingStudy.sectionStatus / requests / drivers; suggest NAVIGATE:ops or NAVIGATE:reviews.",
   "• Legacy recruitment board / anterior overview (no indication) → legacyAnterior trust + topByEnrolled / counts. If enrollmentIncluded or htmlTable present, list enrollment; never ask user to paste the table.",
   "• Sponsor already in SF? BD owner / tier / Ora grouping? → intelligence.sponsorCrosswalk (sf_owner, tier, ora_grouping). Crosswalk dashboard (no sponsor named) → intelligence.crosswalkOverview (totalCount, statusRank, tierRank, noSfMatchSample).",
-  "• Salesforce Accounts / Opportunities / Activity Requests (ARs) / services (Product2) → intelligence.salesforceData (ora_sf_* mirrors). If counts are 0, say Sync SF tables is needed. Never invent pipeline Amount/Stage.",
+  "• Salesforce Accounts / Opportunities / Activity Requests (ARs) → intelligence.salesforceData (ora_sf_account / ora_sf_opportunity / ora_sf_activity_request). If counts are 0, say Sync SF tables is needed. Never invent pipeline Amount/Stage.",
   "• NCT lookup → intelligence.nctLookup (TrialHub) and/or intelligence.ctgovNct / ctgov.",
   "• CT.gov dashboard / registry overview (no indication named) → intelligence.ctgovOverview (totalCount, indicationRank, statusRank, recentSample, countryRank). If totalCount > 0 you HAVE data — never say CT.gov is empty.",
   "• CT.gov by indication → intelligence.ctgov (trialCount, sample, recruitingSample).",
@@ -1538,10 +1538,10 @@ function formatCosmosFactsBlock(context) {
   const sf = context?.intelligence?.salesforceData;
   if (sf && !sf.error) {
     const sfLines = [
-      "SALESFORCE FACTS (Cosmos ora_sf_* mirrors — use for SF Account / Opp / AR / services asks):",
+      "SALESFORCE FACTS (Cosmos ora_sf_* mirrors — Account / Opportunity / Activity_Request__c):",
       `counts: accounts=${sf.counts?.ora_sf_account ?? "—"}, opps=${sf.counts?.ora_sf_opportunity ?? "—"}, ARs=${
         sf.counts?.ora_sf_activity_request ?? "—"
-      }, lines=${sf.counts?.ora_sf_opportunity_line ?? "—"}, services=${sf.counts?.ora_sf_services ?? "—"}`
+      }`
     ];
     if (sf.empty) {
       sfLines.push(
