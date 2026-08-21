@@ -1153,7 +1153,7 @@
         apiBase: "",
         external: false,
         useLocalApi: true,
-        mintError: "external_disabled"
+        mintError: state._buddyExternalDisableReason || "external_disabled"
       };
     }
     const now = Date.now();
@@ -1181,22 +1181,8 @@
         data.apiBase || window.BUDDY_API_BASE || DEFAULT_BUDDY_API_BASE || ""
       ).replace(/\/$/, "");
       if (data.ok && data.token && apiBase) {
-        // CORS probe — don't steer the browser at FA if preflight won't allow this origin.
-        const corsOk = await probeBuddyExternalCors(apiBase);
-        if (!corsOk) {
-          console.warn("[Buddy] Function App CORS probe failed — staying on SWA", apiBase);
-          state._buddyExternalDisabled = true;
-          state.buddySessionToken = null;
-          state.buddyApiBase = "";
-          return {
-            ok: true,
-            token: null,
-            apiBase: "",
-            external: false,
-            useLocalApi: true,
-            mintError: "cors_probe_failed"
-          };
-        }
+        // Mint succeeded — use Function App. Do NOT CORS-probe-and-discard (that
+        // falsely told people the SWA secret was missing).
         state.buddySessionToken = data.token;
         state.buddyApiBase = apiBase;
         state._buddyPreferExternal = true;
@@ -1209,17 +1195,19 @@
       state.buddyApiBase = "";
       state._buddyPreferExternal = false;
       state.buddySessionExpiresAt = 0;
-      console.warn("[Buddy] session mint unavailable — visuals stay on SWA (45s)", {
-        status: res.status,
-        error: data.error || null
-      });
+      const mintError =
+        data.error ||
+        (res.status === 401 || res.status === 302
+          ? "sign_in_required"
+          : `session_http_${res.status}`);
+      console.warn("[Buddy] session mint failed", { status: res.status, error: mintError, data });
       return {
         ok: true,
         token: null,
         apiBase: "",
         external: false,
         useLocalApi: true,
-        mintError: data.error || `session_http_${res.status}`
+        mintError
       };
     } catch (err) {
       console.warn("[Buddy] session mint failed", err);
@@ -1234,31 +1222,10 @@
     }
   }
 
-  /** Browser preflight must allow this page's origin against the Function App. */
-  async function probeBuddyExternalCors(apiBase) {
-    const base = String(apiBase || "").replace(/\/$/, "");
-    if (!base) return false;
-    try {
-      const r = await fetch(`${base}/api/ask`, {
-        method: "OPTIONS",
-        headers: {
-          "Access-Control-Request-Method": "POST",
-          "Access-Control-Request-Headers": "authorization,content-type"
-        }
-      });
-      if (!(r.status === 204 || r.status === 200)) return false;
-      const acao = String(r.headers.get("access-control-allow-origin") || "").replace(/\/$/, "");
-      const here = String(window.location.origin || "").replace(/\/$/, "");
-      return acao === "*" || (acao && here && acao === here);
-    } catch (err) {
-      console.warn("[Buddy] CORS probe error", err);
-      return false;
-    }
-  }
-
   function disableBuddyExternal(reason) {
     console.warn("[Buddy] disabling Function App hops:", reason);
     state._buddyExternalDisabled = true;
+    state._buddyExternalDisableReason = String(reason || "disabled");
     state.buddySessionToken = null;
     state.buddyApiBase = "";
     state._buddyPreferExternal = false;
@@ -4459,7 +4426,7 @@
       }
       if (!canExternal) {
         console.warn(
-          "[Buddy] No Function App session — SWA ~45s gateway risk. Set BUDDY_SESSION_SECRET on SWA.",
+          "[Buddy] No Function App session — SWA ~45s risk.",
           session.mintError || null
         );
       }
@@ -4535,30 +4502,62 @@
       };
 
       async function buddyHop(path, bodyExtra, statusText, hopOpts = {}) {
-        // Prefer Function App whenever session exists. Pass external:false to force SWA.
-        // Visuals use same-origin /api/buddy/ask bridge (hopOpts.bridge) — avoids FA CORS 405.
-        const useBridge = Boolean(hopOpts.bridge);
-        const preferExternal = !useBridge && hopOpts.external !== false;
-        const useExternal = Boolean(preferExternal && canExternal && state.buddySessionToken);
+        // Function App when session works — never the SWA→FA bridge (that re-imposes 45s).
+        const preferExternal = hopOpts.external !== false;
+        let useExternal = Boolean(
+          preferExternal && canExternal && state.buddySessionToken && !state._buddyExternalDisabled
+        );
+
+        // If we're about to hit SWA, try one more mint — secret is often fine; prior probe lied.
+        if (!useExternal && preferExternal && !state._buddyExternalDisabled && !bodyExtra?._remint) {
+          const again = await ensureBuddySession();
+          if (again.external && again.token) {
+            useExternal = true;
+          }
+        }
+
         if (els.askStatus && statusText) els.askStatus.textContent = statusText;
+
         const hopController =
           typeof AbortController !== "undefined" ? new AbortController() : null;
         const onAbort = () => hopController && hopController.abort();
         if (askController && hopController) {
           askController.signal.addEventListener("abort", onAbort, { once: true });
         }
-        // Bridge is same-origin SWA but waits on FA upstream — give it the long timeout.
-        const hopTimeoutMs = useExternal || useBridge ? externalHopTimeoutMs : swaHopTimeoutMs;
+
+        const hopTimeoutMs = useExternal ? externalHopTimeoutMs : swaHopTimeoutMs;
         const hopTimer = hopController
           ? setTimeout(() => hopController.abort(), hopTimeoutMs)
           : null;
+
+        // On SWA: after ~10s, abort and jump to Function App (avoids 45s gateway death).
+        const upgradeMs = Math.max(
+          8000,
+          Number(window.BUDDY_SWA_UPGRADE_MS || 10000) || 10000
+        );
+        let upgraded = false;
+        const upgradeTimer =
+          !useExternal &&
+          hopController &&
+          !bodyExtra?._upgradedToFa &&
+          !state._buddyExternalDisabled
+            ? setTimeout(() => {
+                upgraded = true;
+                if (els.askStatus) {
+                  els.askStatus.textContent = "Switching to Function App…";
+                }
+                try {
+                  hopController.abort();
+                } catch (_) {}
+              }, upgradeMs)
+            : null;
+
         const headers = { "Content-Type": "application/json" };
         if (useExternal && state.buddySessionToken) {
           headers.Authorization = `Bearer ${state.buddySessionToken}`;
         }
-        const url = useBridge
-          ? apiUrl("/api/buddy/ask")
-          : buddyAskUrl(path, { external: useExternal });
+        const url = buddyAskUrl(path, { external: useExternal });
+
         let res;
         try {
           res = await fetch(url, {
@@ -4569,26 +4568,53 @@
           });
         } catch (fetchErr) {
           if (hopTimer) clearTimeout(hopTimer);
+          if (upgradeTimer) clearTimeout(upgradeTimer);
           if (askController && hopController) {
             askController.signal.removeEventListener("abort", onAbort);
           }
-          // Browser CORS / network failure on FA — disable and retry SWA once.
-          if (useExternal && !bodyExtra?._corsRetry) {
-            disableBuddyExternal(String(fetchErr.message || fetchErr));
-            return buddyHop(
-              path,
-              { ...bodyExtra, _corsRetry: true },
-              statusText ? `${statusText} · SWA fallback…` : "SWA fallback…",
-              { ...hopOpts, external: false, bridge: hopOpts.bridge }
-            );
+          const aborted =
+            fetchErr &&
+            (fetchErr.name === "AbortError" || /aborted/i.test(String(fetchErr.message || "")));
+
+          // SWA → auto-upgrade to Function App
+          if (!useExternal && (upgraded || aborted) && !bodyExtra?._upgradedToFa) {
+            state._buddyExternalDisabled = false;
+            const minted = await ensureBuddySession();
+            if (minted.external && minted.token) {
+              return buddyHop(
+                path,
+                { ...bodyExtra, _upgradedToFa: true },
+                "Function App…",
+                { external: true }
+              );
+            }
+          }
+
+          // FA network/CORS failure — tell the truth (CORS), don't blame the SWA secret.
+          if (useExternal && !bodyExtra?._faNetRetry) {
+            return {
+              res: { ok: false, status: 0 },
+              rawText: "",
+              data: {
+                ok: false,
+                error: "function_app_blocked",
+                answer:
+                  "Browser could not reach the Function App (often CORS). Azure Portal → ora-buddy-api → CORS → allow " +
+                  String(window.location.origin || "").replace(/\/$/, "") +
+                  " → Save → hard-refresh."
+              },
+              usedExternal: true
+            };
           }
           throw fetchErr;
         } finally {
           if (hopTimer) clearTimeout(hopTimer);
+          if (upgradeTimer) clearTimeout(upgradeTimer);
           if (askController && hopController) {
             askController.signal.removeEventListener("abort", onAbort);
           }
         }
+
         const rawText = await res.text();
         let data = {};
         try {
@@ -4596,98 +4622,83 @@
         } catch (_) {
           data = {};
         }
+
         if (useExternal && res.status === 401 && !bodyExtra?._sessionRetry) {
           state.buddySessionToken = null;
           state.buddySessionExpiresAt = 0;
           const again = await ensureBuddySession();
           if (again.external && again.token) {
-            return buddyHop(path, { ...bodyExtra, _sessionRetry: true }, statusText, hopOpts);
+            return buddyHop(path, { ...bodyExtra, _sessionRetry: true }, statusText, {
+              external: true
+            });
           }
         }
-        // FA 405 (CORS/method stack) — fall back to same-origin bridge or SWA.
+
         if (useExternal && res.status === 405 && !bodyExtra?._method405Retry) {
-          disableBuddyExternal(`HTTP 405 from ${url}`);
-          if (hopOpts.bridge !== false && (bodyExtra?.askPhase === "visual" || hopOpts.wantBridge)) {
-            return buddyHop(
-              path,
-              { ...bodyExtra, _method405Retry: true },
-              "Deep · leave-behind (bridge)…",
-              { external: false, bridge: true }
-            );
-          }
-          return buddyHop(
-            path,
-            { ...bodyExtra, _method405Retry: true },
-            statusText ? `${statusText} · SWA…` : "SWA…",
-            { ...hopOpts, external: false, bridge: false }
-          );
+          return {
+            res,
+            rawText,
+            data: {
+              ok: false,
+              error: "function_app_405",
+              answer:
+                "Function App returned HTTP 405 (CORS/methods). Portal → ora-buddy-api → CORS → add " +
+                String(window.location.origin || "").replace(/\/$/, "") +
+                " → Save → hard-refresh. Do not use the SWA bridge for leave-behinds."
+            },
+            usedExternal: true
+          };
         }
-        // SWA gateway (502/504) — one retry on Function App if we have a session.
+
+        // SWA gateway — jump to Function App
         if (
           !useExternal &&
-          !useBridge &&
-          canExternal &&
-          state.buddySessionToken &&
           (res.status === 502 || res.status === 504 || res.status === 500) &&
-          !bodyExtra?._swaGatewayRetry
+          !bodyExtra?._upgradedToFa
         ) {
-          return buddyHop(
-            path,
-            { ...bodyExtra, _swaGatewayRetry: true },
-            statusText ? `${statusText} · retry Function App…` : "Retry · Function App…",
-            { ...hopOpts, external: true, bridge: false }
-          );
+          state._buddyExternalDisabled = false;
+          const minted = await ensureBuddySession();
+          if (minted.external && minted.token) {
+            return buddyHop(
+              path,
+              { ...bodyExtra, _upgradedToFa: true },
+              "Function App (after SWA gateway)…",
+              { external: true }
+            );
+          }
         }
-        return { res, rawText, data, usedExternal: useExternal, usedBridge: useBridge };
+
+        return { res, rawText, data, usedExternal: useExternal };
       }
 
       async function runVisualHop(contextId, priorAnswer) {
-        // Direct Function App first (no SWA 45s ceiling). Bridge only if FA returns 405/CORS failure.
-        let vis = await buddyHop(
-          "/api/ask",
-          {
-            askPhase: "visual",
-            contextId,
-            priorAnswer
-          },
-          canExternal && !state._buddyExternalDisabled
-            ? "Deep · leave-behind (Function App)…"
-            : "Deep · leave-behind (bridge)…",
-          canExternal && !state._buddyExternalDisabled
-            ? { bridge: false, external: true, wantBridge: true }
-            : { bridge: true, external: false, wantBridge: true }
-        );
-        if (
-          !vis.data.answer &&
-          !vis.data.htmlReport &&
-          !(vis.data.exports && vis.data.exports.length) &&
-          (vis.res.status === 405 || vis.usedExternal === false) &&
-          !vis.usedBridge
-        ) {
-          vis = await buddyHop(
-            "/api/ask",
-            {
-              askPhase: "visual",
-              contextId,
-              priorAnswer,
-              _bridgeFallback: true
-            },
-            "Deep · leave-behind (bridge)…",
-            { bridge: true, external: false, wantBridge: true }
+        // Always Function App for leave-behinds — never SWA bridge (45s death).
+        const minted = await ensureBuddySession();
+        if (!(minted.external && minted.token)) {
+          pushAssistant(
+            "Leave-behinds need the Function App session. Status should say Function App. " +
+              `Session mint said: ${minted.mintError || "unknown"}. ` +
+              "If the secret is already on SWA, confirm it’s the same value as on ora-buddy-api and that Configuration was Saved (API restarts)."
           );
+          return false;
         }
+        const vis = await buddyHop(
+          "/api/ask",
+          { askPhase: "visual", contextId, priorAnswer },
+          "Deep · leave-behind (Function App)…",
+          { external: true }
+        );
         if (vis.data.answer || vis.data.htmlReport || (vis.data.exports && vis.data.exports.length)) {
           applyAskResult(vis.data, vis.res);
           return true;
         }
-        if (!vis.res.ok || vis.data.softDeadline || vis.data.ok === false) {
-          pushAssistant(
-            `Chat is ready — the leave-behind failed (HTTP ${vis.res.status || "?"}). ` +
-              (vis.res.status === 405
-                ? "Function App CORS is blocking the browser. In Azure Portal → ora-buddy-api → CORS, add this site’s URL, then hard-refresh."
+        pushAssistant(
+          vis.data.answer ||
+            `Leave-behind failed (HTTP ${vis.res?.status || "?"}). ` +
+              (vis.data.error === "function_app_405" || vis.data.error === "function_app_blocked"
+                ? "Fix CORS on ora-buddy-api (Portal → CORS → allow this site), then hard-refresh."
                 : "Say “spin up the visual” to retry.")
-          );
-        }
+        );
         return false;
       }
 
