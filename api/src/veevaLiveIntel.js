@@ -37,6 +37,158 @@ function isEnrolledSubjectStatus(statusRaw) {
   return true;
 }
 
+/** Vault country__v ids look like 00C000000000228 — not display names. */
+function looksLikeVaultCountryId(raw) {
+  return /^00C[0-9A-Z]{12,}$/i.test(String(raw || "").trim());
+}
+
+/** Normalize Vault country picklist / id residue → display name. */
+function prettyCountryName(raw) {
+  if (!raw) return null;
+  let s = String(raw).trim();
+  if (!s || looksLikeVaultCountryId(s)) return null;
+  // Multi-country study lists are not a site country
+  if (s.includes(";")) return null;
+  // united_states__c / United_States__C → united states
+  s = s
+    .replace(/__/g, " ")
+    .replace(/_/g, " ")
+    .replace(/\s+c\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!s) return null;
+  const key = s.toLowerCase();
+  const aliases = {
+    "united states": "United States",
+    us: "United States",
+    usa: "United States",
+    "u s": "United States",
+    "u s a": "United States",
+    "united kingdom": "United Kingdom",
+    uk: "United Kingdom",
+    "great britain": "United Kingdom",
+    "czech republic": "Czech Republic",
+    korea: "South Korea",
+    "south korea": "South Korea",
+    "hong kong": "Hong Kong"
+  };
+  if (aliases[key]) return aliases[key];
+  // Title-case plain words
+  if (/^[a-z ]+$/i.test(s) && s.length >= 3 && s.length <= 40) {
+    return s.replace(/\b\w/g, (c) => c.toUpperCase());
+  }
+  return s;
+}
+
+/**
+ * Resolve Vault country__v object ids → human country names.
+ * Prefer ora_veeva_country (if synced); else majority-vote study.country__c via site.study__v;
+ * else heuristic from study_country__v name__v (…USA… / United Kingdom…).
+ */
+async function loadCountryNameById(database) {
+  const map = new Map();
+  try {
+    const rows = await queryAll(
+      database.container("ora_veeva_country"),
+      `SELECT c.id, c.name__v, c.abbreviation__v FROM c WHERE c.docType = @t`,
+      [{ name: "@t", value: "ora_veeva_country" }]
+    );
+    for (const r of rows) {
+      const name = prettyCountryName(r.name__v) || String(r.name__v || "").trim();
+      if (r.id && name && !looksLikeVaultCountryId(name)) map.set(r.id, name);
+    }
+  } catch (_) {
+    /* optional until country__v ingest */
+  }
+  if (map.size > 0) return map;
+
+  const votes = new Map(); // id → Map<label, n>
+  const bump = (id, label) => {
+    const pretty = prettyCountryName(label);
+    if (!id || !pretty) return;
+    if (!votes.has(id)) votes.set(id, new Map());
+    const m = votes.get(id);
+    m.set(pretty, (m.get(pretty) || 0) + 1);
+  };
+
+  try {
+    const studies = await queryAll(
+      database.container("ora_veeva_study"),
+      `SELECT c.id, c.country__c FROM c WHERE c.docType = @t`,
+      [{ name: "@t", value: "ora_veeva_study" }]
+    );
+    const studyCountry = new Map();
+    for (const s of studies) {
+      const label = prettyCountryName(s.country__c);
+      if (label) studyCountry.set(s.id, label);
+    }
+    const sites = await queryAll(
+      database.container("ora_veeva_site"),
+      `SELECT c.country__v, c.study__v FROM c WHERE c.docType = @t AND IS_DEFINED(c.country__v)`,
+      [{ name: "@t", value: "ora_veeva_site" }]
+    );
+    for (const site of sites) {
+      const label = studyCountry.get(site.study__v);
+      if (label) bump(site.country__v, label);
+    }
+  } catch (_) {
+    /* optional */
+  }
+
+  try {
+    const sc = await queryAll(
+      database.container("ora_veeva_study_country"),
+      `SELECT c.country__v, c.name__v FROM c WHERE c.docType = @t`,
+      [{ name: "@t", value: "ora_veeva_study_country" }]
+    );
+    for (const row of sc) {
+      const n = String(row.name__v || "");
+      let guess = null;
+      if (/\b(USA|U\.S\.A\.|United States)\b/i.test(n)) guess = "United States";
+      else if (/\b(UK|U\.K\.|United Kingdom|Britain)\b/i.test(n)) guess = "United Kingdom";
+      else if (/\bCanada\b/i.test(n)) guess = "Canada";
+      else if (/\bGermany\b/i.test(n)) guess = "Germany";
+      else if (/\bFrance\b/i.test(n)) guess = "France";
+      else if (/\bJapan\b/i.test(n)) guess = "Japan";
+      else if (/\bChina\b/i.test(n)) guess = "China";
+      else if (/\bAustralia\b/i.test(n)) guess = "Australia";
+      else if (/\bSpain\b/i.test(n)) guess = "Spain";
+      else if (/\bItaly\b/i.test(n)) guess = "Italy";
+      else if (/\bPoland\b/i.test(n)) guess = "Poland";
+      else if (/\bIndia\b/i.test(n)) guess = "India";
+      if (guess) bump(row.country__v, guess);
+    }
+  } catch (_) {
+    /* optional */
+  }
+
+  for (const [id, labelCounts] of votes.entries()) {
+    let best = null;
+    let bestN = 0;
+    for (const [label, n] of labelCounts.entries()) {
+      if (n > bestN) {
+        best = label;
+        bestN = n;
+      }
+    }
+    if (best) map.set(id, best);
+  }
+  return map;
+}
+
+function resolveCountryLabel(raw, countryNameById) {
+  if (!raw) return "_unknown";
+  const s = String(raw).trim();
+  if (!s) return "_unknown";
+  if (countryNameById && countryNameById.has(s)) {
+    return prettyCountryName(countryNameById.get(s)) || countryNameById.get(s);
+  }
+  const direct = prettyCountryName(s);
+  if (direct) return direct;
+  if (looksLikeVaultCountryId(s)) return "Unknown country";
+  return s;
+}
+
 /**
  * Load ora_veeva_* and compute site/study PSM from milestones.
  * Returns normalized rows shaped like the old fact pack (org_clean, site_psm, …).
@@ -71,6 +223,8 @@ async function loadVeevaLiveFeasibility(database) {
   } catch (_) {
     /* optional */
   }
+
+  const countryNameById = await loadCountryNameById(database);
 
   const sponsorNameById = new Map();
   try {
@@ -177,7 +331,8 @@ async function loadVeevaLiveFeasibility(database) {
       veeva_study_id: site.study__v || null,
       org_clean: org,
       organization: org,
-      country: site.country__v || "_unknown",
+      country: resolveCountryLabel(site.country__v, countryNameById),
+      country_id: site.country__v || null,
       indication,
       phase: picklistLabel(site.study_phase__c) || study?.phase || null,
       lifecycle_state: study?.lifecycle_state || null,
@@ -266,6 +421,7 @@ async function loadVeevaStartupGapRows(database) {
   } catch (_) {
     /* optional */
   }
+  const countryNameById = await loadCountryNameById(database);
   const siteById = new Map(siteRows.map((s) => [s.id, s]));
 
   const ms = await queryAll(
@@ -290,7 +446,8 @@ async function loadVeevaStartupGapRows(database) {
       bySiteStudy.set(key, {
         organization: org,
         study_name: site.study_name__v || site.study__v || m.study__v,
-        country: site.country__v || "_unknown",
+        country: resolveCountryLabel(site.country__v, countryNameById),
+        country_id: site.country__v || null,
         dates: {},
         source: "ora_veeva_milestone"
       });
@@ -335,6 +492,9 @@ async function loadVeevaStartupGapRows(database) {
 module.exports = {
   loadVeevaLiveFeasibility,
   loadVeevaStartupGapRows,
+  loadCountryNameById,
+  resolveCountryLabel,
+  looksLikeVaultCountryId,
   round,
   median
 };

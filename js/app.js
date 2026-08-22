@@ -5297,16 +5297,21 @@
     if (state.intelligence.sponsorNewsBusy) return;
     state.intelligence.sponsorNewsBusy = true;
     state.intelligence.sponsorNewsMessage =
-      "Crawling Google News RSS for SF / crosswalk sponsors…";
+      "Crawling Google News RSS for SF / crosswalk sponsors (via ora-buddy-api)…";
     refreshDataStatusIfOpen();
     try {
-      const res = await fetch(apiUrl("/api/sponsor-news/sync"), {
+      const res = await intelligenceFaFetch("/api/sponsor-news/sync", {
+        requireExternal: true,
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ maxSponsors: 25 })
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ maxSponsors: 20 })
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
+      if (res.status === 401) {
+        state.intelligence.sponsorNewsMessage =
+          data.error ||
+          "Sign in required (or Buddy session mint failed) to crawl sponsor news on ora-buddy-api.";
+      } else if (!res.ok) {
         state.intelligence.sponsorNewsMessage =
           data.error || `Sponsor news crawl failed (${res.status})`;
       } else {
@@ -5319,7 +5324,7 @@
       }
       await loadIntelligenceHealth();
     } catch (err) {
-      state.intelligence.sponsorNewsMessage = `Sponsor news error: ${String(err)}`;
+      state.intelligence.sponsorNewsMessage = `Sponsor news error: ${String(err.message || err)}`;
     }
     state.intelligence.sponsorNewsBusy = false;
     refreshDataStatusIfOpen();

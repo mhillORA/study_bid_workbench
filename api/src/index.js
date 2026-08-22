@@ -1607,25 +1607,22 @@ app.http("sponsorNewsSync", {
   route: "sponsor-news/sync",
   handler: async (request, context) => {
     if (request.method === "OPTIONS") {
-      return {
-        status: 204,
-        headers: {
-          "Access-Control-Allow-Origin": "*",
-          "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-          "Access-Control-Allow-Headers": "content-type, x-copilot-key"
-        }
-      };
+      return optionsOk(request);
     }
     try {
       if (request.method === "GET") {
         const status = await getSponsorNewsStatus(getDb);
-        return json(200, status);
+        return json(200, status, request);
       }
       const auth = authorizeCtgovSync(request);
       if (!auth.ok) {
-        return json(401, {
-          error: "Unauthorized — sign in, or pass x-copilot-key (same as Copilot Ask key)"
-        });
+        return json(
+          401,
+          {
+            error: "Unauthorized — sign in, or pass x-copilot-key (same as Copilot Ask key)"
+          },
+          request
+        );
       }
       let body = {};
       try {
@@ -1634,12 +1631,12 @@ app.http("sponsorNewsSync", {
         body = {};
       }
       const result = await runSponsorNewsCrawl(getDb, {
-        maxSponsors: Number(body.maxSponsors) || 25
+        maxSponsors: Math.min(Number(body.maxSponsors) || 20, 40)
       });
-      return json(result.ok ? 200 : 500, result);
+      return json(result.ok ? 200 : 500, result, request);
     } catch (err) {
       context.error(err);
-      return json(500, { ok: false, error: String(err.message || err) });
+      return json(500, { ok: false, error: String(err.message || err) }, request);
     }
   }
 });

@@ -153,6 +153,12 @@ const VEEVA_TABLES = [
     projectFact: "site"
   },
   {
+    vaultObject: "country__v",
+    container: "ora_veeva_country",
+    docType: "ora_veeva_country",
+    fields: ["id", "name__v", "abbreviation__v", "modified_date__v"]
+  },
+  {
     vaultObject: "study_country__v",
     container: "ora_veeva_study_country",
     docType: "ora_veeva_study_country",
@@ -926,23 +932,25 @@ async function runVeevaTablesSync(getDb, opts = {}) {
     switch (t.vaultObject) {
       case "sponsor__c":
         return 0;
-      case "organization__v":
+      case "country__v":
         return 1;
-      case "study__v":
+      case "organization__v":
         return 2;
-      case "study_country__v":
+      case "study__v":
         return 3;
-      case "metrics__ctms":
+      case "study_country__v":
         return 4;
-      case "milestone__v":
+      case "metrics__ctms":
         return 5;
-      case "site__v":
+      case "milestone__v":
         return 6;
+      case "site__v":
+        return 7;
       case "subject__clin":
       case "subject__v":
-        return 7;
-      default:
         return 8;
+      default:
+        return 9;
     }
   };
   const countsByContainer = {};

@@ -289,11 +289,24 @@ async function buildRmPack(getDb, opts = {}) {
   };
 }
 
-async function getLensHealthSlice(getDb) {
+async function getLensHealthSlice(getDb, opts = {}) {
   const database = getDb();
+  const slim = opts.slim !== false; // default slim — full counts only when Data Status asks
   const netsuite = await safeCountByDocType(database, NS_CONTAINER, NS_DOC_TYPE);
+  const coreRm = [
+    "lens_rm_studies",
+    "lens_rm_actuals",
+    "lens_rm_assignments",
+    "lens_rm_projections",
+    "lens_rm_employees",
+    "lens_rm_headcount",
+    "lens_rm_runs"
+  ];
+  const tables = slim
+    ? RM_TABLES.filter((t) => coreRm.includes(t.container))
+    : RM_TABLES;
   const rm = {};
-  for (const t of RM_TABLES) {
+  for (const t of tables) {
     rm[t.container] = await safeCountByDocType(database, t.container, t.docType);
   }
   let latestRmRun = null;
@@ -315,6 +328,7 @@ async function getLensHealthSlice(getDb) {
     insightsRm: {
       counts: rm,
       latestRun: latestRmRun,
+      slim,
       note:
         "Insights RM / FleetView star schema in lens_rm_* (see Ora_Resource_Model_1.xlsx)."
     }

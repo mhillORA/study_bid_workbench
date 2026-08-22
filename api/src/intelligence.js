@@ -1424,16 +1424,15 @@ function gapMedianPack(rows) {
  */
 async function queryStartupTimelines(
   database,
-  { countries = null, orgNames = [], studyNames = [] } = {}
+  { countries = null, orgNames = [], studyNames = [], includeLegacyYears = false } = {}
 ) {
   try {
     const { loadVeevaStartupGapRows } = require("./veevaLiveIntel");
     let rows = await loadVeevaStartupGapRows(database);
-    rows = rows.filter(
-      (r) =>
-        (r.activity_2023_plus !== false) &&
-        !r.outlier_gap_gt_730
-    );
+    rows = rows.filter((r) => !r.outlier_gap_gt_730);
+    if (!includeLegacyYears) {
+      rows = rows.filter((r) => r.activity_2023_plus !== false);
+    }
     const sourceUsed = "ora_veeva_milestone";
 
     let universe = rows;
@@ -1482,7 +1481,7 @@ async function queryStartupTimelines(
       }
     }
 
-    const topSitesByStartup = [...byOrg.values()]
+    const allSitesByStartup = [...byOrg.values()]
       .map((g) => {
         const contractToFsi = g.gaps
           .map((x) => x.contract_to_fsi)
@@ -1506,8 +1505,8 @@ async function queryStartupTimelines(
         const aa = a.contract_to_fsi_median ?? a.siv_to_fsi_median ?? 9999;
         const bb = b.contract_to_fsi_median ?? b.siv_to_fsi_median ?? 9999;
         return aa - bb;
-      })
-      .slice(0, 25);
+      });
+    const topSitesByStartup = allSitesByStartup.slice(0, 25);
 
     return {
       scope: "ora_veeva_milestone",
@@ -1522,6 +1521,7 @@ async function queryStartupTimelines(
       scopedToSites: scoped.length !== universe.length,
       gapMedians: gapMedianPack(scoped),
       topSitesByStartup,
+      allSitesByStartup,
       note:
         scoped.length > 0
           ? "Startup gap medians from live ora_veeva_milestone (Vault milestone__v). Excel Site Level packs not used."
@@ -1586,7 +1586,7 @@ async function getIntelligenceHealth(getDb) {
   let lensSlice = null;
   try {
     const { getLensHealthSlice } = require("./lensOps");
-    lensSlice = await getLensHealthSlice(getDb);
+    lensSlice = await getLensHealthSlice(getDb, { slim: true });
     if (lensSlice?.netsuite) {
       counts.lens_ns_projects = lensSlice.netsuite.projects;
     }
@@ -2986,7 +2986,7 @@ async function buildIntelligenceContext(getDb, opts = {}) {
 
     try {
       const { isSponsorNewsQuestion, buildSponsorNewsPack } = require("./sponsorNews");
-      if (isSponsorNewsQuestion(question) || /\b(news|headlines)\b/i.test(question)) {
+      if (isSponsorNewsQuestion(question)) {
         out.sponsorNews = await buildSponsorNewsPack(getDb, {
           sponsor: who || sponsor || clientName,
           clientName: who || clientName
@@ -3166,21 +3166,32 @@ async function buildSiteScorecard(getDb, opts = {}) {
 
   // Startup speed from live Veeva milestones (contract→FSI / SIV→FSI days)
   let startupByOrg = new Map();
+  const normOrg = (s) =>
+    String(s || "")
+      .toLowerCase()
+      .replace(/^otx-|^ocun-\d+\s*/i, "")
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim();
   try {
     const startup = await queryStartupTimelines(database, {
       countries,
-      orgNames: aggregates.map((a) => a.org_clean).filter(Boolean)
+      orgNames: aggregates.map((a) => a.org_clean).filter(Boolean),
+      // Scorecard needs history — 2023-only drops most Contract/SIV→FSI medians
+      includeLegacyYears: true
     });
-    for (const s of startup.topSitesByStartup || []) {
-      const k = `${String(s.organization || "").toLowerCase()}|${String(s.country || "").toLowerCase()}`;
-      startupByOrg.set(k, s);
-    }
-    // Also index org-only when country filter is global
-    if (!countries) {
-      for (const s of startup.topSitesByStartup || []) {
-        const orgKey = String(s.organization || "").toLowerCase();
-        if (!orgKey) continue;
-        if (!startupByOrg.has(`${orgKey}|`)) startupByOrg.set(`${orgKey}|`, s);
+    const startupRows = startup.allSitesByStartup || startup.topSitesByStartup || [];
+    for (const s of startupRows) {
+      const orgKey = String(s.organization || "").toLowerCase();
+      const orgNorm = normOrg(s.organization);
+      const ctryKey = String(s.country || "").toLowerCase();
+      if (!orgKey) continue;
+      startupByOrg.set(`${orgKey}|${ctryKey}`, s);
+      if (!startupByOrg.has(`${orgKey}|`)) startupByOrg.set(`${orgKey}|`, s);
+      if (orgNorm) {
+        if (!startupByOrg.has(`~${orgNorm}|${ctryKey}`)) {
+          startupByOrg.set(`~${orgNorm}|${ctryKey}`, s);
+        }
+        if (!startupByOrg.has(`~${orgNorm}|`)) startupByOrg.set(`~${orgNorm}|`, s);
       }
     }
   } catch (_) {
@@ -3188,10 +3199,14 @@ async function buildSiteScorecard(getDb, opts = {}) {
   }
 
   for (const a of aggregates) {
-    const k = `${String(a.org_clean || "").toLowerCase()}|${String(a.country || "").toLowerCase()}`;
+    const orgKey = String(a.org_clean || "").toLowerCase();
+    const orgNorm = normOrg(a.org_clean);
+    const ctryKey = String(a.country || "").toLowerCase();
     const hit =
-      startupByOrg.get(k) ||
-      startupByOrg.get(`${String(a.org_clean || "").toLowerCase()}|`);
+      startupByOrg.get(`${orgKey}|${ctryKey}`) ||
+      startupByOrg.get(`${orgKey}|`) ||
+      startupByOrg.get(`~${orgNorm}|${ctryKey}`) ||
+      startupByOrg.get(`~${orgNorm}|`);
     if (!hit) {
       a.contractToFsiMedian = null;
       a.sivToFsiMedian = null;
