@@ -1270,7 +1270,6 @@ app.http("dashboardBrief", {
             ? "scheduler_or_key"
             : `ui:${auth.user?.email || auth.user?.userId || "user"}`;
         const brief = await buildDashboardBrief(getDb, {
-          buildPortfolioContext,
           triggeredBy
         });
         let saved;
@@ -1283,7 +1282,6 @@ app.http("dashboardBrief", {
       }
 
       const brief = await getOrBuildDashboardBrief(getDb, {
-        buildPortfolioContext,
         triggeredBy: "get_or_build",
         refresh: false
       });

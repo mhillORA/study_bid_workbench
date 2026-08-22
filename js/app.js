@@ -737,18 +737,11 @@
           `${i + 1}. ${a.accountName || "—"} · ${a.openOppCount || 0} open · ${money(a.oraNetRevenue)}`
       )
       .join("\n");
-    const bidLines = (b.bidConcentration || [])
-      .slice(0, 8)
-      .map(
-        (c, i) =>
-          `${i + 1}. ${c.client || "—"} · ${c.studyCount || 0} studies · ${money(c.grandTotal)}`
-      )
-      .join("\n");
     return [
       "Produce an HTML leave-behind leadership visual for Ora Clinical's weekly commercial brief.",
       "Internal company briefing — clear, actionable, no fluff. Use navy #1f3a83 and Ora red #e32626.",
       "Title: Weekly Commercial Brief. Include week label and generated timestamp.",
-      "CRITICAL: Pipeline dollars = Total Ora Net Revenue only — never Amount/contract.",
+      "CRITICAL: Pipeline dollars = Total Ora Net Revenue only — never Amount/contract. Do not use uploaded bid workbook fees.",
       "",
       `Week: ${b.weekLabel || "—"}`,
       `Generated: ${b.generatedAt || "—"}`,
@@ -756,7 +749,7 @@
       "[[HEADLINES]]",
       `Open pipeline (Ora Net Revenue): ${money(h.openPipelineOraNet)} across ${h.openOppCount ?? "—"} open opportunities`,
       `Closed Won YTD ${h.closedWonYtdYear || ""}: ${money(h.closedWonYtdOraNet)} (${h.closedWonYtdCount ?? "—"} deals)`,
-      `Uploaded bid portfolio grand total: ${money(h.bidPortfolioGrandTotal)} (${h.bidStudyCount ?? "—"} studies)`,
+      `Veeva sites (feasibility): ${b.dataFreshness?.counts?.veevaSites ?? "—"} · studies ${b.dataFreshness?.counts?.veevaStudies ?? "—"}`,
       "",
       "[[CHASE THIS WEEK]]",
       chaseLines || "(none)",
@@ -770,11 +763,8 @@
       "[[TOP OPEN ACCOUNTS — SF]]",
       acctLines || "(none)",
       "",
-      "[[TOP CLIENTS BY UPLOADED BID FEES]]",
-      bidLines || "(none)",
-      "",
-      "Emit HTML_REPORT with: headline KPI strip, chase table, watch table, owner bar/table, concentration tables, and 3 short action bullets for BD this week.",
-      "Stay in chat — do not NAVIGATE. Use only the numbers above plus live Salesforce/portfolio context if present."
+      "Emit HTML_REPORT with: headline KPI strip, chase table, watch table, owner bar/table, SF concentration, feasibility data freshness, and 3 short action bullets for BD this week.",
+      "Stay in chat — do not NAVIGATE. Use only the numbers above plus live Salesforce/Veeva context if present. Do not cite uploaded bid portfolio totals."
     ].join("\n");
   }
 
@@ -1211,8 +1201,7 @@
     const top = visible.filter((s) => !s.navGroup);
     const budgetKids = budgetSectionsVisible();
     const budgetActive = isBudgetSection(state.sectionId);
-    // Stay collapsed by default; only open when the user expands Budget.
-    const open = Boolean(state.budgetNavOpen);
+    const open = Boolean(state.budgetNavOpen) || budgetActive;
     const budgetStatusDots = budgetKids
       .map((s) => state.study.sectionStatus[s.id])
       .filter(Boolean);
@@ -1228,11 +1217,13 @@
       : "";
 
     const budgetBlock = budgetKids.length
-      ? `<div class="nav-group ${open ? "open" : ""} ${budgetActive ? "has-active" : ""}">
+      ? `<div class="nav-group nav-group-secondary ${open ? "open" : ""} ${budgetActive ? "has-active" : ""}">
           <button type="button" class="nav-group-toggle ${budgetActive ? "active" : ""}" data-nav-group="budget" aria-expanded="${
             open ? "true" : "false"
           }">
-            <span class="nav-group-label">Budget</span>
+            <span class="nav-group-label">${escapeHtml(
+              (SBW.navGroups && SBW.navGroups.budget && SBW.navGroups.budget.label) || "Budget"
+            )}</span>
             <span class="nav-group-meta">${groupDot}<span class="nav-chevron" aria-hidden="true"></span></span>
           </button>
           <div class="nav-group-children"${open ? "" : " hidden"}>
@@ -2407,11 +2398,11 @@
     if (els.askInput && !els.askInput.matches(":focus")) {
       const wf = state.buddyWorkflow || "auto";
       els.askInput.placeholder =
-        wf === "budget"
-          ? "Ask Buddy about budget, portfolio fees, analysis…"
-          : wf === "feasibility"
-            ? "Ask Buddy about PSM, sites, TrialHub, reconcile docs…"
-            : "Ask Buddy… attach files (protocol, slides, template…)";
+        wf === "feasibility"
+          ? "Ask Buddy about PSM, sites, TrialHub, CT.gov, scorecard…"
+          : wf === "budget"
+            ? "Ask Buddy about budget, HLBP, uploaded fees…"
+            : "Ask Buddy about feasibility, sites, pipeline…";
     }
     paintBuddyModelLabel();
   }
@@ -5510,7 +5501,19 @@
       }
       await loadIntelligenceHealth();
     } catch (err) {
-      state.intelligence.sfSyncMessage = `Salesforce sync error: ${String(err)}`;
+      const msg = String(err?.message || err || "");
+      if (/Failed to fetch|NetworkError|Load failed|network/i.test(msg)) {
+        state.intelligence.sfSyncMessage =
+          "Browser dropped the long Salesforce call — checking whether the server finished…";
+        refreshDataStatusIfOpen();
+        await loadIntelligenceHealth();
+        const last = state.intelligence.sfSyncStatus?.sync?.lastSuccessfulSync;
+        state.intelligence.sfSyncMessage = last
+          ? `Crosswalk finished on the server (${last}). Browser timed out waiting for the response.`
+          : "Browser timed out. Refresh Data Status — if last sync is recent, it completed.";
+      } else {
+        state.intelligence.sfSyncMessage = `Salesforce sync error: ${msg}`;
+      }
     }
     state.intelligence.sfSyncBusy = false;
     refreshDataStatusIfOpen();
@@ -5530,18 +5533,37 @@
         const obj = objects[i];
         state.intelligence.sfTablesMessage = `Ingesting ${obj} (${i + 1}/${objects.length})…`;
         refreshDataStatusIfOpen();
-        const res = await intelligenceFaFetch("/api/salesforce/sync", {
-          requireExternal: true,
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            tables: true,
-            only: [obj],
-            // Crosswalk once after Account (needs Account rows); skip until last object otherwise
-            thenCrosswalk: obj === "Account" || i === objects.length - 1
-          })
-        });
-        const data = await res.json().catch(() => ({}));
+        let res;
+        let data = {};
+        try {
+          res = await intelligenceFaFetch("/api/salesforce/sync", {
+            requireExternal: true,
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              tables: true,
+              only: [obj],
+              thenCrosswalk: i === objects.length - 1
+            })
+          });
+          data = await res.json().catch(() => ({}));
+        } catch (fetchErr) {
+          const msg = String(fetchErr?.message || fetchErr || "");
+          if (/Failed to fetch|NetworkError|Load failed|network/i.test(msg)) {
+            await loadIntelligenceHealth();
+            const tables = state.intelligence.sfSyncStatus?.tables || {};
+            const row = (tables.tables || []).find(
+              (t) => String(t.sfObject || "").toLowerCase() === obj.toLowerCase()
+            );
+            bits.push(
+              `${obj}: browser timed out — Cosmos still has ${
+                typeof row?.count === "number" ? Number(row.count).toLocaleString() : "?"
+              } (server likely finished)`
+            );
+            continue;
+          }
+          throw fetchErr;
+        }
         if (res.status === 401) {
           state.intelligence.sfTablesMessage =
             data.error ||
@@ -5597,7 +5619,14 @@
       }
       await loadIntelligenceHealth();
     } catch (err) {
-      state.intelligence.sfTablesMessage = `SF tables sync error: ${String(err)}`;
+      const msg = String(err?.message || err || "");
+      if (/Failed to fetch|NetworkError|Load failed|network/i.test(msg)) {
+        state.intelligence.sfTablesMessage =
+          "Browser dropped a long SF ingest call. Refresh Data Status — Cosmos counts are the source of truth.";
+        await loadIntelligenceHealth();
+      } else {
+        state.intelligence.sfTablesMessage = `SF tables sync error: ${msg}`;
+      }
     }
     state.intelligence.sfTablesBusy = false;
     refreshDataStatusIfOpen();
@@ -8380,22 +8409,6 @@
           .join("")
       : `<tr><td colspan="3" class="muted">${loading ? "Loading…" : "—"}</td></tr>`;
 
-    const bidRows = (b?.bidConcentration || []).length
-      ? b.bidConcentration
-          .slice(0, 8)
-          .map(
-            (c) => `<tr>
-            <td>${escapeHtml(c.client || "—")}</td>
-            <td>${num(c.studyCount, 0)}</td>
-            <td>${money(c.grandTotal)}</td>
-            <td class="muted">${
-              c.pctOfGrandTotal != null ? `${Number(c.pctOfGrandTotal).toFixed(1)}%` : "—"
-            }</td>
-          </tr>`
-          )
-          .join("")
-      : `<tr><td colspan="4" class="muted">${loading ? "Loading…" : "—"}</td></tr>`;
-
     const df = b?.dataFreshness || {};
     const counts = df.counts || {};
 
@@ -8403,7 +8416,7 @@
       <div class="grid">
         <div class="card wide dash-hero">
           <h3>Weekly commercial brief</h3>
-          <p class="muted">Numbers waiting when you arrive — chase list, watch flags, owner coverage, and concentration. Built overnight after CT.gov / Veeva / Salesforce sync. Pipeline $ = <strong>Total Ora Net Revenue</strong> (not contract Amount).</p>
+          <p class="muted">Salesforce pipeline (Total Ora Net Revenue) plus feasibility data health. Budget workbooks stay under <strong>Budget (legacy)</strong> in the sidebar — not here.</p>
           <p class="muted" style="margin-top:0.35rem;">${escapeHtml(b?.weekLabel || "—")} · ${escapeHtml(
             state.dashboard.status || (loading ? "Loading…" : "—")
           )}${b?.error ? ` · ${escapeHtml(b.error)}` : ""}</p>
@@ -8416,9 +8429,9 @@
             <button type="button" class="btn btn-secondary" id="btnDashRefresh" ${
               loading ? "disabled" : ""
             }>${state.dashboard.refreshing ? "Refreshing…" : "Refresh brief"}</button>
+            <button type="button" class="btn btn-ghost" data-jump="scorecard">Site Scorecard</button>
             <button type="button" class="btn btn-ghost" data-jump="intelligence">Intelligence</button>
             <button type="button" class="btn btn-ghost" data-jump="data-status">Data Status</button>
-            <button type="button" class="btn btn-ghost" data-jump="ops">Ops Dashboard</button>
           </div>
         </div>
 
@@ -8437,12 +8450,14 @@
           }</p>
         </div>
         <div class="card">
-          <h3>Bid portfolio</h3>
-          <div class="stat">${money(h.bidPortfolioGrandTotal)}</div>
+          <h3>Ora sites (Veeva)</h3>
+          <div class="stat">${
+            counts.veevaSites != null ? Number(counts.veevaSites).toLocaleString() : loading ? "…" : "—"
+          }</div>
           <p class="muted">${
-            h.bidStudyCount != null
-              ? `${Number(h.bidStudyCount).toLocaleString()} uploaded studies`
-              : "Uploaded bid fees"
+            counts.veevaStudies != null
+              ? `${Number(counts.veevaStudies).toLocaleString()} studies`
+              : "Feasibility history"
           }</p>
         </div>
         <div class="card">
@@ -8489,18 +8504,9 @@
           </table>
         </div>
 
-        <div class="card wide" id="dash-concentration">
-          <h3>Uploaded bid concentration</h3>
-          <p class="muted">Ora bid fees by client (portfolio) — different source from Salesforce pipeline.</p>
-          <table class="table" style="margin-top:0.65rem;">
-            <thead><tr><th>Client</th><th>Studies</th><th>Grand total</th><th>Share</th></tr></thead>
-            <tbody>${bidRows}</tbody>
-          </table>
-        </div>
-
         <div class="card wide" id="dash-data">
-          <h3>Data ready for bids</h3>
-          <p class="muted">Nightly sync freshness — feasibility and pipeline numbers you can trust.</p>
+          <h3>Feasibility data health</h3>
+          <p class="muted">Nightly Veeva / Salesforce / CT.gov freshness — numbers you can take into a site conversation.</p>
           <table class="table" style="margin-top:0.65rem;">
             <thead><tr><th>Source</th><th>Last sync</th><th>Rows</th></tr></thead>
             <tbody>
@@ -8517,11 +8523,6 @@
               <tr><td>CT.gov</td><td>${escapeHtml(syncStamp(df.ctgov))}</td><td>${
                 counts.ctgovTrials != null
                   ? `${Number(counts.ctgovTrials).toLocaleString()} trials`
-                  : "—"
-              }</td></tr>
-              <tr><td>Bid portfolio</td><td class="muted">On upload</td><td>${
-                counts.bidStudies != null
-                  ? `${Number(counts.bidStudies).toLocaleString()} studies`
                   : "—"
               }</td></tr>
             </tbody>
@@ -8946,26 +8947,26 @@
       <div class="grid">
         <div class="card wide">
           <h3>Start here</h3>
-          <p class="muted">Built for BD and sales (pitch-ready feasibility), leadership (portfolio snapshots), and ops (workflow + data health). Open a study, query Intelligence, or ask Buddy.</p>
+          <p class="muted">Feasibility first: indication benchmarks, site slates, Salesforce pipeline, Veeva history. Budget builder stays under <strong>Budget (legacy)</strong> in the sidebar.</p>
           <div style="display:flex;gap:0.6rem;flex-wrap:wrap;margin-top:0.75rem;">
-            <button type="button" class="btn btn-primary" id="btnNewStudyHub">New study</button>
-            <button type="button" class="btn btn-primary" id="btnStartHlbpHub">New HLBP</button>
-            <button type="button" class="btn btn-secondary" data-jump="studies">Browse studies</button>
-            <button type="button" class="btn btn-secondary" data-jump="upload">Upload budgets</button>
+            <button type="button" class="btn btn-primary" data-jump="intelligence">Indication benchmark</button>
+            <button type="button" class="btn btn-primary" data-jump="scorecard">Site Scorecard</button>
+            <button type="button" class="btn btn-secondary" data-jump="dashboard">Dashboard</button>
+            <button type="button" class="btn btn-secondary" data-jump="data-status">Data Status</button>
           </div>
         </div>
         <div class="card wide">
           <h3>Sell, lead &amp; run</h3>
-          <p class="muted">Benchmarks and site slates for proposals · leadership rollups · ops workflow and data pulse.</p>
+          <p class="muted">Pitch-ready PSM and sites · SF chase list · data health. HLBP / upload remain under Budget (legacy).</p>
           <div style="display:flex;gap:0.6rem;flex-wrap:wrap;margin-top:0.75rem;">
             ${shortcuts}
             ${quickAsks}
           </div>
         </div>
         <div class="card">
-          <h3>Service fees</h3>
+          <h3>Open study — service fees</h3>
           <div class="stat">${money(state.results["summary.totalServiceFees"])}</div>
-          <p class="muted">Includes contingency + inflation</p>
+          <p class="muted">Only if a budget study is open</p>
         </div>
         <div class="card">
           <h3>Pass-throughs</h3>
@@ -8978,6 +8979,7 @@
         </div>
         <div class="card wide">
           <h3>Department status</h3>
+          <p class="muted">Shown when a budget study is open. Otherwise use Intelligence / Scorecard.</p>
           <table class="table">
             <thead><tr><th>Section</th><th>Dept</th><th>Status</th><th>Open request</th></tr></thead>
             <tbody>${rows}</tbody>

@@ -44,14 +44,16 @@ const PORTFOLIO_RULES =
   "If matchedStudyCount < databaseStudyCount, explain it ONLY from filters / note / filterError on context.portfolio — do not invent a reason. " +
   "ORA EARNED $ vs SPONSOR COMPANY $ vs SALESFORCE PIPELINE (critical): " +
   "When the user asks how many studies we've run with clients/sponsors AND/OR to rank them by revenue/fees/what we've made/made off them — " +
-  "use context.portfolio.byClient: studyCount + grandTotal (or serviceFees). That is Ora bid/service-fee dollars from uploaded budgets — NOT the sponsor's corporate revenue, CHF/USD billions, 10-K filings, or web market caps. " +
-  "Label clearly as Ora fees / bid totals. Sort by grandTotal (fallback serviceFees). Cite studiesWithMoneyCount when some clients lack money. " +
+  "use Salesforce Total Ora Net Revenue from context.intelligence.salesforceData (Closed Won / pipeline by account). " +
+  "Uploaded bid workbooks (context.portfolio.byClient grandTotal) are UNRELIABLE right now — do not use them for reporting, rankings, or Dashboard. " +
+  "NetSuite / RM are allowed when present in context; otherwise say those packs are not attached this turn. " +
+  "Do NOT use uploaded budgets as Ora earned $. " +
   "When the user asks about Salesforce / CRM / pipeline / opportunities / stages / amounts / Activity Requests / account owner / tier / Ora grouping — " +
   "use context.intelligence.salesforceData (and sponsorCrosswalk). SF revenue dollars = Total Ora Net Revenue (amount in the pack / pipelineSummary openAmountSum) — NEVER Amount/contract. " +
   "Do NOT substitute portfolio.byClient for CRM pipeline revenue/Stage. " +
   "If salesforceData.counts show rows > 0, you HAVE Salesforce data — lead with it for those asks. " +
   "Only use web company revenue when they explicitly ask for the sponsor's own company revenue, biggest pharma by market revenue, filings, or similar public facts. " +
-  "If context.moneyIntent is \"ora_earned\", you MUST use portfolio byClient and MUST NOT web-search sponsor corporate revenue. " +
+  "If context.moneyIntent is \"ora_earned\", you MUST use Salesforce Total Ora Net (salesforceData) — never uploaded bid portfolio — and MUST NOT web-search sponsor corporate revenue. " +
   "INGEST / UPLOAD DATES (critical): portfolio.studies[].importedAt = first ingest into Cosmos; updatedAt = last workbench save. " +
   "portfolio.recentlyIngested is newest-first for \"when did we ingest/upload/add\" asks. " +
   "cosmos.study.importedAt / updatedAt and cosmos.version.createdAt are the same for the open study. " +
@@ -107,9 +109,9 @@ const INTELLIGENCE_RULES = [
   "• Site Scorecard (Ora vs industry) → oraScore vs industryScore/Δ; otherOraStudies / oraStudiesActive = concurrent Ora load at that org beyond the indication filter; Deeper dive = recommended site slate for enrollment goals. Prefer medians; null ≠ 0.",
   "• BD/sales pitch asks (\"why Ora\", \"what do I tell the sponsor\", RFI bullets) → lead with Ora median vs industry, geography, top sites, competitive recruiting; end with 3 short talking points.",
   "• BD call prep / win themes / meeting prep → indicationBenchmark + sponsorCrosswalk (owner/tier) + competing recruitingSample + 3 talking points; emit HTML_REPORT when they ask for a leave-behind. Prefer open-study indication/client when the question does not name one.",
-  "• Leadership briefing / exec one-pager → context.portfolio (totals, byClient with pctOfGrandTotal, byYear, byIndication, highestBudgetStudies, recentlyIngested) + intelligence.inventory when present. Headline + n first.",
-  "• What's in the DB / Cosmos catalog / ingest freshness → portfolio.databaseStudyCount + recentlyIngested + intelligence.inventory (+ CT.gov sync time when present).",
-  "• Client concentration / who pays us the most → portfolio.byClient sorted by grandTotal with pctOfGrandTotal — Ora fees only (not Salesforce pipeline).",
+  "• Leadership briefing / exec one-pager → Salesforce pipeline (Total Ora Net) + Veeva/CT.gov freshness from intelligence — not uploaded bid portfolio.",
+  "• What's in the DB / Cosmos catalog / ingest freshness → intelligence.inventory + Data Status sync times (Veeva / SF / CT.gov). Do not treat portfolio.databaseStudyCount (uploaded budgets) as the live catalog.",
+  "• Client concentration / who pays us the most → Salesforce openAccounts / Closed Won by account (Total Ora Net). Uploaded bid files are not a reliable source until squared away.",
   "• Ops briefing (section status, fill requests, what to do next) → workingStudy.sectionStatus / requests / drivers; suggest NAVIGATE:ops or NAVIGATE:reviews.",
   "• Legacy recruitment board / anterior overview (no indication) → legacyAnterior trust + topByEnrolled / counts. If enrollmentIncluded or htmlTable present, list enrollment; never ask user to paste the table.",
   "• Sponsor already in SF? BD owner / tier / Ora grouping? → intelligence.sponsorCrosswalk (sf_owner, tier, ora_grouping). Crosswalk dashboard (no sponsor named) → intelligence.crosswalkOverview (totalCount, statusRank, tierRank, noSfMatchSample).",
@@ -121,7 +123,7 @@ const INTELLIGENCE_RULES = [
   "• TrialHub by indication → indicationBenchmark.trialhub.",
   "• Veeva / Ora history dashboard (no indication) → intelligence.veevaOverview (studyCount, siteCount, psmMedian, indicationRank, sampleStudies, topSites). If studyCount/siteCount > 0 you HAVE data.",
   "• Country-only site asks (no indication) → intelligence.countrySites.topSites — list sites even when site_psm is null.",
-  "• Budget dollars / uploaded bid portfolio → context.portfolio (not intelligence, not SF Amount).",
+  "• Budget dollars / uploaded bid portfolio → UNRELIABLE this sprint. Do not report from context.portfolio. Use Salesforce Total Ora Net, Veeva, TrialHub, CT.gov, NetSuite/RM if attached.",
   "• HLBP form asks → CREATE_STUDY with budgetType HLBP + sites country mix, NAVIGATE:hlbp, then APPLY missing fields as the user answers. Past-bid dollar comps may use context.pricingScenarios when present — label them as comparable past service fees, not 'the HLBP form'.",
   "• CT.gov dollars → only when pricingScenarios.ctgovDollars.available or intelligence.ctgov.dollarMentions.available. Those are rare free-text mentions (not CRO bids). If unavailable, say CT.gov has no structured bid costs — do not invent.",
   "• RFP / pricing numbers from past bids → context.pricingScenarios when present (comparable service-fee ranges scaled to N). Cite comparableCount. Not a formal quote.",
@@ -294,10 +296,10 @@ const WEB_SEARCH_RULES = [
   "• \"our therapeutic area\" / \"our TA\" = ophthalmology (eye) unless the user named another TA.",
   "• \"this year\" / \"highest company revenue\" = latest reported annual revenue from public filings; say the fiscal year.",
   "ORA PORTFOLIO MONEY OVERRIDE (critical): If the ask is about studies we've run with clients, rank clients by revenue/fees, how much we've made, or similar —",
-  "DO NOT web search. Answer from context.portfolio.byClient (studyCount + grandTotal/serviceFees). Never show CHF/USD corporate billions for that ask.",
+  "DO NOT web search. DO NOT use uploaded bid workbooks. Use Salesforce Total Ora Net Revenue (intelligence.salesforceData). Never show CHF/USD corporate billions for that ask.",
   "If context.moneyIntent is \"ora_earned\", web search for revenue is forbidden.",
   "Answer shape for public company revenue: [[h]]Answer[[/h]] then a ranked list; wrap each figure as [[i]]$44.3B[[/i]] with year; 3–8 names is enough.",
-  "Answer shape for Ora earned fees: [[h]]Clients by Ora fees[[/h]] then ranked lines: client — [[i]]$…[[/i]] fees — N studies (from portfolio).",
+  "Answer shape for Ora earned fees: [[h]]Clients by Salesforce Ora Net[[/h]] then ranked Closed Won / open accounts from salesforceData.",
   "Use Context JSON (portfolio / intelligence / crosswalk) to bias toward sponsors Ora actually sees, then fill gaps from the web only for public facts.",
   "For public figures, a short year/filing cue inline is enough — no Sources footer. Never invent revenue figures.",
   "Only ask a clarifying question if the ask is truly impossible without it AFTER you already delivered a best-effort ranked answer."
@@ -356,8 +358,8 @@ function systemPromptFor(context) {
     " To remember/learn a durable SME note from chat end with LEARN_CONTEXT:{\"dept\":\"bd\",\"category\":\"talking-points\",\"addition\":\"…\"}; user must click Save to Buddy context — do not claim it is stored until then." +
     " If context.sectionLocks shows another person on a tab, do not APPLY that tab — say who is editing it and that they must Save and Done first." +
     " To create a new study or HLBP from user-provided info end with CREATE_STUDY:{...json...} (set budgetType:\"HLBP\" and sites:[{country,coreSites}] for HLBP). On fillFollowUp the workbench creates it immediately." +
-    " For cross-study / all-studies / average / client / year questions: set answer from context.portfolio (averages + totals + byClient); cite matchedStudyCount; do not use openStudyInUi or workingStudy for those answers." +
-    " For when a study was ingested/uploaded/added: use portfolio.recentlyIngested or studies[].importedAt / updatedAt (or cosmos.study dates) — do not claim dates are unavailable if present." +
+    " For cross-study / all-studies / average / client / year questions: answer from Veeva (intelligence.veevaOverview / indicationBenchmark) and Salesforce (salesforceData). Do not use uploaded bid portfolio.byClient." +
+    " For when a study was ingested: prefer Veeva/SF/CT.gov sync stamps on Data Status — not budget upload importedAt." +
     " When context.studyComparison is present: summarize Left vs Right from that diff (fieldChanges first, then department/line-item deltas). Cite both study ids. If needIds, ask for two O-ids or two Studies-tab checkboxes." +
     " For feasibility / PSM / TrialHub / competing trials / site performance / NCT / ophthalmology landscape / startup timelines: answer from context.intelligence in chat. NAME the sites. Compute forecasts now; never ask permission to proceed. Never NAVIGATE:intelligence or NAVIGATE:scorecard for these asks." +
     " For legacy anterior-segment site trust / preferred sites / historical scheduled-screened-enrolled: use context.legacyAnterior when present." +
@@ -366,7 +368,7 @@ function systemPromptFor(context) {
     " Never print DB field names (fsi_trust, org_clean, site_psm, etc.) — use human labels. " +
     " Do not repeat the same closing offer/menu you already gave in this chat. " +
     " For public company revenue / news asks (not Ora earned fees): web-search now and answer — do not ask clarifying menus first. " +
-    " If context.moneyIntent is \"ora_earned\": rank context.portfolio.byClient by grandTotal/serviceFees + studyCount — never web-search sponsor corporate revenue. " +
+    " If context.moneyIntent is \"ora_earned\": rank Salesforce Closed Won / open accounts by Total Ora Net Revenue — never uploaded bid portfolio, never web-search sponsor corporate revenue. " +
     " When context.uploadedDocuments has file text OR ATTACHED DOCUMENTS appear in the user message: READ the files first, cite them by name, and do not pivot to a portfolio overview. " +
     " Never reply with null/(null)/empty/no answer.";
   const focus = context?.answerFocus;
@@ -408,7 +410,7 @@ function systemPromptFor(context) {
     focus === "compare"
       ? " CRITICAL: answerFocus=compare — use context.studyComparison / STUDY COMPARISON facts. Left vs Right by studyId. Do NOT use portfolio averages. If needIds, ask for two O-ids or two checkboxes on Studies."
       : focus === "portfolio"
-      ? " CRITICAL: answerFocus=portfolio — answer from context.portfolio (Cosmos DB) only; you may still use context.intelligence / context.legacyAnterior for feasibility if present AND workflow is not budget."
+      ? " CRITICAL: answerFocus=portfolio — uploaded bid files are unreliable. Use Salesforce Total Ora Net + Veeva/CT.gov/TrialHub. Do not quote portfolio.byClient grandTotal."
       : focus === "feasibility"
         ? " answerFocus=feasibility — prefer intelligence packs over portfolio dollars."
         : focus === "teach"
@@ -416,7 +418,7 @@ function systemPromptFor(context) {
           : " If the user asks about all studies or averages across studies, switch to context.portfolio even if a workingStudy is present.";
   const moneyNote =
     context?.moneyIntent === "ora_earned"
-      ? " CRITICAL: moneyIntent=ora_earned — use portfolio.byClient studyCount + grandTotal/serviceFees only. Forbidden: web company revenue, CHF/USD billions, 10-K filings."
+      ? " CRITICAL: moneyIntent=ora_earned — Salesforce Total Ora Net Revenue (salesforceData) only. Forbidden: uploaded bid portfolio.byClient, web company revenue, CHF/USD billions, 10-K filings."
       : context?.moneyIntent === "public_company"
         ? " moneyIntent=public_company — web-search sponsor/company revenue is OK."
         : "";
@@ -1117,7 +1119,7 @@ function formatPortfolioFactsBlock(context) {
     }
   }
   lines.push(
-    "RULE: Use these portfolio figures for leadership / fee rankings. Never say you lack client rankings when Top clients rows exist. Never web-search sponsor corporate revenue when moneyIntent=ora_earned."
+    "RULE: Uploaded bid portfolio figures are UNRELIABLE — do not use for leadership / fee rankings. Use Salesforce Total Ora Net + Veeva instead."
   );
   return lines.join("\n");
 }
@@ -2230,14 +2232,14 @@ async function askFoundryAgent({
     {
       role: "user",
       content:
-        `CRITICAL: If moneyIntent/context says ora_earned OR the ask is studies we've run with clients / rank by revenue we've made — use context.portfolio.byClient (studyCount + grandTotal/serviceFees). Do NOT web-search sponsor corporate revenue (no CHF/USD billions). ` +
+        `CRITICAL: If moneyIntent/context says ora_earned OR the ask is studies we've run with clients / rank by revenue we've made — use Salesforce Total Ora Net (salesforceData). Do NOT use uploaded bid portfolio.byClient. Do NOT web-search sponsor corporate revenue (no CHF/USD billions). ` +
         `If this ask is about public COMPANY revenue, biggest pharma, market size, or news — use web search NOW and answer with a ranked list. ` +
         `Default TA = ophthalmology; sponsor = biopharma/device trial sponsors (not payers). Do not ask clarifying menus first.\n\n` +
         `CRITICAL: If ATTACHED DOCUMENTS appear below, READ THEM. If ORA COSMOS FACTS appear below, USE THOSE NUMBERS — never invent PSM/enrollment/site stats. Say missing when Cosmos fields are null.\n` +
         (context?.cosmosReconciliation
           ? `CRITICAL: COSMOS RECONCILIATION — live Cosmos data IS in ORA COSMOS FACTS below when intelligenceAttached=true. Compare each document claim to those numbers. Never say you need an exported context pack or that Cosmos was not queried.\n\n`
           : "") +
-        `${system}\n\n---\nPriority: ATTACHED DOCUMENTS (protocol/template) → ORA COSMOS FACTS (performance numbers) → Context JSON portfolio for Ora fees → web for public company facts only.\n---\n\n` +
+        `${system}\n\n---\nPriority: ATTACHED DOCUMENTS (protocol/template) → ORA COSMOS FACTS (Veeva/SF/TrialHub/CT.gov) → Salesforce Total Ora Net for Ora $ → web for public company facts only. Never treat uploaded bid workbooks as reporting truth.\n---\n\n` +
         userBlock(question, context)
     }
   ];

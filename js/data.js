@@ -13,14 +13,14 @@ SBW.users = [
 SBW.sections = [
   { id: "hub", label: "Hub", department: null },
   { id: "dashboard", label: "Dashboard", department: null },
+  { id: "intelligence", label: "Ora Clinical Intelligence", department: null },
+  { id: "scorecard", label: "Site Scorecard", department: null },
   { id: "buddy", label: "Buddy", department: null },
+  { id: "data-status", label: "Data Status", department: null },
   { id: "ops", label: "Ops Dashboard", department: null },
+  { id: "buddy-context", label: "Buddy Context", department: null },
   { id: "studies", label: "Studies", department: null },
   { id: "versions", label: "Versions / Diff", department: null },
-  { id: "intelligence", label: "Ora Clinical Intelligence", department: null },
-  { id: "data-status", label: "Data Status", department: null },
-  { id: "scorecard", label: "Site Scorecard", department: null },
-  { id: "buddy-context", label: "Buddy Context", department: null },
   { id: "hlbp", label: "HLBP", department: null, navGroup: "budget" },
   { id: "overview", label: "Overview / Inputs", department: "Analyst", navGroup: "budget" },
   { id: "recruitment", label: "Recruitment", department: "Recruitment", navGroup: "budget" },
@@ -33,11 +33,11 @@ SBW.sections = [
   { id: "upload", label: "Upload budgets", department: "Analyst", navGroup: "budget" }
 ];
 
-/** Sidebar groups — budget categories collapse under one dropdown. */
+/** Sidebar groups — budget work stays available, collapsed at the bottom. */
 SBW.navGroups = {
   budget: {
     id: "budget",
-    label: "Budget",
+    label: "Budget (legacy)",
     defaultSection: "overview"
   }
 };
@@ -93,17 +93,12 @@ SBW.hlbpFields = {
     ]
   };
 
-/** Hub shortcuts — BD/sales, leadership, ops, HLBP. */
+/** Hub shortcuts — feasibility first; budget stays in the sidebar group. */
 SBW.bdShortcuts = [
   {
     id: "dashboard",
     title: "Dashboard",
-    blurb: "Weekly commercial brief — chase, watch, concentration"
-  },
-  {
-    id: "hlbp",
-    title: "New HLBP",
-    blurb: "High Level Ballpark form — patients, timelines, site country mix"
+    blurb: "Weekly commercial brief — chase, watch, SF pipeline"
   },
   {
     id: "intelligence",
@@ -113,27 +108,27 @@ SBW.bdShortcuts = [
   {
     id: "scorecard",
     title: "Site Scorecard",
-    blurb: "Rank sites and build a recommended slate"
+    blurb: "Rank sites, concurrent Ora load, recommended slate"
+  },
+  {
+    id: "data-status",
+    title: "Data Status",
+    blurb: "Veeva / Salesforce / CT.gov ingest"
   },
   {
     id: "ops",
     title: "Ops Dashboard",
-    blurb: "Workflow status, portfolio pulse, data health"
+    blurb: "Workflow status and data health"
   },
   {
-    id: "studies",
-    title: "Past bids",
-    blurb: "Open prior studies / fee history"
+    id: "hlbp",
+    title: "HLBP (budget)",
+    blurb: "High Level Ballpark form — still available under Budget"
   }
 ];
 
 /** Prefill Ask Buddy from Hub. */
 SBW.buddyQuickAsks = [
-  {
-    id: "hlbp",
-    label: "Start HLBP",
-    prompt: "I need a High Level Ballpark (HLBP). Open the form and guide me through the required fields including site country mix."
-  },
   {
     id: "pitch",
     label: "Draft pitch points",
@@ -141,22 +136,22 @@ SBW.buddyQuickAsks = [
       "For Dry Eye in the US, give me 3 short talking points comparing Ora median enrollment speed vs industry, plus geography and competitive recruiting. Proposal-ready."
   },
   {
-    id: "leadership",
-    label: "Leadership snapshot",
+    id: "sites",
+    label: "Site slate",
     prompt:
-      "Give me a leadership snapshot of our uploaded bid portfolio: study count, average enrolled subjects, top clients by count, and which studies have the highest budgets. Headline numbers first."
+      "Rank Ora sites for Dry Eye in the US. Include concurrent Ora studies at each org, startup speed if we have it, and a recommended slate with expected enrollment."
   },
   {
     id: "weekly-brief",
     label: "Weekly commercial brief",
     prompt:
-      "Produce an HTML leave-behind leadership visual for Ora's weekly commercial brief. Use live Salesforce Total Ora Net Revenue for open pipeline (never Amount/contract), uploaded bid portfolio concentration, chase list, watch/reassess flags, and owner coverage. Headline numbers first, then tables. Internal company briefing — clear and actionable."
+      "Produce an HTML leave-behind leadership visual for Ora's weekly commercial brief. Use live Salesforce Total Ora Net Revenue for open pipeline (never Amount/contract), chase list, watch/reassess flags, and owner coverage. Do not use uploaded bid workbook fees. Headline numbers first, then tables. Internal company briefing — clear and actionable."
   },
   {
     id: "ops",
-    label: "Ops briefing",
+    label: "Feasibility pulse",
     prompt:
-      "Ops briefing for the open study if one is selected: which departments are not started, in progress, ready for review, or approved; any open fill requests; key drivers (enrolled, sites, months). If no study is open, summarize portfolio study count and what I should check next on Reviews or Upload."
+      "Feasibility pulse: Veeva study/site counts, Salesforce pipeline (Total Ora Net Revenue), CT.gov last sync. Then what I should check next on Intelligence or Site Scorecard."
   }
 ];
 

@@ -266,9 +266,9 @@ function planGapFillTools({ context, question, huntReason }) {
 
   if (
     (context?.moneyIntent === "ora_earned" || context?.answerFocus === "portfolio") &&
-    (!context?.portfolio || context.portfolio.skipped || context.portfolio.error)
+    (!context?.intelligence?.salesforceData || context.intelligence.salesforceData.error)
   ) {
-    tools.push("query_portfolio");
+    tools.push("query_intelligence");
   }
 
   if (context?.moneyIntent === "public_company") {

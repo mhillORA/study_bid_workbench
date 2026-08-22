@@ -154,9 +154,10 @@ async function saveCachedBrief(getDb, brief) {
 }
 
 /**
- * Build a fresh weekly commercial brief from SF + bid portfolio + data freshness.
+ * Build a fresh weekly commercial brief from SF + Veeva/CT.gov freshness.
+ * Uploaded bid workbooks are intentionally excluded (budget builder is sidelined).
  * @param {Function} getDb
- * @param {{ buildPortfolioContext?: Function, triggeredBy?: string }} opts
+ * @param {{ triggeredBy?: string }} opts
  */
 async function buildDashboardBrief(getDb, opts = {}) {
   const started = Date.now();
@@ -170,22 +171,15 @@ async function buildDashboardBrief(getDb, opts = {}) {
     ok: false,
     error: String(err.message || err)
   }));
-  const portfolioPromise =
-    typeof opts.buildPortfolioContext === "function"
-      ? opts.buildPortfolioContext({ limit: 500 }).catch((err) => ({
-          error: String(err.message || err)
-        }))
-      : Promise.resolve(null);
   const openPromise = loadOpenOpportunities(getDb).catch((err) => {
     console.warn("[dashboardBrief] open opps", err.message || err);
     return [];
   });
 
   const database = getDb();
-  const [sf, health, portfolio, openOpps, veevaStamp] = await Promise.all([
+  const [sf, health, openOpps, veevaStamp] = await Promise.all([
     sfPromise,
     healthPromise,
-    portfolioPromise,
     openPromise,
     readSyncStamp(database, "veeva_tables")
   ]);
@@ -260,16 +254,6 @@ async function buildDashboardBrief(getDb, opts = {}) {
   const ytdYear = now.getUTCFullYear();
   const wonYtd = (ps.closedWonByYear || []).find((r) => Number(r.year) === ytdYear) || null;
 
-  const bidClients = (portfolio?.byClient || [])
-    .slice(0, 10)
-    .map((c) => ({
-      client: c.clientName || c.client || c.name,
-      studyCount: c.n || c.studyCount || 0,
-      grandTotal: moneyRound(c.grandTotal),
-      serviceFees: moneyRound(c.serviceFees),
-      pctOfGrandTotal: c.pctOfGrandTotal != null ? Number(c.pctOfGrandTotal) : null
-    }));
-
   const dataFreshness = {
     ctgov: health?.ctgov?.sync || null,
     salesforce: health?.salesforce?.sync || null,
@@ -279,8 +263,7 @@ async function buildDashboardBrief(getDb, opts = {}) {
       sfAccounts: health?.liveCounts?.ora_sf_account ?? null,
       veevaStudies: health?.liveCounts?.ora_veeva_study ?? null,
       veevaSites: health?.liveCounts?.ora_veeva_site ?? null,
-      ctgovTrials: health?.liveCounts?.ora_ctgov_trials ?? null,
-      bidStudies: portfolio?.matchedStudyCount ?? portfolio?.databaseStudyCount ?? null
+      ctgovTrials: health?.liveCounts?.ora_ctgov_trials ?? null
     },
     healthOk: health?.ok !== false && !health?.error
   };
@@ -291,8 +274,8 @@ async function buildDashboardBrief(getDb, opts = {}) {
     closedWonYtdOraNet: wonYtd ? moneyRound(wonYtd.amountSum) : null,
     closedWonYtdCount: wonYtd ? Number(wonYtd.n) : null,
     closedWonYtdYear: ytdYear,
-    bidPortfolioGrandTotal: moneyRound(portfolio?.totals?.grandTotal),
-    bidStudyCount: portfolio?.matchedStudyCount ?? portfolio?.databaseStudyCount ?? null,
+    veevaSiteCount: dataFreshness.counts.veevaSites,
+    veevaStudyCount: dataFreshness.counts.veevaStudies,
     revenueField: ps.revenueField || "Total_Ora_Net_Revenue__c",
     revenueFieldLabel: ps.revenueFieldLabel || "Total Ora Net Revenue"
   };
@@ -321,15 +304,15 @@ async function buildDashboardBrief(getDb, opts = {}) {
     },
     {
       id: "concentration",
-      title: "Client concentration",
-      blurb: "Top open accounts (SF) and top clients by uploaded bid fees (portfolio).",
-      count: Math.max(accounts.length, bidClients.length),
-      metric: accounts[0]?.oraNetRevenue ?? bidClients[0]?.grandTotal ?? 0
+      title: "Account concentration",
+      blurb: "Top open Salesforce accounts by Total Ora Net Revenue.",
+      count: accounts.length,
+      metric: accounts[0]?.oraNetRevenue ?? 0
     },
     {
       id: "data",
-      title: "Data ready for bids",
-      blurb: "Nightly CT.gov / Veeva / Salesforce freshness — feasibility and pipeline numbers you can trust.",
+      title: "Feasibility data health",
+      blurb: "Nightly CT.gov / Veeva / Salesforce freshness — site and pipeline numbers you can trust.",
       count: dataFreshness.healthOk ? 1 : 0,
       metric: dataFreshness.counts.veevaSites
     }
@@ -345,21 +328,13 @@ async function buildDashboardBrief(getDb, opts = {}) {
     attention: attention.slice(0, 20),
     owners,
     accounts,
-    bidConcentration: bidClients,
-    highestBudgetStudies: (portfolio?.highestBudgetStudies || []).slice(0, 6).map((s) => ({
-      studyId: s.studyId,
-      clientName: s.clientName,
-      grandTotal: moneyRound(s.grandTotal),
-      enrolledSubjects: s.enrolledSubjects
-    })),
     dataFreshness,
     loops,
     salesforceEmpty: Boolean(sf.empty),
     salesforceError: sf.error || null,
-    portfolioError: portfolio?.error || null,
     notes: [
       "Pipeline $ = Total Ora Net Revenue (Total_Ora_Net_Revenue__c), never Amount/contract.",
-      "Uploaded bid fees (portfolio) are a different source from Salesforce pipeline.",
+      "Dashboard does not use uploaded bid workbook fees.",
       "Brief is rebuilt after nightly intelligence sync and on Dashboard refresh.",
       "Use Produce leadership visual for a shareable HTML leave-behind."
     ],

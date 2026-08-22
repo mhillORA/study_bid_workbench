@@ -463,7 +463,7 @@ async function buildSalesforceBuddyContext(getDb, ops = {}) {
   const out = {
     source: "salesforce_cosmos",
     note:
-      "Live Salesforce mirrors in Cosmos (ora_sf_*). Opportunity dollars = Total Ora Net Revenue (Total_Ora_Net_Revenue__c) — never Amount/contract. Aggregates scan ALL opportunity rows. Prefer this pack for CRM/pipeline; portfolio.byClient is Ora bid fees only.",
+      "Live Salesforce mirrors in Cosmos (ora_sf_*). Opportunity dollars = Total Ora Net Revenue (Total_Ora_Net_Revenue__c) — never Amount/contract. Aggregates scan ALL opportunity rows. Prefer this pack for CRM/pipeline AND Ora earned-$ rankings. Uploaded bid portfolio.byClient is unreliable — do not use.",
     counts,
     query: { nameHint, clientName, intent },
     accounts: [],
@@ -718,7 +718,7 @@ async function buildSalesforceBuddyContext(getDb, ops = {}) {
     "CRITICAL: Opportunity dollars / revenue / pipeline $ = Total Ora Net Revenue (Total_Ora_Net_Revenue__c). NEVER use Amount (contract value) for SF revenue.",
     "CRITICAL: Never ask the user for a Salesforce CSV / export when counts > 0. Answer from this pack (openAccounts, filteredOpportunities, yearSlice, pipelineSummary).",
     "Open pipeline = pipelineSummary.openCount / openAccounts / opportunities where isOpen. Closed Won for a year = yearSlice when query.intent.year is set.",
-    "PRIORITY: CRM/pipeline/owner/tier/AR → this pack. portfolio.byClient = Ora uploaded bid fees only — different source.",
+    "PRIORITY: CRM/pipeline/owner/tier/AR and Ora earned $ → this pack (Total Ora Net). Uploaded bid portfolio.byClient is unreliable until squared away.",
     "If yearSlice.closedWonCount is 0 for the requested year, say so plainly (no CSV ask). Offer other years from closedWonByYear.",
     "For visuals/HTML_REPORT: use openAccounts, filteredOpportunities, ownerBreakdown, yearSlice — include Owner on every row.",
     "If counts are 0, tell the user to run Ingest SF + crosswalk on Data Status."
