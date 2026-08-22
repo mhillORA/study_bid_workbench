@@ -60,7 +60,9 @@ function parseRssItems(xml, limit = 8) {
 }
 
 async function fetchGoogleNews(sponsorName) {
-  const q = encodeURIComponent(`"${sponsorName}" (clinical OR trial OR FDA OR ophthalmology OR biotech)`);
+  const q = encodeURIComponent(
+    `"${sponsorName}" (clinical trial OR FDA OR phase OR ophthalmology OR enrollment OR partnership OR biotech)`
+  );
   const url = `https://news.google.com/rss/search?q=${q}&hl=en-US&gl=US&ceid=US:en`;
   const res = await fetch(url, {
     headers: { "User-Agent": "OraStudyBidWorkbench/1.0 (sponsor-news)" }
@@ -222,7 +224,8 @@ async function runSponsorNewsCrawl(getDb, opts = {}) {
 
   for (const sponsor of watchlist) {
     try {
-      const headlines = await fetchGoogleNews(sponsor.name);
+      const rawHeadlines = await fetchGoogleNews(sponsor.name);
+      const headlines = rawHeadlines.filter((h) => isHeadlineFresh(h.pubDate, now));
       const sponsorKey = slugKey(sponsor.name) || "unknown";
       const id = `news-${sponsorKey}`;
       await database.container(NEWS_CONTAINER).items.upsert({
@@ -327,13 +330,26 @@ async function getSponsorNewsStatus(getDb) {
   };
 }
 
-const BD_HEADLINE_BOOSTS = [
-  [/clinical\s+trial|phase\s+[123]|fda|nda|bla|approval|breakthrough/i, 3],
-  [/ophthalm|retina|glaucoma|dry\s*eye|macular|uveitis|cataract/i, 3],
-  [/partnership|collaborat|acqui|merger|funding|raise|invest/i, 2],
-  [/cro|enrollment|site|feasibility|sponsor/i, 2],
-  [/biotech|pharma|therapeutic|pipeline|drug/i, 1]
+const BD_HEADLINE_NOISE = [
+  /stock\s+(price|market|watch|alert|drop|surge)/i,
+  /earnings|quarterly results|q[1-4]\s+\d{4}/i,
+  /announces?\s+(date|time)\s+for\s+(its\s+)?(upcoming\s+)?(conference|webcast|call)/i,
+  /investor\s+(day|conference|webcast|presentation)/i,
+  /\b(director|executive|ceo|cfo|chairman)\s+(appointed|resign|retire|steps down)/i,
+  /sports|nba|nfl|celebrity|obituar/i
 ];
+
+const BD_HEADLINE_BOOSTS = [
+  [/\brfp\b|request for proposal|feasibility|site selection|cro selection|award(ed)?\s+(the\s+)?contract/i, 4],
+  [/clinical\s+trial|phase\s+[123]|first patient|topline|readout|enrollment/i, 3],
+  [/fda|nda|bla|approval|clearance|breakthrough/i, 3],
+  [/ophthalm|retina|glaucoma|dry\s*eye|macular|uveitis|cataract/i, 3],
+  [/partnership|collaborat|licens|acqui|merger|funding|raise|invest/i, 2],
+  [/cro|site|sponsor|biotech|pharma|therapeutic|pipeline|drug/i, 1]
+];
+
+/** Headlines older than this are dropped from feed + crawl storage. */
+const SPONSOR_NEWS_MAX_AGE_DAYS = 7;
 
 function parsePubDateMs(pubDate) {
   if (!pubDate) return null;
@@ -341,14 +357,66 @@ function parsePubDateMs(pubDate) {
   return Number.isFinite(t) ? t : null;
 }
 
-function scoreHeadline(title, source) {
+function headlineAgeDays(ts, nowMs = Date.now()) {
+  if (!ts) return null;
+  return (nowMs - ts) / 86400000;
+}
+
+function isHeadlineFresh(pubDate, crawledAt, nowMs = Date.now()) {
+  const ts = parsePubDateMs(pubDate) || parsePubDateMs(crawledAt);
+  if (!ts) return true;
+  const age = headlineAgeDays(ts, nowMs);
+  return age != null && age <= SPONSOR_NEWS_MAX_AGE_DAYS;
+}
+
+function scoreHeadline(title, source, pubDate) {
   const blob = `${String(title || "")} ${String(source || "")}`.toLowerCase();
+  if (BD_HEADLINE_NOISE.some((re) => re.test(blob))) return -99;
   let score = 0;
   for (const [re, w] of BD_HEADLINE_BOOSTS) {
     if (re.test(blob)) score += w;
   }
-  if (/stock price|share price|analyst rating|dividend|earnings per share/i.test(blob)) score -= 1;
+  const ts = parsePubDateMs(pubDate);
+  if (ts) {
+    const ageDays = (Date.now() - ts) / 86400000;
+    if (ageDays <= 30) score += 2;
+    else if (ageDays <= 90) score += 1;
+    else if (ageDays > 365) score -= 2;
+  }
   return score;
+}
+
+/** BD win move — one-line action to chase or win sponsor business. */
+function classifyHeadlineAction(title, source) {
+  const blob = `${String(title || "")} ${String(source || "")}`.toLowerCase();
+  if (/\brfp\b|request for proposal|bid\s+(process|deadline)|cro selection/i.test(blob)) {
+    return { tag: "RFP window", hint: "Move now — chase open SF opp or get BD to open one before deadline." };
+  }
+  if (/fda|nda|bla|approval|clearance|breakthrough/i.test(blob)) {
+    return {
+      tag: "Regulatory win",
+      hint: "Congratulate RA contact; pitch next-phase feasibility while they're in the news."
+    };
+  }
+  if (/phase [123]|clinical trial|enrollment|enrolled|recruiting|first patient/i.test(blob)) {
+    return {
+      tag: "Trial signal",
+      hint: "Check SF for open opps — offer site slate + enrollment acceleration to win the work."
+    };
+  }
+  if (/partnership|collaborat|licens|acqui|merger|co-?develop/i.test(blob)) {
+    return { tag: "Expansion", hint: "New programs likely — qualify RFP timing and decision-makers in SF." };
+  }
+  if (/funding|series [a-e]|investment|raised \$/i.test(blob)) {
+    return { tag: "New capital", hint: "Funded sponsors start trials — proactive outreach before the RFP lands." };
+  }
+  if (/ophthalm|retina|glaucoma|dry\s*eye|macular|uveitis|cataract/i.test(blob)) {
+    return { tag: "Ophthalmology", hint: "Lead with Ora specialty wins + models — ask for feasibility meeting." };
+  }
+  if (/pipeline|therapeutic|drug candidate|indication/i.test(blob)) {
+    return { tag: "Pipeline", hint: "Map headline to open SF opps — attach feasibility talking points." };
+  }
+  return { tag: "Account touch", hint: "Reference headline in outreach — ask what's next on their clinical pipeline." };
 }
 
 /** Strip publisher suffix from Google News titles for a readable one-line overview. */
@@ -373,6 +441,7 @@ function headlineOverview(title, source) {
  */
 async function buildTopSponsorNewsFeed(getDb, opts = {}) {
   const limit = Math.min(Number(opts.limit) || 12, 25);
+  const minScore = Number(opts.minScore) >= 0 ? Number(opts.minScore) : 2;
   const hint = String(opts.sponsor || opts.clientName || "").trim().toLowerCase();
   const database = getDb();
   try {
@@ -400,10 +469,14 @@ async function buildTopSponsorNewsFeed(getDb, opts = {}) {
     const flat = [];
     for (const row of rows) {
       for (const h of row.headlines || []) {
+        if (!isHeadlineFresh(h.pubDate, row.crawledAt)) continue;
         const ts =
           parsePubDateMs(h.pubDate) ||
           parsePubDateMs(row.crawledAt) ||
           0;
+        const score = scoreHeadline(h.title, h.source, h.pubDate);
+        if (score < minScore) continue;
+        const action = classifyHeadlineAction(h.title, h.source);
         flat.push({
           sponsorName: row.sponsorName,
           title: h.title,
@@ -413,7 +486,9 @@ async function buildTopSponsorNewsFeed(getDb, opts = {}) {
           source: h.source || null,
           crawledAt: row.crawledAt || null,
           sfAccountId: row.sfAccountId || null,
-          score: scoreHeadline(h.title, h.source),
+          score,
+          actionTag: action.tag,
+          actionHint: action.hint,
           ts
         });
       }
@@ -450,7 +525,7 @@ async function buildTopSponsorNewsFeed(getDb, opts = {}) {
       lastCrawledAt: lastCrawledAt ? new Date(lastCrawledAt).toISOString() : null,
       sync,
       note:
-        "Ranked Google News RSS headlines for watched SF sponsors (Closed Won priority + open-pipeline fill; ora_sponsor_news). Triage BD signal vs noise — not ZoomInfo."
+        `Actionable BD headlines only (score ≥ 2; last ${SPONSOR_NEWS_MAX_AGE_DAYS} days; stock/analyst noise dropped). Watched SF sponsors — Closed Won priority + open-pipeline fill.`
     };
   } catch (err) {
     return { error: String(err.message || err), empty: true };

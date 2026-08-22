@@ -13,14 +13,16 @@ SBW.users = [
 SBW.sections = [
   { id: "dashboard", label: "Dashboard", department: null },
   { id: "intelligence", label: "Ora Clinical Intelligence", department: null },
+  { id: "study-info", label: "Study Info", department: null },
   { id: "scorecard", label: "Site Scorecard", department: null },
   { id: "buddy", label: "Buddy", department: null },
   { id: "data-status", label: "Data Status", department: null },
   { id: "ops", label: "Ops Dashboard", department: null },
   { id: "buddy-context", label: "Buddy Context", department: null },
   { id: "studies", label: "Studies", department: null },
-  { id: "versions", label: "Versions / Diff", department: null },
   { id: "hlbp", label: "HLBP", department: null, navGroup: "budget" },
+  { id: "budget-studies", label: "Budget studies", department: null, navGroup: "budget" },
+  { id: "versions", label: "Versions / Diff", department: null, navGroup: "budget" },
   { id: "overview", label: "Overview / Inputs", department: "Analyst", navGroup: "budget" },
   { id: "recruitment", label: "Recruitment", department: "Recruitment", navGroup: "budget" },
   { id: "clinops", label: "ClinOps / SOE", department: "ClinOps", navGroup: "budget" },
@@ -101,8 +103,18 @@ SBW.bdShortcuts = [
   },
   {
     id: "intelligence",
-    title: "Indication benchmark",
-    blurb: "Ora vs industry PSM — for proposals and RFIs"
+    title: "Intelligence docs",
+    blurb: "Benchmark + Buddy HTML leave-behinds for BD"
+  },
+  {
+    id: "study-info",
+    title: "Study Info",
+    blurb: "Prior Ora timelines + sponsor news to win business"
+  },
+  {
+    id: "studies",
+    title: "Veeva studies",
+    blurb: "Ora operational studies — drill into milestones"
   },
   {
     id: "scorecard",
@@ -123,6 +135,34 @@ SBW.bdShortcuts = [
     id: "hlbp",
     title: "HLBP (budget)",
     blurb: "High Level Ballpark form — still available under Budget"
+  }
+];
+
+/** Intelligence tab — Buddy starters (uses current indication / geography when set). */
+SBW.intelDocStarters = [
+  {
+    id: "feasibility-brief",
+    label: "Feasibility brief",
+    prompt:
+      "For {indication} in {geo}, produce an HTML intelligence leave-behind: Ora median PSM vs industry (Cosmos), top Ora sites, competitive recruiting from CT.gov/TrialHub, and 3 BD talking points to win the study. Proposal-ready tone."
+  },
+  {
+    id: "pitch-one-pager",
+    label: "Pitch one-pager",
+    prompt:
+      "Draft an HTML one-pager for {indication} in {geo}: why Ora vs other CROs on enrollment speed, ophthalmology depth, and site network. Use live Cosmos numbers only — no bid workbook fees."
+  },
+  {
+    id: "site-slate-memo",
+    label: "Site slate memo",
+    prompt:
+      "HTML site slate memo for {indication} in {geo}: rank Ora sites by PSM, note concurrent Ora load and startup speed where we have it, recommend a slate with expected enrollment."
+  },
+  {
+    id: "sponsor-outreach",
+    label: "Sponsor outreach",
+    prompt:
+      "Draft a short sponsor outreach email for {indication} in {geo}: reference our Ora performance vs industry, one proof point from Cosmos, and a clear ask for a feasibility call. Professional BD tone."
   }
 ];
 

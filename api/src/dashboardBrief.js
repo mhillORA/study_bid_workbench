@@ -14,6 +14,8 @@ const { getYearlyGoalSettings, computeGoalProgress } = require("./commercialGoal
 
 const BRIEF_ID = "dashboard_weekly_brief";
 const ATTENTION_CLOSE_DAYS = 14;
+/** Chase only opps touched in Salesforce within this window (not year-old stagnant deals). */
+const CHASE_RECENT_ACTIVITY_DAYS = 90;
 
 function weekLabel(d = new Date()) {
   const day = d.getUTCDay();
@@ -31,6 +33,23 @@ function daysUntilClose(closeDate, now = new Date()) {
   const close = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
   const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
   return Math.round((close - today) / 86400000);
+}
+
+function parseSfDateMs(value) {
+  if (!value) return null;
+  const t = Date.parse(String(value));
+  return Number.isFinite(t) ? t : null;
+}
+
+function daysSinceSfActivity(lastModifiedDate, createdDate, now = new Date()) {
+  const ms = parseSfDateMs(lastModifiedDate) || parseSfDateMs(createdDate);
+  if (!ms) return null;
+  return Math.floor((now.getTime() - ms) / 86400000);
+}
+
+function hasRecentSalesforceActivity(o, now = new Date()) {
+  const days = daysSinceSfActivity(o.lastModifiedDate, o.createdDate, now);
+  return days != null && days <= CHASE_RECENT_ACTIVITY_DAYS;
 }
 
 function moneyRound(n) {
@@ -81,7 +100,7 @@ async function loadOpenOpportunities(getDb) {
   const rows = await queryAll(
     database.container("ora_sf_opportunity"),
     `SELECT c.id, c.Name, c.StageName, c.Amount, c.Total_Ora_Net_Revenue__c, c.CloseDate,
-            c.AccountId, c.OwnerName, c.IsClosed, c.IsWon
+            c.AccountId, c.OwnerName, c.IsClosed, c.IsWon, c.LastModifiedDate, c.CreatedDate
      FROM c WHERE c.docType = @t`,
     [{ name: "@t", value: "ora_sf_opportunity" }]
   );
@@ -106,7 +125,9 @@ async function loadOpenOpportunities(getDb) {
     accountId: o.AccountId || null,
     accountName: (o.AccountId && nameById.get(o.AccountId)) || null,
     amount: pickRevenue(o),
-    closeDate: o.CloseDate || null
+    closeDate: o.CloseDate || null,
+    lastModifiedDate: o.LastModifiedDate || null,
+    createdDate: o.CreatedDate || null
   }));
 }
 
@@ -186,10 +207,12 @@ async function buildDashboardBrief(getDb, opts = {}) {
   ]);
 
   const chase = [...openOpps]
+    .filter((o) => hasRecentSalesforceActivity(o, now))
     .sort((a, b) => moneyRound(b.amount) - moneyRound(a.amount))
     .slice(0, 12)
     .map((o) => {
       const days = daysUntilClose(o.closeDate, now);
+      const activityDays = daysSinceSfActivity(o.lastModifiedDate, o.createdDate, now);
       return {
         id: o.id,
         name: o.name,
@@ -198,7 +221,9 @@ async function buildDashboardBrief(getDb, opts = {}) {
         owner: o.owner || null,
         oraNetRevenue: moneyRound(o.amount),
         closeDate: o.closeDate || null,
-        daysToClose: days
+        daysToClose: days,
+        daysSinceActivity: activityDays,
+        lastModifiedDate: o.lastModifiedDate || null
       };
     });
 
@@ -288,7 +313,8 @@ async function buildDashboardBrief(getDb, opts = {}) {
           goalOraNet: goalSettings.goalOraNet,
           year: goalSettings.year || ytdYear,
           closedWonYtdOraNet: headline.closedWonYtdOraNet,
-          openOpportunities: openOpps
+          openOpportunities: openOpps,
+          now
         })
       : null;
 
@@ -296,7 +322,7 @@ async function buildDashboardBrief(getDb, opts = {}) {
     {
       id: "chase",
       title: "Chase this week",
-      blurb: "Highest open Ora Net Revenue opportunities — protect BD time here first.",
+      blurb: `Open opps with Salesforce activity in the last ${CHASE_RECENT_ACTIVITY_DAYS} days — ranked by Ora Net $.`,
       count: chase.length,
       metric: headline.openPipelineOraNet
     },

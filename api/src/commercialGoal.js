@@ -15,6 +15,28 @@ function round1(n) {
   return Number.isFinite(x) ? Math.round(x * 10) / 10 : null;
 }
 
+function parseCloseDateYmd(closeDate) {
+  if (!closeDate) return null;
+  const s = String(closeDate).slice(0, 10);
+  const m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return null;
+  return { year: Number(m[1]), ymd: s };
+}
+
+function daysUntilClose(closeDate, now = new Date()) {
+  const p = parseCloseDateYmd(closeDate);
+  if (!p) return null;
+  const close = Date.UTC(p.year, Number(p.ymd.slice(5, 7)) - 1, Number(p.ymd.slice(8, 10)));
+  const today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+  return Math.round((close - today) / 86400000);
+}
+
+function isCloseDateInCalendarYear(closeDate, year) {
+  const p = parseCloseDateYmd(closeDate);
+  if (!p) return false;
+  return p.year === Number(year);
+}
+
 async function ensureSyncState(database) {
   await database.containers.createIfNotExists({
     id: "syncState",
@@ -83,7 +105,8 @@ function computeGoalProgress(params = {}) {
   const goalOraNet = moneyRound(params.goalOraNet);
   if (!(goalOraNet > 0)) return null;
 
-  const year = Number(params.year) || new Date().getUTCFullYear();
+  const now = params.now instanceof Date ? params.now : new Date();
+  const year = Number(params.year) || now.getUTCFullYear();
   const closedWonYtdOraNet = moneyRound(params.closedWonYtdOraNet ?? 0);
   const gapRemaining = Math.max(0, goalOraNet - closedWonYtdOraNet);
   const percentToGoal = round1(Math.min(999.9, (closedWonYtdOraNet / goalOraNet) * 100));
@@ -99,15 +122,37 @@ function computeGoalProgress(params = {}) {
       oraNetRevenue: moneyRound(o.amount ?? o.oraNetRevenue),
       closeDate: o.closeDate || null
     }))
-    .filter((o) => o.oraNetRevenue > 0)
-    .sort((a, b) => b.oraNetRevenue - a.oraNetRevenue);
+    .filter((o) => o.oraNetRevenue > 0);
+
+  const calendarYearOpen = open
+    .filter((o) => isCloseDateInCalendarYear(o.closeDate, year))
+    .map((o) => {
+      const daysToClose = daysUntilClose(o.closeDate, now);
+      return {
+        ...o,
+        daysToClose,
+        closeDatePast: daysToClose != null && daysToClose < 0
+      };
+    })
+    .sort((a, b) => {
+      if (a.closeDatePast !== b.closeDatePast) return a.closeDatePast ? -1 : 1;
+      if (a.closeDatePast && b.closeDatePast && a.daysToClose !== b.daysToClose) {
+        return a.daysToClose - b.daysToClose;
+      }
+      return b.oraNetRevenue - a.oraNetRevenue;
+    });
 
   const openPipelineOraNet = open.reduce((s, o) => s + o.oraNetRevenue, 0);
+  const calendarYearPipelineOraNet = calendarYearOpen.reduce((s, o) => s + o.oraNetRevenue, 0);
+  const projectedEoyOraNet = closedWonYtdOraNet + calendarYearPipelineOraNet;
+  const projectedPercentToGoal = round1(Math.min(999.9, (projectedEoyOraNet / goalOraNet) * 100));
+  const projectedGapRemaining = Math.max(0, goalOraNet - projectedEoyOraNet);
+  const projectedCoversGoal = projectedEoyOraNet >= goalOraNet;
 
   const suggestedWins = [];
   let suggestedTotal = 0;
   if (!atGoal) {
-    for (const o of open) {
+    for (const o of calendarYearOpen) {
       suggestedWins.push(o);
       suggestedTotal += o.oraNetRevenue;
       if (suggestedTotal >= gapRemaining) break;
@@ -115,7 +160,9 @@ function computeGoalProgress(params = {}) {
   }
 
   const avgOpen =
-    open.length > 0 ? moneyRound(openPipelineOraNet / open.length) : null;
+    calendarYearOpen.length > 0
+      ? moneyRound(calendarYearPipelineOraNet / calendarYearOpen.length)
+      : null;
   const oppsNeededEstimate =
     !atGoal && avgOpen > 0 ? Math.ceil(gapRemaining / avgOpen) : atGoal ? 0 : null;
 
@@ -128,6 +175,13 @@ function computeGoalProgress(params = {}) {
     atGoal,
     openPipelineOraNet,
     openOppCount: open.length,
+    calendarYearOpenCount: calendarYearOpen.length,
+    calendarYearPipelineOraNet,
+    projectedEoyOraNet,
+    projectedPercentToGoal,
+    projectedGapRemaining,
+    projectedCoversGoal,
+    closeDateFilter: { year, from: `${year}-01-01`, through: `${year}-12-31` },
     suggestedWins,
     suggestedWinsCount: suggestedWins.length,
     suggestedWinsTotal: suggestedTotal,
@@ -138,9 +192,9 @@ function computeGoalProgress(params = {}) {
     note: atGoal
       ? `Closed Won YTD ${year} meets or exceeds the yearly goal.`
       : suggestedWins.length
-        ? `If the top ${suggestedWins.length} open opportunit${suggestedWins.length === 1 ? "y" : "ies"} below close, you cover the remaining $${gapRemaining.toLocaleString()} gap (greedy by Ora Net $).`
+        ? `If the top ${suggestedWins.length} open opportunit${suggestedWins.length === 1 ? "y" : "ies"} with a ${year} close date close, you cover the remaining $${gapRemaining.toLocaleString()} gap. Projected EOY (won + all ${year}-dated open pipeline): $${projectedEoyOraNet.toLocaleString()} (${projectedPercentToGoal}% of goal).`
         : gapRemaining > 0
-          ? "No open opportunities with Ora Net Revenue — ingest SF or add pipeline to model path to goal."
+          ? `No open opportunities with Ora Net Revenue and a close date in calendar year ${year} — ingest SF or update close dates.`
           : null
   };
 }
@@ -195,5 +249,7 @@ module.exports = {
   getYearlyGoalSettings,
   saveYearlyGoal,
   computeGoalProgress,
-  buildYearlyGoalPack
+  buildYearlyGoalPack,
+  daysUntilClose,
+  isCloseDateInCalendarYear
 };

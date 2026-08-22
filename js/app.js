@@ -83,6 +83,16 @@
       studyMilestonesLoading: false,
       studyMilestonesStatus: "",
       studyMilestoneStudy: "",
+      veevaStudies: {
+        list: null,
+        loading: false,
+        status: "",
+        filter: "",
+        truncated: false,
+        selectedId: null,
+        detail: null,
+        detailLoading: false
+      },
       yearlyGoal: null,
       yearlyGoalLoading: false,
       yearlyGoalSaving: false,
@@ -644,7 +654,7 @@
         if (document.querySelector(".lock-bar")) render();
       });
     }
-    if (sectionId === "versions" || sectionId === "studies") {
+    if (sectionId === "versions" || sectionId === "budget-studies") {
       ensureStudiesLoaded().then(() => {
         if (sectionId === "versions") {
           hydrateBudgetCompareDefaults();
@@ -654,6 +664,9 @@
     }
     if (sectionId === "intelligence") {
       ensureIntelligenceLoaded();
+    }
+    if (sectionId === "study-info") {
+      ensureStudyInfoLoaded();
     }
     if (sectionId === "data-status") {
       ensureIntelligenceLoaded();
@@ -1512,7 +1525,8 @@
       "home"
     ],
     buddy: ["buddy", "ask buddy", "ask", "chat", "talk to buddy"],
-    studies: ["studies", "study list"],
+    studies: ["studies", "study list", "veeva studies", "ora studies"],
+    "budget-studies": ["budget studies", "budget files", "cosmos studies", "bid studies"],
     versions: ["versions", "diff", "versions / diff"],
     intelligence: [
       "intelligence",
@@ -1520,7 +1534,16 @@
       "clinical intelligence",
       "feasibility",
       "trialhub",
-      "psm"
+      "psm",
+      "intelligence doc",
+      "leave-behind"
+    ],
+    "study-info": [
+      "study info",
+      "study timelines",
+      "milestones",
+      "sponsor news",
+      "study milestone"
     ],
     "data-status": [
       "data status",
@@ -3994,7 +4017,7 @@
     state.editingSectionId = null;
     state.lockStatus = "";
     if (state.sectionId === "overview" || state.sectionId === "recruitment" || state.sectionId === "clinops" || state.sectionId === "monitoring" || state.sectionId === "smo" || state.sectionId === "summary" || state.sectionId === "formulas" || state.sectionId === "reviews" || state.sectionId === "hlbp") {
-      state.sectionId = "studies";
+      state.sectionId = "budget-studies";
     }
     markSaved();
     if (els.saveStatus) {
@@ -5231,9 +5254,6 @@
     if (!state.intelligence.health && !state.intelligence.loading) {
       tasks.push(loadIntelligenceHealth());
     }
-    if (!state.intelligence.sponsorNewsFeed && !state.intelligence.sponsorNewsFeedLoading) {
-      tasks.push(loadSponsorNewsFeed());
-    }
     if (
       state.sectionId === "data-status" &&
       !state.intelligence.yearlyGoal &&
@@ -5242,6 +5262,50 @@
       tasks.push(loadYearlyGoal());
     }
     if (tasks.length) await Promise.all(tasks);
+  }
+
+  async function ensureStudyInfoLoaded() {
+    const tasks = [];
+    if (!state.intelligence.sponsorNewsFeed && !state.intelligence.sponsorNewsFeedLoading) {
+      tasks.push(loadSponsorNewsFeed());
+    }
+    if (tasks.length) await Promise.all(tasks);
+  }
+
+  function intelDocGeoLabel() {
+    if (state.intelligence.globalRegion) return "Global";
+    const countries =
+      state.intelligence.pack?.query?.countries ||
+      state.intelligence.countries ||
+      [];
+    return countries.length ? countries.join(", ") : "all geographies";
+  }
+
+  function buildIntelDocPrompt(template) {
+    const ind = String(state.intelligence.indication || "").trim() || "this indication";
+    return String(template || "")
+      .replace(/\{indication\}/g, ind)
+      .replace(/\{geo\}/g, intelDocGeoLabel());
+  }
+
+  function renderIntelDocStartersCard() {
+    const starters = SBW.intelDocStarters || [];
+    const ind = escapeHtml(state.intelligence.indication || "—");
+    const geo = escapeHtml(intelDocGeoLabel());
+    const buttons = starters
+      .map(
+        (s) =>
+          `<button type="button" class="btn btn-secondary" data-intel-doc="${escapeAttr(
+            s.id
+          )}" title="${escapeAttr(buildIntelDocPrompt(s.prompt))}">${escapeHtml(s.label)}</button>`
+      )
+      .join("");
+    return `<div class="card wide">
+      <h3>Create intelligence docs</h3>
+      <p class="muted">Buddy builds HTML leave-behinds beside the chat. Set indication and geography below first, then pick a starter — or ask Buddy to refine the draft.</p>
+      <p class="muted" style="margin-top:0.35rem;">Current scope: <strong>${ind}</strong> · ${geo}</p>
+      <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.85rem;">${buttons}</div>
+    </div>`;
   }
 
   async function loadYearlyGoal() {
@@ -5319,44 +5383,15 @@
     let progressBlock = "";
     if (progress) {
       const pct = progress.percentToGoal != null ? `${progress.percentToGoal}%` : "—";
-      const wins = progress.suggestedWins || [];
-      const winRows = wins.length
-        ? wins
-            .map(
-              (o, i) =>
-                `<tr><td>${i + 1}</td><td>${escapeHtml(o.name || "—")}</td><td>${escapeHtml(
-                  o.accountName || "—"
-                )}</td><td>${escapeHtml(o.stage || "—")}</td><td>${money(
-                  o.oraNetRevenue
-                )}</td><td>${escapeHtml(o.closeDate || "—")}</td></tr>`
-            )
-            .join("")
-        : `<tr><td colspan="6" class="muted">No open opps with Ora Net Revenue in SF.</td></tr>`;
       progressBlock = `
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:0.75rem;margin-top:1rem;">
           <div><div class="stat">${pct}</div><p class="muted">% to goal · ${year}</p></div>
           <div><div class="stat">${money(progress.closedWonYtdOraNet)}</div><p class="muted">Closed Won YTD</p></div>
           <div><div class="stat">${money(progress.gapRemaining)}</div><p class="muted">Gap remaining</p></div>
-          <div><div class="stat">${money(progress.openPipelineOraNet)}</div><p class="muted">Open pipeline</p></div>
         </div>
-        <p class="muted" style="margin-top:0.75rem;">${escapeHtml(progress.note || "")}${
-          progress.estimatedOppsToClose != null && !progress.atGoal
-            ? ` · ~${progress.estimatedOppsToClose} avg-sized wins to close the gap.`
-            : ""
-        }</p>
-        ${
-          !progress.atGoal
-            ? `<h4 style="margin:1rem 0 0.35rem;font-size:0.95rem;">Suggested wins to hit goal (${intelStatNum(
-                progress.suggestedWinsCount
-              )} opps · ${money(progress.suggestedWinsTotal)} Ora Net)</h4>
-               <div style="overflow:auto;"><table class="table">
-                 <thead><tr><th>#</th><th>Opportunity</th><th>Account</th><th>Stage</th><th>Ora Net $</th><th>Close</th></tr></thead>
-                 <tbody>${winRows}</tbody>
-               </table></div>`
-            : `<p class="muted" style="margin-top:0.75rem;"><strong>At goal</strong> for ${year} Closed Won YTD.</p>`
-        }`;
+        <p class="muted" style="margin-top:0.75rem;">Set the target here — chase list, suggested wins, and projected EOY live on the <strong>Dashboard</strong>.</p>`;
     } else if (!loading) {
-      progressBlock = `<p class="muted" style="margin-top:0.75rem;">Set a yearly goal to see % to goal and which open opportunities to chase.</p>`;
+      progressBlock = `<p class="muted" style="margin-top:0.75rem;">Set a yearly goal to track % to goal on the Dashboard.</p>`;
     }
 
     return `<div class="card wide">
@@ -5384,7 +5419,7 @@
   async function loadSponsorNewsFeed() {
     state.intelligence.sponsorNewsFeedLoading = true;
     state.intelligence.sponsorNewsFeedStatus = "";
-    if (state.sectionId === "intelligence") render();
+    if (state.sectionId === "study-info") render();
     try {
       const res = await fetch(apiUrl("/api/sponsor-news/feed?limit=12"));
       const data = await res.json().catch(() => ({}));
@@ -5400,13 +5435,13 @@
       state.intelligence.sponsorNewsFeedStatus = String(err.message || err);
     }
     state.intelligence.sponsorNewsFeedLoading = false;
-    if (state.sectionId === "intelligence") render();
+    if (state.sectionId === "study-info") render();
   }
 
   async function loadStudyMilestones() {
     state.intelligence.studyMilestonesLoading = true;
     state.intelligence.studyMilestonesStatus = "Loading study timelines…";
-    if (state.sectionId === "intelligence") render();
+    if (state.sectionId === "study-info") render();
     try {
       const params = new URLSearchParams({ limit: "20" });
       const ind = String(state.intelligence.indication || "").trim();
@@ -5429,7 +5464,7 @@
       state.intelligence.studyMilestonesStatus = String(err.message || err);
     }
     state.intelligence.studyMilestonesLoading = false;
-    if (state.sectionId === "intelligence") render();
+    if (state.sectionId === "study-info") render();
   }
 
   function renderStudyMilestonesCard() {
@@ -5437,8 +5472,13 @@
     const loading = state.intelligence.studyMilestonesLoading;
     const status = state.intelligence.studyMilestonesStatus;
     const studyQ = escapeAttr(state.intelligence.studyMilestoneStudy || "");
+    const indQ = escapeAttr(state.intelligence.indication || "");
 
     const filterRow = `<div class="benchmark-filter-grid" style="margin-top:0.75rem;">
+      <div class="benchmark-filter-field">
+        <label class="field-label" for="studyInfoIndication">Indication (optional)</label>
+        <input id="studyInfoIndication" class="input" placeholder="e.g. Dry Eye" value="${indQ}" />
+      </div>
       <div class="benchmark-filter-field">
         <label class="field-label" for="studyMilestoneSearch">Study filter (optional)</label>
         <input id="studyMilestoneSearch" class="input" placeholder="Study number or name" value="${studyQ}" />
@@ -5463,7 +5503,7 @@
         <p class="muted">Prior Ora studies — days between major study-level Veeva milestones (SOW → FSI → LSI → DBL → CSR → close). Uses the same canonical step order as Insights RM.</p>
         ${filterRow}
         <p class="muted" style="margin-top:0.75rem;">${
-          status ? escapeHtml(status) : "Pick an indication above (or leave blank for all studies), then Load timelines."
+          status ? escapeHtml(status) : "Filter by indication and/or study, then Load timelines."
         }</p>
       </div>`;
     }
@@ -5539,57 +5579,66 @@
     const metaBits = [
       lastCrawled ? `Last crawl ${lastCrawled}` : null,
       sync?.watchlistSize != null ? `${sync.watchlistSize} sponsors watched` : null,
-      feed?.headlineCount != null ? `${feed.headlineCount} headlines indexed` : null
+      feed?.headlineCount != null ? `${feed.headlineCount} ranked` : null
     ].filter(Boolean);
 
+    const header = `<div class="sponsor-news-head" style="display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;flex-wrap:wrap;">
+      <div>
+        <h3 style="margin:0;">Sponsor news — win moves</h3>
+        <p class="muted" style="margin:0.35rem 0 0;">Ranked headlines for SF sponsors we can win. Each row is a concrete BD action — not generic monitoring. Crawl on <strong>Data Status</strong>.</p>
+        ${
+          metaBits.length
+            ? `<p class="muted" style="margin:0.35rem 0 0;font-size:0.85rem;">${escapeHtml(metaBits.join(" · "))}</p>`
+            : ""
+        }
+      </div>
+      <button type="button" class="btn btn-secondary" id="btnRefreshSponsorNews" ${
+        loading ? "disabled" : ""
+      }>${loading ? "Loading…" : "Refresh"}</button>
+    </div>`;
+
     if (loading && !feed) {
-      return `<div class="card wide"><h3>Sponsor news</h3><p class="muted">Loading headlines…</p></div>`;
+      return `<div class="card wide">${header}<p class="muted" style="margin-top:0.75rem;">Loading headlines…</p></div>`;
     }
 
     const headlines = feed?.headlines || [];
     if (!headlines.length) {
-      return `<div class="card wide">
-        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;flex-wrap:wrap;">
-          <div>
-            <h3 style="margin:0;">Sponsor news</h3>
-            <p class="muted" style="margin:0.35rem 0 0;">Google News RSS for Closed Won SF sponsors (priority) plus open-pipeline accounts. Run <strong>Crawl sponsor news</strong> on Data Status after Ingest SF.</p>
-          </div>
-          <button type="button" class="btn btn-secondary" id="btnRefreshSponsorNews">Refresh</button>
-        </div>
-        <p class="muted" style="margin-top:0.75rem;">${
-          status ? escapeHtml(status) : "No headlines yet — crawl sponsor news to populate ora_sponsor_news."
-        }</p>
-      </div>`;
+      return `<div class="card wide">${header}<p class="muted" style="margin-top:0.75rem;">${
+        status ? escapeHtml(status) : "No headlines yet — run Crawl sponsor news on Data Status."
+      }</p></div>`;
     }
 
-    const items = headlines
+    const rows = headlines
       .map((h) => {
         const overview = escapeHtml(h.overview || h.title || "—");
         const sponsor = escapeHtml(h.sponsorName || "—");
-        const pub = h.pubDate ? `<span class="muted" style="font-size:0.85rem;"> · ${escapeHtml(h.pubDate)}</span>` : "";
+        const tag = escapeHtml(h.actionTag || "—");
+        const hint = escapeHtml(h.actionHint || "—");
+        const pub = h.pubDate
+          ? `<span class="muted">${escapeHtml(String(h.pubDate).slice(0, 16))}</span>`
+          : `<span class="muted">—</span>`;
         const link = h.link
-          ? `<a href="${escapeAttr(h.link)}" target="_blank" rel="noopener noreferrer" style="font-weight:600;">Read article →</a>`
-          : `<span class="muted">No link</span>`;
-        return `<li class="sponsor-news-item" style="padding:0.75rem 0;border-bottom:1px solid var(--border, #e5e7eb);">
-          <div style="font-weight:700;color:var(--navy,#1f3a83);">${sponsor}${pub}</div>
-          <p style="margin:0.35rem 0 0.5rem;line-height:1.45;">${overview}</p>
-          ${link}
-        </li>`;
+          ? `<a href="${escapeAttr(h.link)}" target="_blank" rel="noopener noreferrer">Source</a>`
+          : `<span class="muted">—</span>`;
+        return `<tr>
+          <td><strong>${sponsor}</strong></td>
+          <td>${overview}</td>
+          <td><span class="badge dash-flag">${tag}</span></td>
+          <td class="muted" style="max-width:16rem;line-height:1.35;">${hint}</td>
+          <td>${pub}</td>
+          <td>${link}</td>
+        </tr>`;
       })
       .join("");
 
     return `<div class="card wide">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;flex-wrap:wrap;">
-        <div>
-          <h3 style="margin:0;">Sponsor news</h3>
-          <p class="muted" style="margin:0.35rem 0 0;">${escapeHtml(
-            metaBits.join(" · ") || "Ranked headlines for watched SF sponsors"
-          )}</p>
-        </div>
-        <button type="button" class="btn btn-secondary" id="btnRefreshSponsorNews">Refresh</button>
+      ${header}
+      <div style="overflow:auto;margin-top:0.75rem;">
+        <table class="table sponsor-news-table">
+          <thead><tr><th>Sponsor</th><th>Headline</th><th>Signal</th><th>Win move</th><th>Date</th><th></th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
       </div>
-      <ul style="list-style:none;margin:0.75rem 0 0;padding:0;">${items}</ul>
-      <p class="muted" style="margin-top:0.75rem;font-size:0.85rem;">Headlines only — triage BD signal vs noise. Not ZoomInfo or paid intel.</p>
     </div>`;
   }
 
@@ -6857,9 +6906,10 @@
       : "";
     return `
       <div class="grid">
+        ${renderIntelDocStartersCard()}
         <div class="card wide">
           <h3>Indication &amp; region benchmark</h3>
-          <p class="muted">For BD/sales: Ora vs industry PSM and competitive recruiting for proposals. For leadership: a quick feasibility read by indication and geography. Syncs and uploads live on the <strong>Data Status</strong> tab.</p>
+          <p class="muted">Query Cosmos for PSM and site data that feed intelligence docs and proposals. Syncs live on <strong>Data Status</strong>; study timelines and sponsor news are on <strong>Study Info</strong>.</p>
           <div class="benchmark-filter-grid">
             <div class="benchmark-filter-field">
               <label class="field-label" for="intelIndication">Indication</label>
@@ -6876,14 +6926,24 @@
           <div class="benchmark-actions">
             <button type="button" class="btn btn-primary" id="btnIntelQuery">Query</button>
             <button type="button" class="btn btn-secondary" id="btnOpenBenchmark" title="Open this view in a new tab">Open benchmark</button>
+            <button type="button" class="btn btn-ghost" data-jump="study-info">Study Info</button>
           </div>
           ${status}
           ${countryNote}
         </div>
-        ${renderSponsorNewsCard()}
-        ${renderStudyMilestonesCard()}
         ${renderIntelBenchmark()}
       </div>`;
+  }
+
+  function renderStudyInfo() {
+    return `<div class="grid">
+      <div class="card wide">
+        <h3>Study Info</h3>
+        <p class="muted">Reference data to win sponsor business — prior Ora study timelines from Veeva and ranked sponsor headlines with concrete win moves. Intelligence doc creation stays on <strong>Ora Clinical Intelligence</strong>.</p>
+      </div>
+      ${renderSponsorNewsCard()}
+      ${renderStudyMilestonesCard()}
+    </div>`;
   }
 
   function canRunSiteScorecard() {
@@ -8184,7 +8244,7 @@
     }
   }
 
-  function renderStudies(loadingHtml) {
+  function renderBudgetStudies(loadingHtml) {
     const sel = state.studyCompare.selected || [];
     const groupBy = state.studiesGroupBy || "client";
     const filter = state.studiesFilter || "all";
@@ -8193,10 +8253,11 @@
         <div class="card wide">
           <div style="display:flex;justify-content:space-between;align-items:center;gap:1rem;flex-wrap:wrap;">
             <div>
-              <h3>Studies in Cosmos</h3>
-              <p class="muted">
+              <h3>Budget studies in Cosmos</h3>
+              <p class="muted">Uploaded bid workbooks and HLBP drafts — legacy budget builder. Ora Veeva operational studies live on the top-level <strong>Studies</strong> tab.</p>
+              <p class="muted" style="margin-top:0.35rem;">
                 ${hasOpenStudy()
-                  ? `Open a study into the workbench, or click <strong>All studies</strong> to clear selection for portfolio questions. Current: <strong>${escapeHtml(state.study.studyId)}</strong>`
+                  ? `Open a study into the workbench, or click <strong>All studies</strong> to clear selection. Current: <strong>${escapeHtml(state.study.studyId)}</strong>`
                   : "<strong>No study selected</strong> — Buddy will query all Cosmos studies with no open-study bias."}
               </p>
             </div>
@@ -8226,6 +8287,161 @@
           <div id="studiesPanel" style="margin-top:1rem;">${loadingHtml || "<p class=\"muted\">Loading…</p>"}</div>
         </div>
       </div>`;
+  }
+
+  function renderVeevaStudyDetail(study) {
+    if (!study) return "";
+    const milestones = (study.milestones || [])
+      .map(
+        (m) =>
+          `<tr><td>${intelStatNum(m.stepOrder)}</td><td>${escapeHtml(
+            m.displayName
+          )}</td><td>${escapeHtml(m.actualDate || "—")}</td></tr>`
+      )
+      .join("");
+    const intervals = (study.intervals || [])
+      .map(
+        (iv) =>
+          `<tr><td>${escapeHtml(iv.fromDisplay)}</td><td>${escapeHtml(
+            iv.toDisplay
+          )}</td><td>${intelStatNum(iv.days)}</td></tr>`
+      )
+      .join("");
+    return `<div class="card wide" style="margin-top:1rem;">
+      <h3>${escapeHtml(study.study_number || study.study_name || "Study")}</h3>
+      <p class="muted">${escapeHtml(study.sponsor || "—")} · ${escapeHtml(
+        study.indication || "—"
+      )} · ${escapeHtml(study.phase || "—")} · ${escapeHtml(study.status || "—")}${
+        study.enrollment != null ? ` · enrolled ${intelStatNum(study.enrollment)}` : ""
+      }</p>
+      ${
+        milestones
+          ? `<h4 style="margin:1rem 0 0.35rem;font-size:0.95rem;">Milestone dates</h4>
+             <div style="overflow:auto;"><table class="table"><thead><tr><th>#</th><th>Milestone</th><th>Actual</th></tr></thead><tbody>${milestones}</tbody></table></div>`
+          : `<p class="muted" style="margin-top:0.75rem;">No milestone timeline yet for this study.</p>`
+      }
+      ${
+        intervals
+          ? `<h4 style="margin:1rem 0 0.35rem;font-size:0.95rem;">Days between steps</h4>
+             <div style="overflow:auto;"><table class="table"><thead><tr><th>From</th><th>To</th><th>Days</th></tr></thead><tbody>${intervals}</tbody></table></div>`
+          : ""
+      }
+      <div style="margin-top:0.85rem;display:flex;gap:0.5rem;flex-wrap:wrap;">
+        <button type="button" class="btn btn-secondary" data-jump="study-info">Full timelines on Study Info</button>
+        <button type="button" class="btn btn-ghost" data-jump="scorecard">Site Scorecard</button>
+      </div>
+    </div>`;
+  }
+
+  function renderVeevaStudies() {
+    const vs = state.veevaStudies || {};
+    const loading = vs.loading;
+    const filter = escapeAttr(vs.filter || "");
+    const studies = vs.list || [];
+    const detail = vs.detail;
+    const status = vs.status;
+
+    const rows = studies.length
+      ? studies
+          .map((s) => {
+            const active = vs.selectedId === s.id;
+            return `<tr class="${active ? "row-active" : ""}">
+              <td><button type="button" class="btn btn-secondary" data-veeva-study="${escapeAttr(
+                s.id
+              )}">${active ? "Selected" : "View"}</button></td>
+              <td><code>${escapeHtml(s.study_number || "—")}</code></td>
+              <td>${escapeHtml(s.study_name || "—")}</td>
+              <td>${escapeHtml(s.sponsor || "—")}</td>
+              <td>${escapeHtml(s.indication || "—")}</td>
+              <td>${escapeHtml(s.phase || "—")}</td>
+              <td>${escapeHtml(s.status || "—")}</td>
+              <td>${s.enrollment != null ? intelStatNum(s.enrollment) : "—"}</td>
+            </tr>`;
+          })
+          .join("")
+      : `<tr><td colspan="8" class="muted">${
+          loading ? "Loading…" : status || "No Veeva studies — run Ingest Veeva on Data Status."
+        }</td></tr>`;
+
+    return `<div class="grid">
+      <div class="card wide">
+        <h3>Ora Veeva studies</h3>
+        <p class="muted">Operational studies from Veeva — drill in for milestone timelines. Budget workbook files are under <strong>Budget (legacy) → Budget studies</strong>.</p>
+        <div class="benchmark-filter-grid" style="margin-top:0.75rem;align-items:flex-end;">
+          <div class="benchmark-filter-field">
+            <label class="field-label" for="veevaStudySearch">Search</label>
+            <input id="veevaStudySearch" class="input" placeholder="Study number, name, sponsor, indication" value="${filter}" />
+          </div>
+          <div class="benchmark-filter-field" style="display:flex;gap:0.5rem;align-items:flex-end;">
+            <button type="button" class="btn btn-primary" id="btnLoadVeevaStudies" ${
+              loading ? "disabled" : ""
+            }>${loading ? "Loading…" : "Search"}</button>
+            <button type="button" class="btn btn-secondary" id="btnRefreshVeevaStudies" ${
+              loading ? "disabled" : ""
+            }>Refresh</button>
+          </div>
+        </div>
+        <div style="overflow:auto;margin-top:0.75rem;">
+          <table class="table">
+            <thead><tr><th></th><th>Study #</th><th>Name</th><th>Sponsor</th><th>Indication</th><th>Phase</th><th>Status</th><th>Enrolled</th></tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+        </div>
+        ${vs.truncated ? `<p class="muted" style="margin-top:0.5rem;">Showing first ${studies.length} matches — narrow search for more.</p>` : ""}
+      </div>
+      ${vs.detailLoading ? `<div class="card wide"><p class="muted">Loading study detail…</p></div>` : renderVeevaStudyDetail(detail)}
+    </div>`;
+  }
+
+  async function loadVeevaStudiesList() {
+    state.veevaStudies.loading = true;
+    state.veevaStudies.status = "";
+    if (state.sectionId === "studies") render();
+    try {
+      const q = String(state.veevaStudies.filter || "").trim();
+      const params = new URLSearchParams({ limit: "250" });
+      if (q) params.set("q", q);
+      const res = await fetch(apiUrl(`/api/intelligence/veeva-studies?${params.toString()}`));
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        state.veevaStudies.list = [];
+        state.veevaStudies.status = data.error || `Load failed (${res.status})`;
+        state.veevaStudies.truncated = false;
+      } else {
+        state.veevaStudies.list = data.studies || [];
+        state.veevaStudies.truncated = !!data.truncated;
+        state.veevaStudies.status =
+          data.studyCount != null ? `${data.studyCount} studies` : "";
+      }
+    } catch (err) {
+      state.veevaStudies.list = [];
+      state.veevaStudies.status = String(err.message || err);
+    }
+    state.veevaStudies.loading = false;
+    if (state.sectionId === "studies") render();
+  }
+
+  async function loadVeevaStudyDetail(studyId) {
+    const id = String(studyId || "").trim();
+    if (!id) return;
+    state.veevaStudies.selectedId = id;
+    state.veevaStudies.detailLoading = true;
+    if (state.sectionId === "studies") render();
+    try {
+      const res = await fetch(apiUrl(`/api/intelligence/veeva-studies?study=${encodeURIComponent(id)}`));
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok === false) {
+        state.veevaStudies.detail = null;
+        state.veevaStudies.status = data.error || `Detail failed (${res.status})`;
+      } else {
+        state.veevaStudies.detail = data.study || null;
+      }
+    } catch (err) {
+      state.veevaStudies.detail = null;
+      state.veevaStudies.status = String(err.message || err);
+    }
+    state.veevaStudies.detailLoading = false;
+    if (state.sectionId === "studies") render();
   }
 
   function studyYear(s) {
@@ -8880,12 +9096,18 @@
             <td>${money(o.oraNetRevenue)}</td>
             <td class="muted">${escapeHtml(o.closeDate || "—")}${
               o.daysToClose != null ? ` · ${o.daysToClose}d` : ""
+            }${
+              o.daysSinceActivity != null ? ` · active ${o.daysSinceActivity}d ago` : ""
             }</td>
           </tr>`
           )
           .join("")
       : `<tr><td colspan="6" class="muted">${
-          loading ? "Loading…" : b?.salesforceEmpty ? "Salesforce empty — run Ingest SF on Data Status." : "No open opportunities."
+          loading
+            ? "Loading…"
+            : b?.salesforceEmpty
+              ? "Salesforce empty — run Ingest SF on Data Status."
+              : "No open opps with Salesforce activity in the last 90 days — refresh stale deals or update SF."
         }</td></tr>`;
 
     const watchRows = (b?.attention || []).length
@@ -8936,15 +9158,69 @@
     const counts = df.counts || {};
 
     const gp = b?.goalProgress;
+    const goalYear = gp?.year || h.closedWonYtdYear || new Date().getFullYear();
     const goalCard = gp
       ? `<div class="card">
-          <h3>% to goal · ${gp.year || h.closedWonYtdYear || ""}</h3>
+          <h3>% to goal · ${goalYear}</h3>
           <div class="stat">${gp.percentToGoal != null ? `${gp.percentToGoal}%` : "—"}</div>
           <p class="muted">${money(gp.closedWonYtdOraNet)} won · ${money(gp.gapRemaining)} to go · goal ${money(
             gp.goalOraNet
           )}</p>
+        </div>
+        <div class="card">
+          <h3>Projected EOY · ${goalYear}</h3>
+          <div class="stat">${gp.projectedPercentToGoal != null ? `${gp.projectedPercentToGoal}%` : "—"}</div>
+          <p class="muted">${money(gp.projectedEoyOraNet)} if ${money(
+            gp.calendarYearPipelineOraNet
+          )} pipeline closes · ${intelStatNum(gp.calendarYearOpenCount)} opps with ${goalYear} close dates</p>
+          ${
+            gp.projectedCoversGoal
+              ? `<p class="muted" style="margin-top:0.35rem;">Projected to hit goal if calendar-year pipeline closes.</p>`
+              : `<p class="muted" style="margin-top:0.35rem;">${money(gp.projectedGapRemaining)} still short if all ${goalYear} dated opps close.</p>`
+          }
         </div>`
       : "";
+
+    const suggestedWinRows =
+      gp && !gp.atGoal && (gp.suggestedWins || []).length
+        ? gp.suggestedWins
+            .map(
+              (o, i) =>
+                `<tr class="${o.closeDatePast ? "row-overdue" : ""}"${
+                  o.closeDatePast ? ' style="color:#b91c1c;"' : ""
+                }>
+              <td>${i + 1}</td>
+              <td>${escapeHtml(o.name || "—")}</td>
+              <td>${escapeHtml(o.accountName || "—")}</td>
+              <td>${escapeHtml(o.stage || "—")}</td>
+              <td>${money(o.oraNetRevenue)}</td>
+              <td>${escapeHtml(o.closeDate || "—")}${
+                  o.closeDatePast ? ` <span class="badge dash-flag">Past due</span>` : ""
+                }</td>
+            </tr>`
+            )
+            .join("")
+        : `<tr><td colspan="6" class="muted">${
+            gp && !gp.atGoal
+              ? `No open opps with Ora Net $ and a ${goalYear} close date.`
+              : gp?.atGoal
+                ? "At goal for Closed Won YTD."
+                : "Set yearly goal on Data Status."
+          }</td></tr>`;
+
+    const suggestedWinsCard =
+      gp && !gp.atGoal
+        ? `<div class="card wide" id="dash-suggested-wins">
+          <h3>Suggested wins to hit goal</h3>
+          <p class="muted">${escapeHtml(
+            gp.note || ""
+          )} · Close dates in calendar year ${goalYear} only (through 12/31/${goalYear}).</p>
+          <table class="table" style="margin-top:0.65rem;">
+            <thead><tr><th>#</th><th>Opportunity</th><th>Account</th><th>Stage</th><th>Ora Net $</th><th>Close</th></tr></thead>
+            <tbody>${suggestedWinRows}</tbody>
+          </table>
+        </div>`
+        : "";
 
     return `
       <div class="grid">
@@ -9010,12 +9286,14 @@
 
         <div class="card wide" id="dash-chase">
           <h3>Chase this week</h3>
-          <p class="muted">Top open opportunities by Total Ora Net Revenue — start BD time here.</p>
+          <p class="muted">Open opportunities with Salesforce activity in the last 90 days — ranked by Ora Net $. Stagnant year-old deals are excluded.</p>
           <table class="table" style="margin-top:0.65rem;">
             <thead><tr><th>Opportunity</th><th>Account</th><th>Owner</th><th>Stage</th><th>Ora Net $</th><th>Close</th></tr></thead>
             <tbody>${chaseRows}</tbody>
           </table>
         </div>
+
+        ${suggestedWinsCard}
 
         <div class="card wide" id="dash-watch">
           <h3>Watch / reassess</h3>
@@ -9173,7 +9451,7 @@
           <h3>Open study workflow</h3>
           <p class="muted">No study selected — open one from Studies to track department status and fill requests. Portfolio pulse below still works.</p>
           <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.75rem;">
-            <button type="button" class="btn btn-primary" data-jump="studies">Browse studies</button>
+            <button type="button" class="btn btn-primary" data-jump="budget-studies">Browse budget studies</button>
             <button type="button" class="btn btn-secondary" data-buddy-ask="ops">Ask Buddy for ops briefing</button>
           </div>
         </div>`;
@@ -10287,6 +10565,12 @@
         ? "Talk to Buddy full-screen — floating chat stays available on other tabs"
         : section.id === "dashboard"
           ? "Weekly commercial brief — chase, watch, concentration — waiting when you arrive"
+        : section.id === "intelligence"
+          ? "Benchmark queries and Buddy HTML intelligence docs"
+        : section.id === "study-info"
+          ? "Prior Ora timelines and sponsor news — win moves for BD"
+        : section.id === "studies"
+          ? "Ora Veeva studies — drill into milestone timelines"
         : !hasOpenStudy()
           ? "Portfolio mode — Buddy answers from all Cosmos studies"
           : section.department
@@ -10307,9 +10591,11 @@
       case "hlbp": html = renderHlbp(); break;
       case "ops": html = renderOpsDashboard(); break;
       case "upload": html = renderUpload(); break;
-      case "studies": html = renderStudies(); break;
+      case "studies": html = renderVeevaStudies(); break;
+      case "budget-studies": html = renderBudgetStudies(); break;
       case "versions": html = renderVersions(); break;
       case "intelligence": html = renderIntelligence(); break;
+      case "study-info": html = renderStudyInfo(); break;
       case "data-status": html = renderDataStatus(); break;
       case "scorecard": html = renderScorecard(); break;
       case "buddy-context": html = renderBuddyContext(); break;
@@ -10324,7 +10610,10 @@
       default: html = renderDashboard();
     }
     els.viewRoot.innerHTML = renderBudgetSubtabs() + html;
-    if (section.id === "studies") {
+    if (section.id === "studies" && !state.veevaStudies.loading && !state.veevaStudies.list) {
+      loadVeevaStudiesList();
+    }
+    if (section.id === "budget-studies") {
       loadStudiesIntoPanel();
     }
     if (section.id === "versions") {
@@ -10499,6 +10788,13 @@
         if (q) openBuddyWithPrompt(q.prompt);
         return;
       }
+      const intelDoc = e.target.closest("[data-intel-doc]");
+      if (intelDoc) {
+        const id = intelDoc.getAttribute("data-intel-doc");
+        const starter = (SBW.intelDocStarters || []).find((x) => x.id === id);
+        if (starter) openBuddyWithPrompt(buildIntelDocPrompt(starter.prompt));
+        return;
+      }
       const statusBtn = e.target.closest("[data-status-section]");
       if (statusBtn) {
         setSectionStatus(statusBtn.dataset.statusSection, statusBtn.dataset.status);
@@ -10647,7 +10943,9 @@
       }
       if (e.target.id === "btnLoadStudyMilestones") {
         const studyInput = document.getElementById("studyMilestoneSearch");
+        const indInput = document.getElementById("studyInfoIndication");
         if (studyInput) state.intelligence.studyMilestoneStudy = studyInput.value;
+        if (indInput) state.intelligence.indication = indInput.value;
         loadStudyMilestones();
         return;
       }
@@ -10819,6 +11117,17 @@
       }
       if (e.target.id === "btnRefreshStudies") {
         loadStudiesIntoPanel();
+        return;
+      }
+      if (e.target.id === "btnLoadVeevaStudies" || e.target.id === "btnRefreshVeevaStudies") {
+        const input = document.getElementById("veevaStudySearch");
+        if (input) state.veevaStudies.filter = input.value;
+        loadVeevaStudiesList();
+        return;
+      }
+      const veevaBtn = e.target.closest("[data-veeva-study]");
+      if (veevaBtn) {
+        loadVeevaStudyDetail(veevaBtn.getAttribute("data-veeva-study"));
         return;
       }
       if (e.target.id === "btnNewStudyInline" || e.target.id === "btnNewStudyHub") {
