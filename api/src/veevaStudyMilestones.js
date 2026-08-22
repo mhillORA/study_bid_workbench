@@ -3,7 +3,7 @@
  * vw_veeva_milestones_calculations (study-level rows only; not every Vault type).
  */
 
-const { vaultIndicationLabel } = require("./veevaPsm");
+const { vaultIndicationLabel, milestoneSingleDayActualDate } = require("./veevaPsm");
 
 /** Canonical study lifecycle milestones (type → display + order). */
 const CANONICAL_STUDY_MILESTONES = [
@@ -57,7 +57,7 @@ function picklistLabel(v) {
 }
 
 function milestoneActualDate(m) {
-  return m.actual_finish_date__v || m.actual_start_date__v || null;
+  return milestoneSingleDayActualDate(m);
 }
 
 function parseDateMs(iso) {

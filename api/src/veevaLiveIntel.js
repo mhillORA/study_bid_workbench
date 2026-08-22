@@ -6,6 +6,8 @@
 const {
   vaultIndicationLabel,
   picklistLabel,
+  parseMilestoneDateIso,
+  milestoneSingleDayActualDate,
   siteEnrollMonthsFromFpfvLpfv,
   computeSitePsm,
   classifyPsmWindowMilestone
@@ -338,7 +340,7 @@ async function loadVeevaLiveFeasibility(database) {
     for (const m of ms) {
       const kind = classifyPsmWindowMilestone(m.name__v, m.milestone_type__v);
       if (!kind) continue;
-      const when = m.actual_finish_date__v || m.actual_start_date__v;
+      const when = milestoneSingleDayActualDate(m);
       if (!when) continue;
       if (!datesBySite.has(m.site__v)) datesBySite.set(m.site__v, {});
       const pack = datesBySite.get(m.site__v);
@@ -546,7 +548,8 @@ async function loadVeevaStartupGapRows(database) {
     }
     const pack = bySiteStudy.get(key);
     const kind = classifyStartupMilestoneKey(m.name__v, m.milestone_type__v);
-    const when = m.actual_finish_date__v || m.actual_start_date__v || m.planned_finish_date__v;
+    const when =
+      milestoneSingleDayActualDate(m) || parseMilestoneDateIso(m.planned_finish_date__v);
     if (kind && when && !pack.dates[kind]) pack.dates[kind] = when;
   }
 

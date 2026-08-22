@@ -2,6 +2,9 @@
  * Shared Veeva PSM helpers — site_psm = enrolled / months(FPFV→LPFV), min 1 month.
  * PSM uses visit milestones only (First/Last Patient/Subject First Visit).
  * FSI / LSI / First Subject In / Last Subject In are NOT used for PSM (startup may still use FSI elsewhere).
+ *
+ * FPFV/LPFV are single-day milestones in Vault — either actual_finish or actual_start may be
+ * populated (often only one). We use whichever actual is present; planned/baseline are not PSM.
  */
 
 function picklistLabel(v) {
@@ -51,6 +54,35 @@ function siteEnrollMonthsFromFpfvLpfv(fpfvIso, lpfvIso) {
     (d1.getUTCFullYear() - d0.getUTCFullYear()) * 12 + (d1.getUTCMonth() - d0.getUTCMonth());
   if (months < 1) return 1;
   return months;
+}
+
+/** Reject Vault null placeholders (e.g. 1900-01-01) and pre-2000 junk. */
+function parseMilestoneDateIso(value) {
+  if (value == null || value === "") return null;
+  const s = String(value).trim();
+  const ymd = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (ymd) {
+    if (Number(ymd[1]) < 2000) return null;
+    return `${ymd[1]}-${ymd[2]}-${ymd[3]}`;
+  }
+  const t = Date.parse(s);
+  if (!Number.isFinite(t)) return null;
+  const d = new Date(t);
+  if (d.getUTCFullYear() < 2000) return null;
+  return d.toISOString();
+}
+
+/**
+ * Single-day milestone actual date — actual finish, else actual start (either field is valid).
+ * Does not use planned or baseline (PSM = realized enrollment window).
+ */
+function milestoneSingleDayActualDate(m) {
+  if (!m || typeof m !== "object") return null;
+  return (
+    parseMilestoneDateIso(m.actual_finish_date__v) ||
+    parseMilestoneDateIso(m.actual_start_date__v) ||
+    null
+  );
 }
 
 /** @deprecated use siteEnrollMonthsFromFpfvLpfv — name kept for startup helpers */
@@ -132,6 +164,8 @@ const classifyEnrollmentMilestone = classifyPsmWindowMilestone;
 module.exports = {
   picklistLabel,
   vaultIndicationLabel,
+  parseMilestoneDateIso,
+  milestoneSingleDayActualDate,
   siteEnrollMonthsFromFpfvLpfv,
   siteEnrollMonthsFromFsiLsi,
   computeSitePsm,

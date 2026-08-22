@@ -26,6 +26,8 @@ const {
 } = require("./veevaClient");
 const {
   vaultIndicationLabel,
+  parseMilestoneDateIso,
+  milestoneSingleDayActualDate,
   siteEnrollMonthsFromFpfvLpfv,
   computeSitePsm,
   classifyPsmWindowMilestone
@@ -571,7 +573,8 @@ async function projectWideMilestones(database, opts = {}) {
     }
     const pack = bySiteStudy.get(key);
     const kind = classifyMilestoneKey(m.name__v, m.milestone_type__v);
-    const when = m.actual_finish_date__v || m.actual_start_date__v || m.planned_finish_date__v;
+    const when =
+      milestoneSingleDayActualDate(m) || parseMilestoneDateIso(m.planned_finish_date__v);
     if (kind && when && !pack.dates[kind]) pack.dates[kind] = when;
   }
 
@@ -678,7 +681,7 @@ async function projectSitePsmFromMilestones(database, opts = {}) {
   for (const m of ms) {
     const kind = classifyPsmWindowMilestone(m.name__v, m.milestone_type__v);
     if (!kind) continue;
-    const when = m.actual_finish_date__v || m.actual_start_date__v;
+    const when = milestoneSingleDayActualDate(m);
     if (!when) continue;
     const key = m.site__v;
     if (!datesBySite.has(key)) datesBySite.set(key, {});
