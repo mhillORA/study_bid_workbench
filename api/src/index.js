@@ -45,6 +45,10 @@ const {
 const { runVeevaTablesSync, getVeevaSyncStatus } = require("./veevaSync");
 const { ingestTrialHubUpload } = require("./trialhubIngest");
 const {
+  runSponsorNewsCrawl,
+  getSponsorNewsStatus
+} = require("./sponsorNews");
+const {
   isPricingQuestion,
   extractRfpScenarioFromQuestion,
   buildRfpPricingPack
@@ -1590,6 +1594,49 @@ app.http("ctgovSync", {
         triggeredBy: auth.via === "copilot_key" ? "scheduler_or_key" : `ui:${auth.user?.email || auth.user?.userId || "user"}`
       });
       return json(result.ok || result.skipped ? 200 : 500, result);
+    } catch (err) {
+      context.error(err);
+      return json(500, { ok: false, error: String(err.message || err) });
+    }
+  }
+});
+
+app.http("sponsorNewsSync", {
+  methods: ["GET", "POST", "OPTIONS"],
+  authLevel: "anonymous",
+  route: "sponsor-news/sync",
+  handler: async (request, context) => {
+    if (request.method === "OPTIONS") {
+      return {
+        status: 204,
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+          "Access-Control-Allow-Headers": "content-type, x-copilot-key"
+        }
+      };
+    }
+    try {
+      if (request.method === "GET") {
+        const status = await getSponsorNewsStatus(getDb);
+        return json(200, status);
+      }
+      const auth = authorizeCtgovSync(request);
+      if (!auth.ok) {
+        return json(401, {
+          error: "Unauthorized — sign in, or pass x-copilot-key (same as Copilot Ask key)"
+        });
+      }
+      let body = {};
+      try {
+        body = (await request.json()) || {};
+      } catch (_) {
+        body = {};
+      }
+      const result = await runSponsorNewsCrawl(getDb, {
+        maxSponsors: Number(body.maxSponsors) || 25
+      });
+      return json(result.ok ? 200 : 500, result);
     } catch (err) {
       context.error(err);
       return json(500, { ok: false, error: String(err.message || err) });

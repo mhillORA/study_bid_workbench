@@ -11,7 +11,6 @@ SBW.users = [
 ];
 
 SBW.sections = [
-  { id: "hub", label: "Hub", department: null },
   { id: "dashboard", label: "Dashboard", department: null },
   { id: "intelligence", label: "Ora Clinical Intelligence", department: null },
   { id: "scorecard", label: "Site Scorecard", department: null },
@@ -108,7 +107,7 @@ SBW.bdShortcuts = [
   {
     id: "scorecard",
     title: "Site Scorecard",
-    blurb: "Rank sites, concurrent Ora load, recommended slate"
+    blurb: "Rank sites, concurrent Ora load, startup speed, recommended slate"
   },
   {
     id: "data-status",

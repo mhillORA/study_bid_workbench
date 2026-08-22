@@ -650,12 +650,25 @@ function isSalesforceDataQuestion(question) {
   }
 }
 
+function isLensOpsQuestion(question) {
+  try {
+    const { isLensOpsQuestion: fn } = require("./lensOps");
+    return fn(question);
+  } catch (_) {
+    const q = String(question || "").toLowerCase();
+    return /\b(net\s*suite|netsuite|insights?\s*rm|fleetview|fte|headcount|staffing|gm\s*%|gm\s*pct)\b/.test(
+      q
+    );
+  }
+}
+
 function isIntelligenceQuestion(question) {
   const q = String(question || "").toLowerCase();
   if (!q) return false;
   return (
     isSourceOverviewQuestion(q) ||
     isSalesforceDataQuestion(q) ||
+    isLensOpsQuestion(q) ||
     /\b(psm|patients?\s*per\s*site|pts?\s*\/\s*site|enrollment rate|enrolment rate)\b/.test(q) ||
     /\b(feasibility|site (mix|selection|performance|capacity)|competing trials?|competitor|competitive landscape)\b/.test(
       q
@@ -1569,6 +1582,20 @@ async function getIntelligenceHealth(getDb) {
   for (const id of containers) {
     counts[id] = await safeCount(database, id);
   }
+  // NetSuite + Insights RM use singular docTypes (not container id) — see lensOps.js
+  let lensSlice = null;
+  try {
+    const { getLensHealthSlice } = require("./lensOps");
+    lensSlice = await getLensHealthSlice(getDb);
+    if (lensSlice?.netsuite) {
+      counts.lens_ns_projects = lensSlice.netsuite.projects;
+    }
+    if (lensSlice?.insightsRm?.counts) {
+      Object.assign(counts, lensSlice.insightsRm.counts);
+    }
+  } catch (_) {
+    lensSlice = null;
+  }
   // Fixed pack sizes are legacy reference only — Buddy uses ora_veeva_*.
   const expected = {
     ora_sponsor_crosswalk: 642,
@@ -1590,7 +1617,13 @@ async function getIntelligenceHealth(getDb) {
     ora_veeva_sponsor: counts.ora_veeva_sponsor,
     ora_veeva_milestone: counts.ora_veeva_milestone,
     ora_veeva_metric: counts.ora_veeva_metric,
-    ora_veeva_subject: counts.ora_veeva_subject
+    ora_veeva_subject: counts.ora_veeva_subject,
+    lens_ns_projects: counts.lens_ns_projects,
+    lens_rm_studies: counts.lens_rm_studies,
+    lens_rm_actuals: counts.lens_rm_actuals,
+    lens_rm_assignments: counts.lens_rm_assignments,
+    lens_rm_projections: counts.lens_rm_projections,
+    lens_rm_employees: counts.lens_rm_employees
   };
   const fixedOk = liveVault
     ? true
@@ -1667,6 +1700,14 @@ async function getIntelligenceHealth(getDb) {
       note: liveVault
         ? "Live Vault mirrors preferred. Feasibility taxonomy: study vs site grain × metrics (enrollment) × milestones (startup) × subjects/geography."
         : "Run Data Status → Ingest Veeva for study, country, site, metrics, subjects, milestones."
+    },
+    netsuite: lensSlice?.netsuite || {
+      projects: counts.lens_ns_projects ?? 0,
+      note: "NetSuite Project Profitability → lens_ns_projects."
+    },
+    insightsRm: lensSlice?.insightsRm || {
+      counts: {},
+      note: "Insights RM star schema → lens_rm_*."
     },
     note: liveVault
       ? "Live Veeva Vault sync present — Buddy feasibility uses ora_veeva_* (not ora_fact_*)."
@@ -2696,6 +2737,7 @@ async function buildIntelligenceContext(getDb, opts = {}) {
   const wantsVeeva = isVeevaQuestion(question);
   const wantsCrosswalk = isCrosswalkQuestion(question);
   const wantsSalesforce = isSalesforceDataQuestion(question);
+  const wantsLensOps = isLensOpsQuestion(question);
   const wantsSourceOverview = isSourceOverviewQuestion(question);
   const nct = extractNct(question);
   const qIndication = extractIndicationFromQuestion(question);
@@ -2723,6 +2765,7 @@ async function buildIntelligenceContext(getDb, opts = {}) {
     !sponsor &&
     !resolvedCountries &&
     !wantsSalesforce &&
+    !wantsLensOps &&
     !startYear &&
     !therapeuticFilter
   ) {
@@ -2741,6 +2784,7 @@ async function buildIntelligenceContext(getDb, opts = {}) {
       "Prefer fsi_trust=high when comparing site_psm.",
       "ctgov = ClinicalTrials.gov ophthalmology feed (daily delta).",
       "salesforce / salesforceData = Cosmos mirrors of SF Account, Opportunity, Activity_Request__c only. Use for pipeline / owner / AR asks after tables sync.",
+      "netsuiteData = lens_ns_projects (Project Profitability GM %). insightsRmData = lens_rm_* star schema (Actuals/Assignments/Projections/Headcount FTE).",
       "ctgovOverview / trialhubOverview / veevaOverview / crosswalkOverview = feed-wide snapshots when no indication was named — use for dashboards. Never say a feed is missing if its totalCount/studyCount > 0 or recentSample has rows.",
       "When countryFilter is set (array), site/CT.gov/TrialHub results match ANY of those countries. Null/Global = all geographies.",
       "For OUS / outside-US asks: use trialhub.countryRankOus (or countryRank) for ranked countries with trialMentions counts — that IS the country leaderboard.",
@@ -2763,6 +2807,8 @@ async function buildIntelligenceContext(getDb, opts = {}) {
       veevaIntent: wantsVeeva,
       crosswalkIntent: wantsCrosswalk,
       salesforceIntent: wantsSalesforce,
+      netsuiteIntent: false,
+      insightsRmIntent: false,
       startYear: startYear || null,
       therapeuticFilter: therapeuticFilter || null,
       enrollmentPlan,
@@ -2928,6 +2974,26 @@ async function buildIntelligenceContext(getDb, opts = {}) {
       });
     } catch (sfErr) {
       out.salesforceData = { error: String(sfErr.message || sfErr) };
+    }
+
+    // NetSuite + Insights RM when the ask is ops/GM/FTE shaped (packs are larger — intent-gated).
+    try {
+      const { attachLensOpsData } = require("./lensOps");
+      await attachLensOpsData(out, getDb, { question });
+    } catch (lensErr) {
+      out.netsuiteData = out.netsuiteData || { error: String(lensErr.message || lensErr) };
+    }
+
+    try {
+      const { isSponsorNewsQuestion, buildSponsorNewsPack } = require("./sponsorNews");
+      if (isSponsorNewsQuestion(question) || /\b(news|headlines)\b/i.test(question)) {
+        out.sponsorNews = await buildSponsorNewsPack(getDb, {
+          sponsor: who || sponsor || clientName,
+          clientName: who || clientName
+        });
+      }
+    } catch (newsErr) {
+      out.sponsorNews = { error: String(newsErr.message || newsErr) };
     }
 
     out.elapsedMs = Date.now() - started;
@@ -3098,15 +3164,61 @@ async function buildSiteScorecard(getDb, opts = {}) {
     };
   });
 
+  // Startup speed from live Veeva milestones (contract→FSI / SIV→FSI days)
+  let startupByOrg = new Map();
+  try {
+    const startup = await queryStartupTimelines(database, {
+      countries,
+      orgNames: aggregates.map((a) => a.org_clean).filter(Boolean)
+    });
+    for (const s of startup.topSitesByStartup || []) {
+      const k = `${String(s.organization || "").toLowerCase()}|${String(s.country || "").toLowerCase()}`;
+      startupByOrg.set(k, s);
+    }
+    // Also index org-only when country filter is global
+    if (!countries) {
+      for (const s of startup.topSitesByStartup || []) {
+        const orgKey = String(s.organization || "").toLowerCase();
+        if (!orgKey) continue;
+        if (!startupByOrg.has(`${orgKey}|`)) startupByOrg.set(`${orgKey}|`, s);
+      }
+    }
+  } catch (_) {
+    startupByOrg = new Map();
+  }
+
+  for (const a of aggregates) {
+    const k = `${String(a.org_clean || "").toLowerCase()}|${String(a.country || "").toLowerCase()}`;
+    const hit =
+      startupByOrg.get(k) ||
+      startupByOrg.get(`${String(a.org_clean || "").toLowerCase()}|`);
+    if (!hit) {
+      a.contractToFsiMedian = null;
+      a.sivToFsiMedian = null;
+      a.nContractToFsi = 0;
+      a.nSivToFsi = 0;
+      continue;
+    }
+    a.contractToFsiMedian = hit.contract_to_fsi_median;
+    a.sivToFsiMedian = hit.siv_to_fsi_median;
+    a.nContractToFsi = hit.n_contract_to_fsi || 0;
+    a.nSivToFsi = hit.n_siv_to_fsi || 0;
+  }
+
   const psmVals = aggregates.map((a) => a.sitePsmMedian).filter((n) => typeof n === "number");
   const volVals = aggregates.map((a) => a.totalEnrolledSum).filter((n) => typeof n === "number");
   const sfrVals = aggregates.map((a) => a.screenFailMedian).filter((n) => typeof n === "number");
+  const startupVals = aggregates
+    .map((a) => a.contractToFsiMedian ?? a.sivToFsiMedian)
+    .filter((n) => typeof n === "number");
   const psmMin = Math.min(...(psmVals.length ? psmVals : [0]));
   const psmMax = Math.max(...(psmVals.length ? psmVals : [1]));
   const volMin = Math.min(...(volVals.length ? volVals : [0]));
   const volMax = Math.max(...(volVals.length ? volVals : [1]));
   const sfrMin = Math.min(...(sfrVals.length ? sfrVals : [0]));
   const sfrMax = Math.max(...(sfrVals.length ? sfrVals : [1]));
+  const startupMin = Math.min(...(startupVals.length ? startupVals : [0]));
+  const startupMax = Math.max(...(startupVals.length ? startupVals : [1]));
 
   function normAsc(v, lo, hi) {
     if (v == null || hi === lo) return 50;
@@ -3169,10 +3281,21 @@ async function buildSiteScorecard(getDb, opts = {}) {
       const w = Math.min(1, a.trustKnown / 3);
       trustScore = round(50 + (raw - 50) * w, 1);
     }
-    const oraScore = round(
-      0.4 * psmScore + 0.25 * volScore + 0.2 * sfrScore + 0.15 * trustScore,
-      1
-    );
+    const startupDays = a.contractToFsiMedian ?? a.sivToFsiMedian;
+    const startupScore =
+      typeof startupDays === "number" ? normDesc(startupDays, startupMin, startupMax) : 50;
+    const hasStartup = typeof startupDays === "number";
+    // When startup history exists, fold it in; otherwise keep prior weights.
+    const oraScore = hasStartup
+      ? round(
+          0.34 * psmScore +
+            0.2 * volScore +
+            0.16 * sfrScore +
+            0.12 * trustScore +
+            0.18 * startupScore,
+          1
+        )
+      : round(0.4 * psmScore + 0.25 * volScore + 0.2 * sfrScore + 0.15 * trustScore, 1);
     const industry = industryByCountry[a.country] || null;
     const industryMedianPsm = industry ? round(median(industry.psms)) : null;
     const recruitingTrials = industry ? industry.recruiting : null;
@@ -3204,7 +3327,8 @@ async function buildSiteScorecard(getDb, opts = {}) {
         psm: round(psmScore, 1),
         volume: round(volScore, 1),
         screenFail: round(sfrScore, 1),
-        trust: round(trustScore, 1)
+        trust: round(trustScore, 1),
+        startup: hasStartup ? round(startupScore, 1) : null
       },
       industryMedianPsm: source === "compare" ? industryMedianPsm : undefined,
       recruitingTrials: source === "compare" ? recruitingTrials : undefined,
@@ -3233,6 +3357,9 @@ async function buildSiteScorecard(getDb, opts = {}) {
   }
 
   const usedRelated = related.length && aliases.every((a) => !siteRows.some((r) => r.indication === a));
+  const hasStartupWeight = sites.some(
+    (s) => typeof s.contractToFsiMedian === "number" || typeof s.sivToFsiMedian === "number"
+  );
   return {
     source,
     indication,
@@ -3243,17 +3370,19 @@ async function buildSiteScorecard(getDb, opts = {}) {
     siteCount: sites.length,
     includeLegacy,
     legacy: legacyMeta,
-    weights: { psm: 0.4, volume: 0.25, screenFail: 0.2, trust: 0.15 },
+    weights: hasStartupWeight
+      ? { psm: 0.34, volume: 0.2, screenFail: 0.16, trust: 0.12, startup: 0.18 }
+      : { psm: 0.4, volume: 0.25, screenFail: 0.2, trust: 0.15 },
     trustNote:
       "Trust = share of Veeva rows with a known fsi_trust label that are \"high\" (missing labels excluded). Display is high/known. Score component shrinks toward neutral when fewer than 3 labeled studies — a single high row is not 100% trust weight.",
     note:
       sites.length === 0
         ? `No Ora Veeva site rows matched "${indication || "filter"}". Try a broader indication (e.g. Glaucoma) or Global geography.`
         : usedRelated || related.length
-          ? `Matched via related/fuzzy Veeva labels when exact "${indication}" had few/no site_psm rows. Ora scores from ora_veeva_* (milestone PSM).`
+          ? `Matched via related/fuzzy Veeva labels when exact "${indication}" had few/no site_psm rows. Ora scores from ora_veeva_* (milestone PSM + startup gaps).`
           : source === "ora"
-            ? "Ora scores from live Veeva site history (ora_veeva_site + FSI→LSI milestones)."
-            : "Ora site score vs industry country score (TrialHub PSM by country). Industry has no named competitor sites — country-level benchmark only.",
+            ? "Ora scores from live Veeva (site PSM FSI→LSI + startup Contract/SIV→FSI days when available)."
+            : "Ora site score vs industry country score (TrialHub PSM by country). Startup days are Ora Veeva only.",
     sites,
     elapsedMs: Date.now() - started
   };

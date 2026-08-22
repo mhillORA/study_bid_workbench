@@ -4,7 +4,7 @@
   const state = {
     userId: localStorage.getItem(USER_KEY) || "u-admin",
     entraUser: null,
-    sectionId: "hub",
+    sectionId: "dashboard",
     study: SBW.defaultStudy(),
     dirty: false,
     results: {},
@@ -1488,13 +1488,14 @@
   };
 
   const SECTION_NAV_ALIASES = {
-    hub: ["hub", "home"],
     dashboard: [
       "dashboard",
       "commercial dashboard",
       "weekly brief",
       "leadership brief",
-      "bd dashboard"
+      "bd dashboard",
+      "hub",
+      "home"
     ],
     buddy: ["buddy", "ask buddy", "ask", "chat", "talk to buddy"],
     studies: ["studies", "study list"],
@@ -2520,7 +2521,7 @@
   function closeBuddy() {
     // Full-page Buddy tab → float (same chat), so both modes stay available
     if (isBuddyWorkspace()) {
-      state.sectionId = "hub";
+      state.sectionId = "dashboard";
       document.documentElement.classList.remove("buddy-workspace");
       if (els.buddyClose) {
         els.buddyClose.title = "Close Buddy";
@@ -5292,6 +5293,38 @@
     if (state.sectionId === "intelligence") render();
   }
 
+  async function runSponsorNewsCrawlManual() {
+    if (state.intelligence.sponsorNewsBusy) return;
+    state.intelligence.sponsorNewsBusy = true;
+    state.intelligence.sponsorNewsMessage =
+      "Crawling Google News RSS for SF / crosswalk sponsors…";
+    refreshDataStatusIfOpen();
+    try {
+      const res = await fetch(apiUrl("/api/sponsor-news/sync"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ maxSponsors: 25 })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        state.intelligence.sponsorNewsMessage =
+          data.error || `Sponsor news crawl failed (${res.status})`;
+      } else {
+        const bits = [
+          `Upserted ${data.upserted ?? 0} sponsors`,
+          data.errors ? `${data.errors} errors` : null,
+          data.watchlistSize != null ? `watchlist ${data.watchlistSize}` : null
+        ].filter(Boolean);
+        state.intelligence.sponsorNewsMessage = bits.join(" · ");
+      }
+      await loadIntelligenceHealth();
+    } catch (err) {
+      state.intelligence.sponsorNewsMessage = `Sponsor news error: ${String(err)}`;
+    }
+    state.intelligence.sponsorNewsBusy = false;
+    refreshDataStatusIfOpen();
+  }
+
   async function runCtgovSyncManual() {
     if (state.intelligence.syncBusy) return;
     state.intelligence.syncBusy = true;
@@ -6044,6 +6077,62 @@
         )})</span></td><td>${intelStatNum(n)}</td><td>SF ingest</td><td>${badge}</td></tr>`;
       })
       .join("");
+    const nsFromHealth = h.netsuite || {};
+    const nsCount =
+      typeof counts.lens_ns_projects === "number"
+        ? counts.lens_ns_projects
+        : typeof nsFromHealth.projects === "number"
+          ? nsFromHealth.projects
+          : null;
+    const nsLiveRows = (() => {
+      const n = typeof nsCount === "number" ? nsCount : null;
+      const badge =
+        n != null && n > 0
+          ? `<span class="badge" style="background:#D1FAE5;color:#065F46;">live NS</span>`
+          : `<span class="badge" style="background:#FEF3C7;color:#92400E;">empty</span>`;
+      return `<tr><td><code>lens_ns_projects</code> <span class="muted">(NetSuite GM)</span></td><td>${intelStatNum(
+        n
+      )}</td><td>NS extract</td><td>${badge}</td></tr>`;
+    })();
+    const rmFromHealth = h.insightsRm || {};
+    const rmCounts = rmFromHealth.counts || {};
+    const rmLiveRows = [
+      ["lens_rm_studies", "Dim_Study", rmCounts.lens_rm_studies ?? counts.lens_rm_studies],
+      ["lens_rm_actuals", "Fact_Actuals", rmCounts.lens_rm_actuals ?? counts.lens_rm_actuals],
+      [
+        "lens_rm_assignments",
+        "Fact_Assignments",
+        rmCounts.lens_rm_assignments ?? counts.lens_rm_assignments
+      ],
+      [
+        "lens_rm_projections",
+        "Fact_Projections",
+        rmCounts.lens_rm_projections ?? counts.lens_rm_projections
+      ],
+      ["lens_rm_employees", "Dim_Employee", rmCounts.lens_rm_employees ?? counts.lens_rm_employees],
+      ["lens_rm_headcount", "Fact_Headcount", rmCounts.lens_rm_headcount ?? counts.lens_rm_headcount]
+    ]
+      .map(([id, label, c]) => {
+        const n = typeof c === "number" ? c : null;
+        const badge =
+          n != null && n > 0
+            ? `<span class="badge" style="background:#D1FAE5;color:#065F46;">live RM</span>`
+            : `<span class="badge" style="background:#FEF3C7;color:#92400E;">empty</span>`;
+        return `<tr><td><code>${escapeHtml(id)}</code> <span class="muted">(${escapeHtml(
+          label
+        )})</span></td><td>${intelStatNum(n)}</td><td>Insights RM</td><td>${badge}</td></tr>`;
+      })
+      .join("");
+    const rmRun = rmFromHealth.latestRun;
+    const rmMeta = `<p class="muted" style="margin:0.35rem 0 0;">Insights RM · ${
+      rmRun
+        ? `last run ${escapeHtml(String(rmRun.runDate || rmRun.finishedAt || "—"))}${
+            rmRun.ok === false ? " · ok=false" : ""
+          }`
+        : "present in Cosmos"
+    } · NetSuite projects=${
+      typeof nsCount === "number" ? Number(nsCount).toLocaleString() : "—"
+    }</p>`;
     const vv = state.intelligence.veevaSyncStatus || {};
     const vvTables = Array.isArray(vv.tables) ? vv.tables : [];
     const vvFromHealth = h.veeva || {};
@@ -6126,10 +6215,10 @@
         <h3>Data status ${
           h.ok === false && h.error ? "· error" : countsMatch ? "· loaded" : "· check counts"
         }</h3>
-        <p class="muted">Ora Veeva + TrialHub + Salesforce reference tables in Cosmos (<code>bd-budgets</code>). Buddy reads summaries from these.</p>
+        <p class="muted">Ora Veeva + TrialHub + Salesforce + NetSuite + Insights RM reference tables in Cosmos (<code>bd-budgets</code>). Buddy reads summaries from these.</p>
         <table class="table">
           <thead><tr><th>Container</th><th>Loaded</th><th>Expected</th><th>Status</th></tr></thead>
-          <tbody>${rows}${liveRows}${sfLiveRows}${veevaLiveRows}</tbody>
+          <tbody>${rows}${liveRows}${sfLiveRows}${veevaLiveRows}${nsLiveRows}${rmLiveRows}</tbody>
         </table>
         <div style="margin-top:0.85rem;display:flex;gap:0.6rem;align-items:center;flex-wrap:wrap;">
           <button type="button" class="btn btn-secondary" id="btnIntelRefresh">Refresh</button>
@@ -6148,6 +6237,13 @@
           <button type="button" class="btn btn-secondary" id="btnVeevaSync" ${veevaDisabled}>${
             veevaBusy ? "Ingesting Veeva…" : "Ingest Veeva (full)"
           }</button>
+          <button type="button" class="btn btn-secondary" id="btnSponsorNewsCrawl" ${
+            state.intelligence.sponsorNewsBusy ? "disabled" : ""
+          }>${
+            state.intelligence.sponsorNewsBusy
+              ? "Crawling news…"
+              : "Crawl sponsor news"
+          }</button>
         </div>
         ${syncMeta}
         ${syncMsg}
@@ -6156,6 +6252,14 @@
         ${sfTablesMsg}
         ${veevaMeta}
         ${veevaMsg}
+        ${rmMeta}
+        ${
+          state.intelligence.sponsorNewsMessage
+            ? `<p class="muted" style="margin-top:0.5rem;">${escapeHtml(
+                state.intelligence.sponsorNewsMessage
+              )}</p>`
+            : ""
+        }
         ${renderCtgovSyncDeltas(state.intelligence.syncDeltas)}
       </div>
       <div class="card wide" style="margin-top:1rem;">
@@ -6911,6 +7015,7 @@
                   : "<th>Site PSM</th>"
               }
               <th>Ora studies</th><th>Other Ora</th>
+              <th>Startup (d)</th>
               <th>Veeva enrolled</th><th>Trust (high/known)</th>
               ${legacyHead}
             </tr></thead>
@@ -6926,6 +7031,18 @@
                     s.oraStudiesActive != null
                       ? `${intelStatNum(s.oraStudiesActive)} active / ${intelStatNum(s.oraStudiesAll)}`
                       : intelStatNum(s.oraStudiesAll ?? s.studyCount);
+                  const startupBits = [];
+                  if (s.contractToFsiMedian != null) {
+                    startupBits.push(`C→FSI ${intelStatNum(s.contractToFsiMedian)}`);
+                  }
+                  if (s.sivToFsiMedian != null) {
+                    startupBits.push(`SIV→FSI ${intelStatNum(s.sivToFsiMedian)}`);
+                  }
+                  const startupCell = startupBits.length
+                    ? `<td title="Median days from Veeva milestones (n Contract→FSI=${intelStatNum(
+                        s.nContractToFsi
+                      )}, n SIV→FSI=${intelStatNum(s.nSivToFsi)})">${startupBits.join("<br>")}</td>`
+                    : `<td class="muted">—</td>`;
                   return `<tr>
                   <td>${i + 1}</td>
                   <td>${escapeHtml(s.org_clean || "—")}</td>
@@ -6947,6 +7064,7 @@
                   <td title="Ora studies beyond this indication filter">${intelStatNum(
                     s.otherOraStudies
                   )}</td>
+                  ${startupCell}
                   <td>${intelStatNum(s.totalEnrolledSum)}</td>
                   ${trustCell(s)}
                   ${legacyCells(s)}
@@ -9763,7 +9881,7 @@
 
     let html = "";
     switch (section.id) {
-      case "hub": html = renderHub(); break;
+      case "hub":
       case "dashboard": html = renderDashboard(); break;
       case "buddy": html = renderBuddyPage(); break;
       case "hlbp": html = renderHlbp(); break;
@@ -9783,7 +9901,7 @@
       case "summary": html = renderSummary(); break;
       case "reviews": html = renderReviews(); break;
       case "formulas": html = renderFormulas(); break;
-      default: html = renderHub();
+      default: html = renderDashboard();
     }
     els.viewRoot.innerHTML = renderBudgetSubtabs() + html;
     if (section.id === "studies") {
@@ -9824,10 +9942,10 @@
       localStorage.setItem(USER_KEY, state.userId);
       const user = currentUser();
       if (user.department === "Admin") {
-        state.sectionId = "hub";
+        state.sectionId = "dashboard";
       } else {
         const home = SBW.sections.find((s) => s.department === user.department);
-        state.sectionId = home ? home.id : "hub";
+        state.sectionId = home ? home.id : "dashboard";
       }
       render();
     });
@@ -10222,6 +10340,10 @@
       }
       if (e.target.id === "btnVeevaSyncDelta") {
         runVeevaSyncManual({ full: false });
+        return;
+      }
+      if (e.target.id === "btnSponsorNewsCrawl") {
+        runSponsorNewsCrawlManual();
         return;
       }
       if (e.target.id === "btnTrialhubUpload") {

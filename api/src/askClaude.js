@@ -22,7 +22,7 @@ const SYSTEM_PROMPT_DEFAULT = [
   "When both cosmos and portfolio exist, use cosmos for study-specific detail and portfolio for rollups/averages.",
   "HLBP / High Level Ballpark: when the user says they need an HLBP / high-level ballpark form, create or continue an HLBP draft. End with CREATE_STUDY:{\"budgetType\":\"HLBP\",\"clientName\":\"...\",\"phase\":\"...\",\"indication\":\"...\",\"drivers\":{\"enrolledSubjects\":100,\"enrollmentMonths\":12,\"coreSites\":16},\"sites\":[{\"country\":\"United States\",\"coreSites\":12},{\"country\":\"United Kingdom\",\"coreSites\":4}],\"versionLabel\":\"HLBP draft\"} including only fields they gave, then NAVIGATE:hlbp. Guide missing required fields one batch at a time (client, indication, phase, enrolled, enrollment months, site country mix). When they answer, APPLY those fields (drivers.*, sites.N.country, sites.N.coreSites, clientName, etc.). Do not invent a full detailed Internal Budget.",
   "When the user wants a new study / draft bid (not HLBP) and provides details, briefly confirm, then end with exactly one line: CREATE_STUDY:{\"studyId\":\"O-12345 or omit\",\"clientName\":\"...\",\"title\":\"...\",\"protocol\":\"...\",\"phase\":\"...\",\"therapeuticArea\":\"...\",\"indication\":\"...\",\"drivers\":{\"enrolledSubjects\":120,\"screenedSubjects\":180,\"coreSites\":15,\"enrollmentMonths\":12},\"notes\":\"...\",\"versionLabel\":\"draft\"}. Only include fields the user gave. studyId optional — system will assign NEW-… if missing. Do not claim the study exists until the user clicks Create in the UI.",
-  "NAVIGATE (critical): Emit NAVIGATE:<sectionId> ONLY when the user explicitly asks to open / go to / show a tab (e.g. \"open Site Scorecard\", \"take me to Intelligence\"). Never NAVIGATE as a way to answer PSM, site lists, feasibility, TrialHub, CT.gov, or startup timelines — those answers come from context.intelligence (Cosmos) in the chat. Forbidden for data asks: NAVIGATE:intelligence, NAVIGATE:scorecard. Allowed section ids when user asked to open: hub, buddy, hlbp, ops, studies, versions, intelligence, data-status, scorecard, buddy-context, overview, recruitment, clinops, monitoring, smo, summary, reviews, formulas, upload.",
+  "NAVIGATE (critical): Emit NAVIGATE:<sectionId> ONLY when the user explicitly asks to open / go to / show a tab (e.g. \"open Site Scorecard\", \"take me to Intelligence\"). Never NAVIGATE as a way to answer PSM, site lists, feasibility, TrialHub, CT.gov, or startup timelines — those answers come from context.intelligence (Cosmos) in the chat. Forbidden for data asks: NAVIGATE:intelligence, NAVIGATE:scorecard. Allowed section ids when user asked to open: dashboard, buddy, hlbp, ops, studies, versions, intelligence, data-status, scorecard, buddy-context, overview, recruitment, clinops, monitoring, smo, summary, reviews, formulas, upload. Prefer NAVIGATE:dashboard instead of hub (Hub tab removed).",
   "When the user asks you to set, fill, change, or update a field on the open study, briefly confirm what you will change, then put exactly one line at the end: APPLY:[{\"path\":\"assumptions.recruitment.notes\",\"value\":\"text\",\"label\":\"Notes (Recruitment)\"}].",
   "FILL FOLLOW-UP (critical): If your previous message asked the user for missing fields / \"give me X and I'll fill it in\" / What I need — and THIS message has their answers: you MUST emit APPLY (open study) or CREATE_STUDY (no study / new HLBP) on THIS turn using the values they just gave. Do not only acknowledge. Do not say you will fill it later. Do not re-ask for fields they already provided. If they were filling an HTML report/template, emit a complete filled HTML_REPORT this turn.",
   "When the user asks Buddy to remember, learn, save for later, add to context/playbook, or keep a fact/process/talking-point: briefly confirm, then end with exactly one line LEARN_CONTEXT:{\"dept\":\"bd\",\"category\":\"talking-points\",\"addition\":\"the durable note to store\"}. dept one of: general, bd, ops, recruitment, clinops, monitoring, smo, analyst, leadership, feasibility, pricing. category one of: playbook, talking-points, ous, sites, indication, pricing, ops, other. The user must click Save to Buddy context before it is stored. Do not claim it is already saved.",
@@ -97,6 +97,8 @@ const INTELLIGENCE_RULES = [
   "4) ora_site_alias_table (~46): variant site names → canonical_name (already applied into org_clean where possible).",
   "5) ora_ctgov_trials (ClinicalTrials.gov ophthalmology feed, daily delta ~6AM EST): public registry landscape.",
   "6) ora_sf_account / ora_sf_opportunity / ora_sf_activity_request (live Salesforce mirrors).",
+  "7) lens_ns_projects (NetSuite Project Profitability): project_number, project_name, project_manager, customer_name, project_status, service_line, change_order_status, budgeted_gm_pct, actual_gm_pct_prior_month, gm_pct_variance, projected_eos_gm_pct_prior_month, cost_per_billable_hr_*. Pack: intelligence.netsuiteData.",
+  "8) lens_rm_* (Insights RM / FleetView star schema — Ora_Resource_Model map): Dim_Study→studies, Dim_Role→roles, Dim_Employee→employees, Dim_Activity→activities; Fact_Actuals/Assignments/Projections/Headcount. Join StudyKey/RoleId/EmployeeKey. Pack: intelligence.insightsRmData (studies, assignments, recentActuals, dqSummary, latestRun).",
   " USE CASES — match the ask to the right source:",
   "• Indication picking is EXCLUSIVE: one ask → one indication family only. Dry Eye ≠ Dry AMD ≠ Wet AMD; Glaucoma ≠ Neuroprotection; CRVO ≠ BRVO ≠ RVO umbrella unless that exact label was asked. Never mash shared words (dry, macular, optic, retinal, glaucoma…). Use context.intelligence.query.indication / aliasesUsed; if ambiguous, ask which indication.",
   "• Feasibility / \"how fast do we enroll\" / typical PSM for an indication → context.intelligence.indicationBenchmark (Ora median PSM + TrialHub median psm_common + site medians). Prefer medians; cite studiesWithPsm / trialsWithPsm counts.",
@@ -106,16 +108,19 @@ const INTELLIGENCE_RULES = [
   "• Startup / activation / SIV→FSI / contract→FSI timelines → indicationBenchmark.startupTimelines.gapMedians + topSitesByStartup. Prefer those medians; do not invent day counts.",
   "• Site selection / which sites perform → LIST real site names from sites.topSitesByPsm AND sites.topSites (org_clean + country + site_psm + fsi_trust). Null PSM still counts — name the site. Also use countrySites.topSites and startupTimelines.topSitesByStartup when present. Optional: NAVIGATE:scorecard after listing — never instead of naming sites.",
   "• Region / country feasibility (US, UK, Germany, Japan, …) → use countryFilter on sites + ctgov + TrialHub countries; cite geography explicitly.",
-  "• Site Scorecard (Ora vs industry) → oraScore vs industryScore/Δ; otherOraStudies / oraStudiesActive = concurrent Ora load at that org beyond the indication filter; Deeper dive = recommended site slate for enrollment goals. Prefer medians; null ≠ 0.",
+  "• Site Scorecard (Ora vs industry) → oraScore vs industryScore/Δ; otherOraStudies / oraStudiesActive = concurrent Ora load; contractToFsiMedian / sivToFsiMedian = startup speed (days); Deeper dive = recommended site slate. Prefer medians; null ≠ 0.",
   "• BD/sales pitch asks (\"why Ora\", \"what do I tell the sponsor\", RFI bullets) → lead with Ora median vs industry, geography, top sites, competitive recruiting; end with 3 short talking points.",
   "• BD call prep / win themes / meeting prep → indicationBenchmark + sponsorCrosswalk (owner/tier) + competing recruitingSample + 3 talking points; emit HTML_REPORT when they ask for a leave-behind. Prefer open-study indication/client when the question does not name one.",
   "• Leadership briefing / exec one-pager → Salesforce pipeline (Total Ora Net) + Veeva/CT.gov freshness from intelligence — not uploaded bid portfolio.",
-  "• What's in the DB / Cosmos catalog / ingest freshness → intelligence.inventory + Data Status sync times (Veeva / SF / CT.gov). Do not treat portfolio.databaseStudyCount (uploaded budgets) as the live catalog.",
+  "• What's in the DB / Cosmos catalog / ingest freshness → intelligence.inventory + Data Status sync times (Veeva / SF / CT.gov / NetSuite / Insights RM). Do not treat portfolio.databaseStudyCount (uploaded budgets) as the live catalog.",
   "• Client concentration / who pays us the most → Salesforce openAccounts / Closed Won by account (Total Ora Net). Uploaded bid files are not a reliable source until squared away.",
   "• Ops briefing (section status, fill requests, what to do next) → workingStudy.sectionStatus / requests / drivers; suggest NAVIGATE:ops or NAVIGATE:reviews.",
   "• Legacy recruitment board / anterior overview (no indication) → legacyAnterior trust + topByEnrolled / counts. If enrollmentIncluded or htmlTable present, list enrollment; never ask user to paste the table.",
   "• Sponsor already in SF? BD owner / tier / Ora grouping? → intelligence.sponsorCrosswalk (sf_owner, tier, ora_grouping). Crosswalk dashboard (no sponsor named) → intelligence.crosswalkOverview (totalCount, statusRank, tierRank, noSfMatchSample).",
   "• Salesforce Accounts / Opportunities / Activity Requests (ARs) → intelligence.salesforceData. Use pipelineSummary (scannedAll=true over ALL Cosmos opps), openAccounts, filteredOpportunities, yearSlice, ownerBreakdown. SF $ = Total Ora Net Revenue — never Amount/contract. NEVER call pipelineSummary a 200-row sample. NEVER ask for a Salesforce CSV/export when counts > 0 — answer from the pack. Prefer this over portfolio.byClient for CRM/pipeline/owner/tier/AR. If yearSlice.closedWonCount is 0, say zero for that year (offer closedWonByYear). For HTML visuals include Owner on every row.",
+  "• NetSuite project profitability / GM % / cost per billable hour → intelligence.netsuiteData (matched + highVarianceSample). Cite project_number + gm_pct_variance. Do not invent GM from bids.",
+  "• Insights RM / FTE / staffing / assignments / headcount / timesheet actuals → intelligence.insightsRmData. Prefer StudyKey (Ora project id). Actuals=timesheet FTE; Assignments=booked; Projections=role demand; Headcount=capacity. Mention DQ findings when dqSummary is present.",
+  "• Sponsor headlines / in the news → intelligence.sponsorNews (Google News RSS crawl → ora_sponsor_news). Not ZoomInfo — headlines only.",
   "• NCT lookup → intelligence.nctLookup (TrialHub) and/or intelligence.ctgovNct / ctgov.",
   "• CT.gov dashboard / registry overview (no indication named) → intelligence.ctgovOverview (totalCount, indicationRank, statusRank, recentSample, countryRank). If totalCount > 0 you HAVE data — never say CT.gov is empty.",
   "• CT.gov by indication → intelligence.ctgov (trialCount, sample, recruitingSample).",
@@ -352,7 +357,7 @@ function systemPromptFor(context) {
   }
   const base = buddyInstructionsBase();
   const protocols =
-    " Machine protocols: for tab navigation end with NAVIGATE:<sectionId> ONLY if the user explicitly asked to open that tab (hub,buddy,hlbp,ops,studies,versions,intelligence,scorecard,buddy-context,overview,recruitment,clinops,monitoring,smo,summary,reviews,formulas,upload). Never NAVIGATE to answer data questions." +
+  " Machine protocols: for tab navigation end with NAVIGATE:<sectionId> ONLY if the user explicitly asked to open that tab (dashboard,buddy,hlbp,ops,studies,versions,intelligence,scorecard,buddy-context,overview,recruitment,clinops,monitoring,smo,summary,reviews,formulas,upload,data-status). Prefer dashboard over hub (Hub removed). Never NAVIGATE to answer data questions." +
     " For field fills end with APPLY:[{\"path\":\"drivers.enrolledSubjects\",\"value\":100,\"label\":\"Enrolled subjects\"}] using only context.editableFields paths; prefer activeTab for ambiguous names. The workbench writes APPLY patches immediately when a study is open." +
     " FILL FOLLOW-UP: If context.fillFollowUp is true, the user just answered your missing-field ask — emit APPLY or CREATE_STUDY this turn. Never reply with only \"thanks / I'll fill that in\" and no protocol line." +
     " To remember/learn a durable SME note from chat end with LEARN_CONTEXT:{\"dept\":\"bd\",\"category\":\"talking-points\",\"addition\":\"…\"}; user must click Save to Buddy context — do not claim it is stored until then." +
@@ -1261,6 +1266,7 @@ function formatCosmosFactsBlock(context) {
     lines.push(
       `Cosmos inventory: ora_veeva_study=${c.ora_veeva_study ?? "—"}, ora_veeva_site=${c.ora_veeva_site ?? "—"}, ` +
         `ora_veeva_milestone=${c.ora_veeva_milestone ?? "—"}, ora_trialhub_trials=${c.ora_trialhub_trials ?? "—"}, ` +
+        `lens_ns_projects=${c.lens_ns_projects ?? "—"}, lens_rm_studies=${c.lens_rm_studies ?? "—"}, ` +
         `ora_ctgov_trials=${c.ora_ctgov_trials ?? "—"}`
     );
   }
@@ -1670,6 +1676,101 @@ function formatCosmosFactsBlock(context) {
   } else if (context?.intelligence?.query?.salesforceIntent) {
     blocks.push(
       "SALESFORCE FACTS — pack missing/error. Say Sync SF tables may be needed; do not invent SF pipeline data."
+    );
+  }
+
+  const ns = context?.intelligence?.netsuiteData;
+  if (ns && !ns.error) {
+    const nsLines = [
+      "NETSUITE FACTS (Cosmos lens_ns_projects — Project Profitability):",
+      `count=${ns.count ?? "—"} empty=${ns.empty === true} hint=${ns.projectHint || "—"}`
+    ];
+    if (ns.empty) {
+      nsLines.push("RULE: NetSuite pack empty — say lens_ns_projects not loaded; do not invent GM%.");
+    } else {
+      for (const p of (ns.matched || []).slice(0, 12)) {
+        nsLines.push(
+          `  - ${p.project_number || "?"} | ${p.project_name || "—"} | cust=${
+            p.customer_name || "—"
+          } | status=${p.project_status || "—"} | budgGM=${p.budgeted_gm_pct ?? "—"} | actGM=${
+            p.actual_gm_pct_prior_month ?? "—"
+          } | var=${p.gm_pct_variance ?? "—"} | PM=${p.project_manager || "—"}`
+        );
+      }
+      for (const p of (ns.highVarianceSample || []).slice(0, 8)) {
+        nsLines.push(
+          `  - hiVar ${p.project_number || "?"} | var=${p.gm_pct_variance ?? "—"} | budgGM=${
+            p.budgeted_gm_pct ?? "—"
+          } | actGM=${p.actual_gm_pct_prior_month ?? "—"} | ${p.project_name || ""}`
+        );
+      }
+      if (ns.note) nsLines.push(`note: ${ns.note}`);
+      nsLines.push(
+        "RULE: Cite project_number + GM fields from this pack only. Never invent margins from uploaded bid workbooks."
+      );
+    }
+    blocks.push(nsLines.join("\n"));
+  } else if (context?.intelligence?.query?.netsuiteIntent) {
+    blocks.push(
+      "NETSUITE FACTS — pack missing/error. Say lens_ns_projects may be empty; do not invent GM%."
+    );
+  }
+
+  const rm = context?.intelligence?.insightsRmData;
+  if (rm && !rm.error) {
+    const rmLines = [
+      "INSIGHTS RM FACTS (Cosmos lens_rm_* — Resource Model star schema):",
+      `studies=${rm.counts?.lens_rm_studies ?? "—"} actuals=${rm.counts?.lens_rm_actuals ?? "—"} assignments=${
+        rm.counts?.lens_rm_assignments ?? "—"
+      } projections=${rm.counts?.lens_rm_projections ?? "—"} employees=${
+        rm.counts?.lens_rm_employees ?? "—"
+      } empty=${rm.empty === true} hint=${rm.studyHint || "—"}`
+    ];
+    if (rm.empty) {
+      rmLines.push("RULE: RM pack empty — say Insights RM not loaded; do not invent FTE.");
+    } else {
+      for (const s of (rm.studies || []).slice(0, 12)) {
+        rmLines.push(
+          `  - Study ${s.studyKey || s.projectId || "?"} | ${s.studyName || "—"} | sponsor=${
+            s.sponsor || "—"
+          } | ind=${s.indication || "—"} | status=${s.status || s.currentProjectStatus || "—"} | sites=${
+            s.numSites ?? "—"
+          }`
+        );
+      }
+      for (const a of (rm.assignments || []).slice(0, 15)) {
+        rmLines.push(
+          `  - Assign ${a.studyKey || "?"} | emp=${a.employeeKey || "—"} | act=${
+            a.activityNameRaw || "—"
+          } | FTE=${a.valueFTE ?? "—"} | ${a.beginDate || "—"}→${a.endDate || "—"} | ${a.status || ""}`
+        );
+      }
+      for (const a of (rm.recentActuals || []).slice(0, 10)) {
+        rmLines.push(
+          `  - Actual ${a.studyKey || "?"} | ${a.employeeNameRaw || "—"} | ${
+            a.activityNameRaw || "—"
+          } | FTE=${a.valueFTE ?? "—"} | ${a.beginDate || ""}`
+        );
+      }
+      for (const d of (rm.dqSummary || []).slice(0, 6)) {
+        rmLines.push(
+          `  - DQ ${d.severity || "?"} ${d.sheet || ""}: ${d.finding || ""} (n=${d.rowsFound ?? "—"})`
+        );
+      }
+      if (rm.latestRun) {
+        rmLines.push(
+          `latestRun: ${rm.latestRun.runDate || rm.latestRun.finishedAt || "—"} ok=${rm.latestRun.ok}`
+        );
+      }
+      if (rm.note) rmLines.push(`note: ${rm.note}`);
+      rmLines.push(
+        "RULE: Actuals=timesheet FTE; Assignments=booked; Projections=role demand; Headcount=capacity. Prefer StudyKey."
+      );
+    }
+    blocks.push(rmLines.join("\n"));
+  } else if (context?.intelligence?.query?.insightsRmIntent) {
+    blocks.push(
+      "INSIGHTS RM FACTS — pack missing/error. Say lens_rm_* may be empty; do not invent FTE/staffing."
     );
   }
 

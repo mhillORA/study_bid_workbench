@@ -278,7 +278,7 @@ function isGeneralKnowledgeAsk(question, { hasOkUpload = false, body = null } = 
 
   // Ora / workbench domain → pull Cosmos
   if (
-    /\b(ora|cosmos|psm|trialhub|ct\.?\s*gov|clinicaltrials|veeva|feasibility|hlbp|ballpark|sponsor|indication|enroll(?:ment|ed|ing)?|screen(?:ed|ing|fail)?|site\s*score|portfolio|budget|bid|pricing|fee|revenue|alcon|nct-?\d|dry\s*eye|glaucoma|retina|amd|dme|ted\b|cataract|ophthalm|buddy context|opportunity|o-\d{3,}|studies\b|study\b|client|protocol|scorecard|ops dashboard|netsuite)\b/i.test(
+    /\b(ora|cosmos|psm|trialhub|ct\.?\s*gov|clinicaltrials|veeva|feasibility|hlbp|ballpark|sponsor|indication|enroll(?:ment|ed|ing)?|screen(?:ed|ing|fail)?|site\s*score|portfolio|budget|bid|pricing|fee|revenue|alcon|nct-?\d|dry\s*eye|glaucoma|retina|amd|dme|ted\b|cataract|ophthalm|buddy context|opportunity|o-\d{3,}|studies\b|study\b|client|protocol|scorecard|ops dashboard|netsuite|insights?\s*rm|fte|headcount|staffing|gm\s*%|gm\s*pct)\b/i.test(
       lower
     )
   ) {
