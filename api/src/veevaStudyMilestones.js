@@ -107,8 +107,8 @@ async function buildStudyMilestoneBoard(getDb, opts = {}) {
   const studyRows = await queryAll(
     database.container("ora_veeva_study"),
     `SELECT c.id, c.name__v, c.alternate_study_number__vs, c.study_name__v,
-            c.sponsor_organization__v, c.indication__v, c.indication__c, c.study_phase__v,
-            c.status__v, c.study_status__v, c.enrollment__vs
+            c.sponsor__c, c.sponsor_organization__v, c.indication__v, c.indication__c,
+            c.study_phase__v, c.status__v, c.study_status__v, c.enrollment__vs
      FROM c WHERE c.docType = @t`,
     [{ name: "@t", value: "ora_veeva_study" }]
   );

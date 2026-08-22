@@ -3221,19 +3221,21 @@ async function buildSiteScorecard(getDb, opts = {}) {
   }
 
   let harmonizedFactRows = 0;
+  let factRowsForBackfill = [];
   try {
-    const factRows = await loadHarmonizedFactSitesForScorecard(database, {
+    factRowsForBackfill = await loadHarmonizedFactSitesForScorecard(database, {
       preferred,
       aliases,
       related,
       countries
     });
-    for (const r of factRows) {
+    for (const r of factRowsForBackfill) {
       harmonizedFactRows += 1;
       mergeSite(r);
     }
   } catch (_) {
     harmonizedFactRows = 0;
+    factRowsForBackfill = [];
   }
 
   const liveSitesWithPsm = (pack.sites || []).filter(
@@ -3302,6 +3304,13 @@ async function buildSiteScorecard(getDb, opts = {}) {
     if (!looksClosed) bucket.active.add(sid);
   }
 
+  const normOrgKey = (s) =>
+    String(s || "")
+      .toLowerCase()
+      .replace(/^otx-|^ocun-\d+\s*/i, "")
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim();
+
   const aggregates = [...byKey.values()].map((g) => {
     const trustKnown = g.trustHigh + g.trustLow + g.trustMedium;
     const highTrustShare = trustKnown > 0 ? round(g.trustHigh / trustKnown, 3) : null;
@@ -3329,18 +3338,45 @@ async function buildSiteScorecard(getDb, opts = {}) {
       trustUnknown: g.trustUnknown,
       trustKnown,
       trustHighOfKnown: trustKnown > 0 ? `${g.trustHigh}/${trustKnown}` : null,
-      indications: [...g.indications].slice(0, 6)
+      indications: [...g.indications].slice(0, 6),
+      psmSource: g.psms.length ? "live_or_merged" : null
     };
   });
 
+  if (factRowsForBackfill.length) {
+    const factByOrgKey = new Map();
+    for (const r of factRowsForBackfill) {
+      if (!(typeof r.site_psm === "number" && r.site_psm > 0)) continue;
+      const key = `${normOrgKey(r.org_clean || r.organization)}||${String(r.country || "_unknown").toLowerCase()}`;
+      if (!factByOrgKey.has(key)) factByOrgKey.set(key, []);
+      factByOrgKey.get(key).push(r.site_psm);
+    }
+    for (const a of aggregates) {
+      if (typeof a.sitePsmMedian === "number" && a.sitePsmMedian > 0) continue;
+      const key = `${normOrgKey(a.org_clean)}||${String(a.country || "_unknown").toLowerCase()}`;
+      const psms = factByOrgKey.get(key);
+      if (psms?.length) {
+        a.sitePsmMedian = round(median(psms));
+        a.psmSource = "harmonized_fact";
+        if (!a.totalEnrolledSum) {
+          const enrolled = factRowsForBackfill
+            .filter(
+              (r) =>
+                normOrgKey(r.org_clean || r.organization) === normOrgKey(a.org_clean) &&
+                String(r.country || "_unknown").toLowerCase() ===
+                  String(a.country || "_unknown").toLowerCase()
+            )
+            .map((r) => r.total_enrolled)
+            .filter((n) => typeof n === "number" && n > 0);
+          if (enrolled.length) a.totalEnrolledSum = enrolled.reduce((x, y) => x + y, 0);
+        }
+      }
+    }
+  }
+
   // Startup speed from live Veeva milestones (contract→FSI / SIV→FSI days)
   let startupByOrg = new Map();
-  const normOrg = (s) =>
-    String(s || "")
-      .toLowerCase()
-      .replace(/^otx-|^ocun-\d+\s*/i, "")
-      .replace(/[^a-z0-9]+/g, " ")
-      .trim();
+  const normOrg = normOrgKey;
   try {
     const startup = await queryStartupTimelines(database, {
       countries,
@@ -3661,6 +3697,7 @@ module.exports = {
   queryStartupTimelines,
   lookupSponsorCrosswalk,
   preferredIndicationLabel,
+  relatedIndicationLabels,
   indicationContainsNeedles,
   extractEnrollmentPlan,
   extractSiteListLimit,

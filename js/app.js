@@ -78,7 +78,11 @@
       sponsorNewsFeedLoading: false,
       sponsorNewsFeedStatus: "",
       sponsorNewsBusy: false,
-      sponsorNewsMessage: ""
+      sponsorNewsMessage: "",
+      studyMilestones: null,
+      studyMilestonesLoading: false,
+      studyMilestonesStatus: "",
+      studyMilestoneStudy: ""
     },
     scorecard: {
       indication: "",
@@ -5250,6 +5254,129 @@
     if (state.sectionId === "intelligence") render();
   }
 
+  async function loadStudyMilestones() {
+    state.intelligence.studyMilestonesLoading = true;
+    state.intelligence.studyMilestonesStatus = "Loading study timelines…";
+    if (state.sectionId === "intelligence") render();
+    try {
+      const params = new URLSearchParams({ limit: "20" });
+      const ind = String(state.intelligence.indication || "").trim();
+      const study = String(state.intelligence.studyMilestoneStudy || "").trim();
+      if (ind) params.set("q", ind);
+      if (study) params.set("study", study);
+      const res = await fetch(apiUrl(`/api/intelligence/study-milestones?${params.toString()}`));
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        state.intelligence.studyMilestones = null;
+        state.intelligence.studyMilestonesStatus = data.error || `Timelines failed (${res.status})`;
+      } else {
+        state.intelligence.studyMilestones = data;
+        state.intelligence.studyMilestonesStatus = data.empty
+          ? data.note || "No studies with milestone intervals matched."
+          : "";
+      }
+    } catch (err) {
+      state.intelligence.studyMilestones = null;
+      state.intelligence.studyMilestonesStatus = String(err.message || err);
+    }
+    state.intelligence.studyMilestonesLoading = false;
+    if (state.sectionId === "intelligence") render();
+  }
+
+  function renderStudyMilestonesCard() {
+    const board = state.intelligence.studyMilestones;
+    const loading = state.intelligence.studyMilestonesLoading;
+    const status = state.intelligence.studyMilestonesStatus;
+    const studyQ = escapeAttr(state.intelligence.studyMilestoneStudy || "");
+
+    const filterRow = `<div class="benchmark-filter-grid" style="margin-top:0.75rem;">
+      <div class="benchmark-filter-field">
+        <label class="field-label" for="studyMilestoneSearch">Study filter (optional)</label>
+        <input id="studyMilestoneSearch" class="input" placeholder="Study number or name" value="${studyQ}" />
+      </div>
+      <div class="benchmark-filter-field" style="display:flex;align-items:flex-end;">
+        <button type="button" class="btn btn-primary" id="btnLoadStudyMilestones" ${
+          loading ? "disabled" : ""
+        }>${loading ? "Loading…" : "Load timelines"}</button>
+      </div>
+    </div>`;
+
+    if (loading && !board) {
+      return `<div class="card wide"><h3>Study milestone timelines</h3>${filterRow}<p class="muted">${escapeHtml(
+        status || "Loading…"
+      )}</p></div>`;
+    }
+
+    const studies = board?.studies || [];
+    if (!studies.length) {
+      return `<div class="card wide">
+        <h3>Study milestone timelines</h3>
+        <p class="muted">Prior Ora studies — days between major study-level Veeva milestones (SOW → FSI → LSI → DBL → CSR → close). Uses the same canonical step order as Insights RM.</p>
+        ${filterRow}
+        <p class="muted" style="margin-top:0.75rem;">${
+          status ? escapeHtml(status) : "Pick an indication above (or leave blank for all studies), then Load timelines."
+        }</p>
+      </div>`;
+    }
+
+    const rows = studies
+      .map((s) => {
+        const intervals = (s.intervals || [])
+          .map(
+            (iv) =>
+              `<tr><td>${escapeHtml(iv.fromDisplay)}</td><td>${escapeHtml(
+                iv.toDisplay
+              )}</td><td>${intelStatNum(iv.days)}</td><td class="muted">${escapeHtml(
+                iv.fromDate || "—"
+              )} → ${escapeHtml(iv.toDate || "—")}</td></tr>`
+          )
+          .join("");
+        const milestones = (s.milestones || [])
+          .map(
+            (m) =>
+              `<tr><td>${intelStatNum(m.stepOrder)}</td><td>${escapeHtml(
+                m.displayName
+              )}</td><td>${escapeHtml(m.actualDate || "—")}</td></tr>`
+          )
+          .join("");
+        return `<details style="margin:0.75rem 0;border:1px solid var(--border,#e5e7eb);border-radius:6px;padding:0.5rem 0.75rem;">
+          <summary style="cursor:pointer;font-weight:600;">
+            ${escapeHtml(s.study_number || s.study_name || "Study")} · ${escapeHtml(
+              s.sponsor || "—"
+            )} · ${intelStatNum(s.milestonesCompleted)} steps · last ${escapeHtml(
+              s.lastCompleted?.displayName || "—"
+            )}
+          </summary>
+          <p class="muted" style="margin:0.5rem 0;">${escapeHtml(
+            s.indication || "—"
+          )} · ${escapeHtml(s.phase || "—")} · ${escapeHtml(s.status || "—")}${
+            s.enrollment != null ? ` · enrolled ${intelStatNum(s.enrollment)}` : ""
+          }</p>
+          <h4 style="margin:0.75rem 0 0.35rem;font-size:0.95rem;">Days between consecutive milestones</h4>
+          <div style="overflow:auto;">
+            <table class="table"><thead><tr><th>From</th><th>To</th><th>Days</th><th>Dates</th></tr></thead><tbody>${
+              intervals || `<tr><td colspan="4" class="muted">No intervals</td></tr>`
+            }</tbody></table>
+          </div>
+          <h4 style="margin:0.75rem 0 0.35rem;font-size:0.95rem;">Milestone dates (canonical order)</h4>
+          <div style="overflow:auto;">
+            <table class="table"><thead><tr><th>#</th><th>Milestone</th><th>Actual</th></tr></thead><tbody>${milestones}</tbody></table>
+          </div>
+        </details>`;
+      })
+      .join("");
+
+    return `<div class="card wide">
+      <h3>Study milestone timelines</h3>
+      <p class="muted">${escapeHtml(
+        board.note ||
+          "Study-level milestones only — intervals are actual finish/start dates between consecutive steps."
+      )} · n=${intelStatNum(board.studyCount)}</p>
+      ${filterRow}
+      <div style="margin-top:0.75rem;">${rows}</div>
+    </div>`;
+  }
+
   function renderSponsorNewsCard() {
     const feed = state.intelligence.sponsorNewsFeed;
     const loading = state.intelligence.sponsorNewsFeedLoading;
@@ -5390,6 +5517,9 @@
     }
     state.intelligence.loading = false;
     if (state.sectionId === "intelligence") render();
+    if (state.intelligence.pack && !state.intelligence.pack.error) {
+      await loadStudyMilestones();
+    }
   }
 
   async function runSponsorNewsCrawlManual() {
@@ -6601,6 +6731,7 @@
           ${countryNote}
         </div>
         ${renderSponsorNewsCard()}
+        ${renderStudyMilestonesCard()}
         ${renderIntelBenchmark()}
       </div>`;
   }
@@ -10337,6 +10468,12 @@
       }
       if (e.target.id === "btnRefreshSponsorNews") {
         loadSponsorNewsFeed();
+        return;
+      }
+      if (e.target.id === "btnLoadStudyMilestones") {
+        const studyInput = document.getElementById("studyMilestoneSearch");
+        if (studyInput) state.intelligence.studyMilestoneStudy = studyInput.value;
+        loadStudyMilestones();
         return;
       }
       if (e.target.id === "btnIntelQuery") {

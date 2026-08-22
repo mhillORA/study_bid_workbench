@@ -1341,6 +1341,39 @@ app.http("intelligenceIndication", {
   }
 });
 
+app.http("intelligenceStudyMilestones", {
+  methods: ["GET", "OPTIONS"],
+  authLevel: "anonymous",
+  route: "intelligence/study-milestones",
+  handler: async (request, context) => {
+    if (request.method === "OPTIONS") {
+      return {
+        status: 204,
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, OPTIONS",
+          "Access-Control-Allow-Headers": "content-type"
+        }
+      };
+    }
+    try {
+      const { buildStudyMilestoneBoard } = require("./veevaStudyMilestones");
+      const q = request.query.get("q") || request.query.get("indication") || "";
+      const study = request.query.get("study") || request.query.get("studyQ") || "";
+      const limit = Math.min(Number(request.query.get("limit")) || 25, 50);
+      const board = await buildStudyMilestoneBoard(getDb, {
+        indication: String(q).trim() || null,
+        study: String(study).trim() || null,
+        limit
+      });
+      return json(200, board, request);
+    } catch (err) {
+      context.error(err);
+      return json(500, { error: String(err.message || err) }, request);
+    }
+  }
+});
+
 app.http("intelligenceSiteScorecard", {
   methods: ["GET", "OPTIONS"],
   authLevel: "anonymous",
