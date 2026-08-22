@@ -54,9 +54,12 @@ GitHub Actions **`intelligence-daily-sync.yml`** runs tables + crosswalk daily a
 5. Consumer Key saved
 6. Private key `ora_intel_sf.key` kept offline
 
-## Azure App Settings (SWA API)
+## Azure App Settings (Function App **ora-buddy-api**)
 
-In Azure Portal → your Static Web App → **Configuration** → **Application settings** (API / Function app settings):
+> **Not the Static Web App.** SF sync runs on `ora-buddy-api` (same host as Veeva).  
+> Putting `SF_*` only on SWA `bd-budgets` / `white-river` leaves live refresh broken even when Cosmos mirrors look fine.
+
+In Azure Portal → Function App **`ora-buddy-api`** → **Settings** → **Environment variables** / **Application settings**:
 
 | Name | Value |
 |---|---|
@@ -68,6 +71,19 @@ In Azure Portal → your Static Web App → **Configuration** → **Application 
 | `SF_TIER_FIELD` | `Tier__c` |
 | `SF_GROUPING_FIELD` | `Ora_Grouping__c` |
 | `SF_API_VERSION` | `59.0` (optional) |
+
+### Cosmos fallback (no Portal)
+
+If the JWT private key is already in Cosmos (`syncState/salesforce_jwt_key`) but Consumer Key + username are missing on the Function App:
+
+```powershell
+# Add to local .env (never commit):
+# SF_CLIENT_ID=...
+# SF_USERNAME=...
+node scripts/set-sf-connection.js
+```
+
+That writes `syncState/salesforce_connection`. Next **Ingest SF** on Data Status uses Cosmos for clientId/username + Cosmos for the JWT key.
 
 ### Pasting the private key (use base64)
 

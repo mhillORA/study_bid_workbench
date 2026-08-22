@@ -1,6 +1,6 @@
 /**
  * Salesforce JWT Bearer client for Ora Intelligence Tool.
- * Env (SWA App Settings):
+ * Env (Function App ora-buddy-api App Settings — NOT the Static Web App):
  *   SF_CLIENT_ID             Connected/External Client App Consumer Key
  *   SF_USERNAME              Integration user username (email)
  *   SF_LOGIN_URL             https://login.salesforce.com (prod) or https://test.salesforce.com
@@ -9,6 +9,9 @@
  *   SF_API_VERSION           optional, default 59.0
  *   SF_TIER_FIELD            optional Account field API name, default Tier__c
  *   SF_GROUPING_FIELD        optional Account field API name, default Ora_Grouping__c
+ *
+ * Fallback: Cosmos syncState/salesforce_connection (clientId+username) + salesforce_jwt_key (PEM).
+ * Veeva credentials live on ora-buddy-api; SF Consumer Key/username must too (or in Cosmos).
  */
 
 const crypto = require("crypto");
@@ -223,14 +226,27 @@ function notConfiguredPayload(cfg, extra = {}) {
   if (!cfg?.clientId) missing.push("SF_CLIENT_ID");
   if (!cfg?.username) missing.push("SF_USERNAME");
   const envDiag = diagnoseSalesforceEnvKeys();
+  const noSfEnv = !(envDiag.sfRelatedKeys || []).some((k) => k.set);
+  let error;
+  if (missing.length === 0) {
+    error = "Salesforce credentials unresolved.";
+  } else if (noSfEnv) {
+    error =
+      `Live SF refresh blocked on ${cfg?.host || runtimeHostHint()}: ${missing.join(" + ")} ` +
+      `are not visible to this Function App (process sees zero SF_* App Settings). ` +
+      `JWT may already be in Cosmos; Consumer Key + username were originally put on the Static Web App. ` +
+      `Veeva already works on ora-buddy-api — put SF_CLIENT_ID + SF_USERNAME there too, ` +
+      `or run: node scripts/set-sf-connection.js (after adding those two to local .env).`;
+  } else {
+    error =
+      `Live SF refresh blocked on ${cfg?.host || runtimeHostHint()}: process cannot see ${missing.join(" + ")}. ` +
+      `Cosmos mirrors still usable. App Settings belong on Function App ora-buddy-api (Linux = case-sensitive names).`;
+  }
   return {
     ok: false,
     skipped: true,
     reason: "not_configured",
-    error:
-      missing.length === 0
-        ? "Salesforce credentials unresolved."
-        : `Live SF refresh blocked on ${cfg?.host || runtimeHostHint()}: process cannot see ${missing.join(" + ")}. Cosmos mirrors still usable. Confirm App Settings on Function App ora-buddy-api (Linux = case-sensitive names).`,
+    error,
     host: cfg?.host || runtimeHostHint(),
     clientIdSet: Boolean(cfg?.clientId),
     usernameSet: Boolean(cfg?.username),
