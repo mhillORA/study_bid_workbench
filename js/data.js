@@ -12,6 +12,7 @@ SBW.users = [
 
 SBW.sections = [
   { id: "hub", label: "Hub", department: null },
+  { id: "dashboard", label: "Dashboard", department: null },
   { id: "buddy", label: "Buddy", department: null },
   { id: "ops", label: "Ops Dashboard", department: null },
   { id: "studies", label: "Studies", department: null },
@@ -95,6 +96,11 @@ SBW.hlbpFields = {
 /** Hub shortcuts — BD/sales, leadership, ops, HLBP. */
 SBW.bdShortcuts = [
   {
+    id: "dashboard",
+    title: "Dashboard",
+    blurb: "Weekly commercial brief — chase, watch, concentration"
+  },
+  {
     id: "hlbp",
     title: "New HLBP",
     blurb: "High Level Ballpark form — patients, timelines, site country mix"
@@ -139,6 +145,12 @@ SBW.buddyQuickAsks = [
     label: "Leadership snapshot",
     prompt:
       "Give me a leadership snapshot of our uploaded bid portfolio: study count, average enrolled subjects, top clients by count, and which studies have the highest budgets. Headline numbers first."
+  },
+  {
+    id: "weekly-brief",
+    label: "Weekly commercial brief",
+    prompt:
+      "Produce an HTML leave-behind leadership visual for Ora's weekly commercial brief. Use live Salesforce Total Ora Net Revenue for open pipeline (never Amount/contract), uploaded bid portfolio concentration, chase list, watch/reassess flags, and owner coverage. Headline numbers first, then tables. Internal company briefing — clear and actionable."
   },
   {
     id: "ops",

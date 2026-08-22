@@ -2,6 +2,12 @@ const { app } = require("@azure/functions");
 const AdmZip = require("adm-zip");
 const { parseWorkbookBuffer } = require("./parseWorkbook");
 const { upsertCanonical, createManualStudy, saveStudyVersion, saveSectionPatch, listStudies, getStudy, listVersions, getVersion, listLineItems, compareVersions, compareStudies, listQuarantine, getParseLearningsSummary, loadLearnings, getDb, buildPortfolioContext, listSectionLocks, claimSectionLock, heartbeatSectionLock, requestSectionTakeover, releaseSectionLock } = require("./cosmosLoad");
+const {
+  getOrBuildDashboardBrief,
+  buildDashboardBrief,
+  saveCachedBrief,
+  loadCachedBrief
+} = require("./dashboardBrief");
 const { askAi, getStudyContext, providerStatus } = require("./askClaude");
 const {
   buildIntelligenceContext,
@@ -1206,6 +1212,80 @@ app.http("intelligenceHealth", {
     } catch (err) {
       context.error(err);
       return json(500, { ok: false, error: String(err.message || err) });
+    }
+  }
+});
+
+/**
+ * Commercial Dashboard weekly brief — cached after nightly sync so BD/leadership
+ * open to chase/watch/concentration numbers instead of inventing Buddy questions.
+ * GET: prefer cache (rebuild if older than ~20h). POST / ?refresh=true: force rebuild (auth).
+ */
+app.http("dashboardBrief", {
+  methods: ["GET", "POST", "OPTIONS"],
+  authLevel: "anonymous",
+  route: "dashboard/brief",
+  handler: async (request, context) => {
+    if (request.method === "OPTIONS") {
+      return {
+        status: 204,
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+          "Access-Control-Allow-Headers": "content-type, authorization, x-copilot-key, x-buddy-session"
+        }
+      };
+    }
+    try {
+      const refreshQ = request.query.get("refresh") === "true";
+      const forcePost = request.method === "POST";
+      let body = {};
+      if (forcePost) {
+        try {
+          body = (await request.json()) || {};
+        } catch (_) {
+          body = {};
+        }
+      }
+      const refresh = forcePost || refreshQ || body.refresh === true;
+      if (refresh) {
+        const auth = authorizeCtgovSync(request);
+        if (!auth.ok) {
+          return json(
+            401,
+            {
+              error:
+                "Unauthorized — sign in, Buddy session, or x-copilot-key required to refresh the weekly brief"
+            },
+            request
+          );
+        }
+        const triggeredBy =
+          auth.via === "copilot_key"
+            ? "scheduler_or_key"
+            : `ui:${auth.user?.email || auth.user?.userId || "user"}`;
+        const brief = await buildDashboardBrief(getDb, {
+          buildPortfolioContext,
+          triggeredBy
+        });
+        let saved;
+        try {
+          saved = await saveCachedBrief(getDb, brief);
+        } catch (err) {
+          saved = { ...brief, cached: false, cacheError: String(err.message || err) };
+        }
+        return json(200, saved, request);
+      }
+
+      const brief = await getOrBuildDashboardBrief(getDb, {
+        buildPortfolioContext,
+        triggeredBy: "get_or_build",
+        refresh: false
+      });
+      return json(200, brief, request);
+    } catch (err) {
+      context.error?.(err);
+      return json(500, { ok: false, error: String(err.message || err) }, request);
     }
   }
 });

@@ -122,6 +122,13 @@
       status: "",
       loading: false
     },
+    dashboard: {
+      brief: null,
+      loading: false,
+      refreshing: false,
+      status: "",
+      visualBusy: false
+    },
     hlbpBaseline: null,
     budgetNavOpen: false,
     studiesFilter: localStorage.getItem("sbw.studiesFilter") || "all",
@@ -640,6 +647,9 @@
     if (sectionId === "ops") {
       ensureOpsLoaded();
     }
+    if (sectionId === "dashboard") {
+      ensureDashboardLoaded();
+    }
     if (sectionId === "scorecard" && state.intelligence.indication && !state.scorecard.indication) {
       state.scorecard.indication = state.intelligence.indication;
       state.scorecard.countries = [...(state.intelligence.countries || [])];
@@ -657,6 +667,139 @@
     ]);
     state.ops.loading = false;
     if (state.sectionId === "ops") render();
+  }
+
+  async function ensureDashboardLoaded({ forceRefresh = false } = {}) {
+    if (state.dashboard.loading || state.dashboard.refreshing) return;
+    if (!forceRefresh && state.dashboard.brief?.ok) return;
+    if (forceRefresh) state.dashboard.refreshing = true;
+    else state.dashboard.loading = true;
+    state.dashboard.status = forceRefresh ? "Refreshing weekly brief…" : "Loading weekly brief…";
+    if (state.sectionId === "dashboard") render();
+    try {
+      let res;
+      if (forceRefresh) {
+        res = await intelligenceFaFetch("/api/dashboard/brief", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Accept: "application/json" },
+          body: JSON.stringify({ refresh: true })
+        });
+      } else {
+        res = await fetch(apiUrl("/api/dashboard/brief"), { headers: { Accept: "application/json" } });
+      }
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok === false) {
+        throw new Error(data.error || `Dashboard brief HTTP ${res.status}`);
+      }
+      state.dashboard.brief = data;
+      state.dashboard.status = data.cached
+        ? `Cached · ${String(data.generatedAt || "").slice(0, 16)}`
+        : `Fresh · ${String(data.generatedAt || "").slice(0, 16)}`;
+    } catch (err) {
+      state.dashboard.status = String(err.message || err);
+      if (!state.dashboard.brief) state.dashboard.brief = { ok: false, error: state.dashboard.status };
+    } finally {
+      state.dashboard.loading = false;
+      state.dashboard.refreshing = false;
+      if (state.sectionId === "dashboard") render();
+    }
+  }
+
+  function buildLeadershipVisualPrompt(brief) {
+    const b = brief || state.dashboard.brief || {};
+    const h = b.headline || {};
+    const chaseLines = (b.chase || [])
+      .slice(0, 10)
+      .map(
+        (o, i) =>
+          `${i + 1}. ${o.name || "Opp"} | ${o.accountName || "—"} | ${o.owner || "—"} | ${money(
+            o.oraNetRevenue
+          )} | ${o.stage || "—"} | close ${o.closeDate || "—"}`
+      )
+      .join("\n");
+    const watchLines = (b.attention || [])
+      .slice(0, 8)
+      .map(
+        (o, i) =>
+          `${i + 1}. ${o.name || "Opp"} | flags: ${(o.flags || []).join(", ")} | ${money(
+            o.oraNetRevenue
+          )} | owner ${o.owner || "—"}`
+      )
+      .join("\n");
+    const ownerLines = (b.owners || [])
+      .slice(0, 8)
+      .map((o, i) => `${i + 1}. ${o.owner || "—"} · ${o.openCount || 0} open · ${money(o.oraNetRevenue)}`)
+      .join("\n");
+    const acctLines = (b.accounts || [])
+      .slice(0, 8)
+      .map(
+        (a, i) =>
+          `${i + 1}. ${a.accountName || "—"} · ${a.openOppCount || 0} open · ${money(a.oraNetRevenue)}`
+      )
+      .join("\n");
+    const bidLines = (b.bidConcentration || [])
+      .slice(0, 8)
+      .map(
+        (c, i) =>
+          `${i + 1}. ${c.client || "—"} · ${c.studyCount || 0} studies · ${money(c.grandTotal)}`
+      )
+      .join("\n");
+    return [
+      "Produce an HTML leave-behind leadership visual for Ora Clinical's weekly commercial brief.",
+      "Internal company briefing — clear, actionable, no fluff. Use navy #1f3a83 and Ora red #e32626.",
+      "Title: Weekly Commercial Brief. Include week label and generated timestamp.",
+      "CRITICAL: Pipeline dollars = Total Ora Net Revenue only — never Amount/contract.",
+      "",
+      `Week: ${b.weekLabel || "—"}`,
+      `Generated: ${b.generatedAt || "—"}`,
+      "",
+      "[[HEADLINES]]",
+      `Open pipeline (Ora Net Revenue): ${money(h.openPipelineOraNet)} across ${h.openOppCount ?? "—"} open opportunities`,
+      `Closed Won YTD ${h.closedWonYtdYear || ""}: ${money(h.closedWonYtdOraNet)} (${h.closedWonYtdCount ?? "—"} deals)`,
+      `Uploaded bid portfolio grand total: ${money(h.bidPortfolioGrandTotal)} (${h.bidStudyCount ?? "—"} studies)`,
+      "",
+      "[[CHASE THIS WEEK]]",
+      chaseLines || "(none)",
+      "",
+      "[[WATCH / REASSESS]]",
+      watchLines || "(none)",
+      "",
+      "[[OWNER COVERAGE]]",
+      ownerLines || "(none)",
+      "",
+      "[[TOP OPEN ACCOUNTS — SF]]",
+      acctLines || "(none)",
+      "",
+      "[[TOP CLIENTS BY UPLOADED BID FEES]]",
+      bidLines || "(none)",
+      "",
+      "Emit HTML_REPORT with: headline KPI strip, chase table, watch table, owner bar/table, concentration tables, and 3 short action bullets for BD this week.",
+      "Stay in chat — do not NAVIGATE. Use only the numbers above plus live Salesforce/portfolio context if present."
+    ].join("\n");
+  }
+
+  function openBuddyAndAsk(prompt) {
+    const text = String(prompt || "").trim();
+    if (!text) return;
+    openBuddy();
+    if (els.askInput) els.askInput.value = text;
+    sendAsk();
+  }
+
+  async function produceDashboardLeadershipVisual() {
+    if (state.dashboard.visualBusy) return;
+    state.dashboard.visualBusy = true;
+    if (state.sectionId === "dashboard") render();
+    try {
+      if (!state.dashboard.brief?.ok) {
+        await ensureDashboardLoaded({ forceRefresh: true });
+      }
+      const prompt = buildLeadershipVisualPrompt(state.dashboard.brief);
+      openBuddyAndAsk(prompt);
+    } finally {
+      state.dashboard.visualBusy = false;
+      if (state.sectionId === "dashboard") render();
+    }
   }
 
   async function loadOpsQuarantinePulse() {
@@ -1355,6 +1498,13 @@
 
   const SECTION_NAV_ALIASES = {
     hub: ["hub", "home"],
+    dashboard: [
+      "dashboard",
+      "commercial dashboard",
+      "weekly brief",
+      "leadership brief",
+      "bd dashboard"
+    ],
     buddy: ["buddy", "ask buddy", "ask", "chat", "talk to buddy"],
     studies: ["studies", "study list"],
     versions: ["versions", "diff", "versions / diff"],
@@ -8065,6 +8215,259 @@
     }
   }
 
+  function flagLabel(flag) {
+    const map = {
+      no_owner: "No owner",
+      missing_ora_net_revenue: "Missing Ora Net $",
+      close_date_past: "Close date past",
+      close_soon: "Close soon"
+    };
+    return map[flag] || flag;
+  }
+
+  function syncStamp(s) {
+    if (!s) return "—";
+    const t = s.lastSuccessfulSync || s.lastRunAt || null;
+    return t ? String(t).slice(0, 16) : "—";
+  }
+
+  function renderDashboard() {
+    const b = state.dashboard.brief;
+    const loading = state.dashboard.loading || state.dashboard.refreshing;
+    const h = b?.headline || {};
+    const loops = b?.loops || [];
+
+    const loopCards = loops.length
+      ? loops
+          .map(
+            (L) => `<div class="card dash-loop" data-dash-loop="${escapeAttr(L.id)}">
+          <h3>${escapeHtml(L.title)}</h3>
+          <div class="stat" style="font-size:1.35rem;">${
+            L.id === "watch" || L.id === "data"
+              ? escapeHtml(String(L.count ?? "—"))
+              : money(L.metric)
+          }</div>
+          <p class="muted">${escapeHtml(L.blurb || "")}</p>
+        </div>`
+          )
+          .join("")
+      : `<div class="card wide"><p class="muted">${
+          loading ? "Building weekly brief…" : "No brief yet — click Refresh brief."
+        }</p></div>`;
+
+    const chaseRows = (b?.chase || []).length
+      ? b.chase
+          .map(
+            (o) => `<tr>
+            <td>${escapeHtml(o.name || "—")}</td>
+            <td>${escapeHtml(o.accountName || "—")}</td>
+            <td>${escapeHtml(o.owner || "—")}</td>
+            <td>${escapeHtml(o.stage || "—")}</td>
+            <td>${money(o.oraNetRevenue)}</td>
+            <td class="muted">${escapeHtml(o.closeDate || "—")}${
+              o.daysToClose != null ? ` · ${o.daysToClose}d` : ""
+            }</td>
+          </tr>`
+          )
+          .join("")
+      : `<tr><td colspan="6" class="muted">${
+          loading ? "Loading…" : b?.salesforceEmpty ? "Salesforce empty — run Ingest SF on Data Status." : "No open opportunities."
+        }</td></tr>`;
+
+    const watchRows = (b?.attention || []).length
+      ? b.attention
+          .map(
+            (o) => `<tr>
+            <td>${escapeHtml(o.name || "—")}</td>
+            <td>${escapeHtml(o.accountName || "—")}</td>
+            <td>${(o.flags || [])
+              .map((f) => `<span class="badge dash-flag">${escapeHtml(flagLabel(f))}</span>`)
+              .join(" ")}</td>
+            <td>${escapeHtml(o.owner || "—")}</td>
+            <td>${money(o.oraNetRevenue)}</td>
+            <td class="muted">${escapeHtml(o.closeDate || "—")}</td>
+          </tr>`
+          )
+          .join("")
+      : `<tr><td colspan="6" class="muted">${
+          loading ? "Loading…" : "No watch flags on open pipeline — good."
+        }</td></tr>`;
+
+    const ownerRows = (b?.owners || []).length
+      ? b.owners
+          .map(
+            (o) => `<tr>
+            <td>${escapeHtml(o.owner || "—")}</td>
+            <td>${num(o.openCount, 0)}</td>
+            <td>${money(o.oraNetRevenue)}</td>
+          </tr>`
+          )
+          .join("")
+      : `<tr><td colspan="3" class="muted">${loading ? "Loading…" : "—"}</td></tr>`;
+
+    const acctRows = (b?.accounts || []).length
+      ? b.accounts
+          .slice(0, 8)
+          .map(
+            (a) => `<tr>
+            <td>${escapeHtml(a.accountName || "—")}</td>
+            <td>${num(a.openOppCount, 0)}</td>
+            <td>${money(a.oraNetRevenue)}</td>
+          </tr>`
+          )
+          .join("")
+      : `<tr><td colspan="3" class="muted">${loading ? "Loading…" : "—"}</td></tr>`;
+
+    const bidRows = (b?.bidConcentration || []).length
+      ? b.bidConcentration
+          .slice(0, 8)
+          .map(
+            (c) => `<tr>
+            <td>${escapeHtml(c.client || "—")}</td>
+            <td>${num(c.studyCount, 0)}</td>
+            <td>${money(c.grandTotal)}</td>
+            <td class="muted">${
+              c.pctOfGrandTotal != null ? `${Number(c.pctOfGrandTotal).toFixed(1)}%` : "—"
+            }</td>
+          </tr>`
+          )
+          .join("")
+      : `<tr><td colspan="4" class="muted">${loading ? "Loading…" : "—"}</td></tr>`;
+
+    const df = b?.dataFreshness || {};
+    const counts = df.counts || {};
+
+    return `
+      <div class="grid">
+        <div class="card wide dash-hero">
+          <h3>Weekly commercial brief</h3>
+          <p class="muted">Numbers waiting when you arrive — chase list, watch flags, owner coverage, and concentration. Built overnight after CT.gov / Veeva / Salesforce sync. Pipeline $ = <strong>Total Ora Net Revenue</strong> (not contract Amount).</p>
+          <p class="muted" style="margin-top:0.35rem;">${escapeHtml(b?.weekLabel || "—")} · ${escapeHtml(
+            state.dashboard.status || (loading ? "Loading…" : "—")
+          )}${b?.error ? ` · ${escapeHtml(b.error)}` : ""}</p>
+          <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.85rem;">
+            <button type="button" class="btn btn-primary" id="btnDashLeadershipVisual" ${
+              state.dashboard.visualBusy || loading ? "disabled" : ""
+            }>${
+              state.dashboard.visualBusy ? "Opening Buddy…" : "Produce leadership visual"
+            }</button>
+            <button type="button" class="btn btn-secondary" id="btnDashRefresh" ${
+              loading ? "disabled" : ""
+            }>${state.dashboard.refreshing ? "Refreshing…" : "Refresh brief"}</button>
+            <button type="button" class="btn btn-ghost" data-jump="intelligence">Intelligence</button>
+            <button type="button" class="btn btn-ghost" data-jump="data-status">Data Status</button>
+            <button type="button" class="btn btn-ghost" data-jump="ops">Ops Dashboard</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>Open pipeline</h3>
+          <div class="stat">${money(h.openPipelineOraNet)}</div>
+          <p class="muted">${h.openOppCount != null ? `${Number(h.openOppCount).toLocaleString()} open opps` : "Ora Net Revenue"}</p>
+        </div>
+        <div class="card">
+          <h3>Closed Won YTD</h3>
+          <div class="stat">${money(h.closedWonYtdOraNet)}</div>
+          <p class="muted">${
+            h.closedWonYtdCount != null
+              ? `${Number(h.closedWonYtdCount).toLocaleString()} deals · ${h.closedWonYtdYear || ""}`
+              : "Ora Net Revenue"
+          }</p>
+        </div>
+        <div class="card">
+          <h3>Bid portfolio</h3>
+          <div class="stat">${money(h.bidPortfolioGrandTotal)}</div>
+          <p class="muted">${
+            h.bidStudyCount != null
+              ? `${Number(h.bidStudyCount).toLocaleString()} uploaded studies`
+              : "Uploaded bid fees"
+          }</p>
+        </div>
+        <div class="card">
+          <h3>Watch flags</h3>
+          <div class="stat">${
+            b?.attention != null ? Number(b.attention.length).toLocaleString() : loading ? "…" : "—"
+          }</div>
+          <p class="muted">Owner / $ / close date</p>
+        </div>
+
+        ${loopCards}
+
+        <div class="card wide" id="dash-chase">
+          <h3>Chase this week</h3>
+          <p class="muted">Top open opportunities by Total Ora Net Revenue — start BD time here.</p>
+          <table class="table" style="margin-top:0.65rem;">
+            <thead><tr><th>Opportunity</th><th>Account</th><th>Owner</th><th>Stage</th><th>Ora Net $</th><th>Close</th></tr></thead>
+            <tbody>${chaseRows}</tbody>
+          </table>
+        </div>
+
+        <div class="card wide" id="dash-watch">
+          <h3>Watch / reassess</h3>
+          <p class="muted">Open deals that need a human look before they burn BD hours.</p>
+          <table class="table" style="margin-top:0.65rem;">
+            <thead><tr><th>Opportunity</th><th>Account</th><th>Flags</th><th>Owner</th><th>Ora Net $</th><th>Close</th></tr></thead>
+            <tbody>${watchRows}</tbody>
+          </table>
+        </div>
+
+        <div class="card half" id="dash-owners">
+          <h3>Owner coverage</h3>
+          <table class="table" style="margin-top:0.65rem;">
+            <thead><tr><th>Owner</th><th>Open</th><th>Ora Net $</th></tr></thead>
+            <tbody>${ownerRows}</tbody>
+          </table>
+        </div>
+
+        <div class="card half" id="dash-accounts">
+          <h3>Top open accounts (SF)</h3>
+          <table class="table" style="margin-top:0.65rem;">
+            <thead><tr><th>Account</th><th>Open</th><th>Ora Net $</th></tr></thead>
+            <tbody>${acctRows}</tbody>
+          </table>
+        </div>
+
+        <div class="card wide" id="dash-concentration">
+          <h3>Uploaded bid concentration</h3>
+          <p class="muted">Ora bid fees by client (portfolio) — different source from Salesforce pipeline.</p>
+          <table class="table" style="margin-top:0.65rem;">
+            <thead><tr><th>Client</th><th>Studies</th><th>Grand total</th><th>Share</th></tr></thead>
+            <tbody>${bidRows}</tbody>
+          </table>
+        </div>
+
+        <div class="card wide" id="dash-data">
+          <h3>Data ready for bids</h3>
+          <p class="muted">Nightly sync freshness — feasibility and pipeline numbers you can trust.</p>
+          <table class="table" style="margin-top:0.65rem;">
+            <thead><tr><th>Source</th><th>Last sync</th><th>Rows</th></tr></thead>
+            <tbody>
+              <tr><td>Salesforce</td><td>${escapeHtml(syncStamp(df.salesforce))}</td><td>${
+                counts.sfOpportunities != null
+                  ? `${Number(counts.sfOpportunities).toLocaleString()} opps`
+                  : "—"
+              }</td></tr>
+              <tr><td>Veeva</td><td>${escapeHtml(syncStamp(df.veeva))}</td><td>${
+                counts.veevaSites != null
+                  ? `${Number(counts.veevaSites).toLocaleString()} sites`
+                  : "—"
+              }</td></tr>
+              <tr><td>CT.gov</td><td>${escapeHtml(syncStamp(df.ctgov))}</td><td>${
+                counts.ctgovTrials != null
+                  ? `${Number(counts.ctgovTrials).toLocaleString()} trials`
+                  : "—"
+              }</td></tr>
+              <tr><td>Bid portfolio</td><td class="muted">On upload</td><td>${
+                counts.bidStudies != null
+                  ? `${Number(counts.bidStudies).toLocaleString()} studies`
+                  : "—"
+              }</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>`;
+  }
+
   function renderOpsDashboard() {
     const deptSections = SBW.sections.filter((s) => s.department);
     const counts = {
@@ -9280,6 +9683,8 @@
     els.pageSubtitle.textContent =
       section.id === "buddy"
         ? "Talk to Buddy full-screen — floating chat stays available on other tabs"
+        : section.id === "dashboard"
+          ? "Weekly commercial brief — chase, watch, concentration — waiting when you arrive"
         : !hasOpenStudy()
           ? "Portfolio mode — Buddy answers from all Cosmos studies"
           : section.department
@@ -9295,6 +9700,7 @@
     let html = "";
     switch (section.id) {
       case "hub": html = renderHub(); break;
+      case "dashboard": html = renderDashboard(); break;
       case "buddy": html = renderBuddyPage(); break;
       case "hlbp": html = renderHlbp(); break;
       case "ops": html = renderOpsDashboard(); break;
@@ -9704,6 +10110,34 @@
       if (e.target.id === "btnOpsRefresh") {
         state.studiesList = [];
         ensureOpsLoaded();
+        return;
+      }
+      if (e.target.id === "btnDashRefresh") {
+        state.dashboard.brief = null;
+        ensureDashboardLoaded({ forceRefresh: true });
+        return;
+      }
+      if (e.target.id === "btnDashLeadershipVisual") {
+        produceDashboardLeadershipVisual();
+        return;
+      }
+      const dashLoop = e.target.closest("[data-dash-loop]");
+      if (dashLoop) {
+        const id = dashLoop.getAttribute("data-dash-loop");
+        const el = document.getElementById(
+          id === "concentration"
+            ? "dash-concentration"
+            : id === "chase"
+              ? "dash-chase"
+              : id === "watch"
+                ? "dash-watch"
+                : id === "owners"
+                  ? "dash-owners"
+                  : id === "data"
+                    ? "dash-data"
+                    : null
+        );
+        if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
         return;
       }
       if (e.target.id === "btnCtgovSync") {

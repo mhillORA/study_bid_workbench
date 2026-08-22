@@ -134,3 +134,26 @@ jobs:
             echo "HTTP $CODE"
             exit 1
           fi
+
+      - name: Rebuild Dashboard weekly brief
+        if: steps.prep.outputs.skip != 'true'
+        env:
+          COPILOT_ASK_KEY: ${{ secrets.COPILOT_ASK_KEY }}
+          API_BASE: ${{ steps.prep.outputs.base }}
+        run: |
+          set -euo pipefail
+          # After SF/Veeva/CT.gov deltas — cache chase/watch/concentration for morning Dashboard.
+          BODY='{"refresh":true}'
+          URL="$API_BASE/api/dashboard/brief"
+          echo "POST $URL $BODY"
+          RESP=$(curl -sS -w "\n%{http_code}" -X POST "$URL" \
+            -H "Content-Type: application/json" \
+            -H "x-copilot-key: $COPILOT_ASK_KEY" \
+            -d "$BODY")
+          CODE=$(echo "$RESP" | tail -n1)
+          BODY_OUT=$(echo "$RESP" | sed '$d')
+          echo "$BODY_OUT"
+          if [ "$CODE" -lt 200 ] || [ "$CODE" -ge 300 ]; then
+            echo "HTTP $CODE"
+            exit 1
+          fi

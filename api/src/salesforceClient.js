@@ -489,7 +489,8 @@ async function describeSObject(session, objectName) {
     return a.localeCompare(b);
   });
   const allQueryable = fields.slice(); // before cap — used for must-have joins
-  const maxFields = Number(process.env.SF_MAX_FIELDS || 90);
+  // Opportunity often has 120+ queryable fields; 90 was truncating Total_Ora_Net_Revenue__c.
+  const maxFields = Number(process.env.SF_MAX_FIELDS || 160);
   return {
     name: data.name || name,
     label: data.label || name,
@@ -559,13 +560,64 @@ const LEAN_OBJECT_FIELDS = {
   ]
 };
 
+/** Always keep these even when describe is capped / SOQL shrink peels fields. */
+const MUST_HAVE_FIELDS = {
+  Account: ["Id", "Name", "Owner.Name", "OwnerId", "Tier__c", "Ora_Grouping__c"],
+  Opportunity: [
+    "Id",
+    "Name",
+    "AccountId",
+    "StageName",
+    "Amount",
+    "Total_Ora_Net_Revenue__c",
+    "CloseDate",
+    "Owner.Name",
+    "OwnerId",
+    "IsClosed",
+    "IsWon"
+  ],
+  Activity_Request__c: ["Id", "Name", "Account__c", "AccountId", "Status__c", "Status", "Subject__c"]
+};
+
+function mergeMustHaveFields(objectName, fieldList, maxFields) {
+  const must = MUST_HAVE_FIELDS[objectName] || LEAN_OBJECT_FIELDS[objectName] || ["Id", "Name"];
+  const lean = LEAN_OBJECT_FIELDS[objectName] || [];
+  const seen = new Set();
+  const out = [];
+  for (const f of [...must, ...lean, ...(fieldList || [])]) {
+    if (!f || seen.has(f)) continue;
+    seen.add(f);
+    out.push(f);
+  }
+  const cap = Number(maxFields) > 0 ? Number(maxFields) : 160;
+  if (out.length <= cap) return out;
+  // Cap extras but never drop must-haves
+  const mustSet = new Set(must);
+  const keptMust = out.filter((f) => mustSet.has(f));
+  const extras = out.filter((f) => !mustSet.has(f));
+  return [...keptMust, ...extras.slice(0, Math.max(0, cap - keptMust.length))];
+}
+
 /** Pull all (or capped) rows — describe when possible, else lean known fields. */
 async function queryFullObject(session, objectName, opts = {}) {
+  const maxFields = Number(process.env.SF_MAX_FIELDS || 160);
   let desc = null;
   let fieldList = [];
   try {
     desc = await describeSObject(session, objectName);
     if (desc.fields?.length) fieldList = [...desc.fields];
+    // If describe capped away must-haves, pull them from allQueryable when present
+    const must = MUST_HAVE_FIELDS[objectName] || [];
+    const allQ = new Set(desc.allQueryable || []);
+    for (const f of must) {
+      // Relationship paths like Owner.Name are not in describe field names — keep anyway
+      if (f.includes(".") || allQ.has(f) || fieldList.includes(f)) {
+        if (!fieldList.includes(f)) fieldList.push(f);
+      } else if (!f.includes(".") && !allQ.has(f)) {
+        // still try — FLS may allow query even when not in our filtered list
+        fieldList.push(f);
+      }
+    }
   } catch (err) {
     desc = { error: String(err.message || err), queryable: false, fields: [] };
   }
@@ -574,8 +626,7 @@ async function queryFullObject(session, objectName, opts = {}) {
     fieldList = [...(LEAN_OBJECT_FIELDS[objectName] || ["Id", "Name"])];
   }
 
-  // Always ensure Id is first
-  fieldList = ["Id", ...fieldList.filter((f) => f !== "Id")];
+  fieldList = mergeMustHaveFields(objectName, fieldList, maxFields);
 
   async function tryQuery(fields) {
     const uniq = [...new Set(fields.filter(Boolean))];
@@ -584,28 +635,65 @@ async function queryFullObject(session, objectName, opts = {}) {
     return { objectName, fields: uniq, records, describe: desc };
   }
 
+  // Prefer lean+must first for Opportunity — full describe lists are huge and used to drop revenue.
+  if (objectName === "Opportunity" || objectName === "Account" || objectName === "Activity_Request__c") {
+    const leanTry = mergeMustHaveFields(
+      objectName,
+      LEAN_OBJECT_FIELDS[objectName] || [],
+      maxFields
+    );
+    try {
+      const out = await tryQuery(leanTry);
+      // If lean worked, still try the richer list so we keep extra custom fields when possible
+      try {
+        const rich = await tryQuery(fieldList);
+        rich.note =
+          `Used ${rich.fields.length} fields (describe+must-have; available=${desc?.fieldCountAvailable ?? "?"})`;
+        return rich;
+      } catch (_) {
+        out.note = `Used lean+must-have (${leanTry.length} fields)` +
+          (desc?.error ? ` (describe: ${desc.error})` : "");
+        return out;
+      }
+    } catch (_) {
+      /* fall through to shrink loop on full list */
+    }
+  }
+
   // Shrink field list until SOQL works (drop unknown custom fields, etc.)
   let lastErr = null;
   let attempt = fieldList;
-  for (let round = 0; round < 8; round++) {
+  const mustProtect = new Set(MUST_HAVE_FIELDS[objectName] || ["Id", "Name"]);
+  for (let round = 0; round < 12; round++) {
     try {
       const out = await tryQuery(attempt);
       if (round > 0 || (desc && !desc.fields?.length)) {
-        out.note = `Used ${attempt.length} fields` + (desc?.error ? ` (describe: ${desc.error})` : " (lean fallback)");
+        out.note =
+          `Used ${attempt.length} fields` +
+          (desc?.error ? ` (describe: ${desc.error})` : " (after shrink)");
       }
       return out;
     } catch (err) {
       lastErr = err;
       const msg = String(err.message || err);
-      // Drop a field named in the error, else peel from the end
       const m =
         msg.match(/No such column '([^']+)'/i) ||
-        msg.match(/field\s+([A-Za-z0-9_]+)\s+does not exist/i) ||
-        msg.match(/'\s*([A-Za-z][A-Za-z0-9_]*)\s*'/);
+        msg.match(/field\s+([A-Za-z0-9_.]+)\s+does not exist/i) ||
+        msg.match(/'\s*([A-Za-z][A-Za-z0-9_.]*)\s*'/);
       if (m && m[1] && attempt.includes(m[1])) {
+        // Named bad field — drop it (even must-have if SF rejects the API name)
         attempt = attempt.filter((f) => f !== m[1]);
-      } else if (attempt.length > 2) {
-        attempt = attempt.slice(0, Math.max(2, attempt.length - 5));
+      } else if (attempt.length > mustProtect.size + 1) {
+        // Peel non-protected from the end
+        let peeled = 0;
+        const next = [...attempt];
+        for (let i = next.length - 1; i >= 0 && peeled < 8; i--) {
+          if (mustProtect.has(next[i]) || next[i] === "Id") continue;
+          next.splice(i, 1);
+          peeled += 1;
+        }
+        if (!peeled) break;
+        attempt = next;
       } else {
         break;
       }
@@ -613,11 +701,15 @@ async function queryFullObject(session, objectName, opts = {}) {
     }
   }
 
-  // Last resort — Id + Name only (crosswalk proved this works for Account)
+  // Last resort — must-have / lean, then Id + Name
   try {
-    return await tryQuery(["Id", "Name"]);
-  } catch (err) {
-    throw lastErr || err;
+    return await tryQuery(mergeMustHaveFields(objectName, LEAN_OBJECT_FIELDS[objectName] || ["Id", "Name"], 40));
+  } catch (err1) {
+    try {
+      return await tryQuery(["Id", "Name"]);
+    } catch (err) {
+      throw lastErr || err1 || err;
+    }
   }
 }
 

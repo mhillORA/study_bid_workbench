@@ -10,7 +10,7 @@ const {
 } = require("./salesforceClient");
 
 const SYNC_ID = "salesforce_tables";
-const TIME_BUDGET_MS = Number(process.env.SF_TABLE_SYNC_BUDGET_MS || 110000);
+const TIME_BUDGET_MS = Number(process.env.SF_TABLE_SYNC_BUDGET_MS || 180000);
 
 const SF_TABLES = [
   { sfObject: "Account", container: "ora_sf_account", docType: "ora_sf_account" },
