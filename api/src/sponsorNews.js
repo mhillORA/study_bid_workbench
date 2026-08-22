@@ -1,5 +1,6 @@
 /**
- * Sponsor news crawl — Google News RSS for Salesforce / crosswalk account names.
+ * Sponsor news crawl — Google News RSS for Salesforce account names.
+ * Watchlist: Closed Won sponsors first, then top open-pipeline SF accounts to fill the cap.
  * Stores recent headlines in Cosmos ora_sponsor_news (not ZoomInfo-grade).
  */
 
@@ -69,60 +70,148 @@ async function fetchGoogleNews(sponsorName) {
   return parseRssItems(xml, 8);
 }
 
+function isOppClosedWon(o) {
+  if (o.IsWon === true || o.IsWon === "true") return true;
+  return /^closed\s*won$/i.test(String(o.StageName || "").trim());
+}
+
+function isOppOpen(o) {
+  if (o.IsClosed === true || o.IsClosed === "true") return false;
+  const stage = String(o.StageName || "").toLowerCase();
+  if (/^closed\b/.test(stage)) return false;
+  return true;
+}
+
+function oppOraNetRevenue(o) {
+  const fields = [
+    "Total_Ora_Net_Revenue__c",
+    "Total_Ora_Net_Rev__c",
+    "Ora_Net_Revenue__c",
+    "Total_Ora_Net_Revenue"
+  ];
+  for (const f of fields) {
+    if (o[f] != null && o[f] !== "") {
+      const n = Number(o[f]);
+      if (Number.isFinite(n)) return n;
+    }
+  }
+  return 0;
+}
+
+/**
+ * Closed Won sponsors first; fill remaining cap with top open-pipeline SF accounts
+ * (clients in CRM we may not have won with yet).
+ */
 async function loadWatchlist(database, { limit = 40 } = {}) {
-  const names = new Map();
+  const watchlistSource = "sf_closed_won_priority";
+  const wonByAccount = new Map();
+  const openByAccount = new Map();
+
+  let opps = [];
+  try {
+    opps = await queryAll(
+      database.container("ora_sf_opportunity"),
+      `SELECT c.AccountId, c.StageName, c.IsWon, c.IsClosed, c.CloseDate,
+              c.Total_Ora_Net_Revenue__c, c.Total_Ora_Net_Rev__c
+       FROM c WHERE c.docType = @t AND IS_DEFINED(c.AccountId) AND c.AccountId != null`,
+      [{ name: "@t", value: "ora_sf_opportunity" }]
+    );
+  } catch (_) {
+    return { watchlist: [], watchlistSource };
+  }
+
+  for (const o of opps) {
+    const accountId = o.AccountId;
+    if (!accountId) continue;
+    if (isOppClosedWon(o)) {
+      const cur = wonByAccount.get(accountId) || {
+        accountId,
+        wonCount: 0,
+        oraNetSum: 0,
+        lastCloseDate: null
+      };
+      cur.wonCount += 1;
+      cur.oraNetSum += oppOraNetRevenue(o);
+      const cd = o.CloseDate ? String(o.CloseDate) : null;
+      if (cd && (!cur.lastCloseDate || cd > cur.lastCloseDate)) cur.lastCloseDate = cd;
+      wonByAccount.set(accountId, cur);
+    }
+    if (isOppOpen(o)) {
+      const cur = openByAccount.get(accountId) || {
+        accountId,
+        openCount: 0,
+        openOraNetSum: 0
+      };
+      cur.openCount += 1;
+      cur.openOraNetSum += oppOraNetRevenue(o);
+      openByAccount.set(accountId, cur);
+    }
+  }
+
+  if (!wonByAccount.size && !openByAccount.size) {
+    return { watchlist: [], watchlistSource };
+  }
+
+  const nameById = new Map();
   try {
     const accounts = await queryAll(
       database.container("ora_sf_account"),
-      `SELECT TOP @lim c.Name, c.Id FROM c WHERE c.docType = @t`,
-      [
-        { name: "@t", value: "ora_sf_account" },
-        { name: "@lim", value: limit }
-      ]
+      `SELECT c.Id, c.Name FROM c WHERE c.docType = @t`,
+      [{ name: "@t", value: "ora_sf_account" }]
     );
     for (const a of accounts) {
-      const n = String(a.Name || "").trim();
-      if (n.length >= 3) names.set(n.toLowerCase(), { name: n, sfAccountId: a.Id || null });
+      if (a.Id) nameById.set(a.Id, String(a.Name || "").trim());
     }
   } catch (_) {
-    /* empty SF ok */
+    /* account names optional but required for crawl */
   }
-  if (names.size < 10) {
-    try {
-      const xw = await queryAll(
-        database.container("ora_sponsor_crosswalk"),
-        `SELECT TOP @lim c.sf_account_name, c.trialhub_veeva_sponsor, c.sf_account_id FROM c WHERE c.docType = @t`,
-        [
-          { name: "@t", value: "ora_sponsor_crosswalk" },
-          { name: "@lim", value: limit }
-        ]
-      );
-      for (const row of xw) {
-        const n = String(row.sf_account_name || row.trialhub_veeva_sponsor || "").trim();
-        if (n.length >= 3 && !names.has(n.toLowerCase())) {
-          names.set(n.toLowerCase(), {
-            name: n,
-            sfAccountId: row.sf_account_id || null
-          });
-        }
-      }
-    } catch (_) {
-      /* empty crosswalk ok */
-    }
-  }
-  return [...names.values()].slice(0, limit);
+
+  const toEntry = (row, priority) => ({
+    name: nameById.get(row.accountId) || "",
+    sfAccountId: row.accountId,
+    watchPriority: priority,
+    closedWonCount: row.wonCount ?? null,
+    oraNetWonSum: row.oraNetSum ?? null,
+    openOppCount: row.openCount ?? null,
+    openOraNetSum: row.openOraNetSum ?? null,
+    lastCloseDate: row.lastCloseDate ?? null
+  });
+
+  const closedWon = [...wonByAccount.values()]
+    .map((row) => toEntry(row, "closed_won"))
+    .filter((s) => s.name.length >= 3)
+    .sort((a, b) => {
+      if (b.closedWonCount !== a.closedWonCount) return b.closedWonCount - a.closedWonCount;
+      if (b.oraNetWonSum !== a.oraNetWonSum) return b.oraNetWonSum - a.oraNetWonSum;
+      return String(b.lastCloseDate || "").localeCompare(String(a.lastCloseDate || ""));
+    });
+
+  const seen = new Set(closedWon.map((s) => s.sfAccountId));
+  const openPipeline = [...openByAccount.values()]
+    .filter((row) => !wonByAccount.has(row.accountId))
+    .map((row) => toEntry(row, "open_pipeline"))
+    .filter((s) => s.name.length >= 3 && !seen.has(s.sfAccountId))
+    .sort((a, b) => {
+      if (b.openOraNetSum !== a.openOraNetSum) return b.openOraNetSum - a.openOraNetSum;
+      return b.openOppCount - a.openOppCount;
+    });
+
+  const watchlist = [...closedWon, ...openPipeline].slice(0, limit);
+  return { watchlist, watchlistSource };
 }
 
 async function runSponsorNewsCrawl(getDb, opts = {}) {
   const database = getDb();
   await ensureNewsContainer(database);
   const maxSponsors = Math.min(Number(opts.maxSponsors) || 25, 60);
-  const watchlist = await loadWatchlist(database, { limit: maxSponsors });
+  const { watchlist, watchlistSource } = await loadWatchlist(database, { limit: maxSponsors });
   if (!watchlist.length) {
     return {
       ok: false,
-      error: "No SF accounts or crosswalk sponsors to crawl",
-      upserted: 0
+      error:
+        "No Salesforce sponsor watchlist — run Ingest SF first (need Closed Won and/or open pipeline accounts).",
+      upserted: 0,
+      watchlistSource
     };
   }
 
@@ -142,6 +231,11 @@ async function runSponsorNewsCrawl(getDb, opts = {}) {
         docType: NEWS_DOC_TYPE,
         sponsorName: sponsor.name,
         sfAccountId: sponsor.sfAccountId || null,
+        watchPriority: sponsor.watchPriority || null,
+        closedWonCount: sponsor.closedWonCount ?? null,
+        oraNetWonSum: sponsor.oraNetWonSum ?? null,
+        openOppCount: sponsor.openOppCount ?? null,
+        openOraNetSum: sponsor.openOraNetSum ?? null,
         headlines,
         headlineCount: headlines.length,
         crawledAt: now,
@@ -175,8 +269,10 @@ async function runSponsorNewsCrawl(getDb, opts = {}) {
       upserted,
       errors,
       watchlistSize: watchlist.length,
+      watchlistSource,
       mode: "google_news_rss",
-      note: "Sponsor headlines from Google News RSS (not ZoomInfo)."
+      note:
+        "Sponsor headlines from Google News RSS — Closed Won SF accounts first, then open-pipeline fill (not ZoomInfo)."
     });
   } catch (_) {
     /* syncState optional */
@@ -187,9 +283,11 @@ async function runSponsorNewsCrawl(getDb, opts = {}) {
     upserted,
     errors,
     watchlistSize: watchlist.length,
+    watchlistSource,
     samples,
     crawledAt: now,
-    note: "Stored in ora_sponsor_news. Not a commercial intel product — headlines only."
+    note:
+      "Stored in ora_sponsor_news (Closed Won priority, open-pipeline fill). Not a commercial intel product — headlines only."
   };
 }
 
@@ -204,7 +302,8 @@ async function getSponsorNewsStatus(getDb) {
           lastRunAt: resource.lastRunAt || null,
           upserted: resource.upserted,
           errors: resource.errors,
-          watchlistSize: resource.watchlistSize
+          watchlistSize: resource.watchlistSize,
+          watchlistSource: resource.watchlistSource || null
         }
       : null;
   } catch (_) {
@@ -221,7 +320,11 @@ async function getSponsorNewsStatus(getDb) {
   } catch (_) {
     count = 0;
   }
-  return { count, sync, note: "Google News RSS crawl → ora_sponsor_news" };
+  return {
+    count,
+    sync,
+    note: "Google News RSS crawl (Closed Won priority + open-pipeline fill) → ora_sponsor_news"
+  };
 }
 
 const BD_HEADLINE_BOOSTS = [
@@ -246,6 +349,23 @@ function scoreHeadline(title, source) {
   }
   if (/stock price|share price|analyst rating|dividend|earnings per share/i.test(blob)) score -= 1;
   return score;
+}
+
+/** Strip publisher suffix from Google News titles for a readable one-line overview. */
+function headlineOverview(title, source) {
+  let t = String(title || "").trim();
+  if (!t) return "";
+  const src = String(source || "").trim();
+  if (src) {
+    for (const sep of [" - ", " | ", " — "]) {
+      const suffix = `${sep}${src}`;
+      if (t.endsWith(suffix)) {
+        t = t.slice(0, -suffix.length).trim();
+        break;
+      }
+    }
+  }
+  return t.length > 240 ? `${t.slice(0, 237)}…` : t;
 }
 
 /**
@@ -287,6 +407,7 @@ async function buildTopSponsorNewsFeed(getDb, opts = {}) {
         flat.push({
           sponsorName: row.sponsorName,
           title: h.title,
+          overview: headlineOverview(h.title, h.source),
           link: h.link || null,
           pubDate: h.pubDate || null,
           source: h.source || null,
@@ -329,7 +450,7 @@ async function buildTopSponsorNewsFeed(getDb, opts = {}) {
       lastCrawledAt: lastCrawledAt ? new Date(lastCrawledAt).toISOString() : null,
       sync,
       note:
-        "Ranked Google News RSS headlines for watched SF/crosswalk sponsors (ora_sponsor_news). Triage BD signal vs noise — not ZoomInfo."
+        "Ranked Google News RSS headlines for watched SF sponsors (Closed Won priority + open-pipeline fill; ora_sponsor_news). Triage BD signal vs noise — not ZoomInfo."
     };
   } catch (err) {
     return { error: String(err.message || err), empty: true };
@@ -416,5 +537,6 @@ module.exports = {
   buildTopSponsorNewsFeed,
   attachSponsorNewsToIntel,
   buildSponsorNewsPack,
-  isSponsorNewsQuestion
+  isSponsorNewsQuestion,
+  headlineOverview
 };

@@ -1920,6 +1920,49 @@ async function benchmarkIndication(database, indication, country = null, opts = 
   pushSites(livePack.sites || [], { requirePsm: true });
   pushSites(livePack.sites || [], { requirePsm: false });
 
+  let harmonizedFactSiteRows = 0;
+  try {
+    const factSiteRows = await loadHarmonizedFactSitesForScorecard(database, {
+      preferred,
+      aliases,
+      related: relatedLabels,
+      countries
+    });
+    harmonizedFactSiteRows = factSiteRows.length;
+    pushSites(factSiteRows, { requirePsm: true });
+    if (!topSites.some((s) => typeof s.site_psm === "number" && s.site_psm > 0)) {
+      pushSites(factSiteRows, { requirePsm: false });
+    }
+  } catch (_) {
+    harmonizedFactSiteRows = 0;
+  }
+
+  try {
+    const factStudies = await loadHarmonizedFactStudiesForBenchmark(database, {
+      preferred,
+      aliases,
+      related: relatedLabels,
+      countries
+    });
+    const liveByNumber = new Map(
+      oraStudies.map((s) => [String(s.study_number || "").toLowerCase(), s])
+    );
+    for (const h of factStudies) {
+      const key = String(h.study_number || "").toLowerCase();
+      const live = liveByNumber.get(key);
+      if (live) {
+        if ((live.psm == null || live.psm === 0) && h.psm > 0) live.psm = h.psm;
+        if (live.total_enrolled == null && h.total_enrolled != null) {
+          live.total_enrolled = h.total_enrolled;
+        }
+      } else {
+        oraStudies.push(h);
+      }
+    }
+  } catch (_) {
+    /* optional backfill */
+  }
+
   // Fuzzy TrialHub only (Veeva already full-scanned in memory)
   let fuzzyUsed = [];
   {
@@ -1987,7 +2030,9 @@ async function benchmarkIndication(database, indication, country = null, opts = 
       psmP75: round(percentile(oraPsm, 75)),
       note:
         oraStudies.length && !oraPsm.length
-          ? "Veeva has studies for this indication but site PSM is missing (need FPFV+LPFV visit milestones and enrolled). FSI/LSI (Subject In) are not used for PSM. List study_number, sponsor, enrolled — do NOT say there is no Veeva data."
+          ? harmonizedFactSiteRows > 0
+            ? "Live Vault PSM unavailable (need FPFV→LPFV) — Ora study/site stats include harmonized ora_fact_* backfill where available."
+            : "Veeva has studies for this indication but site PSM is missing (need FPFV+LPFV visit milestones and enrolled). FSI/LSI (Subject In) are not used for PSM. List study_number, sponsor, enrolled — do NOT say there is no Veeva data."
           : oraStudies.length
             ? "From ora_veeva_study (+ site PSM median from FPFV→LPFV visit milestones only). Prefer median PSM when studiesWithPsm > 0."
             : livePack.error
@@ -2069,9 +2114,11 @@ async function benchmarkIndication(database, indication, country = null, opts = 
       countryFilterLabel: countries ? countries.join(", ") : ousOnly ? "OUS (ex-US)" : "Global",
       note: sitesWithPsm.length
         ? `Ora Veeva named sites from ora_veeva_* (up to ${siteListLimit}). PSM = enrolled / months(FPFV→LPFV). Never say Cosmos only has 10 if returnedCount is higher.`
-        : topSites.length
-          ? `No computable site PSM yet (need FPFV+LPFV visit milestones + enrolled; FSI/LSI not used) — listed ${Math.min(siteListLimit, topSites.length)} real org rows from ora_veeva_site. This IS the site slate.`
-          : "No Ora Veeva site rows for this indication. Use trialhub.countryRank + ctgov country ranks to prioritize geographies; do not invent PI names.",
+        : harmonizedFactSiteRows > 0 && topSites.length
+          ? `Live Vault has no FPFV→LPFV site PSM yet — showing harmonized ora_fact_site PSM for ${Math.min(siteListLimit, topSites.length)} sites.`
+          : topSites.length
+            ? `No computable site PSM yet (need FPFV+LPFV visit milestones + enrolled; FSI/LSI not used) — listed ${Math.min(siteListLimit, topSites.length)} real org rows from ora_veeva_site. This IS the site slate.`
+            : "No Ora Veeva site rows for this indication. Use trialhub.countryRank + ctgov country ranks to prioritize geographies; do not invent PI names.",
       dataSource: "ora_veeva_site+milestone",
       livePackNote: livePack.note || undefined,
       harmonize: {
@@ -3008,6 +3055,108 @@ async function buildIntelligenceContext(getDb, opts = {}) {
 }
 
 /**
+ * Harmonized Mike Watson ora_fact_site rows (pre-FPFV Vault era).
+ * Used when live ora_veeva_* has no FPFV→LPFV window or site enrolled counts yet.
+ */
+async function loadHarmonizedFactSitesForScorecard(database, opts = {}) {
+  const { preferred, aliases = [], related = [], countries = null } = opts;
+  let rows = [];
+  try {
+    rows = await queryAll(
+      database.container("ora_fact_site"),
+      `SELECT c.org_clean, c.organization, c.country, c.indication, c.site_psm,
+              c.total_enrolled, c.site_enroll_months, c.screen_fail_rate, c.fsi_trust,
+              c.study_name, c.source
+       FROM c WHERE c.docType = @t AND c.site_psm > 0
+         AND (NOT IS_DEFINED(c.source) OR c.source != @live)`,
+      [
+        { name: "@t", value: "ora_fact_site" },
+        { name: "@live", value: "veeva_live" }
+      ]
+    );
+  } catch (_) {
+    return [];
+  }
+
+  const out = [];
+  for (const r of rows) {
+    if (preferred && r.indication) {
+      if (!indicationCompatible(r.indication, preferred, aliases)) {
+        const relatedOk = related.some((rel) =>
+          indicationCompatible(r.indication, rel, indicationAliases(rel))
+        );
+        if (!relatedOk) continue;
+      }
+    }
+    if (countries && !countriesMatch(r.country, countries)) continue;
+    const org = r.org_clean || r.organization;
+    if (!org) continue;
+    out.push({
+      org_clean: org,
+      organization: org,
+      country: r.country || "_unknown",
+      indication: r.indication,
+      site_psm: r.site_psm,
+      total_enrolled: r.total_enrolled,
+      site_enroll_months: r.site_enroll_months,
+      screen_fail_rate: r.screen_fail_rate,
+      fsi_trust: r.fsi_trust,
+      study_name: r.study_name,
+      psm_source: "harmonized_fact",
+      source: "ora_fact_site"
+    });
+  }
+  return out;
+}
+
+/** Harmonized ora_fact_study rows when live Veeva study PSM is missing. */
+async function loadHarmonizedFactStudiesForBenchmark(database, opts = {}) {
+  const { preferred, aliases = [], related = [], countries = null } = opts;
+  let rows = [];
+  try {
+    rows = await queryAll(
+      database.container("ora_fact_study"),
+      `SELECT c.study_number, c.sponsor, c.indication, c.phase, c.psm, c.total_enrolled,
+              c.n_contributing_sites, c.lifecycle_state, c.countries, c.source
+       FROM c WHERE c.docType = @t AND c.psm > 0
+         AND (NOT IS_DEFINED(c.source) OR c.source != @live)`,
+      [
+        { name: "@t", value: "ora_fact_study" },
+        { name: "@live", value: "veeva_live" }
+      ]
+    );
+  } catch (_) {
+    return [];
+  }
+  const out = [];
+  for (const r of rows) {
+    if (preferred && r.indication) {
+      if (!indicationCompatible(r.indication, preferred, aliases)) {
+        const relatedOk = related.some((rel) =>
+          indicationCompatible(r.indication, rel, indicationAliases(rel))
+        );
+        if (!relatedOk) continue;
+      }
+    }
+    if (countries && !countriesMatch(r.countries, countries)) continue;
+    out.push({
+      study_number: r.study_number,
+      sponsor: r.sponsor,
+      phase: r.phase,
+      indication: r.indication,
+      psm: r.psm,
+      total_enrolled: r.total_enrolled,
+      n_contributing_sites: r.n_contributing_sites,
+      lifecycle_state: r.lifecycle_state,
+      countries: r.countries,
+      psm_source: "harmonized_fact",
+      source: "ora_fact_study"
+    });
+  }
+  return out;
+}
+
+/**
  * Site scorecard from live ora_veeva_* (milestone PSM).
  * source=ora → Ora scores only
  * source=compare → Ora score + industry (TrialHub country) score side-by-side
@@ -3070,6 +3219,26 @@ async function buildSiteScorecard(getDb, opts = {}) {
   if (!siteRows.length) {
     for (const r of liveSites) mergeSite(r);
   }
+
+  let harmonizedFactRows = 0;
+  try {
+    const factRows = await loadHarmonizedFactSitesForScorecard(database, {
+      preferred,
+      aliases,
+      related,
+      countries
+    });
+    for (const r of factRows) {
+      harmonizedFactRows += 1;
+      mergeSite(r);
+    }
+  } catch (_) {
+    harmonizedFactRows = 0;
+  }
+
+  const liveSitesWithPsm = (pack.sites || []).filter(
+    (s) => typeof s.site_psm === "number" && s.site_psm > 0
+  ).length;
 
   // Aggregate by org_clean + country
   const byKey = new Map();
@@ -3375,6 +3544,17 @@ async function buildSiteScorecard(getDb, opts = {}) {
   const hasStartupWeight = sites.some(
     (s) => typeof s.contractToFsiMedian === "number" || typeof s.sivToFsiMedian === "number"
   );
+  const sitesWithPsmMedian = sites.filter(
+    (s) => typeof s.sitePsmMedian === "number" && s.sitePsmMedian > 0
+  ).length;
+  const psmNote =
+    liveSitesWithPsm === 0 && harmonizedFactRows > 0
+      ? "Live Vault sync has no FPFV→LPFV visit milestones or site enrolled counts yet — Site PSM uses harmonized ora_fact_site (historical pack). Study load and startup still come from live Veeva."
+      : liveSitesWithPsm === 0
+        ? "Live Vault sync has no computable FPFV→LPFV site PSM yet (need First/Last Subject First Visit milestones + enrolled). Re-run Ingest Veeva after Vault has those fields."
+        : harmonizedFactRows > 0
+          ? "Site PSM blends live FPFV→LPFV where available with harmonized ora_fact_site backfill."
+          : null;
   return {
     source,
     indication,
@@ -3383,6 +3563,10 @@ async function buildSiteScorecard(getDb, opts = {}) {
     aliasesUsed: aliases,
     relatedIndicationsQueried: related.length ? related : undefined,
     siteCount: sites.length,
+    sitesWithPsmMedian,
+    liveSitesWithPsm,
+    harmonizedFactRows,
+    psmNote,
     includeLegacy,
     legacy: legacyMeta,
     weights: hasStartupWeight

@@ -46,7 +46,8 @@ const { runVeevaTablesSync, getVeevaSyncStatus } = require("./veevaSync");
 const { ingestTrialHubUpload } = require("./trialhubIngest");
 const {
   runSponsorNewsCrawl,
-  getSponsorNewsStatus
+  getSponsorNewsStatus,
+  buildTopSponsorNewsFeed
 } = require("./sponsorNews");
 const {
   isPricingQuestion,
@@ -1597,6 +1598,26 @@ app.http("ctgovSync", {
     } catch (err) {
       context.error(err);
       return json(500, { ok: false, error: String(err.message || err) });
+    }
+  }
+});
+
+app.http("sponsorNewsFeed", {
+  methods: ["GET", "OPTIONS"],
+  authLevel: "anonymous",
+  route: "sponsor-news/feed",
+  handler: async (request, context) => {
+    if (request.method === "OPTIONS") {
+      return optionsOk(request);
+    }
+    try {
+      const limit = Math.min(Number(request.query.get("limit")) || 12, 25);
+      const sponsor = request.query.get("sponsor") || request.query.get("client") || null;
+      const feed = await buildTopSponsorNewsFeed(getDb, { limit, sponsor, clientName: sponsor });
+      return json(200, feed, request);
+    } catch (err) {
+      context.error(err);
+      return json(500, { error: String(err.message || err) }, request);
     }
   }
 });

@@ -73,7 +73,12 @@
       veevaMessage: "",
       trialhubUploadBusy: false,
       trialhubUploadMessage: "",
-      trialhubUploadResult: null
+      trialhubUploadResult: null,
+      sponsorNewsFeed: null,
+      sponsorNewsFeedLoading: false,
+      sponsorNewsFeedStatus: "",
+      sponsorNewsBusy: false,
+      sponsorNewsMessage: ""
     },
     scorecard: {
       indication: "",
@@ -5213,9 +5218,103 @@
   ];
 
   async function ensureIntelligenceLoaded() {
+    const tasks = [];
     if (!state.intelligence.health && !state.intelligence.loading) {
-      await loadIntelligenceHealth();
+      tasks.push(loadIntelligenceHealth());
     }
+    if (!state.intelligence.sponsorNewsFeed && !state.intelligence.sponsorNewsFeedLoading) {
+      tasks.push(loadSponsorNewsFeed());
+    }
+    if (tasks.length) await Promise.all(tasks);
+  }
+
+  async function loadSponsorNewsFeed() {
+    state.intelligence.sponsorNewsFeedLoading = true;
+    state.intelligence.sponsorNewsFeedStatus = "";
+    if (state.sectionId === "intelligence") render();
+    try {
+      const res = await fetch(apiUrl("/api/sponsor-news/feed?limit=12"));
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        state.intelligence.sponsorNewsFeed = null;
+        state.intelligence.sponsorNewsFeedStatus = data.error || `Feed failed (${res.status})`;
+      } else {
+        state.intelligence.sponsorNewsFeed = data;
+        state.intelligence.sponsorNewsFeedStatus = "";
+      }
+    } catch (err) {
+      state.intelligence.sponsorNewsFeed = null;
+      state.intelligence.sponsorNewsFeedStatus = String(err.message || err);
+    }
+    state.intelligence.sponsorNewsFeedLoading = false;
+    if (state.sectionId === "intelligence") render();
+  }
+
+  function renderSponsorNewsCard() {
+    const feed = state.intelligence.sponsorNewsFeed;
+    const loading = state.intelligence.sponsorNewsFeedLoading;
+    const status = state.intelligence.sponsorNewsFeedStatus;
+    const sync = feed?.sync;
+    const lastCrawled = feed?.lastCrawledAt
+      ? new Date(feed.lastCrawledAt).toLocaleString()
+      : sync?.lastSuccessfulSync
+        ? new Date(sync.lastSuccessfulSync).toLocaleString()
+        : null;
+    const metaBits = [
+      lastCrawled ? `Last crawl ${lastCrawled}` : null,
+      sync?.watchlistSize != null ? `${sync.watchlistSize} sponsors watched` : null,
+      feed?.headlineCount != null ? `${feed.headlineCount} headlines indexed` : null
+    ].filter(Boolean);
+
+    if (loading && !feed) {
+      return `<div class="card wide"><h3>Sponsor news</h3><p class="muted">Loading headlines…</p></div>`;
+    }
+
+    const headlines = feed?.headlines || [];
+    if (!headlines.length) {
+      return `<div class="card wide">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;flex-wrap:wrap;">
+          <div>
+            <h3 style="margin:0;">Sponsor news</h3>
+            <p class="muted" style="margin:0.35rem 0 0;">Google News RSS for Closed Won SF sponsors (priority) plus open-pipeline accounts. Run <strong>Crawl sponsor news</strong> on Data Status after Ingest SF.</p>
+          </div>
+          <button type="button" class="btn btn-secondary" id="btnRefreshSponsorNews">Refresh</button>
+        </div>
+        <p class="muted" style="margin-top:0.75rem;">${
+          status ? escapeHtml(status) : "No headlines yet — crawl sponsor news to populate ora_sponsor_news."
+        }</p>
+      </div>`;
+    }
+
+    const items = headlines
+      .map((h) => {
+        const overview = escapeHtml(h.overview || h.title || "—");
+        const sponsor = escapeHtml(h.sponsorName || "—");
+        const pub = h.pubDate ? `<span class="muted" style="font-size:0.85rem;"> · ${escapeHtml(h.pubDate)}</span>` : "";
+        const link = h.link
+          ? `<a href="${escapeAttr(h.link)}" target="_blank" rel="noopener noreferrer" style="font-weight:600;">Read article →</a>`
+          : `<span class="muted">No link</span>`;
+        return `<li class="sponsor-news-item" style="padding:0.75rem 0;border-bottom:1px solid var(--border, #e5e7eb);">
+          <div style="font-weight:700;color:var(--navy,#1f3a83);">${sponsor}${pub}</div>
+          <p style="margin:0.35rem 0 0.5rem;line-height:1.45;">${overview}</p>
+          ${link}
+        </li>`;
+      })
+      .join("");
+
+    return `<div class="card wide">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:1rem;flex-wrap:wrap;">
+        <div>
+          <h3 style="margin:0;">Sponsor news</h3>
+          <p class="muted" style="margin:0.35rem 0 0;">${escapeHtml(
+            metaBits.join(" · ") || "Ranked headlines for watched SF sponsors"
+          )}</p>
+        </div>
+        <button type="button" class="btn btn-secondary" id="btnRefreshSponsorNews">Refresh</button>
+      </div>
+      <ul style="list-style:none;margin:0.75rem 0 0;padding:0;">${items}</ul>
+      <p class="muted" style="margin-top:0.75rem;font-size:0.85rem;">Headlines only — triage BD signal vs noise. Not ZoomInfo or paid intel.</p>
+    </div>`;
   }
 
   function isDataStatusTab() {
@@ -5297,7 +5396,7 @@
     if (state.intelligence.sponsorNewsBusy) return;
     state.intelligence.sponsorNewsBusy = true;
     state.intelligence.sponsorNewsMessage =
-      "Crawling Google News RSS for SF / crosswalk sponsors (via ora-buddy-api)…";
+      "Crawling Google News RSS for SF sponsors (Closed Won first, open pipeline fill)…";
     refreshDataStatusIfOpen();
     try {
       const res = await intelligenceFaFetch("/api/sponsor-news/sync", {
@@ -5318,11 +5417,15 @@
         const bits = [
           `Upserted ${data.upserted ?? 0} sponsors`,
           data.errors ? `${data.errors} errors` : null,
-          data.watchlistSize != null ? `watchlist ${data.watchlistSize}` : null
+          data.watchlistSize != null ? `watchlist ${data.watchlistSize}` : null,
+          data.watchlistSource === "sf_closed_won_priority"
+            ? "Closed Won + open pipeline"
+            : data.watchlistSource || null
         ].filter(Boolean);
         state.intelligence.sponsorNewsMessage = bits.join(" · ");
       }
       await loadIntelligenceHealth();
+      await loadSponsorNewsFeed();
     } catch (err) {
       state.intelligence.sponsorNewsMessage = `Sponsor news error: ${String(err.message || err)}`;
     }
@@ -6327,6 +6430,11 @@
         <div class="stat">${intelStatNum(sites.sitePsmMedian)}</div>
         <p class="muted">Median site PSM · ${intelStatNum(sites.sitesWithPsmSampled)} sites sampled</p>
         <p class="muted">P75: ${intelStatNum(sites.sitePsmP75)}</p>
+        ${
+          sites.note && /harmonized/i.test(sites.note)
+            ? `<p class="muted" style="margin-top:0.35rem;">${escapeHtml(sites.note)}</p>`
+            : ""
+        }
       </div>`;
 
     const topSitesList = (sites.topSitesByPsm || []).length
@@ -6492,6 +6600,7 @@
           ${status}
           ${countryNote}
         </div>
+        ${renderSponsorNewsCard()}
         ${renderIntelBenchmark()}
       </div>`;
   }
@@ -7008,8 +7117,16 @@
             includeLegacy && result.legacy
               ? ` · legacy matched ${intelStatNum(result.legacy.matched)}/${intelStatNum(result.siteCount)}`
               : ""
+          }${
+            result.sitesWithPsmMedian != null
+              ? ` · ${intelStatNum(result.sitesWithPsmMedian)} with PSM`
+              : ""
           }</p>
-          <p class="muted" style="margin-top:0.35rem;">Ora site PSM = enrolled ÷ months(FPFV→LPFV). Startup (d) uses Contract/SIV→FSI — separate from PSM.</p>
+          <p class="muted" style="margin-top:0.35rem;">${
+            result.psmNote
+              ? escapeHtml(result.psmNote)
+              : "Ora site PSM = enrolled ÷ months(FPFV→LPFV). Startup (d) uses Contract/SIV→FSI — separate from PSM."
+          }</p>
           ${trustNote}
           <div style="overflow:auto;">
           <table class="table">
@@ -10216,6 +10333,10 @@
       const intelAsk = e.target.closest("[data-intel-ask]");
       if (intelAsk) {
         askBuddyAboutIndication(intelAsk.getAttribute("data-intel-ask"));
+        return;
+      }
+      if (e.target.id === "btnRefreshSponsorNews") {
+        loadSponsorNewsFeed();
         return;
       }
       if (e.target.id === "btnIntelQuery") {
