@@ -24,6 +24,12 @@ const {
   vqlQuery,
   flattenVeevaRecord
 } = require("./veevaClient");
+const {
+  vaultIndicationLabel,
+  siteEnrollMonthsFromFpfvLpfv,
+  computeSitePsm,
+  classifyPsmWindowMilestone
+} = require("./veevaPsm");
 
 const SYNC_ID = "veeva_tables";
 // Function App can run longer than SWA — leave room for milestone__v (~large).
@@ -351,6 +357,34 @@ async function writeSyncState(database, patch) {
   return doc;
 }
 
+async function countWithField(database, containerId, docType, field) {
+  try {
+    const rows = await queryAll(
+      database.container(containerId),
+      `SELECT VALUE COUNT(1) FROM c WHERE c.docType = @t AND IS_DEFINED(c.${field}) AND c.${field} != null`,
+      [{ name: "@t", value: docType }]
+    );
+    return rows[0] || 0;
+  } catch (_) {
+    return 0;
+  }
+}
+
+/** Mirrors missing link fields — force a full re-pull instead of delta. */
+async function mirrorNeedsFullResync(database, table, existingCount) {
+  if (!(existingCount > 0)) return false;
+  if (table.container === "ora_veeva_subject") {
+    const withSite = await countWithField(database, table.container, table.docType, "site__v");
+    return withSite === 0;
+  }
+  if (table.container === "ora_veeva_metric") {
+    const withActual = await countWithField(database, table.container, table.docType, "actual__v");
+    const withSite = await countWithField(database, table.container, table.docType, "site__v");
+    return withActual === 0 && withSite === 0;
+  }
+  return false;
+}
+
 async function countDocType(database, containerId, docType) {
   try {
     const rows = await queryAll(
@@ -386,54 +420,6 @@ function picklistLabel(v) {
   const s = String(v);
   // proliferative_diabetic_retinopathy__c → readable-ish
   return s.replace(/__/g, " ").replace(/_/g, " ").replace(/\s+c$/i, "").trim() || s;
-}
-
-/** Canonical Ora indication from Vault Indication picklist (indication__v). */
-function vaultIndicationLabel(raw) {
-  try {
-    const { canonicalIndicationFromVaultPicklist } = require("./intelligence");
-    return canonicalIndicationFromVaultPicklist(raw);
-  } catch (_) {
-    return picklistLabel(raw) || "_unknown";
-  }
-}
-
-/**
- * Months of active enrollment FSI → LSI.
- * Same calendar month (or < 1 month) → 1 (never divide by zero).
- */
-function siteEnrollMonthsFromFsiLsi(fsiIso, lsiIso) {
-  if (!fsiIso || !lsiIso) return null;
-  const a = Date.parse(fsiIso);
-  const b = Date.parse(lsiIso);
-  if (Number.isNaN(a) || Number.isNaN(b)) return null;
-  const start = Math.min(a, b);
-  const end = Math.max(a, b);
-  const d0 = new Date(start);
-  const d1 = new Date(end);
-  let months =
-    (d1.getUTCFullYear() - d0.getUTCFullYear()) * 12 + (d1.getUTCMonth() - d0.getUTCMonth());
-  if (months < 1) return 1;
-  // Partial end month: if end day is past start day, keep months; else already integer months
-  return months;
-}
-
-/** site_psm = total_enrolled / site_enroll_months (Patients per Site per Month). */
-function computeSitePsm(totalEnrolled, enrollMonths) {
-  const n = Number(totalEnrolled);
-  const m = Number(enrollMonths);
-  if (!(n >= 0) || !(m > 0)) return null;
-  if (n === 0) return 0;
-  return Math.round((n / m) * 1000) / 1000;
-}
-
-function classifyEnrollmentMilestone(name, type) {
-  const s = `${name || ""} ${type || ""}`.toLowerCase();
-  // LSO is last subject OUT — not LSI / LPFV
-  if (/\blso\b|last subject out|last patient out/.test(s)) return null;
-  if (/\blsi\b|last subject in|last patient in|lpfv/.test(s)) return "lsi";
-  if (/\bfsi\b|\bfpi\b|fpfv|first subject|first patient/.test(s)) return "fsi";
-  return null;
 }
 
 function projectFactStudy(mirror, sponsorNameById) {
@@ -639,8 +625,8 @@ async function projectWideMilestones(database, opts = {}) {
 /**
  * Compute site PSM on live ora_fact_site:
  *   site_psm = total_enrolled / site_enroll_months
- *   site_enroll_months = months(FSI → LSI), minimum 1
- * FSI = First Subject In; LSI = Last Subject In (not LSO).
+ *   site_enroll_months = months(FPFV → LPFV), minimum 1
+ * FPFV/LPFV = First/Last Subject First Visit — not FSI/LSI (Subject In).
  */
 async function projectSitePsmFromMilestones(database, opts = {}) {
   const syncedAt = opts.syncedAt || new Date().toISOString();
@@ -690,18 +676,17 @@ async function projectSitePsmFromMilestones(database, opts = {}) {
 
   const datesBySite = new Map();
   for (const m of ms) {
-    const kind = classifyEnrollmentMilestone(m.name__v, m.milestone_type__v);
+    const kind = classifyPsmWindowMilestone(m.name__v, m.milestone_type__v);
     if (!kind) continue;
     const when = m.actual_finish_date__v || m.actual_start_date__v;
     if (!when) continue;
     const key = m.site__v;
     if (!datesBySite.has(key)) datesBySite.set(key, {});
     const pack = datesBySite.get(key);
-    // Prefer earliest FSI / latest LSI when multiple
-    if (kind === "fsi") {
-      if (!pack.fsi || Date.parse(when) < Date.parse(pack.fsi)) pack.fsi = when;
-    } else if (kind === "lsi") {
-      if (!pack.lsi || Date.parse(when) > Date.parse(pack.lsi)) pack.lsi = when;
+    if (kind === "fpfv") {
+      if (!pack.fpfv || Date.parse(when) < Date.parse(pack.fpfv)) pack.fpfv = when;
+    } else if (kind === "lpfv") {
+      if (!pack.lpfv || Date.parse(when) > Date.parse(pack.lpfv)) pack.lpfv = when;
     }
   }
 
@@ -725,10 +710,33 @@ async function projectSitePsmFromMilestones(database, opts = {}) {
     /* optional */
   }
 
+  const studyEnrollById = new Map();
+  try {
+    const enrollRows = await queryAll(
+      database.container("ora_veeva_study"),
+      `SELECT c.id, c.enrollment__vs FROM c WHERE c.docType = @t AND IS_DEFINED(c.enrollment__vs) AND c.enrollment__vs != null`,
+      [{ name: "@t", value: "ora_veeva_study" }]
+    );
+    for (const s of enrollRows) {
+      const n = Number(s.enrollment__vs);
+      if (n > 0) studyEnrollById.set(s.id, n);
+    }
+  } catch (_) {
+    /* optional */
+  }
+
+  const fpfvLpfvCountByStudy = new Map();
+  for (const [siteId, dates] of datesBySite.entries()) {
+    if (!dates.fpfv || !dates.lpfv) continue;
+    const site = siteById.get(siteId);
+    if (!site?.study__v) continue;
+    fpfvLpfvCountByStudy.set(site.study__v, (fpfvLpfvCountByStudy.get(site.study__v) || 0) + 1);
+  }
+
   for (const [siteId, dates] of datesBySite.entries()) {
     const site = siteById.get(siteId);
     if (!site) continue;
-    const months = siteEnrollMonthsFromFsiLsi(dates.fsi, dates.lsi);
+    const months = siteEnrollMonthsFromFpfvLpfv(dates.fpfv, dates.lpfv);
     let enrolled =
       site.no_subjects_enrolled__v != null ? Number(site.no_subjects_enrolled__v) : null;
     let enrolledSource = enrolled != null ? "site.no_subjects_enrolled__v" : null;
@@ -736,6 +744,14 @@ async function projectSitePsmFromMilestones(database, opts = {}) {
       enrolled = enrolledBySite.get(siteId);
       enrolledSource = "subject_count";
       enrolledFromSubjects += 1;
+    }
+    if (enrolled == null && site.study__v && dates.fpfv && dates.lpfv) {
+      const studyTotal = studyEnrollById.get(site.study__v);
+      const nSites = fpfvLpfvCountByStudy.get(site.study__v);
+      if (studyTotal > 0 && nSites > 0) {
+        enrolled = studyTotal / nSites;
+        enrolledSource = "study.enrollment__vs/shared_fpfv_lpfv_sites";
+      }
     }
     const sitePsm = months != null && enrolled != null ? computeSitePsm(enrolled, months) : null;
 
@@ -767,14 +783,16 @@ async function projectSitePsmFromMilestones(database, opts = {}) {
         base.indication ||
         vaultIndicationLabel(site.indication__c) ||
         "_unknown",
-      fsi_date: dates.fsi || base.fsi_date || null,
-      lsi_date: dates.lsi || base.lsi_date || null,
+      fsi_date: dates.fpfv || base.fsi_date || null,
+      lsi_date: dates.lpfv || base.lsi_date || null,
+      fpfv_date: dates.fpfv || base.fpfv_date || null,
+      lpfv_date: dates.lpfv || base.lpfv_date || null,
       site_enroll_months: months,
       total_enrolled: enrolled != null ? enrolled : base.total_enrolled ?? null,
       enrolled_source: enrolledSource,
       site_psm: sitePsm,
       psm_zero_enrolled: sitePsm === 0,
-      psm_formula: "total_enrolled / site_enroll_months (FSI→LSI, min 1 month)",
+      psm_formula: "total_enrolled / months(FPFV→LPFV visit milestones only, min 1 month)",
       veevaSyncedAt: syncedAt,
       importedAt: syncedAt
     };
@@ -799,8 +817,8 @@ async function projectSitePsmFromMilestones(database, opts = {}) {
     withPsm,
     zeroPsm,
     enrolledFromSubjects,
-    sitesWithFsiLsi: [...datesBySite.values()].filter((d) => d.fsi && d.lsi).length,
-    note: "site_psm = enrolled / months(FSI→LSI); enrolled may fall back to subject__clin counts"
+    sitesWithFpfvLpfv: [...datesBySite.values()].filter((d) => d.fpfv && d.lpfv).length,
+    note: "site_psm = enrolled / months(FPFV→LPFV visit milestones only; FSI/LSI excluded)"
   };
 }
 
@@ -993,11 +1011,15 @@ async function runVeevaTablesSync(getDb, opts = {}) {
       const whereExtra = table.feasibilityMetricFilter ? feasibilityMetricWhere() : "";
       // Empty mirrors must full-pull even in delta mode — watermark would skip history.
       const existing = countsByContainer[table.container] || 0;
-      const tableWatermark = existing === 0 ? null : watermark;
+      const needsFull = await mirrorNeedsFullResync(database, table, existing);
+      const tableWatermark = existing === 0 || needsFull ? null : watermark;
       const pulled = await vqlSelectResilient(session, table.vaultObject, table.fields, {
         watermark: tableWatermark,
         whereExtra
       });
+      const criticalDropped = (pulled.fieldsDropped || []).filter((f) =>
+        ["site__v", "study__v", "actual__v", "subject_status__v"].includes(f)
+      );
 
       let upserted = 0;
       const errors = [];
@@ -1087,6 +1109,9 @@ async function runVeevaTablesSync(getDb, opts = {}) {
         pages: pulled.pages,
         truncated: pulled.truncated || incomplete,
         fieldsDropped: pulled.fieldsDropped || [],
+        criticalFieldsDropped: criticalDropped.length ? criticalDropped : undefined,
+        degraded: criticalDropped.length > 0 || needsFull,
+        resyncMode: needsFull ? "full_for_degraded_mirror" : tableWatermark ? "delta" : "full",
         errorCount: errors.length,
         errors: errors.slice(0, 5),
         elapsedMs: Date.now() - t0

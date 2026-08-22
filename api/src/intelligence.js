@@ -1987,9 +1987,9 @@ async function benchmarkIndication(database, indication, country = null, opts = 
       psmP75: round(percentile(oraPsm, 75)),
       note:
         oraStudies.length && !oraPsm.length
-          ? "Veeva has studies for this indication but site PSM is missing (need FSI+LSI milestones and enrolled). List study_number, sponsor, enrolled — do NOT say there is no Veeva data."
+          ? "Veeva has studies for this indication but site PSM is missing (need FPFV+LPFV visit milestones and enrolled). FSI/LSI (Subject In) are not used for PSM. List study_number, sponsor, enrolled — do NOT say there is no Veeva data."
           : oraStudies.length
-            ? "From ora_veeva_study (+ site PSM median from FSI→LSI milestones). Prefer median PSM when studiesWithPsm > 0."
+            ? "From ora_veeva_study (+ site PSM median from FPFV→LPFV visit milestones only). Prefer median PSM when studiesWithPsm > 0."
             : livePack.error
               ? `Veeva live load error: ${livePack.error}`
               : "No ora_veeva_study rows matched this indication.",
@@ -2068,9 +2068,9 @@ async function benchmarkIndication(database, indication, country = null, opts = 
       countryFilter: countries,
       countryFilterLabel: countries ? countries.join(", ") : ousOnly ? "OUS (ex-US)" : "Global",
       note: sitesWithPsm.length
-        ? `Ora Veeva named sites from ora_veeva_* (up to ${siteListLimit}). PSM = enrolled / months(FSI→LSI milestones). Never say Cosmos only has 10 if returnedCount is higher.`
+        ? `Ora Veeva named sites from ora_veeva_* (up to ${siteListLimit}). PSM = enrolled / months(FPFV→LPFV). Never say Cosmos only has 10 if returnedCount is higher.`
         : topSites.length
-          ? `No computable site PSM yet (missing FSI/LSI or enrolled) — listed ${Math.min(siteListLimit, topSites.length)} real org rows from ora_veeva_site. This IS the site slate.`
+          ? `No computable site PSM yet (need FPFV+LPFV visit milestones + enrolled; FSI/LSI not used) — listed ${Math.min(siteListLimit, topSites.length)} real org rows from ora_veeva_site. This IS the site slate.`
           : "No Ora Veeva site rows for this indication. Use trialhub.countryRank + ctgov country ranks to prioritize geographies; do not invent PI names.",
       dataSource: "ora_veeva_site+milestone",
       livePackNote: livePack.note || undefined,
@@ -2362,7 +2362,7 @@ async function veevaOverview(database) {
       topSites,
       note:
         studies.length || sites.length
-          ? "Live from ora_veeva_study / ora_veeva_site / ora_veeva_milestone. Site PSM = enrolled / months(FSI→LSI). ora_fact_* not used."
+          ? "Live from ora_veeva_study / ora_veeva_site / ora_veeva_milestone. Site PSM = enrolled / months(FPFV→LPFV visit milestones only). ora_fact_* not used."
           : "Ora Veeva mirrors are empty — run Ingest Veeva."
     };
   } catch (err) {
@@ -2891,8 +2891,8 @@ async function buildIntelligenceContext(getDb, opts = {}) {
           })),
           note:
             sorted.length && sorted.every((s) => s.site_psm == null || s.site_psm === 0)
-              ? "Sites from ora_veeva_site; site PSM missing (need FSI+LSI + enrolled) — still name sites."
-              : "Sites from ora_veeva_*; PSM = enrolled / months(FSI→LSI)."
+              ? "Sites from ora_veeva_site; site PSM missing (need FPFV+LPFV visit milestones + enrolled) — still name sites."
+              : "Sites from ora_veeva_*; PSM = enrolled / months(FPFV→LPFV visit milestones only)."
         };
       }
 
@@ -3396,7 +3396,7 @@ async function buildSiteScorecard(getDb, opts = {}) {
         : usedRelated || related.length
           ? `Matched via related/fuzzy Veeva labels when exact "${indication}" had few/no site_psm rows. Ora scores from ora_veeva_* (milestone PSM + startup gaps).`
           : source === "ora"
-            ? "Ora scores from live Veeva (site PSM FSI→LSI + startup Contract/SIV→FSI days when available)."
+            ? "Ora scores from live Veeva (site PSM FPFV→LPFV + startup Contract/SIV→FSI days when available)."
             : "Ora site score vs industry country score (TrialHub PSM by country). Startup days are Ora Veeva only.",
     sites,
     elapsedMs: Date.now() - started

@@ -74,7 +74,7 @@ Ora Clinical Intelligence Platform — Context Document v2
  LIVE PIVOT (Aug 2026 — highest priority): Veeva answers come from Cosmos live mirrors
  (ora_veeva_study / ora_veeva_site / ora_veeva_milestone / metrics / subjects) — NOT ora_fact_*
  and NOT Excel/JSON files. Salesforce from ora_sf_*. Buddy computes site PSM = enrolled /
- months(FSI→LSI from milestones). Keep analytical rules below (indication coding, crosswalk,
+ months(FPFV→LPFV visit milestones only; FSI/LSI not used for PSM). Keep analytical rules below (indication coding, crosswalk,
  planning landmarks). Crosswalk + site alias tables remain in Cosmos for name matching.
 
  Primary Data Collections — LIVE

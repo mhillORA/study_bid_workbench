@@ -6362,6 +6362,7 @@
           <p class="muted">${intelStatNum(ora.studyCount)} studies · ${intelStatNum(
             ora.studiesWithPsm
           )} with PSM${ora.note ? ` — ${escapeHtml(ora.note)}` : ""}</p>
+          <p class="muted" style="margin-top:0.35rem;">Site PSM = enrolled ÷ months(FPFV→LPFV). First/Last Subject <em>First Visit</em> only — FSI/LSI (Subject In) are not used.</p>
           <table class="table">
             <thead><tr><th>Study</th><th>Sponsor</th><th>Indication</th><th>PSM</th><th>Enrolled</th><th>Sites</th></tr></thead>
             <tbody>${ora.sampleStudies
@@ -7008,6 +7009,7 @@
               ? ` · legacy matched ${intelStatNum(result.legacy.matched)}/${intelStatNum(result.siteCount)}`
               : ""
           }</p>
+          <p class="muted" style="margin-top:0.35rem;">Ora site PSM = enrolled ÷ months(FPFV→LPFV). Startup (d) uses Contract/SIV→FSI — separate from PSM.</p>
           ${trustNote}
           <div style="overflow:auto;">
           <table class="table">

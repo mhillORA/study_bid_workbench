@@ -1,5 +1,7 @@
 /**
- * Shared Veeva PSM helpers — site_psm = enrolled / months(FSI→LSI), min 1 month.
+ * Shared Veeva PSM helpers — site_psm = enrolled / months(FPFV→LPFV), min 1 month.
+ * PSM uses visit milestones only (First/Last Patient/Subject First Visit).
+ * FSI / LSI / First Subject In / Last Subject In are NOT used for PSM (startup may still use FSI elsewhere).
  */
 
 function picklistLabel(v) {
@@ -9,7 +11,6 @@ function picklistLabel(v) {
   }
   const s = String(v).trim();
   if (!s) return null;
-  // dry_eye__c → dry eye → title-ish handled by vaultIndicationLabel callers
   return s;
 }
 
@@ -34,13 +35,13 @@ function vaultIndicationLabel(raw) {
 }
 
 /**
- * Months of active enrollment FSI → LSI.
+ * Months of active enrollment FPFV → LPFV.
  * Same calendar month (or < 1 month) → 1 (never divide by zero).
  */
-function siteEnrollMonthsFromFsiLsi(fsiIso, lsiIso) {
-  if (!fsiIso || !lsiIso) return null;
-  const a = Date.parse(fsiIso);
-  const b = Date.parse(lsiIso);
+function siteEnrollMonthsFromFpfvLpfv(fpfvIso, lpfvIso) {
+  if (!fpfvIso || !lpfvIso) return null;
+  const a = Date.parse(fpfvIso);
+  const b = Date.parse(lpfvIso);
   if (Number.isNaN(a) || Number.isNaN(b)) return null;
   const start = Math.min(a, b);
   const end = Math.max(a, b);
@@ -52,6 +53,9 @@ function siteEnrollMonthsFromFsiLsi(fsiIso, lsiIso) {
   return months;
 }
 
+/** @deprecated use siteEnrollMonthsFromFpfvLpfv — name kept for startup helpers */
+const siteEnrollMonthsFromFsiLsi = siteEnrollMonthsFromFpfvLpfv;
+
 /** site_psm = total_enrolled / site_enroll_months (Patients per Site per Month). */
 function computeSitePsm(totalEnrolled, enrollMonths) {
   const n = Number(totalEnrolled);
@@ -61,19 +65,76 @@ function computeSitePsm(totalEnrolled, enrollMonths) {
   return Math.round((n / m) * 1000) / 1000;
 }
 
-function classifyEnrollmentMilestone(name, type) {
-  const s = `${name || ""} ${type || ""}`.toLowerCase();
-  // LSO is last subject OUT — not LSI / LPFV
-  if (/\blso\b|last subject out|last patient out/.test(s)) return null;
-  if (/\blsi\b|last subject in|last patient in|lpfv/.test(s)) return "lsi";
-  if (/\bfsi\b|\bfpi\b|fpfv|first subject|first patient/.test(s)) return "fsi";
+/** Vault report labels — first/last *first visit* only (not Subject In). */
+const PSM_WINDOW_START_LABELS = new Set([
+  "first subject first visit in",
+  "first patient first visit in"
+]);
+
+const PSM_WINDOW_END_LABELS = new Set([
+  "last subject first visit in",
+  "last patient first visit in"
+]);
+
+function milestoneBlob(name, type) {
+  const typeLabel = (picklistLabel(type) || String(type || "")).toLowerCase();
+  const nameLabel = String(name || "").toLowerCase();
+  return `${nameLabel} ${typeLabel}`.replace(/[_\s]+/g, " ").trim();
+}
+
+function isPlainSubjectInMilestone(raw) {
+  return (
+    /(?:^|\s)fsi(?:__|\s|$)|(?:^|\s)lsi(?:__|\s|$)|fsi__ctms|lsi__ctms/.test(raw) ||
+    (/first subject in|last subject in|first patient in|last patient in|study fsi|study lsi/.test(raw) &&
+      !/first visit/.test(raw))
+  );
+}
+
+/**
+ * Map ora_veeva_milestone row → PSM enrollment window edge.
+ * Returns "fpfv" | "lpfv" | null. Does NOT treat FSI/LSI as FPFV/LPFV.
+ */
+function classifyPsmWindowMilestone(name, type) {
+  const raw = `${name || ""} ${type || ""}`.toLowerCase();
+  const blob = milestoneBlob(name, type);
+  const typeOnly = (picklistLabel(type) || String(type || "")).toLowerCase().replace(/[_\s]+/g, " ").trim();
+
+  if (/lso__|lplv__|last subject out|last patient out|last patient last visit/.test(raw)) {
+    return null;
+  }
+
+  if (isPlainSubjectInMilestone(raw)) {
+    return null;
+  }
+
+  if (
+    PSM_WINDOW_END_LABELS.has(blob) ||
+    PSM_WINDOW_END_LABELS.has(typeOnly) ||
+    /lpfv__|(?:^|[\s_])lpfv(?:__|\s|$)|last subject first visit|last patient first visit/.test(raw)
+  ) {
+    return "lpfv";
+  }
+
+  if (
+    PSM_WINDOW_START_LABELS.has(blob) ||
+    PSM_WINDOW_START_LABELS.has(typeOnly) ||
+    /fpfv__|(?:^|[\s_])fpfv(?:__|\s|$)|first subject first visit|first patient first visit/.test(raw)
+  ) {
+    return "fpfv";
+  }
+
   return null;
 }
+
+/** @deprecated alias — PSM path should call classifyPsmWindowMilestone */
+const classifyEnrollmentMilestone = classifyPsmWindowMilestone;
 
 module.exports = {
   picklistLabel,
   vaultIndicationLabel,
+  siteEnrollMonthsFromFpfvLpfv,
   siteEnrollMonthsFromFsiLsi,
   computeSitePsm,
+  classifyPsmWindowMilestone,
   classifyEnrollmentMilestone
 };

@@ -1,14 +1,14 @@
 /**
  * Buddy feasibility from live Vault mirrors (ora_veeva_*), not ora_fact_*.
- * Site PSM = enrolled / months(FSI → LSI from milestone__v), min 1 month.
+ * Site PSM = enrolled / months(FPFV → LPFV from milestone__v), min 1 month.
  */
 
 const {
   vaultIndicationLabel,
   picklistLabel,
-  siteEnrollMonthsFromFsiLsi,
+  siteEnrollMonthsFromFpfvLpfv,
   computeSitePsm,
-  classifyEnrollmentMilestone
+  classifyPsmWindowMilestone
 } = require("./veevaPsm");
 
 async function queryAll(container, query, parameters = []) {
@@ -189,6 +189,76 @@ function resolveCountryLabel(raw, countryNameById) {
   return s;
 }
 
+function isTotalEnrolledMetricName(name) {
+  return /total enrolled|subjects enrolled|patients enrolled|enrollment count/.test(
+    String(name || "").toLowerCase()
+  );
+}
+
+function isEnrollmentRateMetricName(name) {
+  return /enrol(?:l)?ment rate|subjects per month|patients per month/.test(
+    String(name || "").toLowerCase()
+  );
+}
+
+/** Site-level Total Enrolled from ora_veeva_metric when subject rows lack site__v. */
+async function loadEnrolledFromMetrics(database) {
+  const bySite = new Map();
+  const byStudy = new Map();
+  try {
+    const rows = await queryAll(
+      database.container("ora_veeva_metric"),
+      `SELECT c.site__v, c.study__v, c.name__v, c.actual__v, c.planned__v
+       FROM c WHERE c.docType = @t`,
+      [{ name: "@t", value: "ora_veeva_metric" }]
+    );
+    for (const row of rows) {
+      const actual = row.actual__v != null ? Number(row.actual__v) : null;
+      const planned = row.planned__v != null ? Number(row.planned__v) : null;
+      const val = Number.isFinite(actual) ? actual : Number.isFinite(planned) ? planned : null;
+      if (val == null || val < 0) continue;
+      const name = row.name__v;
+      if (isTotalEnrolledMetricName(name)) {
+        if (row.site__v) {
+          bySite.set(row.site__v, { enrolled: val, source: "ora_veeva_metric.total_enrolled" });
+        } else if (row.study__v) {
+          byStudy.set(row.study__v, { enrolled: val, source: "ora_veeva_metric.study_total_enrolled" });
+        }
+      }
+    }
+  } catch (_) {
+    /* optional */
+  }
+  return { bySite, byStudy };
+}
+
+/**
+ * When site enrolled is missing but study.enrollment__vs exists, split across sites
+ * on that study with FPFV+LPFV milestone window (approximate per-site enrolled).
+ */
+function allocateStudyEnrollmentToSites(sites, studyById) {
+  const eligibleByStudy = new Map();
+  for (const row of sites) {
+    if (row.total_enrolled != null) continue;
+    if (!(row.site_enroll_months > 0) || !row.veeva_study_id) continue;
+    if (!eligibleByStudy.has(row.veeva_study_id)) eligibleByStudy.set(row.veeva_study_id, []);
+    eligibleByStudy.get(row.veeva_study_id).push(row);
+  }
+  for (const [studyId, rows] of eligibleByStudy.entries()) {
+    const study = studyById.get(studyId);
+    const total = study?.total_enrolled;
+    if (!(total > 0) || !rows.length) continue;
+    const perSite = total / rows.length;
+    for (const row of rows) {
+      row.total_enrolled = round(perSite, 2);
+      row.enrolled_source = "study.enrollment__vs/shared_fpfv_lpfv_sites";
+      row.site_psm = computeSitePsm(row.total_enrolled, row.site_enroll_months);
+      row.site_psm = row.site_psm != null ? round(row.site_psm) : null;
+      row.psm_zero_enrolled = row.site_psm === 0;
+    }
+  }
+}
+
 /**
  * Load ora_veeva_* and compute site/study PSM from milestones.
  * Returns normalized rows shaped like the old fact pack (org_clean, site_psm, …).
@@ -254,6 +324,8 @@ async function loadVeevaLiveFeasibility(database) {
     /* optional */
   }
 
+  const metricEnrolled = await loadEnrolledFromMetrics(database);
+
   const datesBySite = new Map();
   try {
     const ms = await queryAll(
@@ -264,16 +336,16 @@ async function loadVeevaLiveFeasibility(database) {
       [{ name: "@t", value: "ora_veeva_milestone" }]
     );
     for (const m of ms) {
-      const kind = classifyEnrollmentMilestone(m.name__v, m.milestone_type__v);
+      const kind = classifyPsmWindowMilestone(m.name__v, m.milestone_type__v);
       if (!kind) continue;
       const when = m.actual_finish_date__v || m.actual_start_date__v;
       if (!when) continue;
       if (!datesBySite.has(m.site__v)) datesBySite.set(m.site__v, {});
       const pack = datesBySite.get(m.site__v);
-      if (kind === "fsi") {
-        if (!pack.fsi || Date.parse(when) < Date.parse(pack.fsi)) pack.fsi = when;
-      } else if (kind === "lsi") {
-        if (!pack.lsi || Date.parse(when) > Date.parse(pack.lsi)) pack.lsi = when;
+      if (kind === "fpfv") {
+        if (!pack.fpfv || Date.parse(when) < Date.parse(pack.fpfv)) pack.fpfv = when;
+      } else if (kind === "lpfv") {
+        if (!pack.lpfv || Date.parse(when) > Date.parse(pack.lpfv)) pack.lpfv = when;
       }
     }
   } catch (_) {
@@ -316,7 +388,7 @@ async function loadVeevaLiveFeasibility(database) {
     if (!org) continue;
 
     const dates = datesBySite.get(site.id) || {};
-    const months = siteEnrollMonthsFromFsiLsi(dates.fsi, dates.lsi);
+    const months = siteEnrollMonthsFromFpfvLpfv(dates.fpfv, dates.lpfv);
     let enrolled =
       site.no_subjects_enrolled__v != null ? Number(site.no_subjects_enrolled__v) : null;
     let enrolledSource = enrolled != null ? "site.no_subjects_enrolled__v" : null;
@@ -324,7 +396,12 @@ async function loadVeevaLiveFeasibility(database) {
       enrolled = enrolledBySite.get(site.id);
       enrolledSource = "ora_veeva_subject_count";
     }
-    const site_psm = months != null && enrolled != null ? computeSitePsm(enrolled, months) : null;
+    if (enrolled == null && metricEnrolled.bySite.has(site.id)) {
+      const pack = metricEnrolled.bySite.get(site.id);
+      enrolled = pack.enrolled;
+      enrolledSource = pack.source;
+    }
+    let site_psm = months != null && enrolled != null ? computeSitePsm(enrolled, months) : null;
 
     const row = {
       veeva_site_id: site.id,
@@ -341,18 +418,33 @@ async function loadVeevaLiveFeasibility(database) {
       total_enrolled: enrolled,
       enrolled_source: enrolledSource,
       site_enroll_months: months,
-      fsi_date: dates.fsi || null,
-      lsi_date: dates.lsi || null,
-      fsi_trust: dates.fsi && dates.lsi ? "high" : dates.fsi || dates.lsi ? "partial" : null,
+      fpfv_date: dates.fpfv || null,
+      lpfv_date: dates.lpfv || null,
+      enroll_window_trust:
+        dates.fpfv && dates.lpfv ? "high" : dates.fpfv || dates.lpfv ? "partial" : null,
+      fsi_trust:
+        dates.fpfv && dates.lpfv ? "high" : dates.fpfv || dates.lpfv ? "partial" : null,
       study_name: site.study_name__v || site.study_number__v || study?.study_number || null,
       source: "ora_veeva_site",
-      psm_formula: "total_enrolled / site_enroll_months (FSI→LSI from ora_veeva_milestone, min 1)"
+      psm_formula:
+        "total_enrolled / months(FPFV→LPFV from ora_veeva_milestone; First/Last Subject First Visit only, min 1 month)"
     };
     sites.push(row);
 
     if (site.study__v && typeof site_psm === "number" && site_psm > 0) {
       if (!sitePsmsByStudy.has(site.study__v)) sitePsmsByStudy.set(site.study__v, []);
       sitePsmsByStudy.get(site.study__v).push(site_psm);
+    }
+  }
+
+  allocateStudyEnrollmentToSites(sites, studyById);
+
+  // Rebuild study PSM rollups after enrollment fallbacks
+  sitePsmsByStudy.clear();
+  for (const row of sites) {
+    if (row.veeva_study_id && typeof row.site_psm === "number" && row.site_psm > 0) {
+      if (!sitePsmsByStudy.has(row.veeva_study_id)) sitePsmsByStudy.set(row.veeva_study_id, []);
+      sitePsmsByStudy.get(row.veeva_study_id).push(row.site_psm);
     }
   }
 
@@ -363,7 +455,7 @@ async function loadVeevaLiveFeasibility(database) {
     studies.push({
       ...st,
       psm,
-      psm_source: psms.length ? "median_site_psm_fsi_lsi" : null,
+      psm_source: psms.length ? "median_site_psm_fpfv_lpfv" : null,
       sites_with_psm: psms.length
     });
   }
@@ -376,8 +468,8 @@ async function loadVeevaLiveFeasibility(database) {
     studiesWithPsm: studies.filter((s) => typeof s.psm === "number" && s.psm > 0).length,
     studies,
     sites,
-    note:
-      "Live Vault mirrors. Site PSM = enrolled / months(FSI→LSI from ora_veeva_milestone). ora_fact_* not used."
+      note:
+      "Live Vault mirrors. Site PSM = enrolled / months(FPFV→LPFV visit milestones only — not FSI/LSI). When site enrolled is missing, falls back to study.enrollment__vs split across FPFV+LPFV sites. Cosmos currently has fsi__ctms/lsi__ctms (Subject In) — need First Subject First Visit milestones in Veeva for PSM."
   };
 }
 

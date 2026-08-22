@@ -224,6 +224,140 @@ async function getSponsorNewsStatus(getDb) {
   return { count, sync, note: "Google News RSS crawl → ora_sponsor_news" };
 }
 
+const BD_HEADLINE_BOOSTS = [
+  [/clinical\s+trial|phase\s+[123]|fda|nda|bla|approval|breakthrough/i, 3],
+  [/ophthalm|retina|glaucoma|dry\s*eye|macular|uveitis|cataract/i, 3],
+  [/partnership|collaborat|acqui|merger|funding|raise|invest/i, 2],
+  [/cro|enrollment|site|feasibility|sponsor/i, 2],
+  [/biotech|pharma|therapeutic|pipeline|drug/i, 1]
+];
+
+function parsePubDateMs(pubDate) {
+  if (!pubDate) return null;
+  const t = Date.parse(String(pubDate));
+  return Number.isFinite(t) ? t : null;
+}
+
+function scoreHeadline(title, source) {
+  const blob = `${String(title || "")} ${String(source || "")}`.toLowerCase();
+  let score = 0;
+  for (const [re, w] of BD_HEADLINE_BOOSTS) {
+    if (re.test(blob)) score += w;
+  }
+  if (/stock price|share price|analyst rating|dividend|earnings per share/i.test(blob)) score -= 1;
+  return score;
+}
+
+/**
+ * Flatten + rank headlines across crawled sponsors for Buddy triage and Dashboard feed.
+ */
+async function buildTopSponsorNewsFeed(getDb, opts = {}) {
+  const limit = Math.min(Number(opts.limit) || 12, 25);
+  const hint = String(opts.sponsor || opts.clientName || "").trim().toLowerCase();
+  const database = getDb();
+  try {
+    let rows;
+    if (hint) {
+      rows = await queryAll(
+        database.container(NEWS_CONTAINER),
+        `SELECT TOP 20 c.sponsorName, c.headlines, c.crawledAt, c.sfAccountId
+         FROM c WHERE c.docType = @t
+           AND (CONTAINS(LOWER(c.sponsorName), @h, true) OR CONTAINS(c.sponsorKey, @h, true))`,
+        [
+          { name: "@t", value: NEWS_DOC_TYPE },
+          { name: "@h", value: hint }
+        ]
+      );
+    } else {
+      rows = await queryAll(
+        database.container(NEWS_CONTAINER),
+        `SELECT TOP 40 c.sponsorName, c.headlines, c.crawledAt, c.sfAccountId
+         FROM c WHERE c.docType = @t`,
+        [{ name: "@t", value: NEWS_DOC_TYPE }]
+      );
+    }
+
+    const flat = [];
+    for (const row of rows) {
+      for (const h of row.headlines || []) {
+        const ts =
+          parsePubDateMs(h.pubDate) ||
+          parsePubDateMs(row.crawledAt) ||
+          0;
+        flat.push({
+          sponsorName: row.sponsorName,
+          title: h.title,
+          link: h.link || null,
+          pubDate: h.pubDate || null,
+          source: h.source || null,
+          crawledAt: row.crawledAt || null,
+          sfAccountId: row.sfAccountId || null,
+          score: scoreHeadline(h.title, h.source),
+          ts
+        });
+      }
+    }
+
+    flat.sort((a, b) => {
+      const scoreDiff = b.score - a.score;
+      if (scoreDiff !== 0) return scoreDiff;
+      return (b.ts || 0) - (a.ts || 0);
+    });
+
+    const headlines = flat.slice(0, limit);
+    let sync = null;
+    try {
+      const status = await getSponsorNewsStatus(getDb);
+      sync = status.sync || null;
+    } catch (_) {
+      sync = null;
+    }
+
+    const lastCrawledAt =
+      headlines[0]?.crawledAt ||
+      rows.reduce((best, r) => {
+        const t = parsePubDateMs(r.crawledAt);
+        return t && t > best ? t : best;
+      }, 0) ||
+      null;
+
+    return {
+      empty: !headlines.length,
+      sponsorCount: rows.length,
+      headlineCount: flat.length,
+      headlines,
+      lastCrawledAt: lastCrawledAt ? new Date(lastCrawledAt).toISOString() : null,
+      sync,
+      note:
+        "Ranked Google News RSS headlines for watched SF/crosswalk sponsors (ora_sponsor_news). Triage BD signal vs noise — not ZoomInfo."
+    };
+  } catch (err) {
+    return { error: String(err.message || err), empty: true };
+  }
+}
+
+/** Attach lightweight feed (always) + optional full pack on sponsor-news asks or named sponsor. */
+async function attachSponsorNewsToIntel(out, getDb, opts = {}) {
+  const { question = "", sponsor = null, clientName = null, feedLimit = 12 } = opts;
+  const who = sponsor || clientName;
+  try {
+    out.sponsorNewsFeed = await buildTopSponsorNewsFeed(getDb, {
+      limit: feedLimit,
+      sponsor: who,
+      clientName: who
+    });
+    if (isSponsorNewsQuestion(question) || who) {
+      out.sponsorNews = await buildSponsorNewsPack(getDb, {
+        sponsor: who,
+        clientName: who || clientName
+      });
+    }
+  } catch (err) {
+    out.sponsorNewsFeed = { error: String(err.message || err), empty: true };
+  }
+  return out;
+}
+
 async function buildSponsorNewsPack(getDb, opts = {}) {
   const database = getDb();
   const hint = String(opts.sponsor || opts.clientName || "").trim().toLowerCase();
@@ -264,7 +398,14 @@ async function buildSponsorNewsPack(getDb, opts = {}) {
 
 function isSponsorNewsQuestion(question) {
   const q = String(question || "").toLowerCase();
-  return /\b(sponsor news|news about|headlines?|press (release|coverage)|in the news)\b/.test(q);
+  return (
+    /\b(sponsor news|sponsor headlines?|news crawl|crawl(ed)? news|google news|top news|ora_sponsor_news)\b/.test(
+      q
+    ) ||
+    /\b(news about|headlines?|press (release|coverage)|in the news|what.*news|any news)\b/.test(q) ||
+    /\bnews\b.{0,40}\b(sponsor|client|account)\b/.test(q) ||
+    /\b(sponsor|client|account)\b.{0,40}\bnews\b/.test(q)
+  );
 }
 
 module.exports = {
@@ -272,6 +413,8 @@ module.exports = {
   NEWS_DOC_TYPE,
   runSponsorNewsCrawl,
   getSponsorNewsStatus,
+  buildTopSponsorNewsFeed,
+  attachSponsorNewsToIntel,
   buildSponsorNewsPack,
   isSponsorNewsQuestion
 };
