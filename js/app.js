@@ -5464,16 +5464,26 @@
     refreshDataStatusIfOpen();
     try {
       const res = await intelligenceFaFetch("/api/salesforce/sync", {
+        requireExternal: true,
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({})
       });
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
+      if (res.status === 401) {
+        state.intelligence.sfSyncMessage =
+          data.error ||
+          "Sign in required (or Buddy session mint failed) — SF must run on ora-buddy-api, not SWA.";
+      } else if (!res.ok) {
         state.intelligence.sfSyncMessage = data.error || `Salesforce sync failed (${res.status})`;
       } else if (data.skipped) {
-        state.intelligence.sfSyncMessage =
-          data.error || data.reason || "Salesforce not configured on ora-buddy-api (SF_CLIENT_ID + SF_USERNAME).";
+        state.intelligence.sfSyncMessage = [
+          data.error || data.reason || "Salesforce not configured",
+          data.host ? `host=${data.host}` : "",
+          data.credsSource ? `creds=${data.credsSource}` : ""
+        ]
+          .filter(Boolean)
+          .join(" · ");
       } else {
         const parts = [
           `Salesforce: ${data.updated ?? 0} updated · ${data.unchanged ?? 0} unchanged · ${
@@ -5526,9 +5536,15 @@
           break;
         }
         if (data.skipped) {
-          state.intelligence.sfTablesMessage =
-            data.error ||
-            "Salesforce not configured on ora-buddy-api (SF_CLIENT_ID + SF_USERNAME + JWT key).";
+          state.intelligence.sfTablesMessage = [
+            data.error || "Salesforce not configured",
+            data.host ? `host=${data.host}` : "",
+            data.credsSource ? `creds=${data.credsSource}` : "",
+            data.clientIdSet === false ? "clientId=missing" : "",
+            data.usernameSet === false ? "username=missing" : ""
+          ]
+            .filter(Boolean)
+            .join(" · ");
           anyFail = true;
           break;
         }
@@ -5907,6 +5923,16 @@
           ? "synced"
           : "no sync yet"
     }${sfCountBits.length ? ` · ${sfCountBits.join(" · ")}` : ""}${
+      sfWrap.host ? ` · host ${escapeHtml(String(sfWrap.host))}` : ""
+    }${
+      sfWrap.credsSource ? ` · creds ${escapeHtml(String(sfWrap.credsSource))}` : ""
+    }${
+      sfWrap.clientIdSet === false
+        ? " · clientId missing on this host"
+        : sfWrap.clientIdSet
+          ? " · clientId ok"
+          : ""
+    }${
       jwtBroken
         ? ` · JWT key not loadable (${escapeHtml(String(jwtKey.error || "check key upload"))})`
         : ""

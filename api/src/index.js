@@ -37,6 +37,11 @@ const { loadLiveContext, saveLiveContext } = require("./buddyLiveContext");
 const { runCtgovSync, getCtgovSyncStatus, remapCtgovIndications } = require("./ctgovSync");
 const { runSalesforceCrosswalkSync, getSalesforceSyncStatus } = require("./salesforceSync");
 const { runSalesforceTablesSync, getSalesforceTablesStatus } = require("./salesforceTables");
+const {
+  saveCosmosSfConnection,
+  resolveSalesforceConfig,
+  runtimeHostHint
+} = require("./salesforceClient");
 const { runVeevaTablesSync, getVeevaSyncStatus } = require("./veevaSync");
 const { ingestTrialHubUpload } = require("./trialhubIngest");
 const {
@@ -1681,7 +1686,7 @@ app.http("salesforceSync", {
         headers: {
           "Access-Control-Allow-Origin": "*",
           "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-          "Access-Control-Allow-Headers": "content-type, x-copilot-key"
+          "Access-Control-Allow-Headers": "content-type, x-copilot-key, authorization"
         }
       };
     }
@@ -1753,6 +1758,76 @@ app.http("salesforceSync", {
     } catch (err) {
       context.error(err);
       return json(500, { ok: false, error: String(err.message || err) });
+    }
+  }
+});
+
+/**
+ * Save SF Connected App consumer key + username into Cosmos (survives missing App Settings).
+ * JWT private key stays on salesforce_jwt_key (separate).
+ */
+app.http("salesforceConnection", {
+  methods: ["GET", "POST", "OPTIONS"],
+  authLevel: "anonymous",
+  route: "salesforce/connection",
+  handler: async (request, context) => {
+    if (request.method === "OPTIONS") {
+      return {
+        status: 204,
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+          "Access-Control-Allow-Headers": "content-type, x-copilot-key, authorization"
+        }
+      };
+    }
+    try {
+      if (request.method === "GET") {
+        const cfg = await resolveSalesforceConfig(getDb);
+        return json(
+          200,
+          {
+            ok: true,
+            host: cfg.host || runtimeHostHint(),
+            configured: Boolean(cfg.configured),
+            credsSource: cfg.credsSource || "none",
+            clientIdSet: Boolean(cfg.clientId),
+            usernameSet: Boolean(cfg.username),
+            usernameHint: cfg.username
+              ? cfg.username.includes("@")
+                ? `${cfg.username.slice(0, 2)}***@${cfg.username.split("@")[1]}`
+                : `${cfg.username.slice(0, 2)}***`
+              : null,
+            loginUrl: cfg.loginUrl
+          },
+          request
+        );
+      }
+
+      const auth = authorizeCtgovSync(request);
+      if (!auth.ok) {
+        return json(
+          401,
+          { error: "Unauthorized — sign in, Buddy session, or x-copilot-key required" },
+          request
+        );
+      }
+      let body = {};
+      try {
+        body = (await request.json()) || {};
+      } catch (_) {
+        body = {};
+      }
+      const saved = await saveCosmosSfConnection(getDb, {
+        clientId: body.clientId || body.SF_CLIENT_ID,
+        username: body.username || body.SF_USERNAME,
+        loginUrl: body.loginUrl || body.SF_LOGIN_URL,
+        updatedBy: `ui:${auth.user?.email || auth.user?.userId || auth.via || "user"}`
+      });
+      return json(200, saved, request);
+    } catch (err) {
+      context.error?.(err);
+      return json(400, { ok: false, error: String(err.message || err) }, request);
     }
   }
 });

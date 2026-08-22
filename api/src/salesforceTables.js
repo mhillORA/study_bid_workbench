@@ -5,8 +5,10 @@
 
 const {
   salesforceConfig,
+  resolveSalesforceConfig,
   getSalesforceAccessToken,
-  queryFullObject
+  queryFullObject,
+  notConfiguredPayload
 } = require("./salesforceClient");
 
 const SYNC_ID = "salesforce_tables";
@@ -139,21 +141,18 @@ async function upsertMany(container, docs, { concurrency = 25, onBudget } = {}) 
  */
 async function runSalesforceTablesSync(getDb, opts = {}) {
   const started = Date.now();
-  const cfg = salesforceConfig();
+  const cfg = await resolveSalesforceConfig(getDb);
   if (!cfg.configured) {
-    return {
-      ok: false,
-      skipped: true,
-      reason: "not_configured",
-      error: "Salesforce not configured on ora-buddy-api — set SF_CLIENT_ID + SF_USERNAME (and JWT key B64 or Data Status key upload).",
-      elapsedMs: 0
-    };
+    return { ...notConfiguredPayload(cfg), elapsedMs: 0 };
   }
 
   let session;
   try {
     session = await getSalesforceAccessToken(cfg, getDb);
   } catch (err) {
+    if (err.code === "not_configured" && err.detail) {
+      return { ...err.detail, elapsedMs: Date.now() - started };
+    }
     return { ok: false, error: String(err.message || err), elapsedMs: Date.now() - started };
   }
 

@@ -6,9 +6,12 @@
 
 const {
   salesforceConfig,
+  resolveSalesforceConfig,
   getSalesforceAccessToken,
   fetchAccountsByIds,
-  diagnoseJwtPrivateKey
+  diagnoseJwtPrivateKey,
+  notConfiguredPayload,
+  runtimeHostHint
 } = require("./salesforceClient");
 
 const SYNC_ID = "salesforce_crosswalk";
@@ -90,16 +93,9 @@ async function loadAccountsMapFromCosmos(database, accountIds) {
  */
 async function runSalesforceCrosswalkSync(getDb, opts = {}) {
   const started = Date.now();
-  const cfg = salesforceConfig();
+  const cfg = await resolveSalesforceConfig(getDb);
   if (!cfg.configured) {
-    return {
-      ok: false,
-      skipped: true,
-      reason: "not_configured",
-      error:
-        "Salesforce not configured on ora-buddy-api — set SF_CLIENT_ID + SF_USERNAME (JWT key via App Setting or Data Status upload).",
-      elapsedMs: Date.now() - started
-    };
+    return { ...notConfiguredPayload(cfg), elapsedMs: Date.now() - started };
   }
 
   const database = getDb();
@@ -318,7 +314,7 @@ async function runSalesforceCrosswalkSync(getDb, opts = {}) {
 }
 
 async function getSalesforceSyncStatus(getDb) {
-  const cfg = salesforceConfig();
+  const cfg = await resolveSalesforceConfig(getDb);
   const database = getDb();
   const state = await readSyncState(database);
   let withSfId = 0;
@@ -348,12 +344,13 @@ async function getSalesforceSyncStatus(getDb) {
     Boolean(cfg.envKeySet) || Boolean(jwtKey.cosmosKeySet) || Boolean(jwtKey.parseOk);
   const hasSynced =
     Boolean(state?.lastSuccessfulSync) || Boolean(state?.lastRunAt) || withSfId > 0;
-  // SWA status GET often lacks SF_CLIENT_ID/USERNAME even when FA can sync and Cosmos has data.
-  // Report configured when this host has creds OR when JWT + prior sync evidence exists.
-  const configured = Boolean(cfg.configured) || (privateKeySet && hasSynced);
+  // Configured when this host (or Cosmos connection doc) has client+username.
+  const configured = Boolean(cfg.configured) || (privateKeySet && hasSynced && cfg.clientId && cfg.username);
   return {
     configured,
-    credentialsOnHost: Boolean(cfg.configured),
+    credentialsOnHost: Boolean(salesforceConfig().configured),
+    credsSource: cfg.credsSource || "none",
+    host: cfg.host || runtimeHostHint(),
     loginUrl: cfg.loginUrl,
     tierField: cfg.tierField,
     groupingField: cfg.groupingField,

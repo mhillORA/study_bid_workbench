@@ -64,6 +64,135 @@ function normalizePem(raw) {
 }
 
 const JWT_KEY_DOC_ID = "salesforce_jwt_key";
+const SF_CONN_DOC_ID = "salesforce_connection";
+
+function runtimeHostHint() {
+  return (
+    process.env.WEBSITE_SITE_NAME ||
+    process.env.WEBSITE_HOSTNAME ||
+    process.env.FUNCTIONS_EXTENSION_VERSION ||
+    "local-or-unknown"
+  );
+}
+
+async function readCosmosSfConnection(getDb) {
+  if (!getDb) return null;
+  try {
+    const database = getDb();
+    const { resource } = await database.container("syncState").item(SF_CONN_DOC_ID, SF_CONN_DOC_ID).read();
+    if (!resource) return null;
+    return {
+      clientId: String(resource.clientId || "").trim() || null,
+      username: String(resource.username || "").trim() || null,
+      loginUrl: String(resource.loginUrl || "").trim().replace(/\/$/, "") || null,
+      updatedAt: resource.updatedAt || null
+    };
+  } catch (err) {
+    if (err.code === 404) return null;
+    return null;
+  }
+}
+
+async function saveCosmosSfConnection(getDb, opts = {}) {
+  const database = getDb();
+  try {
+    await database.containers.createIfNotExists({
+      id: "syncState",
+      partitionKey: { paths: ["/id"] }
+    });
+  } catch (_) {
+    /* exists */
+  }
+  const clientId = String(opts.clientId || "").trim();
+  const username = String(opts.username || "").trim();
+  if (!clientId || !username) {
+    throw new Error("clientId and username are required");
+  }
+  const loginUrl = String(opts.loginUrl || "https://login.salesforce.com")
+    .trim()
+    .replace(/\/$/, "");
+  const doc = {
+    id: SF_CONN_DOC_ID,
+    docType: "syncState",
+    job: SF_CONN_DOC_ID,
+    clientId,
+    username,
+    loginUrl,
+    updatedAt: new Date().toISOString(),
+    updatedBy: opts.updatedBy || "api",
+    note: "SF Connected App consumer key + integration username. Used when App Settings are missing on this host."
+  };
+  await database.container("syncState").items.upsert(doc);
+  return {
+    ok: true,
+    source: "cosmos:salesforce_connection",
+    updatedAt: doc.updatedAt,
+    clientIdSet: true,
+    usernameHint: username.includes("@")
+      ? `${username.slice(0, 2)}***@${username.split("@")[1]}`
+      : `${username.slice(0, 2)}***`
+  };
+}
+
+/**
+ * Env first, then Cosmos salesforce_connection (same pattern as JWT key in Cosmos).
+ * Opportunistically persists env creds so a later host without App Settings still works.
+ */
+async function resolveSalesforceConfig(getDb) {
+  const base = salesforceConfig();
+  if (base.clientId && base.username) {
+    if (getDb) {
+      try {
+        await saveCosmosSfConnection(getDb, {
+          clientId: base.clientId,
+          username: base.username,
+          loginUrl: base.loginUrl,
+          updatedBy: "auto:env"
+        });
+      } catch (_) {
+        /* non-fatal */
+      }
+    }
+    return { ...base, credsSource: "env", host: runtimeHostHint() };
+  }
+  const stored = await readCosmosSfConnection(getDb);
+  if (stored?.clientId && stored?.username) {
+    return {
+      ...base,
+      clientId: stored.clientId,
+      username: stored.username,
+      loginUrl: stored.loginUrl || base.loginUrl,
+      configured: true,
+      credsSource: "cosmos",
+      host: runtimeHostHint()
+    };
+  }
+  return {
+    ...base,
+    configured: false,
+    credsSource: "none",
+    host: runtimeHostHint()
+  };
+}
+
+function notConfiguredPayload(cfg, extra = {}) {
+  const missing = [];
+  if (!cfg?.clientId) missing.push("SF_CLIENT_ID");
+  if (!cfg?.username) missing.push("SF_USERNAME");
+  return {
+    ok: false,
+    skipped: true,
+    reason: "not_configured",
+    error:
+      `Salesforce not configured on host "${cfg?.host || runtimeHostHint()}" — missing ${missing.join(" + ") || "creds"}. ` +
+      `Save Consumer Key + Username on Data Status (stored in Cosmos), or set App Settings on ora-buddy-api. JWT key alone is not enough.`,
+    host: cfg?.host || runtimeHostHint(),
+    clientIdSet: Boolean(cfg?.clientId),
+    usernameSet: Boolean(cfg?.username),
+    credsSource: cfg?.credsSource || "none",
+    ...extra
+  };
+}
 
 /**
  * Resolve key material from App Settings.
@@ -337,9 +466,17 @@ function safeApiField(name, fallback) {
 }
 
 function salesforceConfig() {
-  const clientId = env("SF_CLIENT_ID");
-  const username = env("SF_USERNAME");
-  const loginUrl = (env("SF_LOGIN_URL") || "https://login.salesforce.com").replace(/\/$/, "");
+  const clientId =
+    env("SF_CLIENT_ID") ||
+    env("SF_CONSUMER_KEY") ||
+    env("SALESFORCE_CLIENT_ID") ||
+    env("SF_CONNECTED_APP_CLIENT_ID");
+  const username =
+    env("SF_USERNAME") || env("SF_USER") || env("SALESFORCE_USERNAME") || env("SF_INTEGRATION_USER");
+  const loginUrl = (env("SF_LOGIN_URL") || env("SALESFORCE_LOGIN_URL") || "https://login.salesforce.com").replace(
+    /\/$/,
+    ""
+  );
   let privateKey = "";
   let keySource = "none";
   try {
@@ -392,12 +529,20 @@ async function buildJwtAssertion(cfg, getDb) {
   return `${enc}.${b64url(sig)}`;
 }
 
-async function getSalesforceAccessToken(cfg = salesforceConfig(), getDb = null) {
-  if (!cfg.configured) {
+async function getSalesforceAccessToken(cfgOrNull = null, getDb = null) {
+  const cfg = cfgOrNull?.configured != null && cfgOrNull?.clientId
+    ? cfgOrNull
+    : await resolveSalesforceConfig(getDb);
+  if (!cfg.configured || !cfg.clientId || !cfg.username) {
     const missing = [];
     if (!cfg.clientId) missing.push("SF_CLIENT_ID");
     if (!cfg.username) missing.push("SF_USERNAME");
-    throw new Error(`Salesforce not configured — set ${missing.join(", ")} on ora-buddy-api Application settings`);
+    const err = new Error(
+      `Salesforce not configured on host "${cfg.host || runtimeHostHint()}" — set ${missing.join(", ")} (App Settings or Data Status → Save SF connection)`
+    );
+    err.code = "not_configured";
+    err.detail = notConfiguredPayload(cfg);
+    throw err;
   }
   const assertion = await buildJwtAssertion(cfg, getDb);
   const body = new URLSearchParams({
@@ -430,7 +575,9 @@ async function getSalesforceAccessToken(cfg = salesforceConfig(), getDb = null) 
     issuedAt: json.issued_at || null,
     apiVersion: cfg.apiVersion,
     tierField: cfg.tierField,
-    groupingField: cfg.groupingField
+    groupingField: cfg.groupingField,
+    credsSource: cfg.credsSource || null,
+    host: cfg.host || runtimeHostHint()
   };
 }
 
@@ -731,6 +878,11 @@ async function fetchAccountsByIds(session, ids, opts = {}) {
 
 module.exports = {
   salesforceConfig,
+  resolveSalesforceConfig,
+  saveCosmosSfConnection,
+  readCosmosSfConnection,
+  notConfiguredPayload,
+  runtimeHostHint,
   getSalesforceAccessToken,
   soqlQuery,
   describeSObject,
@@ -743,5 +895,6 @@ module.exports = {
   saveCosmosJwtKey,
   diagnoseJwtPrivateKey,
   JWT_KEY_DOC_ID,
+  SF_CONN_DOC_ID,
   sfGet
 };
