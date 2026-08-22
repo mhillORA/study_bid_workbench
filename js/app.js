@@ -82,7 +82,12 @@
       studyMilestones: null,
       studyMilestonesLoading: false,
       studyMilestonesStatus: "",
-      studyMilestoneStudy: ""
+      studyMilestoneStudy: "",
+      yearlyGoal: null,
+      yearlyGoalLoading: false,
+      yearlyGoalSaving: false,
+      yearlyGoalMessage: "",
+      yearlyGoalInput: ""
     },
     scorecard: {
       indication: "",
@@ -5229,7 +5234,151 @@
     if (!state.intelligence.sponsorNewsFeed && !state.intelligence.sponsorNewsFeedLoading) {
       tasks.push(loadSponsorNewsFeed());
     }
+    if (
+      state.sectionId === "data-status" &&
+      !state.intelligence.yearlyGoal &&
+      !state.intelligence.yearlyGoalLoading
+    ) {
+      tasks.push(loadYearlyGoal());
+    }
     if (tasks.length) await Promise.all(tasks);
+  }
+
+  async function loadYearlyGoal() {
+    state.intelligence.yearlyGoalLoading = true;
+    state.intelligence.yearlyGoalMessage = "";
+    if (state.sectionId === "data-status") render();
+    try {
+      const res = await fetch(apiUrl("/api/commercial/yearly-goal"));
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        state.intelligence.yearlyGoal = null;
+        state.intelligence.yearlyGoalMessage = data.error || `Goal load failed (${res.status})`;
+      } else {
+        state.intelligence.yearlyGoal = data;
+        if (data.settings?.goalOraNet != null && !state.intelligence.yearlyGoalInput) {
+          state.intelligence.yearlyGoalInput = String(data.settings.goalOraNet);
+        }
+      }
+    } catch (err) {
+      state.intelligence.yearlyGoal = null;
+      state.intelligence.yearlyGoalMessage = String(err.message || err);
+    }
+    state.intelligence.yearlyGoalLoading = false;
+    if (state.sectionId === "data-status") render();
+  }
+
+  async function saveYearlyGoalSetting() {
+    const input = document.getElementById("yearlyGoalInput");
+    const raw = input ? input.value : state.intelligence.yearlyGoalInput;
+    const goalOraNet = Number(String(raw || "").replace(/[,$\s]/g, ""));
+    if (!(goalOraNet > 0)) {
+      state.intelligence.yearlyGoalMessage = "Enter a positive yearly goal (Total Ora Net Revenue).";
+      if (state.sectionId === "data-status") render();
+      return;
+    }
+    state.intelligence.yearlyGoalSaving = true;
+    state.intelligence.yearlyGoalMessage = "Saving…";
+    if (state.sectionId === "data-status") render();
+    try {
+      const res = await intelligenceFaFetch("/api/commercial/yearly-goal", {
+        requireExternal: true,
+        method: "POST",
+        headers: { "Content-Type": "application/json", Accept: "application/json" },
+        body: JSON.stringify({ goalOraNet, year: new Date().getFullYear() })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 401) {
+        state.intelligence.yearlyGoalMessage =
+          data.error || "Sign in required to save yearly goal.";
+      } else if (!res.ok || data.ok === false) {
+        state.intelligence.yearlyGoalMessage = data.error || `Save failed (${res.status})`;
+      } else {
+        state.intelligence.yearlyGoal = data;
+        state.intelligence.yearlyGoalInput = String(data.settings?.goalOraNet ?? goalOraNet);
+        state.intelligence.yearlyGoalMessage = "Saved.";
+        state.dashboard.brief = null;
+        if (state.sectionId === "dashboard") ensureDashboardLoaded({ forceRefresh: true });
+      }
+    } catch (err) {
+      state.intelligence.yearlyGoalMessage = String(err.message || err);
+    }
+    state.intelligence.yearlyGoalSaving = false;
+    if (state.sectionId === "data-status") render();
+  }
+
+  function renderYearlyGoalCard() {
+    const pack = state.intelligence.yearlyGoal;
+    const loading = state.intelligence.yearlyGoalLoading;
+    const saving = state.intelligence.yearlyGoalSaving;
+    const msg = state.intelligence.yearlyGoalMessage;
+    const year = pack?.settings?.year || new Date().getFullYear();
+    const inputVal = escapeAttr(state.intelligence.yearlyGoalInput || pack?.settings?.goalOraNet || "");
+    const progress = pack?.progress;
+
+    let progressBlock = "";
+    if (progress) {
+      const pct = progress.percentToGoal != null ? `${progress.percentToGoal}%` : "—";
+      const wins = progress.suggestedWins || [];
+      const winRows = wins.length
+        ? wins
+            .map(
+              (o, i) =>
+                `<tr><td>${i + 1}</td><td>${escapeHtml(o.name || "—")}</td><td>${escapeHtml(
+                  o.accountName || "—"
+                )}</td><td>${escapeHtml(o.stage || "—")}</td><td>${money(
+                  o.oraNetRevenue
+                )}</td><td>${escapeHtml(o.closeDate || "—")}</td></tr>`
+            )
+            .join("")
+        : `<tr><td colspan="6" class="muted">No open opps with Ora Net Revenue in SF.</td></tr>`;
+      progressBlock = `
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:0.75rem;margin-top:1rem;">
+          <div><div class="stat">${pct}</div><p class="muted">% to goal · ${year}</p></div>
+          <div><div class="stat">${money(progress.closedWonYtdOraNet)}</div><p class="muted">Closed Won YTD</p></div>
+          <div><div class="stat">${money(progress.gapRemaining)}</div><p class="muted">Gap remaining</p></div>
+          <div><div class="stat">${money(progress.openPipelineOraNet)}</div><p class="muted">Open pipeline</p></div>
+        </div>
+        <p class="muted" style="margin-top:0.75rem;">${escapeHtml(progress.note || "")}${
+          progress.estimatedOppsToClose != null && !progress.atGoal
+            ? ` · ~${progress.estimatedOppsToClose} avg-sized wins to close the gap.`
+            : ""
+        }</p>
+        ${
+          !progress.atGoal
+            ? `<h4 style="margin:1rem 0 0.35rem;font-size:0.95rem;">Suggested wins to hit goal (${intelStatNum(
+                progress.suggestedWinsCount
+              )} opps · ${money(progress.suggestedWinsTotal)} Ora Net)</h4>
+               <div style="overflow:auto;"><table class="table">
+                 <thead><tr><th>#</th><th>Opportunity</th><th>Account</th><th>Stage</th><th>Ora Net $</th><th>Close</th></tr></thead>
+                 <tbody>${winRows}</tbody>
+               </table></div>`
+            : `<p class="muted" style="margin-top:0.75rem;"><strong>At goal</strong> for ${year} Closed Won YTD.</p>`
+        }`;
+    } else if (!loading) {
+      progressBlock = `<p class="muted" style="margin-top:0.75rem;">Set a yearly goal to see % to goal and which open opportunities to chase.</p>`;
+    }
+
+    return `<div class="card wide">
+      <h3>Yearly sales goal</h3>
+      <p class="muted">Total Ora Net Revenue target for ${year} — compared to Salesforce Closed Won YTD (not contract Amount).</p>
+      <div class="benchmark-filter-grid" style="margin-top:0.75rem;align-items:flex-end;">
+        <div class="benchmark-filter-field">
+          <label class="field-label" for="yearlyGoalInput">Yearly goal</label>
+          <input id="yearlyGoalInput" class="input" type="number" min="1" step="1000" placeholder="e.g. 15000000" value="${inputVal}" />
+        </div>
+        <div class="benchmark-filter-field" style="display:flex;gap:0.5rem;align-items:flex-end;">
+          <button type="button" class="btn btn-primary" id="btnSaveYearlyGoal" ${
+            saving ? "disabled" : ""
+          }>${saving ? "Saving…" : "Save goal"}</button>
+          <button type="button" class="btn btn-secondary" id="btnRefreshYearlyGoal" ${
+            loading ? "disabled" : ""
+          }>Refresh</button>
+        </div>
+      </div>
+      ${msg ? `<p class="muted" style="margin-top:0.5rem;">${escapeHtml(msg)}</p>` : ""}
+      ${loading && !pack ? `<p class="muted" style="margin-top:0.75rem;">Loading goal progress…</p>` : progressBlock}
+    </div>`;
   }
 
   async function loadSponsorNewsFeed() {
@@ -6686,6 +6835,7 @@
           <h3>Data Status</h3>
           <p class="muted">Upload and sync feeds Buddy uses (TrialHub, CT.gov, Salesforce). Benchmark queries stay on Ora Clinical Intelligence.</p>
         </div>
+        ${renderYearlyGoalCard()}
         ${renderIntelligenceHealthCard()}
       </div>`;
   }
@@ -8785,6 +8935,17 @@
     const df = b?.dataFreshness || {};
     const counts = df.counts || {};
 
+    const gp = b?.goalProgress;
+    const goalCard = gp
+      ? `<div class="card">
+          <h3>% to goal · ${gp.year || h.closedWonYtdYear || ""}</h3>
+          <div class="stat">${gp.percentToGoal != null ? `${gp.percentToGoal}%` : "—"}</div>
+          <p class="muted">${money(gp.closedWonYtdOraNet)} won · ${money(gp.gapRemaining)} to go · goal ${money(
+            gp.goalOraNet
+          )}</p>
+        </div>`
+      : "";
+
     return `
       <div class="grid">
         <div class="card wide dash-hero">
@@ -8792,7 +8953,9 @@
           <p class="muted">Salesforce pipeline (Total Ora Net Revenue) plus feasibility data health. Budget workbooks stay under <strong>Budget (legacy)</strong> in the sidebar — not here.</p>
           <p class="muted" style="margin-top:0.35rem;">${escapeHtml(b?.weekLabel || "—")} · ${escapeHtml(
             state.dashboard.status || (loading ? "Loading…" : "—")
-          )}${b?.error ? ` · ${escapeHtml(b.error)}` : ""}</p>
+          )}${b?.error ? ` · ${escapeHtml(b.error)}` : ""}${
+            !gp ? ` · <a href="#" data-jump="data-status">Set yearly goal on Data Status</a>` : ""
+          }</p>
           <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.85rem;">
             <button type="button" class="btn btn-primary" id="btnDashLeadershipVisual" ${
               state.dashboard.visualBusy || loading ? "disabled" : ""
@@ -8807,6 +8970,8 @@
             <button type="button" class="btn btn-ghost" data-jump="data-status">Data Status</button>
           </div>
         </div>
+
+        ${goalCard}
 
         <div class="card">
           <h3>Open pipeline</h3>
@@ -10464,6 +10629,16 @@
       const intelAsk = e.target.closest("[data-intel-ask]");
       if (intelAsk) {
         askBuddyAboutIndication(intelAsk.getAttribute("data-intel-ask"));
+        return;
+      }
+      if (e.target.id === "btnRefreshYearlyGoal") {
+        loadYearlyGoal();
+        return;
+      }
+      if (e.target.id === "btnSaveYearlyGoal") {
+        const input = document.getElementById("yearlyGoalInput");
+        if (input) state.intelligence.yearlyGoalInput = input.value;
+        saveYearlyGoalSetting();
         return;
       }
       if (e.target.id === "btnRefreshSponsorNews") {

@@ -8,6 +8,10 @@ const {
   saveCachedBrief,
   loadCachedBrief
 } = require("./dashboardBrief");
+const {
+  buildYearlyGoalPack,
+  saveYearlyGoal
+} = require("./commercialGoal");
 const { askAi, getStudyContext, providerStatus } = require("./askClaude");
 const {
   buildIntelligenceContext,
@@ -1291,6 +1295,52 @@ app.http("dashboardBrief", {
         refresh: false
       });
       return json(200, brief, request);
+    } catch (err) {
+      context.error?.(err);
+      return json(500, { ok: false, error: String(err.message || err) }, request);
+    }
+  }
+});
+
+app.http("commercialYearlyGoal", {
+  methods: ["GET", "PUT", "POST", "OPTIONS"],
+  authLevel: "anonymous",
+  route: "commercial/yearly-goal",
+  handler: async (request, context) => {
+    if (request.method === "OPTIONS") {
+      return optionsOk(request);
+    }
+    try {
+      if (request.method === "GET") {
+        const pack = await buildYearlyGoalPack(getDb);
+        return json(200, pack, request);
+      }
+      let body = {};
+      try {
+        body = (await request.json()) || {};
+      } catch (_) {
+        body = {};
+      }
+      const auth = authorizeCtgovSync(request);
+      if (!auth.ok) {
+        return json(
+          401,
+          { error: "Sign in or Buddy session required to save yearly goal" },
+          request
+        );
+      }
+      const raw =
+        body.goalOraNet ?? body.yearlyGoal ?? body.goal ?? request.query.get("goal");
+      const saved = await saveYearlyGoal(getDb, {
+        goalOraNet: raw,
+        year: body.year || new Date().getUTCFullYear(),
+        updatedBy: auth.user?.email || auth.user?.userId || "user"
+      });
+      if (!saved.ok) {
+        return json(400, saved, request);
+      }
+      const pack = await buildYearlyGoalPack(getDb);
+      return json(200, { ...pack, saved: true }, request);
     } catch (err) {
       context.error?.(err);
       return json(500, { ok: false, error: String(err.message || err) }, request);

@@ -10,6 +10,7 @@ const {
   buildSalesforceBuddyContext
 } = require("./salesforceTables");
 const { getIntelligenceHealth } = require("./intelligence");
+const { getYearlyGoalSettings, computeGoalProgress } = require("./commercialGoal");
 
 const BRIEF_ID = "dashboard_weekly_brief";
 const ATTENTION_CLOSE_DAYS = 14;
@@ -280,6 +281,17 @@ async function buildDashboardBrief(getDb, opts = {}) {
     revenueFieldLabel: ps.revenueFieldLabel || "Total Ora Net Revenue"
   };
 
+  const goalSettings = await getYearlyGoalSettings(getDb);
+  const goalProgress =
+    goalSettings.goalOraNet > 0
+      ? computeGoalProgress({
+          goalOraNet: goalSettings.goalOraNet,
+          year: goalSettings.year || ytdYear,
+          closedWonYtdOraNet: headline.closedWonYtdOraNet,
+          openOpportunities: openOpps
+        })
+      : null;
+
   const loops = [
     {
       id: "chase",
@@ -324,6 +336,8 @@ async function buildDashboardBrief(getDb, opts = {}) {
     weekLabel: weekLabel(now),
     triggeredBy,
     headline,
+    goal: goalSettings,
+    goalProgress,
     chase,
     attention: attention.slice(0, 20),
     owners,
@@ -374,5 +388,6 @@ module.exports = {
   loadCachedBrief,
   saveCachedBrief,
   buildDashboardBrief,
-  getOrBuildDashboardBrief
+  getOrBuildDashboardBrief,
+  loadOpenOpportunities
 };
