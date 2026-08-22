@@ -515,7 +515,7 @@ async function soqlQuery(session, soql, opts = {}) {
   return maxRecords != null ? records.slice(0, maxRecords) : records;
 }
 
-/** Lean field lists when describe returns nothing (common for Integration users). */
+/** Lean field lists — Buddy + Dashboard only need these. Do NOT describe+pull 100+ fields. */
 const LEAN_OBJECT_FIELDS = {
   Account: [
     "Id",
@@ -560,118 +560,82 @@ const LEAN_OBJECT_FIELDS = {
   ]
 };
 
-/** Always keep these even when describe is capped / SOQL shrink peels fields. */
-const MUST_HAVE_FIELDS = {
-  Account: ["Id", "Name", "Owner.Name", "OwnerId", "Tier__c", "Ora_Grouping__c"],
-  Opportunity: [
-    "Id",
-    "Name",
-    "AccountId",
-    "StageName",
-    "Amount",
-    "Total_Ora_Net_Revenue__c",
-    "CloseDate",
-    "Owner.Name",
-    "OwnerId",
-    "IsClosed",
-    "IsWon"
-  ],
-  Activity_Request__c: ["Id", "Name", "Account__c", "AccountId", "Status__c", "Status", "Subject__c"]
-};
+/** Alternate API names if Total_Ora_Net_Revenue__c is rejected by SOQL. */
+const OPP_REVENUE_FIELD_FALLBACKS = [
+  process.env.SF_OPP_REVENUE_FIELD,
+  "Total_Ora_Net_Revenue__c",
+  "Total_Ora_Net_Rev__c",
+  "Ora_Net_Revenue__c",
+  "Total_Ora_Net_Revenue"
+].filter(Boolean);
 
-function mergeMustHaveFields(objectName, fieldList, maxFields) {
-  const must = MUST_HAVE_FIELDS[objectName] || LEAN_OBJECT_FIELDS[objectName] || ["Id", "Name"];
-  const lean = LEAN_OBJECT_FIELDS[objectName] || [];
+function uniqFields(fields) {
   const seen = new Set();
   const out = [];
-  for (const f of [...must, ...lean, ...(fieldList || [])]) {
+  for (const f of fields || []) {
     if (!f || seen.has(f)) continue;
     seen.add(f);
     out.push(f);
   }
-  const cap = Number(maxFields) > 0 ? Number(maxFields) : 160;
-  if (out.length <= cap) return out;
-  // Cap extras but never drop must-haves
-  const mustSet = new Set(must);
-  const keptMust = out.filter((f) => mustSet.has(f));
-  const extras = out.filter((f) => !mustSet.has(f));
-  return [...keptMust, ...extras.slice(0, Math.max(0, cap - keptMust.length))];
+  return out;
 }
 
-/** Pull all (or capped) rows — describe when possible, else lean known fields. */
+/**
+ * Pull all rows for an sObject using a small known field list.
+ * IMPORTANT: never describe→SELECT 100+ columns (URI length + double full-table pulls).
+ */
 async function queryFullObject(session, objectName, opts = {}) {
-  const maxFields = Number(process.env.SF_MAX_FIELDS || 160);
-  let desc = null;
-  let fieldList = [];
-  try {
-    desc = await describeSObject(session, objectName);
-    if (desc.fields?.length) fieldList = [...desc.fields];
-    // If describe capped away must-haves, pull them from allQueryable when present
-    const must = MUST_HAVE_FIELDS[objectName] || [];
-    const allQ = new Set(desc.allQueryable || []);
-    for (const f of must) {
-      // Relationship paths like Owner.Name are not in describe field names — keep anyway
-      if (f.includes(".") || allQ.has(f) || fieldList.includes(f)) {
-        if (!fieldList.includes(f)) fieldList.push(f);
-      } else if (!f.includes(".") && !allQ.has(f)) {
-        // still try — FLS may allow query even when not in our filtered list
-        fieldList.push(f);
-      }
-    }
-  } catch (err) {
-    desc = { error: String(err.message || err), queryable: false, fields: [] };
-  }
-
-  if (!fieldList.length) {
-    fieldList = [...(LEAN_OBJECT_FIELDS[objectName] || ["Id", "Name"])];
-  }
-
-  fieldList = mergeMustHaveFields(objectName, fieldList, maxFields);
+  const leanBase = [...(LEAN_OBJECT_FIELDS[objectName] || ["Id", "Name"])];
+  let desc = { fields: leanBase, fieldCountAvailable: leanBase.length, leanOnly: true };
 
   async function tryQuery(fields) {
-    const uniq = [...new Set(fields.filter(Boolean))];
+    const uniq = uniqFields(fields);
     const soql = `SELECT ${uniq.join(",")} FROM ${objectName}`;
     const records = await soqlQuery(session, soql, { maxRecords: opts.maxRecords });
     return { objectName, fields: uniq, records, describe: desc };
   }
 
-  // Prefer lean+must first for Opportunity — full describe lists are huge and used to drop revenue.
-  if (objectName === "Opportunity" || objectName === "Account" || objectName === "Activity_Request__c") {
-    const leanTry = mergeMustHaveFields(
-      objectName,
-      LEAN_OBJECT_FIELDS[objectName] || [],
-      maxFields
-    );
-    try {
-      const out = await tryQuery(leanTry);
-      // If lean worked, still try the richer list so we keep extra custom fields when possible
+  // Opportunity: try revenue field candidates until SOQL accepts one
+  if (objectName === "Opportunity") {
+    let lastErr = null;
+    for (const revField of OPP_REVENUE_FIELD_FALLBACKS) {
+      const fields = uniqFields(
+        leanBase.map((f) => (f === "Total_Ora_Net_Revenue__c" ? revField : f))
+      );
       try {
-        const rich = await tryQuery(fieldList);
-        rich.note =
-          `Used ${rich.fields.length} fields (describe+must-have; available=${desc?.fieldCountAvailable ?? "?"})`;
-        return rich;
-      } catch (_) {
-        out.note = `Used lean+must-have (${leanTry.length} fields)` +
-          (desc?.error ? ` (describe: ${desc.error})` : "");
+        const out = await tryQuery(fields);
+        out.note = `Lean Opportunity fields (${fields.length}); revenue=${revField}`;
+        out.revenueField = revField;
         return out;
+      } catch (err) {
+        lastErr = err;
+        const msg = String(err.message || err);
+        if (!/No such column|does not exist|INVALID_FIELD/i.test(msg)) {
+          // Not a field-name problem — don't keep trying aliases
+          break;
+        }
       }
-    } catch (_) {
-      /* fall through to shrink loop on full list */
+    }
+    // Drop revenue field entirely, keep Amount + rest
+    try {
+      const fields = leanBase.filter((f) => f !== "Total_Ora_Net_Revenue__c");
+      const out = await tryQuery(fields);
+      out.note =
+        "Lean Opportunity without Total Ora Net Revenue field (API name not queryable for this user)";
+      out.revenueField = null;
+      return out;
+    } catch (err) {
+      throw lastErr || err;
     }
   }
 
-  // Shrink field list until SOQL works (drop unknown custom fields, etc.)
+  // Account / AR / unknown: lean list with shrink on bad columns
+  let attempt = leanBase;
   let lastErr = null;
-  let attempt = fieldList;
-  const mustProtect = new Set(MUST_HAVE_FIELDS[objectName] || ["Id", "Name"]);
-  for (let round = 0; round < 12; round++) {
+  for (let round = 0; round < 10; round++) {
     try {
       const out = await tryQuery(attempt);
-      if (round > 0 || (desc && !desc.fields?.length)) {
-        out.note =
-          `Used ${attempt.length} fields` +
-          (desc?.error ? ` (describe: ${desc.error})` : " (after shrink)");
-      }
+      out.note = `Lean ${objectName} fields (${attempt.length})`;
       return out;
     } catch (err) {
       lastErr = err;
@@ -679,21 +643,11 @@ async function queryFullObject(session, objectName, opts = {}) {
       const m =
         msg.match(/No such column '([^']+)'/i) ||
         msg.match(/field\s+([A-Za-z0-9_.]+)\s+does not exist/i) ||
-        msg.match(/'\s*([A-Za-z][A-Za-z0-9_.]*)\s*'/);
+        msg.match(/INVALID_FIELD[^\n]*?([A-Za-z][A-Za-z0-9_.]*)/i);
       if (m && m[1] && attempt.includes(m[1])) {
-        // Named bad field — drop it (even must-have if SF rejects the API name)
         attempt = attempt.filter((f) => f !== m[1]);
-      } else if (attempt.length > mustProtect.size + 1) {
-        // Peel non-protected from the end
-        let peeled = 0;
-        const next = [...attempt];
-        for (let i = next.length - 1; i >= 0 && peeled < 8; i--) {
-          if (mustProtect.has(next[i]) || next[i] === "Id") continue;
-          next.splice(i, 1);
-          peeled += 1;
-        }
-        if (!peeled) break;
-        attempt = next;
+      } else if (attempt.length > 2) {
+        attempt = attempt.slice(0, Math.max(2, attempt.length - 2));
       } else {
         break;
       }
@@ -701,15 +655,10 @@ async function queryFullObject(session, objectName, opts = {}) {
     }
   }
 
-  // Last resort — must-have / lean, then Id + Name
   try {
-    return await tryQuery(mergeMustHaveFields(objectName, LEAN_OBJECT_FIELDS[objectName] || ["Id", "Name"], 40));
-  } catch (err1) {
-    try {
-      return await tryQuery(["Id", "Name"]);
-    } catch (err) {
-      throw lastErr || err1 || err;
-    }
+    return await tryQuery(["Id", "Name"]);
+  } catch (err) {
+    throw lastErr || err;
   }
 }
 

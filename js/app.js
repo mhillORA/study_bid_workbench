@@ -5496,51 +5496,70 @@
     if (state.intelligence.sfTablesBusy) return;
     state.intelligence.sfTablesBusy = true;
     state.intelligence.sfTablesMessage =
-      "Ingesting Accounts, Opportunities, Activity Requests → then refreshing crosswalk…";
+      "Starting SF ingest (one object per request so the browser does not time out)…";
     refreshDataStatusIfOpen();
     try {
-      const res = await intelligenceFaFetch("/api/salesforce/sync", {
-        requireExternal: true,
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ tables: true, thenCrosswalk: true })
-      });
-      const data = await res.json().catch(() => ({}));
-      if (res.status === 401) {
-        state.intelligence.sfTablesMessage =
-          data.error ||
-          "Sign in required (or Buddy session mint failed) to run SF ingest on ora-buddy-api.";
-      } else if (data.skipped) {
-        state.intelligence.sfTablesMessage =
-          data.error || "Salesforce not configured on ora-buddy-api (SF_CLIENT_ID + SF_USERNAME + JWT key).";
-      } else if (data.ok === false || (data.results || []).some((r) => r.error)) {
-        const bits = (data.results || []).map((r) =>
-          r.error
-            ? `${r.object}: ${r.error}`
-            : `${r.object}: ${r.upserted ?? 0}/${r.fetched ?? 0}`
-        );
+      const objects = ["Account", "Opportunity", "Activity_Request__c"];
+      const bits = [];
+      let anyFail = false;
+      for (let i = 0; i < objects.length; i++) {
+        const obj = objects[i];
+        state.intelligence.sfTablesMessage = `Ingesting ${obj} (${i + 1}/${objects.length})…`;
+        refreshDataStatusIfOpen();
+        const res = await intelligenceFaFetch("/api/salesforce/sync", {
+          requireExternal: true,
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            tables: true,
+            only: [obj],
+            // Crosswalk once after Account (needs Account rows); skip until last object otherwise
+            thenCrosswalk: obj === "Account" || i === objects.length - 1
+          })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (res.status === 401) {
+          state.intelligence.sfTablesMessage =
+            data.error ||
+            "Sign in required (or Buddy session mint failed) to run SF ingest on ora-buddy-api.";
+          anyFail = true;
+          break;
+        }
+        if (data.skipped) {
+          state.intelligence.sfTablesMessage =
+            data.error ||
+            "Salesforce not configured on ora-buddy-api (SF_CLIENT_ID + SF_USERNAME + JWT key).";
+          anyFail = true;
+          break;
+        }
+        const row = (data.results || []).find((r) => r.object === obj) || (data.results || [])[0];
+        if (data.ok === false || row?.error) {
+          bits.push(`${obj}: ERR ${row?.error || data.error || `HTTP ${res.status}`}`);
+          anyFail = true;
+        } else if (row?.skipped) {
+          bits.push(`${obj}: skipped (${row.reason || "—"})`);
+        } else {
+          const rev =
+            row?.revenueField != null ? ` · rev=${row.revenueField}` : "";
+          bits.push(
+            `${obj}: ${row?.upserted ?? 0}/${row?.fetched ?? 0}${rev}${
+              data.elapsedMs ? ` · ${Math.round(data.elapsedMs / 1000)}s` : ""
+            }`
+          );
+        }
+        if (data.crosswalk) {
+          const cw = data.crosswalk;
+          bits.push(
+            cw.ok === false
+              ? `crosswalk ERR ${cw.error || ""}`
+              : `crosswalk ${cw.updated ?? 0} updated`
+          );
+        }
+      }
+      if (!anyFail || bits.length) {
         state.intelligence.sfTablesMessage = [
-          "SF ingest issues",
-          bits.join(" · ") || data.error || `HTTP ${res.status}`,
-          data.elapsedMs ? `${Math.round(data.elapsedMs / 1000)}s` : ""
-        ]
-          .filter(Boolean)
-          .join(" · ");
-      } else {
-        const bits = (data.results || []).map(
-          (r) => `${r.object}: ${r.upserted ?? 0}/${r.fetched ?? 0}`
-        );
-        const cw = data.crosswalk;
-        const cwBit = cw
-          ? cw.ok === false
-            ? `crosswalk ERR ${cw.error || ""}`
-            : `crosswalk ${cw.updated ?? 0} updated (${cw.accountSource || "—"})`
-          : "";
-        state.intelligence.sfTablesMessage = [
-          data.incomplete ? "Partial ingest (re-run)" : "SF ingest OK",
-          bits.join(" · "),
-          cwBit,
-          data.elapsedMs ? `${Math.round(data.elapsedMs / 1000)}s` : ""
+          anyFail ? "SF ingest issues" : "SF ingest OK",
+          bits.join(" · ")
         ]
           .filter(Boolean)
           .join(" · ");

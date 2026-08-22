@@ -11,6 +11,21 @@ const {
 
 const SYNC_ID = "salesforce_tables";
 const TIME_BUDGET_MS = Number(process.env.SF_TABLE_SYNC_BUDGET_MS || 180000);
+const UPSERT_CONCURRENCY = Math.max(1, Number(process.env.SF_UPSERT_CONCURRENCY || 25));
+
+async function mapPool(items, concurrency, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i], i);
+    }
+  }
+  const n = Math.min(concurrency, Math.max(1, items.length));
+  await Promise.all(Array.from({ length: n }, () => worker()));
+  return out;
+}
 
 const SF_TABLES = [
   { sfObject: "Account", container: "ora_sf_account", docType: "ora_sf_account" },
@@ -93,6 +108,30 @@ function toCosmosDoc(rec, docType, syncedAt) {
   };
 }
 
+async function upsertMany(container, docs, { concurrency = 25, onBudget } = {}) {
+  let upserted = 0;
+  const errors = [];
+  let i = 0;
+  async function worker() {
+    while (i < docs.length) {
+      if (typeof onBudget === "function" && onBudget()) break;
+      const idx = i++;
+      const doc = docs[idx];
+      if (!doc) continue;
+      try {
+        await container.items.upsert(doc);
+        upserted += 1;
+      } catch (err) {
+        errors.push(`${doc.id}: ${err.message || err}`);
+        if (errors.length > 15) break;
+      }
+    }
+  }
+  const n = Math.min(concurrency, Math.max(1, docs.length));
+  await Promise.all(Array.from({ length: n }, () => worker()));
+  return { upserted, errors };
+}
+
 /**
  * Sync one or all SF tables into Cosmos.
  * @param {Function} getDb
@@ -152,29 +191,28 @@ async function runSalesforceTablesSync(getDb, opts = {}) {
         maxRecords: opts.maxRecords || null
       });
       const syncedAt = new Date().toISOString();
-      let upserted = 0;
-      const errors = [];
+      const docs = [];
       for (const rec of pulled.records) {
-        if (Date.now() - started > TIME_BUDGET_MS) {
-          incomplete = true;
-          break;
-        }
         const doc = toCosmosDoc(rec, table.docType, syncedAt);
-        if (!doc) continue;
-        try {
-          await container.items.upsert(doc);
-          upserted += 1;
-        } catch (err) {
-          errors.push(`${doc.id}: ${err.message || err}`);
-          if (errors.length > 15) break;
-        }
+        if (doc) docs.push(doc);
       }
+      const { upserted, errors } = await upsertMany(container, docs, {
+        concurrency: Number(process.env.SF_UPSERT_CONCURRENCY || 25),
+        onBudget: () => {
+          if (Date.now() - started > TIME_BUDGET_MS) {
+            incomplete = true;
+            return true;
+          }
+          return false;
+        }
+      });
       results.push({
         object: table.sfObject,
         container: table.container,
         fetched: pulled.records.length,
         upserted,
         fieldsUsed: pulled.fields.length,
+        revenueField: pulled.revenueField || undefined,
         errorCount: errors.length,
         errors: errors.slice(0, 5),
         note: pulled.note || undefined,
@@ -199,8 +237,8 @@ async function runSalesforceTablesSync(getDb, opts = {}) {
     triggeredBy: opts.triggeredBy || "api",
     lastDeltas: { results, incomplete },
     note: incomplete
-      ? "Time budget hit — re-run Sync SF tables to continue remaining objects."
-      : "Full Salesforce table sync into ora_sf_* (Account, Opportunity, Activity_Request__c)."
+      ? "Time budget hit — re-run Ingest SF (or pass only=[Opportunity]) to finish remaining objects."
+      : "Lean Salesforce table sync into ora_sf_* (Account, Opportunity, Activity_Request__c)."
   });
 
   const out = {
