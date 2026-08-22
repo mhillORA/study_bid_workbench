@@ -10,6 +10,7 @@ const {
   getSalesforceAccessToken,
   fetchAccountsByIds,
   diagnoseJwtPrivateKey,
+  diagnoseSalesforceEnvKeys,
   notConfiguredPayload,
   runtimeHostHint
 } = require("./salesforceClient");
@@ -345,10 +346,11 @@ async function getSalesforceSyncStatus(getDb) {
   const hasSynced =
     Boolean(state?.lastSuccessfulSync) || Boolean(state?.lastRunAt) || withSfId > 0;
   // Configured when this host (or Cosmos connection doc) has client+username.
-  const configured = Boolean(cfg.configured) || (privateKeySet && hasSynced && cfg.clientId && cfg.username);
+  const configured = Boolean(cfg.configured);
+  const envCfg = salesforceConfig();
   return {
     configured,
-    credentialsOnHost: Boolean(salesforceConfig().configured),
+    credentialsOnHost: Boolean(envCfg.configured),
     credsSource: cfg.credsSource || "none",
     host: cfg.host || runtimeHostHint(),
     loginUrl: cfg.loginUrl,
@@ -360,6 +362,9 @@ async function getSalesforceSyncStatus(getDb) {
     privateKeySet,
     keySource: jwtKey.source || cfg.keySource || null,
     jwtKey,
+    envResolvedFrom: cfg.envResolvedFrom || envCfg.envResolvedFrom || null,
+    envDiag: diagnoseSalesforceEnvKeys(),
+    cosmosMirrorsOk: hasSynced,
     crosswalkWithSfId: withSfId,
     sync: state
       ? {

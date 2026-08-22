@@ -3017,6 +3017,7 @@ async function buildSiteScorecard(getDb, opts = {}) {
         org_clean: org,
         country: r.country || "_unknown",
         studyCount: 0,
+        studiesInIndication: new Set(),
         psms: [],
         enrolled: [],
         months: [],
@@ -3031,6 +3032,8 @@ async function buildSiteScorecard(getDb, opts = {}) {
       byKey.set(key, g);
     }
     g.studyCount += 1;
+    const studyLabel = r.study_name || r.veeva_study_id || r.study_number;
+    if (studyLabel) g.studiesInIndication.add(String(studyLabel));
     if (typeof r.site_psm === "number" && r.site_psm > 0) g.psms.push(r.site_psm);
     if (typeof r.total_enrolled === "number" && r.total_enrolled > 0) g.enrolled.push(r.total_enrolled);
     if (typeof r.site_enroll_months === "number" && r.site_enroll_months > 0) g.months.push(r.site_enroll_months);
@@ -3045,13 +3048,41 @@ async function buildSiteScorecard(getDb, opts = {}) {
     if (r.indication) g.indications.add(r.indication);
   }
 
+  // Concurrent load: all Ora/Veeva studies at same org×country (any indication)
+  const concurrencyByOrg = new Map();
+  for (const r of liveSites) {
+    const org = r.org_clean || r.organization;
+    if (!org) continue;
+    const key = `${org}||${r.country || "_unknown"}`;
+    if (!concurrencyByOrg.has(key)) {
+      concurrencyByOrg.set(key, { all: new Set(), active: new Set() });
+    }
+    const bucket = concurrencyByOrg.get(key);
+    const studyLabel = r.study_name || r.veeva_study_id || r.study_number;
+    if (!studyLabel) continue;
+    const sid = String(studyLabel);
+    bucket.all.add(sid);
+    const life = String(r.lifecycle_state || r.study_status || "").toLowerCase();
+    const looksClosed = /\b(complet|clos|cancel|terminat|archiv|withdrawn)\b/.test(life);
+    if (!looksClosed) bucket.active.add(sid);
+  }
+
   const aggregates = [...byKey.values()].map((g) => {
     const trustKnown = g.trustHigh + g.trustLow + g.trustMedium;
     const highTrustShare = trustKnown > 0 ? round(g.trustHigh / trustKnown, 3) : null;
+    const key = `${g.org_clean}||${g.country || "_unknown"}`;
+    const conc = concurrencyByOrg.get(key);
+    const oraStudiesAll = conc ? conc.all.size : g.studiesInIndication.size;
+    const oraStudiesActive = conc ? conc.active.size : null;
+    const indicationStudyCount = g.studiesInIndication.size || g.studyCount;
+    const otherOraStudies = Math.max(0, oraStudiesAll - indicationStudyCount);
     return {
       org_clean: g.org_clean,
       country: g.country,
-      studyCount: g.studyCount,
+      studyCount: indicationStudyCount,
+      oraStudiesAll,
+      oraStudiesActive,
+      otherOraStudies,
       sitePsmMedian: round(median(g.psms)),
       totalEnrolledSum: g.enrolled.reduce((a, b) => a + b, 0) || null,
       enrollMonthsMedian: round(median(g.months), 2),

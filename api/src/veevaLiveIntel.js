@@ -180,6 +180,7 @@ async function loadVeevaLiveFeasibility(database) {
       country: site.country__v || "_unknown",
       indication,
       phase: picklistLabel(site.study_phase__c) || study?.phase || null,
+      lifecycle_state: study?.lifecycle_state || null,
       site_psm: site_psm != null ? round(site_psm) : null,
       psm_zero_enrolled: site_psm === 0,
       total_enrolled: enrolled,

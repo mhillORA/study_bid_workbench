@@ -5468,42 +5468,6 @@
     }
   }
 
-  async function saveSalesforceConnectionFromForm() {
-    const clientId = String(document.getElementById("sfConnClientId")?.value || "").trim();
-    const username = String(document.getElementById("sfConnUsername")?.value || "").trim();
-    const loginUrl = String(document.getElementById("sfConnLoginUrl")?.value || "").trim();
-    if (!clientId || !username) {
-      state.intelligence.sfTablesMessage =
-        "Enter SF Consumer Key (client id) and integration username, then Save SF connection.";
-      refreshDataStatusIfOpen();
-      return;
-    }
-    state.intelligence.sfTablesMessage = "Saving SF connection to Cosmos…";
-    refreshDataStatusIfOpen();
-    try {
-      const res = await intelligenceFaFetch("/api/salesforce/connection", {
-        requireExternal: true,
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ clientId, username, loginUrl: loginUrl || undefined })
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok || data.ok === false) {
-        state.intelligence.sfTablesMessage = data.error || `Save failed (HTTP ${res.status})`;
-      } else {
-        state.intelligence.sfTablesMessage = `SF connection saved (${data.usernameHint || "ok"}) — run Ingest SF + crosswalk.`;
-        const idEl = document.getElementById("sfConnClientId");
-        const userEl = document.getElementById("sfConnUsername");
-        if (idEl) idEl.value = "";
-        if (userEl) userEl.value = "";
-      }
-      await loadIntelligenceHealth();
-    } catch (err) {
-      state.intelligence.sfTablesMessage = `SF connection save error: ${String(err.message || err)}`;
-      refreshDataStatusIfOpen();
-    }
-  }
-
   async function runSalesforceSyncManual() {
     if (state.intelligence.sfSyncBusy) return;
     state.intelligence.sfSyncBusy = true;
@@ -5524,10 +5488,13 @@
       } else if (!res.ok) {
         state.intelligence.sfSyncMessage = data.error || `Salesforce sync failed (${res.status})`;
       } else if (data.skipped) {
+        const keys = (data.envDiag?.sfRelatedKeys || [])
+          .map((k) => `${k.name}${k.set ? "" : "(empty)"}`)
+          .slice(0, 12)
+          .join(", ");
         state.intelligence.sfSyncMessage = [
-          data.error || data.reason || "Salesforce not configured",
-          data.host ? `host=${data.host}` : "",
-          data.credsSource ? `creds=${data.credsSource}` : ""
+          data.error || "Live SF refresh blocked",
+          keys ? `env keys: ${keys}` : "env keys: (none matching SF_*)"
         ]
           .filter(Boolean)
           .join(" · ");
@@ -5583,12 +5550,13 @@
           break;
         }
         if (data.skipped) {
+          const keys = (data.envDiag?.sfRelatedKeys || [])
+            .map((k) => `${k.name}${k.set ? "" : "(empty)"}`)
+            .slice(0, 12)
+            .join(", ");
           state.intelligence.sfTablesMessage = [
-            data.error || "Salesforce not configured",
-            data.host ? `host=${data.host}` : "",
-            data.credsSource ? `creds=${data.credsSource}` : "",
-            data.clientIdSet === false ? "clientId=missing" : "",
-            data.usernameSet === false ? "username=missing" : ""
+            data.error || "Live SF refresh blocked",
+            keys ? `env keys: ${keys}` : "env keys: (none matching SF_*)"
           ]
             .filter(Boolean)
             .join(" · ");
@@ -5943,8 +5911,6 @@
       Boolean(sfLast) ||
       sfTableTotal > 0 ||
       (typeof sfWrap.crosswalkWithSfId === "number" && sfWrap.crosswalkWithSfId > 0);
-    const jwtKey = sfWrap.jwtKey || {};
-    const jwtBroken = sfWrap.privateKeySet && jwtKey.parseOk === false;
     const sfMsg = state.intelligence.sfSyncMessage
       ? `<p class="muted" style="margin-top:0.5rem;">${escapeHtml(state.intelligence.sfSyncMessage)}</p>`
       : "";
@@ -5970,19 +5936,11 @@
           ? "synced"
           : "no sync yet"
     }${sfCountBits.length ? ` · ${sfCountBits.join(" · ")}` : ""}${
-      sfWrap.host ? ` · host ${escapeHtml(String(sfWrap.host))}` : ""
-    }${
-      sfWrap.credsSource ? ` · creds ${escapeHtml(String(sfWrap.credsSource))}` : ""
-    }${
-      sfWrap.clientIdSet === false
-        ? " · clientId missing on this host"
-        : sfWrap.clientIdSet
-          ? " · clientId ok"
+      sfWrap.configured
+        ? " · live refresh ready"
+        : sfHasData
+          ? " · mirrors OK · live refresh paused"
           : ""
-    }${
-      jwtBroken
-        ? ` · JWT key not loadable (${escapeHtml(String(jwtKey.error || "check key upload"))})`
-        : ""
     }</p>`;
 
     if (!h) {
@@ -6169,28 +6127,6 @@
         ${sfTablesMsg}
         ${veevaMeta}
         ${veevaMsg}
-        ${
-          sfWrap.clientIdSet === false || sfWrap.credsSource === "none"
-            ? `<div class="card" style="margin-top:0.85rem;padding:0.85rem 1rem;">
-          <h3 style="margin-top:0;">Salesforce connection (one-time)</h3>
-          <p class="muted">JWT key can live in Cosmos already, but Consumer Key + username must be saved once so ora-buddy-api can mint tokens without relying on App Settings visibility. Values store in Cosmos <code>syncState/salesforce_connection</code>.</p>
-          <div class="form-grid" style="margin-top:0.65rem;">
-            <label class="field"><span>Consumer Key (SF_CLIENT_ID)</span>
-              <input class="input" id="sfConnClientId" autocomplete="off" spellcheck="false" placeholder="Connected App Consumer Key" />
-            </label>
-            <label class="field"><span>Integration username (SF_USERNAME)</span>
-              <input class="input" id="sfConnUsername" autocomplete="off" spellcheck="false" placeholder="user@oraclinical.com" />
-            </label>
-            <label class="field full"><span>Login URL (optional)</span>
-              <input class="input" id="sfConnLoginUrl" autocomplete="off" placeholder="https://login.salesforce.com" />
-            </label>
-          </div>
-          <div style="margin-top:0.65rem;">
-            <button type="button" class="btn btn-primary" id="btnSfConnSave">Save SF connection</button>
-          </div>
-        </div>`
-            : ""
-        }
         ${renderCtgovSyncDeltas(state.intelligence.syncDeltas)}
       </div>
       <div class="card wide" style="margin-top:1rem;">
@@ -6945,6 +6881,7 @@
                   ? "<th>Industry score</th><th>Δ</th><th>Ora PSM</th><th>Ind. PSM</th><th>vs Ind.</th><th>Recruiting</th>"
                   : "<th>Site PSM</th>"
               }
+              <th>Ora studies</th><th>Other Ora</th>
               <th>Veeva enrolled</th><th>Trust (high/known)</th>
               ${legacyHead}
             </tr></thead>
@@ -6956,6 +6893,10 @@
                   const delta = s.scoreDelta;
                   const deltaCls =
                     delta == null ? "" : delta >= 0 ? "score-delta-up" : "score-delta-down";
+                  const oraStud =
+                    s.oraStudiesActive != null
+                      ? `${intelStatNum(s.oraStudiesActive)} active / ${intelStatNum(s.oraStudiesAll)}`
+                      : intelStatNum(s.oraStudiesAll ?? s.studyCount);
                   return `<tr>
                   <td>${i + 1}</td>
                   <td>${escapeHtml(s.org_clean || "—")}</td>
@@ -6973,6 +6914,10 @@
                          <td>${intelStatNum(s.recruitingTrials)}</td>`
                       : `<td>${intelStatNum(s.sitePsmMedian)}</td>`
                   }
+                  <td title="All Ora/Veeva studies at this org×country">${oraStud}</td>
+                  <td title="Ora studies beyond this indication filter">${intelStatNum(
+                    s.otherOraStudies
+                  )}</td>
                   <td>${intelStatNum(s.totalEnrolledSum)}</td>
                   ${trustCell(s)}
                   ${legacyCells(s)}
@@ -10275,10 +10220,6 @@
       }
       if (e.target.id === "btnVeevaSyncDelta") {
         runVeevaSyncManual({ full: false });
-        return;
-      }
-      if (e.target.id === "btnSfConnSave") {
-        saveSalesforceConnectionFromForm();
         return;
       }
       if (e.target.id === "btnTrialhubUpload") {

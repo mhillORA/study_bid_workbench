@@ -19,6 +19,49 @@ function env(name) {
   return v;
 }
 
+/**
+ * Linux Function Apps are case-sensitive for App Setting names.
+ * Portal UI often looks fine while Node only sees the exact key casing that was saved.
+ */
+function envLoose(name) {
+  const direct = env(name);
+  if (direct) return { value: direct, from: name };
+  const want = String(name || "").toUpperCase();
+  for (const [k, raw] of Object.entries(process.env || {})) {
+    if (String(k).toUpperCase() !== want) continue;
+    const v = String(raw || "").trim();
+    if (!v || v.includes("SET_IN")) continue;
+    return { value: v, from: k };
+  }
+  return { value: "", from: null };
+}
+
+/** Names only — never values — so Data Status can show what the process actually sees. */
+function diagnoseSalesforceEnvKeys() {
+  const interesting = [];
+  for (const k of Object.keys(process.env || {})) {
+    if (/^(SF_|SALESFORCE_)/i.test(k) || /SALESFORCE/i.test(k)) {
+      const raw = process.env[k];
+      const s = String(raw ?? "");
+      interesting.push({
+        name: k,
+        set: Boolean(s.trim()) && !s.includes("SET_IN"),
+        length: s.trim().length,
+        looksLikeKeyVaultRef: /@Microsoft\.KeyVault\(/i.test(s)
+      });
+    }
+  }
+  interesting.sort((a, b) => a.name.localeCompare(b.name));
+  return {
+    host: runtimeHostHint(),
+    websiteSiteName: process.env.WEBSITE_SITE_NAME || null,
+    websiteHostname: process.env.WEBSITE_HOSTNAME || null,
+    sfRelatedKeys: interesting,
+    note:
+      "Linux App Settings are case-sensitive. If SF_CLIENT_ID is missing here but visible in Portal, check exact casing on Function App ora-buddy-api (not SWA)."
+  };
+}
+
 function stripWrappingQuotes(s) {
   let out = String(s || "").trim();
   if (
@@ -179,17 +222,21 @@ function notConfiguredPayload(cfg, extra = {}) {
   const missing = [];
   if (!cfg?.clientId) missing.push("SF_CLIENT_ID");
   if (!cfg?.username) missing.push("SF_USERNAME");
+  const envDiag = diagnoseSalesforceEnvKeys();
   return {
     ok: false,
     skipped: true,
     reason: "not_configured",
     error:
-      `Salesforce not configured on host "${cfg?.host || runtimeHostHint()}" — missing ${missing.join(" + ") || "creds"}. ` +
-      `Save Consumer Key + Username on Data Status (stored in Cosmos), or set App Settings on ora-buddy-api. JWT key alone is not enough.`,
+      missing.length === 0
+        ? "Salesforce credentials unresolved."
+        : `Live SF refresh blocked on ${cfg?.host || runtimeHostHint()}: process cannot see ${missing.join(" + ")}. Cosmos mirrors still usable. Confirm App Settings on Function App ora-buddy-api (Linux = case-sensitive names).`,
     host: cfg?.host || runtimeHostHint(),
     clientIdSet: Boolean(cfg?.clientId),
     usernameSet: Boolean(cfg?.username),
     credsSource: cfg?.credsSource || "none",
+    envResolvedFrom: cfg?.envResolvedFrom || null,
+    envDiag,
     ...extra
   };
 }
@@ -200,7 +247,7 @@ function notConfiguredPayload(cfg, extra = {}) {
  * @returns {{ pem?: string, der?: Buffer, source: string }}
  */
 function resolveJwtKeyMaterialFromEnv() {
-  const b64raw = stripWrappingQuotes(env("SF_JWT_PRIVATE_KEY_B64"));
+  const b64raw = stripWrappingQuotes(envLoose("SF_JWT_PRIVATE_KEY_B64").value);
   if (b64raw) {
     const cleaned = b64raw.replace(/\s+/g, "");
     let buf;
@@ -218,7 +265,7 @@ function resolveJwtKeyMaterialFromEnv() {
     return { der: buf, source: "SF_JWT_PRIVATE_KEY_B64(der)" };
   }
 
-  const pemRaw = env("SF_JWT_PRIVATE_KEY");
+  const pemRaw = envLoose("SF_JWT_PRIVATE_KEY").value;
   if (!pemRaw) return { source: "none" };
   return { pem: normalizePem(pemRaw), source: "SF_JWT_PRIVATE_KEY" };
 }
@@ -419,8 +466,8 @@ function loadJwtPrivateKey(materialOrPem) {
 /** Safe diagnostics for Data Status (never returns key material). */
 async function diagnoseJwtPrivateKey(getDb = null) {
   const out = {
-    pemSet: Boolean(env("SF_JWT_PRIVATE_KEY")),
-    b64Set: Boolean(env("SF_JWT_PRIVATE_KEY_B64")),
+    pemSet: Boolean(envLoose("SF_JWT_PRIVATE_KEY").value),
+    b64Set: Boolean(envLoose("SF_JWT_PRIVATE_KEY_B64").value),
     cosmosKeySet: false,
     source: null,
     parseOk: false,
@@ -466,17 +513,28 @@ function safeApiField(name, fallback) {
 }
 
 function salesforceConfig() {
-  const clientId =
-    env("SF_CLIENT_ID") ||
-    env("SF_CONSUMER_KEY") ||
-    env("SALESFORCE_CLIENT_ID") ||
-    env("SF_CONNECTED_APP_CLIENT_ID");
-  const username =
-    env("SF_USERNAME") || env("SF_USER") || env("SALESFORCE_USERNAME") || env("SF_INTEGRATION_USER");
-  const loginUrl = (env("SF_LOGIN_URL") || env("SALESFORCE_LOGIN_URL") || "https://login.salesforce.com").replace(
-    /\/$/,
-    ""
-  );
+  const clientPick =
+    envLoose("SF_CLIENT_ID").value
+      ? envLoose("SF_CLIENT_ID")
+      : envLoose("SF_CONSUMER_KEY").value
+        ? envLoose("SF_CONSUMER_KEY")
+        : envLoose("SALESFORCE_CLIENT_ID").value
+          ? envLoose("SALESFORCE_CLIENT_ID")
+          : envLoose("SF_CONNECTED_APP_CLIENT_ID");
+  const userPick =
+    envLoose("SF_USERNAME").value
+      ? envLoose("SF_USERNAME")
+      : envLoose("SF_USER").value
+        ? envLoose("SF_USER")
+        : envLoose("SALESFORCE_USERNAME").value
+          ? envLoose("SALESFORCE_USERNAME")
+          : envLoose("SF_INTEGRATION_USER");
+  const loginPick = envLoose("SF_LOGIN_URL").value
+    ? envLoose("SF_LOGIN_URL")
+    : envLoose("SALESFORCE_LOGIN_URL");
+  const clientId = clientPick.value || "";
+  const username = userPick.value || "";
+  const loginUrl = (loginPick.value || "https://login.salesforce.com").replace(/\/$/, "");
   let privateKey = "";
   let keySource = "none";
   try {
@@ -486,9 +544,12 @@ function salesforceConfig() {
   } catch (_) {
     privateKey = "";
   }
-  const apiVersion = env("SF_API_VERSION") || "59.0";
-  const tierField = safeApiField(env("SF_TIER_FIELD") || "Tier__c", "Tier__c");
-  const groupingField = safeApiField(env("SF_GROUPING_FIELD") || "Ora_Grouping__c", "Ora_Grouping__c");
+  const apiVersion = envLoose("SF_API_VERSION").value || "59.0";
+  const tierField = safeApiField(envLoose("SF_TIER_FIELD").value || "Tier__c", "Tier__c");
+  const groupingField = safeApiField(
+    envLoose("SF_GROUPING_FIELD").value || "Ora_Grouping__c",
+    "Ora_Grouping__c"
+  );
   // Client + username required; JWT key may come from App Settings OR Cosmos upload
   const configured = Boolean(clientId && username);
   return {
@@ -501,7 +562,14 @@ function salesforceConfig() {
     tierField,
     groupingField,
     configured,
-    envKeySet: Boolean(env("SF_JWT_PRIVATE_KEY") || env("SF_JWT_PRIVATE_KEY_B64"))
+    envKeySet: Boolean(
+      envLoose("SF_JWT_PRIVATE_KEY").value || envLoose("SF_JWT_PRIVATE_KEY_B64").value
+    ),
+    envResolvedFrom: {
+      clientId: clientPick.from,
+      username: userPick.from,
+      loginUrl: loginPick.from
+    }
   };
 }
 
@@ -883,6 +951,7 @@ module.exports = {
   readCosmosSfConnection,
   notConfiguredPayload,
   runtimeHostHint,
+  diagnoseSalesforceEnvKeys,
   getSalesforceAccessToken,
   soqlQuery,
   describeSObject,
