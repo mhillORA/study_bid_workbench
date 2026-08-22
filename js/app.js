@@ -5345,11 +5345,12 @@
     refreshDataStatusIfOpen();
   }
 
-  async function runVeevaSyncManual() {
+  async function runVeevaSyncManual({ full = false } = {}) {
     if (state.intelligence.veevaBusy) return;
     state.intelligence.veevaBusy = true;
+    const modeLabel = full ? "full" : "delta (new/changed)";
     state.intelligence.veevaMessage =
-      "Starting Veeva ingest (one object per request so the browser does not time out)…";
+      `Starting Veeva ${modeLabel} ingest (one object per request so the browser does not time out)…`;
     refreshDataStatusIfOpen();
     try {
       const statusRes = await intelligenceFaFetch("/api/veeva/sync", { requireExternal: true });
@@ -5378,13 +5379,17 @@
       ];
       const tables = Array.isArray(status.tables) ? [...status.tables] : [];
       tables.sort((a, b) => {
+        // Full: empty containers first. Delta: populated first (watermarked new/changed).
         const aEmpty = (a.count || 0) === 0 ? 0 : 1;
         const bEmpty = (b.count || 0) === 0 ? 0 : 1;
-        if (aEmpty !== bEmpty) return aEmpty - bEmpty;
+        const emptyRank = full ? aEmpty - bEmpty : bEmpty - aEmpty;
+        if (emptyRank !== 0) return emptyRank;
         const ai = prefer.indexOf(a.vaultObject);
         const bi = prefer.indexOf(b.vaultObject);
         return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi);
       });
+      // Delta: prefer objects that already have rows (new/changed since watermark).
+      // Full: empty-first so cold containers get history.
       const targets = tables.length
         ? tables.map((t) => t.vaultObject)
         : prefer;
@@ -5394,7 +5399,7 @@
       for (let i = 0; i < targets.length; i++) {
         const obj = targets[i];
         const prior = tables.find((t) => t.vaultObject === obj);
-        state.intelligence.veevaMessage = `Veeva ${i + 1}/${targets.length}: ${obj}${
+        state.intelligence.veevaMessage = `Veeva ${modeLabel} ${i + 1}/${targets.length}: ${obj}${
           prior && prior.count != null ? ` (was ${prior.count})` : ""
         }…`;
         refreshDataStatusIfOpen();
@@ -5406,7 +5411,11 @@
             requireExternal: true,
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ full: true, only: [obj], prioritizeEmpty: true })
+            body: JSON.stringify({
+              full: Boolean(full),
+              only: [obj],
+              prioritizeEmpty: Boolean(full)
+            })
           });
           data = await res.json().catch(() => ({}));
         } catch (chunkErr) {
@@ -5433,7 +5442,9 @@
           stopped = true;
           break;
         } else {
-          summaries.push(`${obj}: ${row.upserted ?? 0}/${row.fetched ?? 0}`);
+          summaries.push(
+            `${obj}: ${row.upserted ?? 0}/${row.fetched ?? 0}${row.mode ? ` [${row.mode}]` : ""}`
+          );
         }
         if (data.incomplete) {
           summaries.push("time budget — continue from next click");
@@ -5443,7 +5454,7 @@
       }
 
       state.intelligence.veevaMessage = [
-        stopped ? "Partial Veeva ingest" : "Veeva ingest OK",
+        stopped ? `Partial Veeva ${modeLabel}` : `Veeva ${modeLabel} OK`,
         summaries.join(" · ")
       ]
         .filter(Boolean)
@@ -5453,6 +5464,42 @@
       state.intelligence.veevaMessage = `Veeva sync error: ${formatVeevaFetchError(err)}`;
     } finally {
       state.intelligence.veevaBusy = false;
+      refreshDataStatusIfOpen();
+    }
+  }
+
+  async function saveSalesforceConnectionFromForm() {
+    const clientId = String(document.getElementById("sfConnClientId")?.value || "").trim();
+    const username = String(document.getElementById("sfConnUsername")?.value || "").trim();
+    const loginUrl = String(document.getElementById("sfConnLoginUrl")?.value || "").trim();
+    if (!clientId || !username) {
+      state.intelligence.sfTablesMessage =
+        "Enter SF Consumer Key (client id) and integration username, then Save SF connection.";
+      refreshDataStatusIfOpen();
+      return;
+    }
+    state.intelligence.sfTablesMessage = "Saving SF connection to Cosmos…";
+    refreshDataStatusIfOpen();
+    try {
+      const res = await intelligenceFaFetch("/api/salesforce/connection", {
+        requireExternal: true,
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clientId, username, loginUrl: loginUrl || undefined })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok === false) {
+        state.intelligence.sfTablesMessage = data.error || `Save failed (HTTP ${res.status})`;
+      } else {
+        state.intelligence.sfTablesMessage = `SF connection saved (${data.usernameHint || "ok"}) — run Ingest SF + crosswalk.`;
+        const idEl = document.getElementById("sfConnClientId");
+        const userEl = document.getElementById("sfConnUsername");
+        if (idEl) idEl.value = "";
+        if (userEl) userEl.value = "";
+      }
+      await loadIntelligenceHealth();
+    } catch (err) {
+      state.intelligence.sfTablesMessage = `SF connection save error: ${String(err.message || err)}`;
       refreshDataStatusIfOpen();
     }
   }
@@ -6108,7 +6155,10 @@
           <button type="button" class="btn btn-primary" id="btnSalesforceTablesSync" ${sfTablesDisabled}>${
             sfTablesBusy ? "Ingesting SF…" : "Ingest SF + crosswalk"
           }</button>
-          <button type="button" class="btn btn-primary" id="btnVeevaSync" ${veevaDisabled}>${
+          <button type="button" class="btn btn-primary" id="btnVeevaSyncDelta" ${veevaDisabled}>${
+            veevaBusy ? "Ingesting Veeva…" : "Ingest Veeva (new)"
+          }</button>
+          <button type="button" class="btn btn-secondary" id="btnVeevaSync" ${veevaDisabled}>${
             veevaBusy ? "Ingesting Veeva…" : "Ingest Veeva (full)"
           }</button>
         </div>
@@ -6119,6 +6169,28 @@
         ${sfTablesMsg}
         ${veevaMeta}
         ${veevaMsg}
+        ${
+          sfWrap.clientIdSet === false || sfWrap.credsSource === "none"
+            ? `<div class="card" style="margin-top:0.85rem;padding:0.85rem 1rem;">
+          <h3 style="margin-top:0;">Salesforce connection (one-time)</h3>
+          <p class="muted">JWT key can live in Cosmos already, but Consumer Key + username must be saved once so ora-buddy-api can mint tokens without relying on App Settings visibility. Values store in Cosmos <code>syncState/salesforce_connection</code>.</p>
+          <div class="form-grid" style="margin-top:0.65rem;">
+            <label class="field"><span>Consumer Key (SF_CLIENT_ID)</span>
+              <input class="input" id="sfConnClientId" autocomplete="off" spellcheck="false" placeholder="Connected App Consumer Key" />
+            </label>
+            <label class="field"><span>Integration username (SF_USERNAME)</span>
+              <input class="input" id="sfConnUsername" autocomplete="off" spellcheck="false" placeholder="user@oraclinical.com" />
+            </label>
+            <label class="field full"><span>Login URL (optional)</span>
+              <input class="input" id="sfConnLoginUrl" autocomplete="off" placeholder="https://login.salesforce.com" />
+            </label>
+          </div>
+          <div style="margin-top:0.65rem;">
+            <button type="button" class="btn btn-primary" id="btnSfConnSave">Save SF connection</button>
+          </div>
+        </div>`
+            : ""
+        }
         ${renderCtgovSyncDeltas(state.intelligence.syncDeltas)}
       </div>
       <div class="card wide" style="margin-top:1rem;">
@@ -10198,7 +10270,15 @@
         return;
       }
       if (e.target.id === "btnVeevaSync") {
-        runVeevaSyncManual();
+        runVeevaSyncManual({ full: true });
+        return;
+      }
+      if (e.target.id === "btnVeevaSyncDelta") {
+        runVeevaSyncManual({ full: false });
+        return;
+      }
+      if (e.target.id === "btnSfConnSave") {
+        saveSalesforceConnectionFromForm();
         return;
       }
       if (e.target.id === "btnTrialhubUpload") {
