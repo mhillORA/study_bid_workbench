@@ -20,6 +20,7 @@ const TOOL_LABELS = {
   study_compare: "Two-study compare",
   pricing_scenarios: "Past-bid pricing",
   legacy_anterior: "Legacy anterior-segment",
+  feasibility_artemis: "Artemis feasibility sites/surveys",
   live_context: "Buddy live context",
   dept_context: "Department playbook",
   web_search: "Web search (public)",
@@ -61,6 +62,7 @@ async function runBuddyTool(name, deps, args = {}) {
     buildDeptContextForAsk,
     compareStudies,
     buildLegacyAnteriorContext,
+    buildFeasibilityArtemisContext,
     buildRfpPricingPack,
     extractRfpScenarioFromQuestion,
     isPricingQuestion
@@ -187,6 +189,32 @@ async function runBuddyTool(name, deps, args = {}) {
           )
         };
       }
+      case "feasibility_artemis": {
+        if (!buildFeasibilityArtemisContext) {
+          throw new Error("buildFeasibilityArtemisContext missing");
+        }
+        const pack = await buildFeasibilityArtemisContext(getDb, {
+          question: args.question || "",
+          indication: args.intelBase?.indication || args.indication || null,
+          includeMatch: true,
+          includeQuestions: true
+        });
+        return {
+          result: { feasibilityArtemis: pack },
+          trace: traceStep(
+            "feasibility_artemis",
+            pack && !pack.error,
+            pack?.error ||
+              `sites=${pack?.sites?.length ?? 0} · questions=${pack?.questions?.length ?? 0} · dupClusters=${pack?.match?.duplicateClusterCount ?? 0}`,
+            {
+              elapsedMs: Date.now() - started,
+              round,
+              n: pack?.sites?.length ?? null,
+              resultKey: "feasibilityArtemis"
+            }
+          )
+        };
+      }
       case "web_search": {
         // Foundry agent performs search — we only record the plan.
         return {
@@ -277,6 +305,13 @@ function planGapFillTools({ context, question, huntReason }) {
 
   if (/\b(what(?:'s| is) in|catalog|inventory|how many)\b/i.test(q)) {
     tools.push("query_inventory");
+  }
+
+  if (
+    /\b(feasibility|survey|duplicate\s+sites?|site\s+match)\b/i.test(q) &&
+    !context?.feasibilityArtemis
+  ) {
+    tools.push("feasibility_artemis");
   }
 
   // Always try inventory as last-resort grounded facts if nothing else

@@ -161,6 +161,17 @@ async function maybeHuntAndRetry(opts) {
   if (hunt.merged.portfolio) {
     nextContext.portfolio = hunt.merged.portfolio;
   }
+  if (hunt.merged.feasibilityArtemis) {
+    nextContext.feasibilityArtemis = hunt.merged.feasibilityArtemis;
+    nextContext.dataSources = {
+      ...(nextContext.dataSources || {}),
+      feasibilityArtemisAttached: Boolean(
+        hunt.merged.feasibilityArtemis &&
+          hunt.merged.feasibilityArtemis.source === "artemis_feasibility_master" &&
+          !hunt.merged.feasibilityArtemis.error
+      )
+    };
+  }
 
   nextContext.huntRound = 2;
   nextContext.huntNote =
@@ -247,6 +258,7 @@ function toolTraceFromPrefetch({
   portfolio,
   intelligence,
   legacyAnterior,
+  feasibilityArtemis,
   pricingScenarios,
   buddyLiveContext,
   buddyDeptContexts,
@@ -297,6 +309,19 @@ function toolTraceFromPrefetch({
       label: "Legacy anterior-segment",
       ok: !legacyAnterior.error,
       detail: legacyAnterior.error || legacyAnterior.note || "loaded",
+      round: 1
+    });
+  }
+
+  if (feasibilityArtemis) {
+    trace.push({
+      tool: "feasibility_artemis",
+      label: "Artemis feasibility sites/surveys",
+      ok: !feasibilityArtemis.error,
+      detail:
+        feasibilityArtemis.error ||
+        `sites=${feasibilityArtemis.sites?.length ?? 0} · questions=${feasibilityArtemis.questions?.length ?? 0} · dupClusters=${feasibilityArtemis.match?.duplicateClusterCount ?? 0}`,
+      n: feasibilityArtemis.sites?.length ?? null,
       round: 1
     });
   }

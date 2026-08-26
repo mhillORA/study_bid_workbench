@@ -124,6 +124,20 @@ function buildSourcesFromContext(ctx = {}, toolTrace = []) {
     );
   }
 
+  const feas = ctx.feasibilityArtemis;
+  if (feas) {
+    sources.push(
+      sourceRow(
+        "feasibility_artemis",
+        "Artemis feasibility (sites/surveys)",
+        feas.source === "artemis_feasibility_master" && !feas.error,
+        feas.error ||
+          `sites=${feas.sites?.length ?? 0} · questions=${feas.questions?.length ?? 0} · dupClusters=${feas.match?.duplicateClusterCount ?? "—"}`,
+        { n: feas.sites?.length ?? feas.inventory?.sites ?? null }
+      )
+    );
+  }
+
   if (pricing) {
     sources.push(
       sourceRow(
@@ -410,6 +424,7 @@ function allowedNumbersFromContext(context = {}) {
   walk(context.portfolio?.databaseStudyCount);
   walk(context.pricingScenarios);
   walk(context.legacyAnterior);
+  walk(context.feasibilityArtemis);
   // Common safe literals
   ["0", "1", "2", "3", "4", "5", "10", "12", "20", "100", "2024", "2025", "2026"].forEach((x) =>
     allowed.add(x)

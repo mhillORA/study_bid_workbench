@@ -37,6 +37,11 @@ const {
   wantsHtmlVisual,
   isLegacyTableAsk
 } = require("./legacyAnterior");
+const {
+  isFeasibilityArtemisQuestion,
+  wantsSiteMatchReport,
+  buildFeasibilityArtemisContext
+} = require("./feasibilityArtemis");
 const { loadLiveContext, saveLiveContext } = require("./buddyLiveContext");
 const { runCtgovSync, getCtgovSyncStatus, remapCtgovIndications } = require("./ctgovSync");
 const { runSalesforceCrosswalkSync, getSalesforceSyncStatus } = require("./salesforceSync");
@@ -2316,7 +2321,8 @@ async function handleAskFromPack({
       buildPortfolioContext,
       loadLiveContext,
       loadDeptContexts,
-      buildDeptContextForAsk
+      buildDeptContextForAsk,
+      buildFeasibilityArtemisContext
     }
   });
   if (huntOut.evidence?.cleanAnswer) {
@@ -2921,6 +2927,36 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       legacyAnterior = { source: "legacy_anterior_segment_error", error: String(err.message || err) };
     }
 
+    // Artemis feasibility sites / survey questions (feasibility_* containers)
+    let feasibilityArtemis = null;
+    try {
+      if (routerHasTool(route, "feasibility_artemis")) {
+        const feasHint =
+          body.feasibilityHint && typeof body.feasibilityHint === "object"
+            ? body.feasibilityHint
+            : {};
+        const feasIndication =
+          feasHint.indication ||
+          extractIndicationFromQuestion(question) ||
+          (body.intelligenceHint && body.intelligenceHint.indication) ||
+          body.indication ||
+          null;
+        feasibilityArtemis = await buildFeasibilityArtemisContext(getDb, {
+          question,
+          siteName: feasHint.siteName || null,
+          questionHint: feasHint.questionHint || null,
+          indication: feasIndication ? String(feasIndication).trim() : null,
+          includeMatch: wantsSiteMatchReport(question) || Boolean(feasHint.includeMatch),
+          includeQuestions: true
+        });
+      }
+    } catch (err) {
+      feasibilityArtemis = {
+        source: "artemis_feasibility_master_error",
+        error: String(err.message || err)
+      };
+    }
+
     // Past-bid RFP pricing tiers (High Level Ballpark / Moderate / Goal Bid)
     let pricingScenarios = null;
     try {
@@ -3010,7 +3046,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         : buddyWorkflow === "budget"
           ? "BUDGET workflow: use portfolio / workingStudy / pricing / APPLY / CREATE_STUDY / HLBP. Do NOT answer with TrialHub/PSM/site feasibility unless the user explicitly asks."
           : buddyWorkflow === "feasibility"
-            ? "FEASIBILITY workflow: use context.intelligence / legacyAnterior / scorecard-style site & enrollment facts. Do NOT invent bid dollars or open an HLBP unless the user explicitly asks for budget/pricing."
+            ? "FEASIBILITY workflow: use context.intelligence / legacyAnterior / feasibilityArtemis (Artemis survey sites & questions) / scorecard-style site facts. Prefer feasibilityArtemis.match.canonical when sites have duplicate PI vs practice names. Do NOT invent bid dollars or open an HLBP unless the user explicitly asks for budget/pricing."
             : buddyWorkflow === "hybrid"
               ? "HYBRID workflow: user wants BOTH feasibility (PSM/sites/TrialHub/intelligence) AND budget/pricing. Answer in two clearly labeled parts. Use context.intelligence for performance/site facts; use context.portfolio/pricingScenarios/workingStudy for Ora fees. Do not answer with only one domain."
               : buddyWorkflow === "teach"
@@ -3034,10 +3070,13 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
           intelligence && intelligence.source === "ora_clinical_intelligence" && !intelligence.error
         ),
         legacyAnteriorAttached: Boolean(legacyAnterior && legacyAnterior.source === "legacy_anterior_segment"),
+        feasibilityArtemisAttached: Boolean(
+          feasibilityArtemis && feasibilityArtemis.source === "artemis_feasibility_master" && !feasibilityArtemis.error
+        ),
         pricingScenariosAttached: Boolean(pricingScenarios && pricingScenarios.tiers),
         buddyLiveContextAttached: Boolean(buddyLiveContext && buddyLiveContext.text),
         buddyDeptContextsAttached: Boolean(buddyDeptContexts && !buddyDeptContexts.error),
-        note: "studyComparison = two-study bid diff. portfolio = budget studies. pricingScenarios = past-bid RFP tiers. intelligence = Ora Veeva + TrialHub + CT.gov. legacyAnterior = anterior-segment overview. buddyLiveContext = SME append notes. buddyDeptContexts = department playbook lens (Ops/BD/Recruitment…)."
+        note: "studyComparison = two-study bid diff. portfolio = budget studies. pricingScenarios = past-bid RFP tiers. intelligence = Ora Veeva + TrialHub + CT.gov. legacyAnterior = anterior-segment overview. feasibilityArtemis = Artemis feasibility sites/surveys (with duplicate-site clusters). buddyLiveContext = SME append notes. buddyDeptContexts = department playbook lens (Ops/BD/Recruitment…)."
       },
       buddyDept: buddyDeptLens,
       buddyDeptContexts,
@@ -3059,6 +3098,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         compare: Boolean(studyComparison),
         intelligence: Boolean(intelligence && !intelligence.error),
         legacyAnterior: Boolean(legacyAnterior && !legacyAnterior.error),
+        feasibilityArtemis: Boolean(feasibilityArtemis && !feasibilityArtemis.error),
         wantsHtmlVisual: visualAsk
       },
       openStudyInUi: openStudyId
@@ -3076,6 +3116,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       pricingScenarios,
       intelligence,
       legacyAnterior,
+      feasibilityArtemis,
       buddyLiveContext:
         buddyLiveContext && buddyLiveContext.text
           ? {
@@ -3157,6 +3198,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       portfolio,
       intelligence,
       legacyAnterior,
+      feasibilityArtemis,
       pricingScenarios,
       buddyLiveContext,
       buddyDeptContexts,
@@ -3168,7 +3210,8 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       buildPortfolioContext,
       loadLiveContext,
       loadDeptContexts,
-      buildDeptContextForAsk
+      buildDeptContextForAsk,
+      buildFeasibilityArtemisContext
     };
 
     // Phase 1 (prepare): persist pack and return — Foundry runs on /ask/answer.
@@ -3393,6 +3436,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
           portfolio: routerHasTool(route, "portfolio"),
           intelligence: intelligence?.fetchPlan || null,
           legacy: routerHasTool(route, "legacy_anterior"),
+          feasibilityArtemis: routerHasTool(route, "feasibility_artemis"),
           pricing: routerHasTool(route, "pricing_scenarios"),
           compare: routerHasTool(route, "study_compare"),
           liveContext: routerHasTool(route, "live_context"),

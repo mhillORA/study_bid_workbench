@@ -16,6 +16,7 @@ const {
   extractTherapeuticFilterFromQuestion
 } = require("./intelligence");
 const { wantsHtmlVisual, isLegacyTableAsk, isLegacyAnteriorQuestion, isLegacyOverviewQuestion, userConsentedLegacyEnrollment } = require("./legacyAnterior");
+const { isFeasibilityArtemisQuestion, wantsSiteMatchReport } = require("./feasibilityArtemis");
 const { wantsDocumentExport } = require("./buddyDocExport");
 
 function reconcileVerbInQuestion(question) {
@@ -438,6 +439,14 @@ function pickTools(ctx) {
     tools.add("pricing_scenarios");
   }
   if (wantsLegacyAnteriorFetch(ctx)) tools.add("legacy_anterior");
+  if (
+    isFeasibilityArtemisQuestion(ctx.question) ||
+    wantsSiteMatchReport(ctx.question) ||
+    (workflow === "feasibility" &&
+      /\b(site|survey|question|pi|investigator|feasibility)\b/i.test(String(ctx.question || "")))
+  ) {
+    tools.add("feasibility_artemis");
+  }
   if (intent === "fill_fields" && buddyMode === "do") tools.add("study_apply");
   if (visualAsk || intent === "document_export") tools.add("html_export");
   if (workflow === "teach" || intent === "teach") tools.add("live_context");
