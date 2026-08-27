@@ -40,7 +40,9 @@ const {
 const {
   isFeasibilityArtemisQuestion,
   wantsSiteMatchReport,
-  buildFeasibilityArtemisContext
+  buildFeasibilityArtemisContext,
+  buildFeasibilityLensPack,
+  loadPersistedFeasibilityCatalog
 } = require("./feasibilityArtemis");
 const { loadLiveContext, saveLiveContext } = require("./buddyLiveContext");
 const { runCtgovSync, getCtgovSyncStatus, remapCtgovIndications } = require("./ctgovSync");
@@ -1783,6 +1785,160 @@ app.http("sponsorNewsSync", {
   }
 });
 
+/**
+ * Data Lens + Buddy shared feasibility catalog (survey names, indications, question keywords).
+ * GET refreshes + persists snapshot to Cosmos (feasibility_pack_meta) for SQL/Claude readers.
+ */
+app.http("feasibilityCatalog", {
+  methods: ["GET", "OPTIONS"],
+  authLevel: "anonymous",
+  route: "feasibility/catalog",
+  handler: async (request, context) => {
+    if (request.method === "OPTIONS") {
+      return optionsOk(request);
+    }
+    try {
+      const refresh = request.query.get("refresh") !== "false";
+      if (!refresh) {
+        const cached = await loadPersistedFeasibilityCatalog(getDb);
+        if (cached?.catalog) {
+          return json(
+            200,
+            {
+              ok: true,
+              source: "cosmos_snapshot",
+              updatedAt: cached.updatedAt || null,
+              catalog: cached.catalog,
+              audience: "data_lens"
+            },
+            request
+          );
+        }
+      }
+      const pack = await buildFeasibilityLensPack(getDb, {
+        question: "feasibility catalog",
+        includeMatch: true
+      });
+      return json(
+        200,
+        {
+          ok: !pack.error,
+          source: pack.source,
+          updatedAt: pack.catalogPersistedAt || null,
+          catalog: pack.catalog,
+          matchSummary: pack.match
+            ? {
+                siteCount: pack.match.siteCount,
+                clusterCount: pack.match.clusterCount,
+                duplicateClusterCount: pack.match.duplicateClusterCount,
+                duplicateMemberCount: pack.match.duplicateMemberCount
+              }
+            : null,
+          inventory: pack.inventory || null,
+          error: pack.error || null,
+          audience: "data_lens",
+          note: pack.note
+        },
+        request
+      );
+    } catch (err) {
+      context.error(err);
+      return json(
+        200,
+        { ok: false, empty: true, error: String(err.message || err), catalog: null },
+        request
+      );
+    }
+  }
+});
+
+/** Search Artemis feasibility sites (+ duplicate clusters). Shared Buddy / Data Lens. */
+app.http("feasibilitySites", {
+  methods: ["GET", "OPTIONS"],
+  authLevel: "anonymous",
+  route: "feasibility/sites",
+  handler: async (request, context) => {
+    if (request.method === "OPTIONS") {
+      return optionsOk(request);
+    }
+    try {
+      const q = request.query.get("q") || request.query.get("site") || "";
+      const indication = request.query.get("indication") || null;
+      const pack = await buildFeasibilityArtemisContext(getDb, {
+        question: q ? `feasibility site ${q}` : "feasibility sites",
+        siteName: q || null,
+        indication,
+        includeMatch: true,
+        includeQuestions: false
+      });
+      return json(
+        200,
+        {
+          ok: !pack.error,
+          query: pack.query,
+          sites: pack.sites || [],
+          match: pack.match || null,
+          catalogHints: pack.catalog
+            ? {
+                surveyCount: pack.catalog.surveyCount,
+                indicationsFromSurveys: pack.catalog.indicationsFromSurveys,
+                howToAskExamples: pack.catalog.howToAskExamples
+              }
+            : null,
+          error: pack.error || null,
+          audience: "data_lens"
+        },
+        request
+      );
+    } catch (err) {
+      context.error(err);
+      return json(200, { ok: false, sites: [], error: String(err.message || err) }, request);
+    }
+  }
+});
+
+/** Search survey questions + sample answers. Shared Buddy / Data Lens. */
+app.http("feasibilityQuestions", {
+  methods: ["GET", "OPTIONS"],
+  authLevel: "anonymous",
+  route: "feasibility/questions",
+  handler: async (request, context) => {
+    if (request.method === "OPTIONS") {
+      return optionsOk(request);
+    }
+    try {
+      const q = request.query.get("q") || request.query.get("question") || "enroll";
+      const indication = request.query.get("indication") || null;
+      const site = request.query.get("site") || null;
+      const pack = await buildFeasibilityArtemisContext(getDb, {
+        question: `feasibility survey questions about ${q}`,
+        questionHint: q,
+        siteName: site,
+        indication,
+        includeMatch: Boolean(site),
+        includeQuestions: true
+      });
+      return json(
+        200,
+        {
+          ok: !pack.error,
+          query: pack.query,
+          questions: pack.questions || [],
+          answers: pack.answers || [],
+          sites: pack.sites || null,
+          themes: pack.catalog?.questionThemes || null,
+          error: pack.error || null,
+          audience: "data_lens"
+        },
+        request
+      );
+    } catch (err) {
+      context.error(err);
+      return json(200, { ok: false, questions: [], error: String(err.message || err) }, request);
+    }
+  }
+});
+
 app.http("veevaSync", {
   methods: ["GET", "POST", "OPTIONS"],
   authLevel: "anonymous",
@@ -3046,7 +3202,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         : buddyWorkflow === "budget"
           ? "BUDGET workflow: use portfolio / workingStudy / pricing / APPLY / CREATE_STUDY / HLBP. Do NOT answer with TrialHub/PSM/site feasibility unless the user explicitly asks."
           : buddyWorkflow === "feasibility"
-            ? "FEASIBILITY workflow: use context.intelligence / legacyAnterior / feasibilityArtemis (Artemis survey sites & questions) / scorecard-style site facts. Prefer feasibilityArtemis.match.canonical when sites have duplicate PI vs practice names. Do NOT invent bid dollars or open an HLBP unless the user explicitly asks for budget/pricing."
+            ? "FEASIBILITY workflow: use context.intelligence / legacyAnterior / feasibilityArtemis. Start with feasibilityArtemis.catalog (survey titles, indications, questionKeywords, questionThemes). Prefer feasibilityArtemis.match.canonical when sites have duplicate PI vs practice names. Do NOT invent bid dollars or open an HLBP unless the user explicitly asks for budget/pricing."
             : buddyWorkflow === "hybrid"
               ? "HYBRID workflow: user wants BOTH feasibility (PSM/sites/TrialHub/intelligence) AND budget/pricing. Answer in two clearly labeled parts. Use context.intelligence for performance/site facts; use context.portfolio/pricingScenarios/workingStudy for Ora fees. Do not answer with only one domain."
               : buddyWorkflow === "teach"

@@ -405,19 +405,229 @@ async function loadAnswersForQuestions(database, questionHits, { siteIds = null,
   return out;
 }
 
+const STOP_KEYWORDS = new Set(
+  `a an the of to for and or in on at by with from is are was were be been being this that these those it its your our their how many what which who when where why do does did can could would should will have has had not no yes if then than as per each all any more most other such only own same so too very just also about into over after before between under again further once here there please provide following below listed select check specify apply apply. information details need able`.split(
+    " "
+  )
+);
+
+/** High-signal clinical / ops themes for Buddy keyword search. */
+const QUESTION_THEMES = [
+  {
+    id: "enrollment",
+    label: "Enrollment / capacity",
+    match: /\b(enroll|enrollment|capacity|recruit|patients?\s+per|subjects?\s+per|block\s+enroll)/i
+  },
+  {
+    id: "screening",
+    label: "Screening / screen fail",
+    match: /\b(screen|screening|screen\s*fail|eligibility|inclusion|exclusion)/i
+  },
+  {
+    id: "investigator",
+    label: "Investigator / PI",
+    match: /\b(investigator|principal\s+investigator|\bpi\b|credentials|sub[- ]?i)/i
+  },
+  {
+    id: "coordinator",
+    label: "Coordinator / staffing",
+    match: /\b(coordinator|crc|staff|fte|dedicated|research\s+nurse)/i
+  },
+  {
+    id: "equipment",
+    label: "Equipment / imaging",
+    match: /\b(equipment|oct|bcva|fundus|imaging|device|slit\s*lamp|camera|certif)/i
+  },
+  {
+    id: "pharmacy",
+    label: "Pharmacy / IP storage",
+    match: /\b(pharmacy|investigational\s+product|\bip\b|freezer|refrigerat|temperature|storage)/i
+  },
+  {
+    id: "regulatory",
+    label: "Regulatory / IRB",
+    match: /\b(irb|ec\b|regulatory|ethics|icf|informed\s+consent)/i
+  },
+  {
+    id: "competing",
+    label: "Competing studies",
+    match: /\b(compet|ongoing\s+stud|other\s+stud|currently\s+participat)/i
+  },
+  {
+    id: "interest",
+    label: "Interest / participation",
+    match: /\b(interest|participat|willing|able\s+to\s+conduct|capacity\s+to)/i
+  },
+  {
+    id: "budget",
+    label: "Budget / contract",
+    match: /\b(budget|contract|startup\s+fee|payment)/i
+  },
+  {
+    id: "site_profile",
+    label: "Site profile / practice",
+    match: /\b(practice\s+setting|address|phone|email|contact|institution|satellite)/i
+  }
+];
+
+/**
+ * Catalog Buddy can browse: survey names, indications, question keywords & themes.
+ */
+function buildFeasibilityCatalog(defs, sites) {
+  const surveys = (defs || [])
+    .filter((d) => d && d.id && d.id !== "feasibility_pack_meta" && d.title)
+    .map((d) => {
+      const labels = (d.questions || []).map((q) => String(q.label || "").trim()).filter(Boolean);
+      const keywords = new Map();
+      for (const label of labels) {
+        for (const tok of normText(label).split(" ")) {
+          if (tok.length < 4 || STOP_KEYWORDS.has(tok)) continue;
+          keywords.set(tok, (keywords.get(tok) || 0) + 1);
+        }
+      }
+      const topKeywords = [...keywords.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 18)
+        .map(([k]) => k);
+      const themeHits = QUESTION_THEMES.map((t) => {
+        const samples = labels.filter((l) => t.match.test(l)).slice(0, 4);
+        return samples.length
+          ? { theme: t.id, label: t.label, questionCount: labels.filter((l) => t.match.test(l)).length, samples }
+          : null;
+      }).filter(Boolean);
+      return {
+        surveyId: d.id,
+        title: d.title,
+        indication: d.indication || null,
+        therapeuticArea: d.therapeuticArea || null,
+        platform: d.platform || null,
+        questionCount: d.questionCount ?? labels.length,
+        responseCount: d.responseCount ?? null,
+        siteCount: d.siteCount ?? null,
+        topKeywords,
+        themes: themeHits,
+        sampleQuestions: labels.slice(0, 8)
+      };
+    })
+    .sort((a, b) => (b.responseCount || 0) - (a.responseCount || 0));
+
+  const indicationCounts = new Map();
+  for (const s of surveys) {
+    const ind = String(s.indication || "").trim();
+    if (!ind) continue;
+    if (!indicationCounts.has(ind)) {
+      indicationCounts.set(ind, { indication: ind, surveys: 0, responses: 0, surveyTitles: [] });
+    }
+    const row = indicationCounts.get(ind);
+    row.surveys += 1;
+    row.responses += Number(s.responseCount) || 0;
+    row.surveyTitles.push(s.title);
+  }
+
+  const siteIndicationCounts = new Map();
+  for (const s of sites || []) {
+    for (const x of [...(s.indicationsCovered || []), ...(s.therapeuticAreas || [])]) {
+      const k = String(x || "").trim();
+      if (!k) continue;
+      siteIndicationCounts.set(k, (siteIndicationCounts.get(k) || 0) + 1);
+    }
+  }
+
+  const globalKw = new Map();
+  for (const s of surveys) {
+    for (const k of s.topKeywords || []) {
+      globalKw.set(k, (globalKw.get(k) || 0) + 1);
+    }
+  }
+
+  const themesRollup = QUESTION_THEMES.map((t) => {
+    const across = [];
+    for (const s of surveys) {
+      const hit = (s.themes || []).find((x) => x.theme === t.id);
+      if (hit) {
+        across.push({
+          survey: s.title,
+          indication: s.indication,
+          questionCount: hit.questionCount,
+          samples: hit.samples
+        });
+      }
+    }
+    return {
+      theme: t.id,
+      label: t.label,
+      surveyCount: across.length,
+      keywords: t.match.source.replace(/\\b/g, "").replace(/[|()]/g, " ").split(/\s+/).filter(Boolean).slice(0, 12),
+      surveys: across.slice(0, 10)
+    };
+  }).filter((t) => t.surveyCount > 0);
+
+  return {
+    note:
+      "Use surveyTitles / indications / questionKeywords to find Artemis feasibility data. Search questions with those keywords; match sites via siteName/PI then use match.canonical for duplicates.",
+    howToAskExamples: [
+      "Feasibility questions about enrollment for Dry Eye",
+      "What did Total Eye Care answer on Aerie COMET?",
+      "Sites with GA / geographic atrophy feasibility surveys",
+      "Duplicate feasibility sites — match PI vs practice names",
+      "Survey questions about OCT / BCVA equipment"
+    ],
+    surveyCount: surveys.length,
+    surveys: surveys.map((s) => ({
+      surveyId: s.surveyId,
+      title: s.title,
+      indication: s.indication,
+      therapeuticArea: s.therapeuticArea,
+      questionCount: s.questionCount,
+      responseCount: s.responseCount,
+      siteCount: s.siteCount,
+      topKeywords: s.topKeywords,
+      sampleQuestions: s.sampleQuestions,
+      themes: (s.themes || []).map((t) => t.label)
+    })),
+    indicationsFromSurveys: [...indicationCounts.values()].sort((a, b) => b.responses - a.responses),
+    indicationsFromSites: [...siteIndicationCounts.entries()]
+      .map(([indication, siteCount]) => ({ indication, siteCount }))
+      .sort((a, b) => b.siteCount - a.siteCount)
+      .slice(0, 40),
+    questionKeywords: [...globalKw.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 60)
+      .map(([keyword, surveyHits]) => ({ keyword, surveyHits })),
+    questionThemes: themesRollup,
+    searchTips: {
+      containers: ["feasibility_sites", "feasibility_site_profiles", "feasibility_survey_definitions", "feasibility_survey_responses"],
+      joinKeys: ["siteId", "surveyId", "questionId"],
+      duplicateNote: "Prefer catalog + match.canonicalName; PI-named rows are often aliases of practice names."
+    }
+  };
+}
+
+/** Static triggers so router fires even before catalog loads. */
+const FEASIBILITY_TRIGGER_TERMS =
+  /\b(artemis|feasibility|surveymonkey|general\s+site\s+feasibility|aerie\s+comet|dew261|4dmt|prism|cog2201|henlius|nacuity|usher|stargardt|eluminex|lotus|lentechs|viatris|neurotrophic|naion|nidek|boehringer|survey\s+question|feasibility\s+survey|feasibility\s+site)\b/i;
+
 function isFeasibilityArtemisQuestion(question) {
-  const q = String(question || "").toLowerCase();
+  const q = String(question || "");
+  if (FEASIBILITY_TRIGGER_TERMS.test(q)) return true;
   if (
-    /\b(feasibility\s+(survey|site|master|question)|artemis\s+feasibility|survey\s+question|site\s+feasibility)\b/.test(
+    /\b(feasibility\s+(survey|site|master|question)|artemis\s+feasibility|survey\s+question|site\s+feasibility)\b/i.test(
       q
     )
   ) {
     return true;
   }
-  if (/\b(duplicate\s+sites?|dedupe\s+sites?|match\s+sites?|site\s+aliases?|same\s+site)\b/.test(q)) {
+  if (/\b(duplicate\s+sites?|dedupe\s+sites?|match\s+sites?|site\s+aliases?|same\s+site)\b/i.test(q)) {
     return true;
   }
-  if (/\b(feasibility|survey)\b/.test(q) && /\b(site|question|pi|investigator|answer|response)\b/.test(q)) {
+  if (/\b(feasibility|survey)\b/i.test(q) && /\b(site|question|pi|investigator|answer|response|enroll|oct|bcva|equipment)\b/i.test(q)) {
+    return true;
+  }
+  // Indication + survey/feasibility cue
+  if (
+    /\b(dry\s*eye|dme|wet\s*amd|geographic\s+atrophy|\bga\b|presbyopia|prk|stargardt|usher|glaucoma|naion)\b/i.test(q) &&
+    /\b(survey|feasibility|question|site\s+answer|enroll(?:ment)?\s+capacity)\b/i.test(q)
+  ) {
     return true;
   }
   return false;
@@ -457,7 +667,7 @@ async function buildFeasibilityArtemisContext(getDb, opts = {}) {
     source: DATASET,
     dataset: DATASET,
     note:
-      "Artemis feasibility export in Cosmos (feasibility_*). Sites often appear twice (PI-named vs practice). Use matchClusters.canonical for BD; members are aliases.",
+      "Artemis feasibility export in Cosmos (feasibility_*). Always read context.feasibilityArtemis.catalog first (survey titles, indications, question keywords/themes). Sites often appear twice (PI-named vs practice) — use match.canonical. Search questions with catalog.questionKeywords / questionThemes.",
     query: {
       siteHint: siteHint || null,
       questionHint: questionHint || null,
@@ -465,6 +675,7 @@ async function buildFeasibilityArtemisContext(getDb, opts = {}) {
       wantMatch,
       wantQuestions
     },
+    catalog: null,
     sites: null,
     questions: null,
     answers: null,
@@ -473,10 +684,20 @@ async function buildFeasibilityArtemisContext(getDb, opts = {}) {
 
   try {
     const sites = await loadAllSites(database);
+    const defs = await loadAllDefs(database);
+    out.catalog = buildFeasibilityCatalog(defs, sites);
     out.inventory = {
       sites: sites.length,
-      note: "Loaded from feasibility_sites"
+      surveyDefinitions: defs.length,
+      note: "Loaded from feasibility_sites + feasibility_survey_definitions"
     };
+    // Keep Data Lens Cosmos snapshot warm whenever Buddy builds the pack
+    try {
+      await persistFeasibilityCatalog(() => database, out.catalog);
+      out.catalogPersistedAt = new Date().toISOString();
+    } catch (_) {
+      /* non-fatal */
+    }
 
     if (wantMatch || !siteHint) {
       const clustered = clusterSites(sites);
@@ -519,16 +740,17 @@ async function buildFeasibilityArtemisContext(getDb, opts = {}) {
     }
 
     if (wantQuestions) {
-      const defs = await loadAllDefs(database);
       out.inventory.surveyDefinitions = defs.length;
-      const needle = questionHint || (wantQuestions && siteHint ? null : null);
       const qNeedle =
         questionHint ||
-        (/\b(enroll|capacity|patient|screen|recruit|coordinator|investigator|pi experience)\b/i.test(question)
-          ? question.match(/\b(enroll\w*|capacity|patient\w*|screen\w*|recruit\w*|coordinator\w*|investigator\w*)\b/i)?.[1]
-          : null) ||
-        "enroll";
-      // If user asked about a site only, still attach common capacity questions when indication known
+        (/\b(enroll|capacity|patient|screen|recruit|coordinator|investigator|pi experience|oct|bcva|equipment|freezer|irb|pharmacy)\b/i.test(
+          question
+        )
+          ? question.match(
+              /\b(enroll\w*|capacity|patient\w*|screen\w*|recruit\w*|coordinator\w*|investigator\w*|oct|bcva|equipment|freezer|irb|pharmacy)\b/i
+            )?.[1]
+          : null);
+      // Prefer explicit question hint; else theme keyword; else don't force "enroll"
       const searchNeedle = questionHint || (wantsQuestionSearch(question) ? qNeedle : null);
       if (searchNeedle) {
         out.questions = searchQuestionsInMemory(defs, {
@@ -548,28 +770,21 @@ async function buildFeasibilityArtemisContext(getDb, opts = {}) {
           siteIds: siteIds.length ? siteIds.slice(0, 30) : null,
           limit: 35
         });
-        // Attach display names from site map
         const byId = new Map(sites.map((s) => [s.siteId || s.id, s.siteName]));
         for (const a of out.answers || []) {
           a.siteName = byId.get(a.siteId) || a.displayName || null;
         }
       } else {
-        out.questions = defs
-          .slice()
-          .sort((a, b) => (b.responseCount || 0) - (a.responseCount || 0))
-          .slice(0, 12)
-          .map((d) => ({
-            surveyId: d.id,
-            surveyTitle: d.title,
-            indication: d.indication,
-            questionCount: d.questionCount,
-            responseCount: d.responseCount,
-            sampleQuestions: (d.questions || []).slice(0, 6).map((q) => ({
-              questionId: q.id,
-              label: q.label,
-              type: q.type
-            }))
-          }));
+        // Point Buddy at catalog instead of dumping raw defs again
+        out.questions = (out.catalog?.surveys || []).slice(0, 12).map((d) => ({
+          surveyId: d.surveyId,
+          surveyTitle: d.title,
+          indication: d.indication,
+          questionCount: d.questionCount,
+          responseCount: d.responseCount,
+          topKeywords: d.topKeywords,
+          sampleQuestions: (d.sampleQuestions || []).slice(0, 6).map((label) => ({ label }))
+        }));
       }
     }
 
@@ -577,6 +792,86 @@ async function buildFeasibilityArtemisContext(getDb, opts = {}) {
   } catch (err) {
     return { ...out, error: String(err.message || err) };
   }
+}
+
+/**
+ * Persist catalog snapshot for Data Lens / SQL readers (same facts Buddy uses).
+ * Container: feasibility_survey_definitions, id feasibility_pack_meta (partition /id).
+ */
+async function persistFeasibilityCatalog(getDb, catalog) {
+  const database = getDb();
+  const now = new Date().toISOString();
+  const doc = {
+    id: "feasibility_pack_meta",
+    docType: "feasibilityCatalogSnapshot",
+    dataset: DATASET,
+    schemaVersion: 2,
+    source: "ora-buddy-api",
+    audience: ["buddy", "data_lens"],
+    updatedAt: now,
+    catalog
+  };
+  await database.container(DEFS).items.upsert(doc);
+  try {
+    await database.containers.createIfNotExists({
+      id: "syncState",
+      partitionKey: { paths: ["/id"] }
+    });
+    await database.container("syncState").items.upsert({
+      id: "feasibility_catalog",
+      docType: "sync_state",
+      lastSuccessfulSync: now,
+      lastRunAt: now,
+      surveyCount: catalog?.surveyCount ?? null,
+      note: "Artemis feasibility catalog snapshot for Buddy + Data Lens"
+    });
+  } catch (_) {
+    /* optional */
+  }
+  return doc;
+}
+
+async function loadPersistedFeasibilityCatalog(getDb) {
+  try {
+    const database = getDb();
+    const { resource } = await database
+      .container(DEFS)
+      .item("feasibility_pack_meta", "feasibility_pack_meta")
+      .read();
+    if (resource?.catalog) return resource;
+  } catch (_) {
+    /* miss */
+  }
+  return null;
+}
+
+/**
+ * Full pack for Data Lens / HTTP: catalog (+ optional search). Always refreshes catalog snapshot.
+ */
+async function buildFeasibilityLensPack(getDb, opts = {}) {
+  const pack = await buildFeasibilityArtemisContext(getDb, {
+    question: opts.question || "feasibility catalog for Data Lens",
+    siteName: opts.siteName || null,
+    questionHint: opts.questionHint || null,
+    indication: opts.indication || null,
+    includeMatch: opts.includeMatch !== false,
+    includeQuestions: true
+  });
+  if (pack?.catalog && !pack.error) {
+    try {
+      await persistFeasibilityCatalog(getDb, pack.catalog);
+      pack.catalogPersistedAt = new Date().toISOString();
+    } catch (err) {
+      pack.catalogPersistError = String(err.message || err).slice(0, 200);
+    }
+  }
+  return {
+    ...pack,
+    audience: "data_lens",
+    note:
+      (pack.note || "") +
+      " Data Lens: prefer catalog (survey titles, indications, questionKeywords, questionThemes). Same Cosmos as Buddy; do not call /api/ask."
+  };
 }
 
 module.exports = {
@@ -591,7 +886,11 @@ module.exports = {
   clusterSites,
   searchSitesInMemory,
   searchQuestionsInMemory,
+  buildFeasibilityCatalog,
   buildFeasibilityArtemisContext,
+  buildFeasibilityLensPack,
+  persistFeasibilityCatalog,
+  loadPersistedFeasibilityCatalog,
   normalizeSiteName,
   normalizePi
 };
