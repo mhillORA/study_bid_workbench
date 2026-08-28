@@ -2588,8 +2588,13 @@
     else openBuddy();
   }
 
-  function paintBuddyChat() {
+  function paintBuddyChat(opts = {}) {
     if (!els.askLog) return;
+    const log = els.askLog;
+    const stickBottom =
+      opts.scrollToBottom === true ||
+      log.scrollHeight - log.scrollTop - log.clientHeight < 64;
+    const prevScrollTop = log.scrollTop;
     const turns = state.askHistory
       .map((t, idx) => {
         const who = t.role === "user" ? "You" : "Buddy";
@@ -2676,9 +2681,9 @@
         </div>`;
       })
       .join("");
-    els.askLog.innerHTML = turns ||
+    log.innerHTML = turns ||
       "<p class=\"muted\">Try “create a new study…”, “set enrolled subjects to 120”, or “remember this: OUS sites prefer…”. Speak “remember / learn / save that” to store a note in Buddy context.</p>";
-    els.askLog.scrollTop = els.askLog.scrollHeight;
+    log.scrollTop = stickBottom ? log.scrollHeight : prevScrollTop;
     if (els.askStatus) {
       if (state.buddyBusy) {
         // Keep Fast/Deep if already set for this ask; default Fast
