@@ -2038,7 +2038,6 @@ async function benchmarkIndication(database, indication, country = null, opts = 
 
   const recruiting = thTrials.filter((t) => /recruit/i.test(String(t.status || "")));
   const completed = thTrials.filter((t) => /completed/i.test(String(t.status || "")));
-  const naiveTrials = thTrials.filter(trialLooksTreatmentNaive);
   const countryRankAll = rankCountriesFromTrials(thTrials, { ousOnly: false, limit: 12 });
   const countryRankOus = rankCountriesFromTrials(thTrials, { ousOnly: true, limit: 12 });
 
@@ -2051,8 +2050,27 @@ async function benchmarkIndication(database, indication, country = null, opts = 
     studyNames: oraStudies.map((s) => s.study_number).filter(Boolean)
   });
 
-  const trialSampleLimit = Math.min(30, Math.max(8, Number(opts.trialSampleLimit) || 12));
-  const naivePrefer = Boolean(opts.treatmentNaive);
+  const trialListLimit = Math.min(40, Math.max(12, Number(opts.trialSampleLimit) || 20));
+  // TrialHub is full Cosmos ingest — never use it for treatment-naïve / eligibility classification
+  void opts.treatmentNaive;
+
+  const thListed = thTrials
+    .slice()
+    .sort((a, b) => (b.psm_common || b.th_actual_psm || 0) - (a.psm_common || a.th_actual_psm || 0))
+    .slice(0, trialListLimit)
+    .map((t) => ({
+      nct: t.nct,
+      title: t.title,
+      sponsor: t.sponsor,
+      phase: t.phase,
+      status: t.status,
+      indication: t.indication,
+      patients: t.patients,
+      sites: t.actual_sites ?? t.planned_sites,
+      psm_common: round(t.psm_common),
+      recruit_days: t.recruit_days,
+      countries: t.countries
+    }));
 
   return {
     indicationRequested: preferred,
@@ -2099,59 +2117,31 @@ async function benchmarkIndication(database, indication, country = null, opts = 
         }))
     },
     trialhub: {
+      source: "ora_trialhub_trials",
+      ingested: true,
       trialCount: thTrials.length,
       inOraIndicationCount: thTrials.filter((t) => t.in_ora_indication).length,
       recruitingCount: recruiting.length,
       completedCount: completed.length,
-      treatmentNaiveCount: naiveTrials.length,
-      treatmentNaiveFilter: naivePrefer,
       trialsWithPsm: thPsm.length,
       psmMedian: round(median(thPsm)),
       psmP25: round(percentile(thPsm, 25)),
       psmP75: round(percentile(thPsm, 75)),
+      listedCount: thListed.length,
       note:
         relatedLabels.length
-          ? `Includes related indications (${relatedLabels.join("; ")}) for country frequency when ${preferred} is thin. Prefer median over mean.`
-          : "psm stats exclude values >= 500 (outlier guard). Prefer median over mean. treatmentNaiveSample = title/indication naïve cues (not a structured TrialHub field).",
-      sampleTrials: (naivePrefer && naiveTrials.length ? naiveTrials : thTrials)
-        .filter((t) => typeof (t.psm_common ?? t.th_actual_psm) === "number" || naivePrefer)
-        .sort((a, b) => (b.psm_common || b.th_actual_psm || 0) - (a.psm_common || a.th_actual_psm || 0))
-        .slice(0, trialSampleLimit)
-        .map((t) => ({
-          nct: t.nct,
-          title: t.title,
-          sponsor: t.sponsor,
-          phase: t.phase,
-          status: t.status,
-          indication: t.indication,
-          patients: t.patients,
-          sites: t.actual_sites ?? t.planned_sites,
-          psm_common: round(t.psm_common),
-          recruit_days: t.recruit_days,
-          countries: t.countries,
-          treatmentNaiveLikely: trialLooksTreatmentNaive(t)
-        })),
-      treatmentNaiveSample: naiveTrials.slice(0, trialSampleLimit).map((t) => ({
-        nct: t.nct,
-        title: t.title,
-        sponsor: t.sponsor,
-        phase: t.phase,
-        status: t.status,
-        indication: t.indication,
-        patients: t.patients,
-        sites: t.actual_sites ?? t.planned_sites,
-        psm_common: round(t.psm_common),
-        countries: t.countries
-      })),
-      recruitingSample: recruiting.slice(0, Math.min(12, trialSampleLimit)).map((t) => ({
+          ? `Full Cosmos ingest of ora_trialhub_trials (not a scratch sample). trialCount=${thTrials.length} matched this indication family. Includes related (${relatedLabels.join("; ")}) for country frequency when ${preferred} is thin. Prefer median PSM. No inclusion/exclusion — use CT.gov for treatment-naïve.`
+          : `Full Cosmos ingest of ora_trialhub_trials (not a scratch sample). trialCount=${thTrials.length} matched. Prefer median PSM. TrialHub has no eligibility criteria — use CT.gov for treatment-naïve / prior aVEGF exclusion.`,
+      listedTrials: thListed,
+      sampleTrials: thListed,
+      recruitingSample: recruiting.slice(0, Math.min(16, trialListLimit)).map((t) => ({
         nct: t.nct,
         title: t.title,
         sponsor: t.sponsor,
         phase: t.phase,
         patients: t.patients,
         planned_sites: t.planned_sites,
-        countries: t.countries,
-        treatmentNaiveLikely: trialLooksTreatmentNaive(t)
+        countries: t.countries
       })),
       countryRank: ousOnly ? countryRankOus : countryRankAll,
       countryRankOus,
@@ -2729,16 +2719,21 @@ async function buildReconciliationIntelContext(getDb, opts = {}) {
           eligibilitySource: "clinicaltrials.gov",
           sources: {
             ctgov: out.ctgov?.treatmentNaiveSample || [],
-            trialhubLandscapeOnly: out.indicationBenchmark?.trialhub?.sampleTrials || [],
             oraStudies: out.indicationBenchmark?.ora?.sampleStudies || []
+          },
+          trialhub: {
+            ingested: true,
+            container: "ora_trialhub_trials",
+            trialCount: out.indicationBenchmark?.trialhub?.trialCount ?? 0,
+            note: "Full TrialHub ingest for PSM only — no eligibility; use CT.gov for naïve."
           },
           counts: {
             ctgovNaive: out.ctgov?.treatmentNaiveCount ?? 0,
-            trialhubAll: out.indicationBenchmark?.trialhub?.trialCount ?? 0,
+            trialhubIngestMatched: out.indicationBenchmark?.trialhub?.trialCount ?? 0,
             oraStudies: out.indicationBenchmark?.ora?.studyCount ?? 0
           },
           note:
-            "Naïve classification from CT.gov eligibility only (prior aVEGF exclusion). TrialHub has no inclusion/exclusion fields."
+            "Naïve from CT.gov eligibility only. TrialHub = full Cosmos ingest (not a sample); no inclusion/exclusion fields."
         };
       }
     } else {
@@ -3059,18 +3054,24 @@ async function buildIntelligenceContext(getDb, opts = {}) {
             eligibilitySource: "clinicaltrials.gov",
             sources: {
               ctgov: out.ctgov?.treatmentNaiveSample || [],
-              ctgovAllSample: out.ctgov?.sample || [],
-              trialhubLandscapeOnly: out.indicationBenchmark?.trialhub?.sampleTrials || [],
+              ctgovAllListed: out.ctgov?.sample || [],
               oraStudies: out.indicationBenchmark?.ora?.sampleStudies || []
+            },
+            trialhub: {
+              ingested: true,
+              container: "ora_trialhub_trials",
+              trialCount: out.indicationBenchmark?.trialhub?.trialCount ?? 0,
+              psmMedian: out.indicationBenchmark?.trialhub?.psmMedian ?? null,
+              note: "Full TrialHub Cosmos ingest for PSM/landscape only — no eligibility criteria; do not use for treatment-naïve classification."
             },
             counts: {
               ctgovNaive: out.ctgov?.treatmentNaiveCount ?? 0,
               ctgovAll: out.ctgov?.matchedIndicationCount ?? out.ctgov?.trialCount ?? 0,
-              trialhubAll: out.indicationBenchmark?.trialhub?.trialCount ?? 0,
+              trialhubIngestMatched: out.indicationBenchmark?.trialhub?.trialCount ?? 0,
               oraStudies: out.indicationBenchmark?.ora?.studyCount ?? 0
             },
             note:
-              "SOURCE OF TRUTH for treatment-naïve = CT.gov eligibilityCriteria (exclusion of prior anti-VEGF / aVEGF, or inclusion treatment-naïve). Cite treatmentNaiveEvidence. TrialHub has NCT/status/PSM only — NO inclusion/exclusion text; use trialhubLandscapeOnly for industry landscape, not for naïve classification. Ora Veeva = Ora studies/sites. Do not invent NCTs or criteria."
+              "SOURCE OF TRUTH for treatment-naïve = CT.gov eligibilityCriteria (prior anti-VEGF exclusion). TrialHub is a full ingest (ora_trialhub_trials) for industry PSM/counts — never call it a sample and never use it for inclusion/exclusion."
           };
         }
       } else if (resolvedCountries) {

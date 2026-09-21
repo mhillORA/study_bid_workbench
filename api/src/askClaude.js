@@ -127,7 +127,7 @@ const INTELLIGENCE_RULES = [
   "• CT.gov by indication → intelligence.ctgov (trialCount, sample, recruitingSample).",
   "• TrialHub / trial hub / trialhub.com dashboard (no indication) → intelligence.trialhubOverview (totalCount, indicationRank, psmMedian, recentSample, countryRank). If totalCount > 0 you HAVE data — never say TrialHub is empty.",
   "• TrialHub by indication → indicationBenchmark.trialhub.",
-  "• Treatment-naïve / naïve-nAMD / prior aVEGF exclusion → USE CT.gov ONLY for population classification. Look at intelligence.ctgov.treatmentNaiveSample / treatmentNaiveTrials.sources.ctgov — each row has treatmentNaiveEvidence (snippet from Eligibility Criteria) and treatmentNaiveReason (e.g. exclusion_prior_avegf). Treatment-naïve = Inclusion says treatment-naïve / no prior anti-VEGF OR Exclusion bars prior anti-VEGF (ranibizumab/aflibercept/bevacizumab/…). TrialHub does NOT store inclusion/exclusion criteria — never say you looked for naïve status in TrialHub fields, and never treat TrialHub NCT/status rows as eligibility proof. Use TrialHub only for industry PSM / recruiting landscape alongside CT.gov. When CT.gov naïve sample is sparse, say so and use Master Context naïve-nAMD PSM landmarks. Never invent NCTs or criteria text.",
+  "• Treatment-naïve / naïve-nAMD / prior aVEGF exclusion → CT.gov ONLY (`intelligence.ctgov` / `treatmentNaiveTrials.sources.ctgov`). Each naïve row has treatmentNaiveEvidence from Eligibility Criteria (exclusion of prior anti-VEGF, or inclusion treatment-naïve / no prior aVEGF). Do NOT use TrialHub for naïve classification — TrialHub ingest has no inclusion/exclusion text. Do NOT say \"TrialHub sample\" — when TrialHub is used for PSM/landscape, it is the full ingested Cosmos container `ora_trialhub_trials` (trialCount = matched ingest rows). Never invent NCTs or criteria text.",
   "• Veeva / Ora history dashboard (no indication) → intelligence.veevaOverview (studyCount, siteCount, psmMedian, indicationRank, sampleStudies, topSites). If studyCount/siteCount > 0 you HAVE data.",
   "• Country-only site asks (no indication) → intelligence.countrySites.topSites — list sites even when site_psm is null.",
   "• Budget dollars / uploaded bid portfolio → UNRELIABLE this sprint. Do not report from context.portfolio. Use Salesforce Total Ora Net, Veeva, TrialHub, CT.gov, NetSuite/RM if attached.",
@@ -1295,12 +1295,12 @@ function formatCosmosFactsBlock(context) {
     }
     const th = bm.trialhub || {};
     lines.push(
-      `TrialHub industry: trialCount=${th.trialCount ?? "—"}, trialsWithPsm=${th.trialsWithPsm ?? "—"}, ` +
+      `TrialHub ingest (ora_trialhub_trials): trialCount=${th.trialCount ?? "—"}, trialsWithPsm=${th.trialsWithPsm ?? "—"}, ` +
         `psmMedian=${th.psmMedian ?? "missing"}, recruitingCount=${th.recruitingCount ?? "—"}`
     );
     if (th.note) lines.push(`TrialHub note: ${th.note}`);
     lines.push(
-      "TrialHub RULE: TrialHub rows are NCT/status/PSM/landscape only — they do NOT include inclusion/exclusion criteria. Never classify treatment-naïve from TrialHub."
+      "TrialHub RULE: Full Cosmos ingest — not a scratch sample. Fields are NCT/status/PSM/landscape only (no inclusion/exclusion). Never classify treatment-naïve from TrialHub; use CT.gov eligibility for that."
     );
     const sitesPsm = bm.sites?.topSitesByPsm || [];
     const sitesAll = bm.sites?.topSites || [];
