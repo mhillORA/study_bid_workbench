@@ -2586,12 +2586,30 @@ async function ctgovByIndication(database, indication, country = null, opts = {}
     if (naiveOnly || trials.some((t) => !t.eligibilityCriteria)) {
       try {
         const { enrichTrialsWithEligibility } = require("./ctgovEligibility");
-        enriched = await enrichTrialsWithEligibility(trials, { limit: sampleLimit + 10 });
+        enriched = await enrichTrialsWithEligibility(trials, { limit: Math.max(40, sampleLimit + 10) });
       } catch (_) {
         enriched = trials;
       }
     }
-    const naiveTrials = enriched.filter(trialLooksTreatmentNaive);
+    let naiveTrials = enriched.filter(trialLooksTreatmentNaive);
+    let liveSearch = null;
+    // Cosmos often lacks eligibilityCriteria — search CT.gov API live for naïve asks
+    if (naiveOnly && naiveTrials.length < 3) {
+      try {
+        const { searchCtgovTreatmentNaiveLive } = require("./ctgovEligibility");
+        liveSearch = await searchCtgovTreatmentNaiveLive(preferred, { limit: sampleLimit, maxPages: 3 });
+        if (liveSearch?.treatmentNaiveSample?.length) {
+          const byNct = new Map(enriched.map((t) => [String(t.nct || "").toUpperCase(), t]));
+          for (const row of liveSearch.treatmentNaiveSample) {
+            byNct.set(String(row.nct).toUpperCase(), { ...row, treatmentNaiveLikely: true });
+          }
+          enriched = [...byNct.values()];
+          naiveTrials = enriched.filter(trialLooksTreatmentNaive);
+        }
+      } catch (liveErr) {
+        liveSearch = { error: String(liveErr.message || liveErr) };
+      }
+    }
     const pool = naiveOnly && naiveTrials.length ? naiveTrials : enriched;
     const recruiting = pool.filter((t) => /recruit/i.test(String(t.status || "")));
     const withDollars = pool.filter((t) => t.hasMentionedDollars || (t.mentionedDollars || []).length);
@@ -2600,6 +2618,15 @@ async function ctgovByIndication(database, indication, country = null, opts = {}
       matchedIndicationCount: enriched.length,
       treatmentNaiveCount: naiveTrials.length,
       treatmentNaiveFilter: naiveOnly,
+      liveCtgovSearch: liveSearch
+        ? {
+            searched: Boolean(liveSearch.searched),
+            scannedCount: liveSearch.scannedCount,
+            registryTotalCount: liveSearch.registryTotalCount,
+            queryCond: liveSearch.queryCond,
+            error: liveSearch.error || null
+          }
+        : undefined,
       recruitingCount: recruiting.length,
       countryFilter: countries,
       countryFilterLabel: countries ? countries.join(", ") : "Global",
@@ -2649,8 +2676,8 @@ async function ctgovByIndication(database, indication, country = null, opts = {}
             : "CT.gov usually has no dollar amounts. Do not invent costs from CT.gov; use past Ora bids for pricing tiers."
       },
       note: naiveOnly
-        ? `Treatment-naïve = CT.gov eligibility excludes prior anti-VEGF (aVEGF), or inclusion says treatment-naïve / no prior anti-VEGF. Live-enriched criteria when Cosmos rows lack eligibilityCriteria. ${naiveTrials.length} of ${enriched.length} indication matches flagged.`
-        : "From ClinicalTrials.gov daily ophthalmology feed (ora_ctgov_trials). treatmentNaiveSample uses eligibilityCriteria (prior aVEGF exclusion), not title keywords alone."
+        ? `Treatment-naïve = CT.gov Eligibility Criteria exclude prior anti-VEGF (lifetime), or inclusion says treatment-naïve / no prior aVEGF. Live registry search used when Cosmos lacks criteria. Flagged ${naiveTrials.length} naïve (scanned live=${liveSearch?.scannedCount ?? "n/a"}). Not TrialHub.`
+        : "From ClinicalTrials.gov ophthalmology feed (ora_ctgov_trials). treatmentNaiveSample uses eligibilityCriteria (prior aVEGF exclusion), not title keywords alone."
     };
   } catch (err) {
     return { error: String(err.message || err), note: "CT.gov container may be empty until first pull." };
