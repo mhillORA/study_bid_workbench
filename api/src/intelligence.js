@@ -2593,14 +2593,20 @@ async function ctgovByIndication(database, indication, country = null, opts = {}
     }
     let naiveTrials = enriched.filter(trialLooksTreatmentNaive);
     let liveSearch = null;
-    // Cosmos often lacks eligibilityCriteria — search CT.gov API live for naïve asks
-    if (naiveOnly && naiveTrials.length < 3) {
+    // Always live-search CT.gov on treatment-naïve asks (Cosmos sample is often completed-heavy)
+    if (naiveOnly) {
       try {
         const { searchCtgovTreatmentNaiveLive } = require("./ctgovEligibility");
-        liveSearch = await searchCtgovTreatmentNaiveLive(preferred, { limit: sampleLimit, maxPages: 3 });
-        if (liveSearch?.treatmentNaiveSample?.length) {
+        liveSearch = await searchCtgovTreatmentNaiveLive(preferred, {
+          limit: sampleLimit,
+          maxPages: 3
+        });
+        if (liveSearch?.treatmentNaiveSample?.length || liveSearch?.recruitingTreatmentNaiveSample?.length) {
           const byNct = new Map(enriched.map((t) => [String(t.nct || "").toUpperCase(), t]));
-          for (const row of liveSearch.treatmentNaiveSample) {
+          for (const row of [
+            ...(liveSearch.recruitingTreatmentNaiveSample || []),
+            ...(liveSearch.treatmentNaiveSample || [])
+          ]) {
             byNct.set(String(row.nct).toUpperCase(), { ...row, treatmentNaiveLikely: true });
           }
           enriched = [...byNct.values()];
@@ -2610,19 +2616,42 @@ async function ctgovByIndication(database, indication, country = null, opts = {}
         liveSearch = { error: String(liveErr.message || liveErr) };
       }
     }
-    const pool = naiveOnly && naiveTrials.length ? naiveTrials : enriched;
+    const recruitingNaive = naiveTrials.filter((t) => /^RECRUITING$/i.test(String(t.status || "")));
+    // Prefer recruiting naïve first so truncated context still keeps open trials
+    const naiveOrdered = [
+      ...recruitingNaive,
+      ...naiveTrials.filter((t) => !/^RECRUITING$/i.test(String(t.status || "")))
+    ];
+    const pool = naiveOnly && naiveOrdered.length ? naiveOrdered : enriched;
     const recruiting = pool.filter((t) => /recruit/i.test(String(t.status || "")));
     const withDollars = pool.filter((t) => t.hasMentionedDollars || (t.mentionedDollars || []).length);
+    const mapNaive = (t) => ({
+      nct: t.nct,
+      title: t.title,
+      status: t.status,
+      phase: t.phase,
+      sponsor: t.sponsor,
+      enrollment: t.enrollment,
+      oraIndication: t.oraIndication,
+      countries: t.countries,
+      startDate: t.startDate,
+      excludesPriorAvegf: t.excludesPriorAvegf === true,
+      treatmentNaiveReason: t.treatmentNaiveReason || null,
+      treatmentNaiveEvidence: t.treatmentNaiveEvidence || null
+    });
     return {
       trialCount: pool.length,
       matchedIndicationCount: enriched.length,
       treatmentNaiveCount: naiveTrials.length,
+      recruitingTreatmentNaiveCount:
+        liveSearch?.recruitingTreatmentNaiveCount ?? recruitingNaive.length,
       treatmentNaiveFilter: naiveOnly,
       liveCtgovSearch: liveSearch
         ? {
             searched: Boolean(liveSearch.searched),
             scannedCount: liveSearch.scannedCount,
             registryTotalCount: liveSearch.registryTotalCount,
+            recruitingRegistryTotal: liveSearch.recruitingRegistryTotal,
             queryCond: liveSearch.queryCond,
             error: liveSearch.error || null
           }
@@ -2645,20 +2674,12 @@ async function ctgovByIndication(database, indication, country = null, opts = {}
         treatmentNaiveReason: t.treatmentNaiveReason || null,
         treatmentNaiveEvidence: t.treatmentNaiveEvidence || null
       })),
-      treatmentNaiveSample: naiveTrials.slice(0, sampleLimit).map((t) => ({
-        nct: t.nct,
-        title: t.title,
-        status: t.status,
-        phase: t.phase,
-        sponsor: t.sponsor,
-        enrollment: t.enrollment,
-        oraIndication: t.oraIndication,
-        countries: t.countries,
-        startDate: t.startDate,
-        excludesPriorAvegf: t.excludesPriorAvegf === true,
-        treatmentNaiveReason: t.treatmentNaiveReason || null,
-        treatmentNaiveEvidence: t.treatmentNaiveEvidence || null
-      })),
+      treatmentNaiveSample: naiveOrdered.slice(0, sampleLimit).map(mapNaive),
+      recruitingTreatmentNaiveSample: (
+        liveSearch?.recruitingTreatmentNaiveSample?.length
+          ? liveSearch.recruitingTreatmentNaiveSample
+          : recruitingNaive.map(mapNaive)
+      ).slice(0, sampleLimit),
       recruitingSample: recruiting.slice(0, Math.min(12, sampleLimit)),
       dollarMentions: {
         available: withDollars.length > 0,
@@ -2676,7 +2697,9 @@ async function ctgovByIndication(database, indication, country = null, opts = {}
             : "CT.gov usually has no dollar amounts. Do not invent costs from CT.gov; use past Ora bids for pricing tiers."
       },
       note: naiveOnly
-        ? `Treatment-naïve = CT.gov Eligibility Criteria exclude prior anti-VEGF (lifetime), or inclusion says treatment-naïve / no prior aVEGF. Live registry search used when Cosmos lacks criteria. Flagged ${naiveTrials.length} naïve (scanned live=${liveSearch?.scannedCount ?? "n/a"}). Not TrialHub.`
+        ? `Treatment-naïve = CT.gov Eligibility Criteria. RECRUITING naïve=${
+            liveSearch?.recruitingTreatmentNaiveCount ?? recruitingNaive.length
+          } (see recruitingTreatmentNaiveSample — NEVER say 0 recruiting if that count > 0). Total naïve=${naiveTrials.length}. Live search scanned=${liveSearch?.scannedCount ?? "n/a"}.`
         : "From ClinicalTrials.gov ophthalmology feed (ora_ctgov_trials). treatmentNaiveSample uses eligibilityCriteria (prior aVEGF exclusion), not title keywords alone."
     };
   } catch (err) {
@@ -3081,6 +3104,7 @@ async function buildIntelligenceContext(getDb, opts = {}) {
             eligibilitySource: "clinicaltrials.gov",
             sources: {
               ctgov: out.ctgov?.treatmentNaiveSample || [],
+              ctgovRecruiting: out.ctgov?.recruitingTreatmentNaiveSample || [],
               ctgovAllListed: out.ctgov?.sample || [],
               oraStudies: out.indicationBenchmark?.ora?.sampleStudies || []
             },
@@ -3093,12 +3117,13 @@ async function buildIntelligenceContext(getDb, opts = {}) {
             },
             counts: {
               ctgovNaive: out.ctgov?.treatmentNaiveCount ?? 0,
+              ctgovRecruitingNaive: out.ctgov?.recruitingTreatmentNaiveCount ?? 0,
               ctgovAll: out.ctgov?.matchedIndicationCount ?? out.ctgov?.trialCount ?? 0,
               trialhubIngestMatched: out.indicationBenchmark?.trialhub?.trialCount ?? 0,
               oraStudies: out.indicationBenchmark?.ora?.studyCount ?? 0
             },
             note:
-              "SOURCE OF TRUTH for treatment-naïve = CT.gov eligibilityCriteria (prior anti-VEGF exclusion). TrialHub is a full ingest (ora_trialhub_trials) for industry PSM/counts — never call it a sample and never use it for inclusion/exclusion."
+              "SOURCE OF TRUTH for treatment-naïve = CT.gov eligibility. For recruiting asks use sources.ctgovRecruiting / counts.ctgovRecruitingNaive — never say 0 if that count > 0."
           };
         }
       } else if (resolvedCountries) {

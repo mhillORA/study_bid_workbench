@@ -227,7 +227,8 @@ async function enrichTrialsWithEligibility(trials, opts = {}) {
 
 /**
  * Live CT.gov search for an indication — pulls eligibility and flags treatment-naïve.
- * Used when Cosmos rows lack eligibilityCriteria (pre-ingest) or return 0 naïve.
+ * Always includes a dedicated RECRUITING pass so Buddy never reports 0 recruiting
+ * when the registry has open naïve trials buried under completed pages.
  */
 async function searchCtgovTreatmentNaiveLive(indication, opts = {}) {
   const maxPages = Math.min(4, Math.max(1, Number(opts.maxPages) || 3));
@@ -239,71 +240,102 @@ async function searchCtgovTreatmentNaiveLive(indication, opts = {}) {
       ? 'neovascular AMD OR "wet AMD" OR nAMD OR "neovascular age-related macular degeneration"'
       : String(indication || "macular degeneration"));
 
-  const studies = [];
-  let token = null;
-  let totalCount = null;
-  for (let page = 0; page < maxPages; page++) {
-    const params = new URLSearchParams({
-      format: "json",
-      pageSize: String(pageSize),
-      countTotal: "true",
-      "query.cond": qCond,
-      "filter.advanced": "AREA[StartDate]RANGE[2014-01-01,MAX]",
-      fields:
-        "NCTId,BriefTitle,OverallStatus,Phase,EligibilityCriteria,LeadSponsorName,Condition,EnrollmentCount,StartDate"
-    });
-    if (token) params.set("pageToken", token);
-    const res = await fetch(`${CTGOV_API}?${params}`, {
-      headers: { Accept: "application/json", "User-Agent": USER_AGENT }
-    });
-    if (!res.ok) break;
-    const data = await res.json();
-    if (totalCount == null) totalCount = data.totalCount ?? null;
-    for (const s of data.studies || []) {
-      const ps = s.protocolSection || {};
-      const nct = ps.identificationModule?.nctId;
-      if (!nct) continue;
-      const elig = ps.eligibilityModule?.eligibilityCriteria || "";
-      const row = applyAvegfNaiveFields({
-        nct: String(nct).toUpperCase(),
-        title: ps.identificationModule?.briefTitle || null,
-        status: ps.statusModule?.overallStatus || null,
-        phase: (ps.designModule?.phases || [])[0] || null,
-        sponsor: ps.sponsorCollaboratorsModule?.leadSponsor?.name || null,
-        enrollment: ps.designModule?.enrollmentInfo?.count ?? null,
-        startDate: ps.statusModule?.startDateStruct?.date || null,
-        conditions: ps.conditionsModule?.conditions || [],
-        eligibilityCriteria: elig ? String(elig).slice(0, 6000) : null,
-        source: "clinicaltrials.gov/api/v2/live"
+  async function pullPages({ recruitingOnly }) {
+    const studies = [];
+    let token = null;
+    let totalCount = null;
+    const pages = recruitingOnly ? Math.min(2, maxPages) : maxPages;
+    for (let page = 0; page < pages; page++) {
+      const params = new URLSearchParams({
+        format: "json",
+        pageSize: String(pageSize),
+        countTotal: "true",
+        "query.cond": qCond,
+        "filter.advanced": "AREA[StartDate]RANGE[2014-01-01,MAX]",
+        fields:
+          "NCTId,BriefTitle,OverallStatus,Phase,EligibilityCriteria,LeadSponsorName,Condition,EnrollmentCount,StartDate"
       });
-      studies.push(row);
+      if (recruitingOnly) params.set("filter.overallStatus", "RECRUITING");
+      if (token) params.set("pageToken", token);
+      const res = await fetch(`${CTGOV_API}?${params}`, {
+        headers: { Accept: "application/json", "User-Agent": USER_AGENT }
+      });
+      if (!res.ok) break;
+      const data = await res.json();
+      if (totalCount == null) totalCount = data.totalCount ?? null;
+      for (const s of data.studies || []) {
+        const ps = s.protocolSection || {};
+        const nct = ps.identificationModule?.nctId;
+        if (!nct) continue;
+        const elig = ps.eligibilityModule?.eligibilityCriteria || "";
+        studies.push(
+          applyAvegfNaiveFields({
+            nct: String(nct).toUpperCase(),
+            title: ps.identificationModule?.briefTitle || null,
+            status: ps.statusModule?.overallStatus || null,
+            phase: (ps.designModule?.phases || [])[0] || null,
+            sponsor: ps.sponsorCollaboratorsModule?.leadSponsor?.name || null,
+            enrollment: ps.designModule?.enrollmentInfo?.count ?? null,
+            startDate: ps.statusModule?.startDateStruct?.date || null,
+            conditions: ps.conditionsModule?.conditions || [],
+            eligibilityCriteria: elig ? String(elig).slice(0, 6000) : null,
+            source: recruitingOnly
+              ? "clinicaltrials.gov/api/v2/live/recruiting"
+              : "clinicaltrials.gov/api/v2/live"
+          })
+        );
+      }
+      token = data.nextPageToken || null;
+      if (!token) break;
     }
-    token = data.nextPageToken || null;
-    if (!token) break;
+    return { studies, totalCount };
   }
 
+  const [allPass, recruitingPass] = await Promise.all([
+    pullPages({ recruitingOnly: false }),
+    pullPages({ recruitingOnly: true })
+  ]);
+
+  const byNct = new Map();
+  for (const t of [...allPass.studies, ...recruitingPass.studies]) {
+    byNct.set(t.nct, t);
+  }
+  const studies = [...byNct.values()];
   const naive = studies.filter((t) => t.treatmentNaiveLikely);
+  const recruitingNaive = naive.filter((t) => /^RECRUITING$/i.test(String(t.status || "")));
+
+  const mapRow = (t) => ({
+    nct: t.nct,
+    title: t.title,
+    status: t.status,
+    phase: t.phase,
+    sponsor: t.sponsor,
+    enrollment: t.enrollment,
+    startDate: t.startDate,
+    excludesPriorAvegf: t.excludesPriorAvegf === true,
+    treatmentNaiveReason: t.treatmentNaiveReason,
+    treatmentNaiveEvidence: t.treatmentNaiveEvidence,
+    treatmentNaiveConfidence: t.treatmentNaiveConfidence
+  });
+
+  // Recruiting first in the general naïve list so truncated packs still keep open trials
+  const naiveOrdered = [
+    ...recruitingNaive,
+    ...naive.filter((t) => !/^RECRUITING$/i.test(String(t.status || "")))
+  ];
+
   return {
     searched: true,
     queryCond: qCond,
     scannedCount: studies.length,
-    registryTotalCount: totalCount,
+    registryTotalCount: allPass.totalCount,
+    recruitingRegistryTotal: recruitingPass.totalCount,
     treatmentNaiveCount: naive.length,
-    treatmentNaiveSample: naive.slice(0, limit).map((t) => ({
-      nct: t.nct,
-      title: t.title,
-      status: t.status,
-      phase: t.phase,
-      sponsor: t.sponsor,
-      enrollment: t.enrollment,
-      startDate: t.startDate,
-      excludesPriorAvegf: t.excludesPriorAvegf === true,
-      treatmentNaiveReason: t.treatmentNaiveReason,
-      treatmentNaiveEvidence: t.treatmentNaiveEvidence,
-      treatmentNaiveConfidence: t.treatmentNaiveConfidence
-    })),
+    recruitingTreatmentNaiveCount: recruitingNaive.length,
+    treatmentNaiveSample: naiveOrdered.slice(0, limit).map(mapRow),
+    recruitingTreatmentNaiveSample: recruitingNaive.slice(0, limit).map(mapRow),
     sample: studies.slice(0, limit),
-    note: `Live CT.gov search (${qCond}). Scanned ${studies.length} studies; ${naive.length} flagged treatment-naïve from Eligibility Criteria (prior aVEGF exclusion / explicit naïve language). Not TrialHub.`
+    note: `Live CT.gov search (${qCond}). Scanned ${studies.length}; naïve=${naive.length}; RECRUITING naïve=${recruitingNaive.length} (dedicated recruiting pass). Not TrialHub.`
   };
 }
 

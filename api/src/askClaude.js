@@ -127,7 +127,7 @@ const INTELLIGENCE_RULES = [
   "• CT.gov by indication → intelligence.ctgov (trialCount, sample, recruitingSample).",
   "• TrialHub / trial hub / trialhub.com dashboard (no indication) → intelligence.trialhubOverview (totalCount, indicationRank, psmMedian, recentSample, countryRank). If totalCount > 0 you HAVE data — never say TrialHub is empty.",
   "• TrialHub by indication → indicationBenchmark.trialhub.",
-  "• Treatment-naïve / naïve-nAMD / prior aVEGF exclusion → CT.gov ONLY (`intelligence.ctgov` / `treatmentNaiveTrials.sources.ctgov`). Each naïve row has treatmentNaiveEvidence from Eligibility Criteria (exclusion of prior anti-VEGF, or inclusion treatment-naïve / no prior aVEGF). Do NOT use TrialHub for naïve classification — TrialHub ingest has no inclusion/exclusion text. Do NOT say \"TrialHub sample\" — when TrialHub is used for PSM/landscape, it is the full ingested Cosmos container `ora_trialhub_trials` (trialCount = matched ingest rows). Never invent NCTs or criteria text.",
+  "• Treatment-naïve / naïve-nAMD / prior aVEGF exclusion → CT.gov ONLY. Use intelligence.ctgov.recruitingTreatmentNaiveSample + recruitingTreatmentNaiveCount when the user asks recruiting/open/active. NEVER say 0 recruiting naïve if recruitingTreatmentNaiveCount > 0 or recruitingTreatmentNaiveSample has rows — list those NCTs with treatmentNaiveEvidence. Also use treatmentNaiveSample (recruiting sorted first). Do NOT use TrialHub for naïve classification. Never invent NCTs.",
   "• Veeva / Ora history dashboard (no indication) → intelligence.veevaOverview (studyCount, siteCount, psmMedian, indicationRank, sampleStudies, topSites). If studyCount/siteCount > 0 you HAVE data.",
   "• Country-only site asks (no indication) → intelligence.countrySites.topSites — list sites even when site_psm is null.",
   "• Budget dollars / uploaded bid portfolio → UNRELIABLE this sprint. Do not report from context.portfolio. Use Salesforce Total Ora Net, Veeva, TrialHub, CT.gov, NetSuite/RM if attached.",
@@ -1380,12 +1380,24 @@ function formatCosmosFactsBlock(context) {
 
   const naivePack = intel.treatmentNaiveTrials;
   const ctgNaive = intel.ctgov?.treatmentNaiveSample || naivePack?.sources?.ctgov || [];
+  const ctgRecruitNaive =
+    intel.ctgov?.recruitingTreatmentNaiveSample || naivePack?.sources?.ctgovRecruiting || [];
   if (naivePack || (Array.isArray(ctgNaive) && ctgNaive.length) || intel.query?.treatmentNaive) {
     lines.push(
-      `TREATMENT-NAÏVE (CT.gov eligibility): naïve=${intel.ctgov?.treatmentNaiveCount ?? ctgNaive.length ?? "—"} of ${
-        intel.ctgov?.matchedIndicationCount ?? intel.ctgov?.trialCount ?? "—"
-      } indication matches. Classification = prior anti-VEGF excluded in Eligibility Criteria (not TrialHub).`
+      `TREATMENT-NAÏVE (CT.gov eligibility): naïve=${intel.ctgov?.treatmentNaiveCount ?? ctgNaive.length ?? "—"} | RECRUITING naïve=${
+        intel.ctgov?.recruitingTreatmentNaiveCount ?? ctgRecruitNaive.length ?? "—"
+      } of Wet AMD/nAMD. NEVER say 0 recruiting if RECRUITING naïve > 0.`
     );
+    if (ctgRecruitNaive.length) {
+      lines.push("RECRUITING treatment-naïve (list these when asked for recruiting):");
+      for (const t of ctgRecruitNaive.slice(0, 16)) {
+        lines.push(
+          `  - ${t.nct || "?"} | RECRUITING | ${t.phase || "?"} | ${t.sponsor || "?"} | reason=${
+            t.treatmentNaiveReason || "—"
+          } | evidence=${t.treatmentNaiveEvidence || "—"}`
+        );
+      }
+    }
     for (const t of (ctgNaive || []).slice(0, 12)) {
       lines.push(
         `  - ${t.nct || "?"} | ${t.status || "?"} | ${t.phase || "?"} | reason=${
@@ -1393,9 +1405,9 @@ function formatCosmosFactsBlock(context) {
         } | evidence=${t.treatmentNaiveEvidence || "—"}`
       );
     }
-    if (!ctgNaive.length) {
+    if (!ctgNaive.length && !ctgRecruitNaive.length) {
       lines.push(
-        "  No CT.gov naïve rows with eligibility evidence yet — say criteria were not matched / need enrich, do not invent from TrialHub NCT lists."
+        "  No CT.gov naïve rows with eligibility evidence in pack — say criteria not matched yet, do not invent from TrialHub."
       );
     }
   }
