@@ -711,6 +711,36 @@ function wantsTreatmentNaivePopulation(question) {
 }
 
 /**
+ * Follow-up "make a visual" / "table that" often drops naïve/indication keywords.
+ * Scan recent chat + prior answer so intel still pulls recruitingTreatmentNaiveSample.
+ */
+function conversationContextBlob(question, history = [], priorAnswer = "") {
+  const parts = [String(question || "")];
+  if (priorAnswer) parts.push(String(priorAnswer).slice(0, 8000));
+  for (const m of (Array.isArray(history) ? history : []).slice(-8)) {
+    const role = m?.role || m?.author || "";
+    const content = m?.content || m?.text || "";
+    if (!content) continue;
+    parts.push(`${role}: ${String(content).slice(0, 2500)}`);
+  }
+  return parts.join("\n");
+}
+
+function wantsTreatmentNaiveInConversation(question, history = [], priorAnswer = "") {
+  if (wantsTreatmentNaivePopulation(question)) return true;
+  const blob = conversationContextBlob(question, history, priorAnswer);
+  if (wantsTreatmentNaivePopulation(blob)) return true;
+  // Prior chat listed naïve NCTs / recruiting naïve framing
+  if (
+    /\bNCT\d{8}\b/i.test(blob) &&
+    /\b(na[iï]ve|anti[- ]?vegf|a[- ]?vegf|recruiting)\b/i.test(blob)
+  ) {
+    return true;
+  }
+  return false;
+}
+
+/**
  * Treatment-naïve = eligibility excludes prior anti-VEGF (aVEGF), not title keywords.
  * Prefer eligibilityCriteria / excludesPriorAvegf from CT.gov; title only as weak fallback.
  */
@@ -3918,6 +3948,8 @@ module.exports = {
   extractIndicationFromQuestion,
   extractCountryFromQuestion,
   wantsTreatmentNaivePopulation,
+  wantsTreatmentNaiveInConversation,
+  conversationContextBlob,
   trialLooksTreatmentNaive,
   normalizeCountryName,
   parseCountryFilter,

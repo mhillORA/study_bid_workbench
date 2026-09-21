@@ -15,7 +15,8 @@ const {
   extractYearFromQuestion,
   extractTherapeuticFilterFromQuestion,
   extractIndicationFromQuestion,
-  wantsTreatmentNaivePopulation
+  wantsTreatmentNaivePopulation,
+  wantsTreatmentNaiveInConversation
 } = require("./intelligence");
 const { wantsHtmlVisual, isLegacyTableAsk, isLegacyAnteriorQuestion, isLegacyOverviewQuestion, userConsentedLegacyEnrollment } = require("./legacyAnterior");
 const { isFeasibilityArtemisQuestion, wantsSiteMatchReport } = require("./feasibilityArtemis");
@@ -620,6 +621,7 @@ function routeBuddyAsk(input) {
     catalogAsk ||
     isIntelligenceQuestion(question) ||
     wantsTreatmentNaivePopulation(question) ||
+    wantsTreatmentNaiveInConversation(question, history, "") ||
     wantsDocumentExport(question) ||
     wantsHtmlVisual(question) ||
     isPricingQuestion(question) ||

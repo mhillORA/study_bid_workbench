@@ -127,7 +127,7 @@ const INTELLIGENCE_RULES = [
   "• CT.gov by indication → intelligence.ctgov (trialCount, sample, recruitingSample).",
   "• TrialHub / trial hub / trialhub.com dashboard (no indication) → intelligence.trialhubOverview (totalCount, indicationRank, psmMedian, recentSample, countryRank). If totalCount > 0 you HAVE data — never say TrialHub is empty.",
   "• TrialHub by indication → indicationBenchmark.trialhub.",
-  "• Treatment-naïve / naïve-nAMD / prior aVEGF exclusion → CT.gov ONLY (live eligibility + Cosmos). Canonical keys: intelligence.ctgov.recruitingTreatmentNaiveSample, intelligence.ctgov.recruitingTreatmentNaiveCount, intelligence.treatmentNaiveTrials.sources.ctgovRecruiting, intelligence.ctgovRecruitingTreatmentNaiveSample, intelligence.recruitingTreatmentNaiveCount. ALSO use the ORA COSMOS FACTS lines under TREATMENT-NAÏVE / RECRUITING treatment-naïve — those NCTs ARE the answer. NEVER say those fields are missing or \"not in Ora Cosmos data\" when FACTS lists RECRUITING naïve > 0 or any NCT rows. NEVER emit HTML_REPORT / portfolio / intelligence dashboard for a naïve recruiting list ask unless the user explicitly asked for a visual/dashboard. Chat list of NCT + evidence only.",
+  "• Treatment-naïve / naïve-nAMD / prior aVEGF exclusion → CT.gov ONLY (live eligibility + Cosmos). Canonical keys: intelligence.ctgov.recruitingTreatmentNaiveSample, intelligence.ctgov.recruitingTreatmentNaiveCount, intelligence.treatmentNaiveTrials.sources.ctgovRecruiting, intelligence.ctgovRecruitingTreatmentNaiveSample, intelligence.recruitingTreatmentNaiveCount. ALSO use the ORA COSMOS FACTS lines under TREATMENT-NAÏVE / RECRUITING treatment-naïve — those NCTs ARE the answer. NEVER say those fields are missing or \"not in Ora Cosmos data\" when FACTS lists RECRUITING naïve > 0 or any NCT rows. Chat list of NCT + evidence by default. When wantsHtmlVisual=true, emit an HTML_REPORT TABLE of those same NCTs — never a portfolio dashboard, and never say 0 if the sample/FACTS/priorChatAnswer has rows.",
   "• Veeva / Ora history dashboard (no indication) → intelligence.veevaOverview (studyCount, siteCount, psmMedian, indicationRank, sampleStudies, topSites). If studyCount/siteCount > 0 you HAVE data.",
   "• Country-only site asks (no indication) → intelligence.countrySites.topSites — list sites even when site_psm is null.",
   "• Budget dollars / uploaded bid portfolio → UNRELIABLE this sprint. Do not report from context.portfolio. Use Salesforce Total Ora Net, Veeva, TrialHub, CT.gov, NetSuite/RM if attached.",
@@ -471,11 +471,16 @@ function systemPromptFor(context) {
         ? ` Enrollment plan is on intelligence.query — use those site counts with human labels.`
         : "";
   const visualNote = context?.wantsHtmlVisual
-    ? " CRITICAL: wantsHtmlVisual=true — you MUST emit HTML_REPORT_START … HTML_REPORT_END with a complete HTML document after a short chat summary. If branding/template uploads are present, follow them. Do not answer with chat text only. The app will offer PDF/Word downloads from your HTML."
+    ? context?.intelligence?.query?.treatmentNaive ||
+      context?.intelligence?.treatmentNaiveTrials ||
+      (context?.intelligence?.recruitingTreatmentNaiveCount || 0) > 0 ||
+      (context?.intelligence?.ctgov?.recruitingTreatmentNaiveSample || []).length > 0
+      ? " CRITICAL: wantsHtmlVisual=true on a treatment-naïve ask — emit HTML_REPORT with a TABLE of intelligence.ctgov.recruitingTreatmentNaiveSample / ctgovRecruitingTreatmentNaiveSample (NCT, status, phase, sponsor, treatmentNaiveEvidence). Use recruitingTreatmentNaiveCount as the headline. NEVER say 0 recruiting if that count > 0, the sample has rows, OR priorChatAnswer already listed NCTs — copy those NCTs into the table. Do NOT build a portfolio/PSM/intelligence overview dashboard."
+      : " CRITICAL: wantsHtmlVisual=true — you MUST emit HTML_REPORT_START … HTML_REPORT_END with a complete HTML document after a short chat summary. If branding/template uploads are present, follow them. Do not answer with chat text only. The app will offer PDF/Word downloads from your HTML."
     : context?.intelligence?.query?.treatmentNaive ||
         context?.intelligence?.treatmentNaiveTrials ||
         (context?.intelligence?.recruitingTreatmentNaiveCount || 0) > 0
-      ? " CRITICAL: treatment-naïve ask — answer in chat with NCT list + eligibility evidence from ORA COSMOS FACTS / recruitingTreatmentNaiveSample. Do NOT emit HTML_REPORT, portfolio dashboard, or intelligence overview visuals."
+      ? " CRITICAL: treatment-naïve ask — answer in chat with NCT list + eligibility evidence from ORA COSMOS FACTS / recruitingTreatmentNaiveSample. Do NOT emit HTML_REPORT, portfolio dashboard, or intelligence overview visuals unless the user explicitly asked for a visual."
       : "";
   const docNote = context?.wantsDocumentExport
     ? " CRITICAL: wantsDocumentExport=true — produce a finished document via HTML_REPORT (branding + bid content). User expects downloadable PDF/Word."

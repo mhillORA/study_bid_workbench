@@ -54,28 +54,88 @@ function extractHtmlReport(text) {
 
 /** When the model fails to emit HTML_REPORT, still ship a usable Ora-styled visual. */
 function synthesizeFallbackHtmlReport(question, context = {}) {
+  const intel = context.intelligence || {};
+  const recruitNaive =
+    intel.ctgov?.recruitingTreatmentNaiveSample ||
+    intel.ctgovRecruitingTreatmentNaiveSample ||
+    intel.treatmentNaiveTrials?.sources?.ctgovRecruiting ||
+    [];
+  const recruitCount =
+    intel.ctgov?.recruitingTreatmentNaiveCount ??
+    intel.recruitingTreatmentNaiveCount ??
+    recruitNaive.length;
+  const prior = String(context.priorChatAnswer || "");
+
+  // Treatment-naïve recruiting visual — never fall back to portfolio/PSM snapshot
+  if (recruitNaive.length || (intel.query?.treatmentNaive && /\bNCT\d{8}\b/i.test(prior))) {
+    const fromPrior = [...prior.matchAll(/\b(NCT\d{8})\b/gi)].map((m) => m[1].toUpperCase());
+    const byNct = new Map();
+    for (const t of recruitNaive) {
+      if (t?.nct) byNct.set(String(t.nct).toUpperCase(), t);
+    }
+    for (const nct of fromPrior) {
+      if (!byNct.has(nct)) byNct.set(nct, { nct, status: "RECRUITING" });
+    }
+    const rows = [...byNct.values()].slice(0, 40).map((t) => {
+      return `<tr><td>${escapeHtmlSynth(t.nct || "?")}</td><td>${escapeHtmlSynth(
+        t.status || "RECRUITING"
+      )}</td><td>${escapeHtmlSynth(t.phase || "—")}</td><td>${escapeHtmlSynth(
+        t.sponsor || "—"
+      )}</td><td>${escapeHtmlSynth(
+        (t.treatmentNaiveEvidence || t.treatmentNaiveReason || "—").toString().slice(0, 180)
+      )}</td></tr>`;
+    });
+    const n = Math.max(recruitCount || 0, rows.length);
+    const ind =
+      intel.query?.indication ||
+      intel.indicationBenchmark?.indicationRequested ||
+      intel.treatmentNaiveTrials?.indication ||
+      "nAMD";
+    const title = `Recruiting treatment-naïve ${ind} trials (CT.gov)`;
+    const q = String(question || "").slice(0, 200);
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>${escapeHtmlSynth(title)}</title>
+<style>
+body{font-family:Segoe UI,Arial,sans-serif;background:#F0F4F8;color:#1B2A4A;margin:0;padding:24px;line-height:1.5}
+.header{background:linear-gradient(135deg,#1B2A4A,#1A7F8E);color:#fff;padding:20px 24px;border-radius:10px;margin-bottom:16px}
+.card{background:#fff;border-radius:10px;padding:16px 20px;box-shadow:0 1px 3px rgba(0,0,0,.08)}
+table{width:100%;border-collapse:collapse;margin-top:8px}
+td,th{border-bottom:1px solid #E2E8F0;padding:8px 6px;text-align:left;font-size:13px;vertical-align:top}
+.muted{color:#64748B;font-size:13px}
+.big{font-size:1.6rem;font-weight:700;margin:0}
+</style></head><body>
+<div class="header"><h1 style="margin:0;font-size:1.35rem">${escapeHtmlSynth(title)}</h1>
+<p class="big" style="margin:10px 0 0">${escapeHtmlSynth(String(n))} recruiting</p>
+<p style="margin:8px 0 0;opacity:.9;font-size:14px">Ask: ${escapeHtmlSynth(q || "—")}</p></div>
+<div class="card"><p class="muted">Eligibility = prior anti-VEGF exclusion / explicit treatment-naïve on ClinicalTrials.gov.</p>
+<table><thead><tr><th>NCT</th><th>Status</th><th>Phase</th><th>Sponsor</th><th>Evidence</th></tr></thead><tbody>${
+      rows.join("") ||
+      `<tr><td colspan="5">No NCT rows in pack — re-ask with treatment-naïve nAMD.</td></tr>`
+    }</tbody></table></div>
+</body></html>`;
+  }
+
   const ind =
-    context.intelligence?.query?.indication ||
-    context.intelligence?.indicationBenchmark?.indicationRequested ||
+    intel.query?.indication ||
+    intel.indicationBenchmark?.indicationRequested ||
     context.clientStudy?.indication ||
     "";
-  const country = context.intelligence?.query?.country || "";
-  const ora = context.intelligence?.indicationBenchmark?.ora || null;
-  const th = context.intelligence?.indicationBenchmark?.trialhub || null;
+  const country = intel.query?.country || "";
+  const ora = intel.indicationBenchmark?.ora || null;
+  const th = intel.indicationBenchmark?.trialhub || null;
   const port = context.portfolio || null;
   const q = String(question || "").slice(0, 200);
   const rows = [];
   if (ora) {
     rows.push(
       `<tr><td>Ora studies (indication)</td><td>${escapeHtmlSynth(String(ora.studyCount ?? "—"))}</td></tr>`,
-      `<tr><td>Ora median PSM</td><td>${escapeHtmlSynth(ora.medianPsm != null ? String(ora.medianPsm) : "missing")}</td></tr>`,
+      `<tr><td>Ora median PSM</td><td>${escapeHtmlSynth(ora.medianPsm != null ? String(ora.medianPsm) : ora.psmMedian != null ? String(ora.psmMedian) : "missing")}</td></tr>`,
       `<tr><td>Ora sites (n)</td><td>${escapeHtmlSynth(String(ora.siteCount ?? ora.nSites ?? "—"))}</td></tr>`
     );
   }
   if (th) {
     rows.push(
       `<tr><td>TrialHub trials</td><td>${escapeHtmlSynth(String(th.trialCount ?? th.n ?? "—"))}</td></tr>`,
-      `<tr><td>TrialHub median PSM</td><td>${escapeHtmlSynth(th.medianPsm != null ? String(th.medianPsm) : "missing")}</td></tr>`
+      `<tr><td>TrialHub median PSM</td><td>${escapeHtmlSynth(th.medianPsm != null ? String(th.medianPsm) : th.psmMedian != null ? String(th.psmMedian) : "missing")}</td></tr>`
     );
   }
   if (port && !port.skipped) {

@@ -1,10 +1,11 @@
 /**
- * ClinicalTrials.gov ophthalmology delta → Cosmos ora_ctgov_trials.
+ * ClinicalTrials.gov ophthalmology → Cosmos ora_ctgov_trials.
  * Runs inside the SWA API (uses App Settings COSMOS_* — no GitHub Cosmos secrets).
  *
- * Default = incremental (LastUpdatePostDate since watermark).
+ * Modes:
+ *   - delta (scheduler): LastUpdatePostDate since watermark (+ OVERLAP_HOURS)
+ *   - enrich (UI Sync): wide LastUpdate window + RECRUITING pass + eligibility backfill
  * Full 10y backfill stays on python ingest/pull_ctgov_ophthalmology.py --full
- * (too large for a single HTTP function invocation).
  */
 
 const SYNC_ID = "ctgov_ophthalmology";
@@ -14,6 +15,11 @@ const SCHEMA_VERSION = 3;
 const API_BASE = "https://clinicaltrials.gov/api/v2/studies";
 const PAGE_SIZE = 100;
 const OVERLAP_HOURS = 36;
+/** UI Sync lookback — pull everything updated in this window, not just since last click. */
+const ENRICH_LOOKBACK_DAYS = 365;
+const ENRICH_MAX_PAGES = 60;
+const ENRICH_RECRUITING_PAGES = 20;
+const ENRICH_BACKFILL_MAX = 600;
 const USER_AGENT = "OraStudyBidWorkbench/1.0 (ctgov-delta-api)";
 
 /**
@@ -321,17 +327,65 @@ async function httpGetJson(url) {
   return res.json();
 }
 
-function buildSearchUrl(advanced, pageToken) {
+function buildSearchUrl(advanced, pageToken, extraParams = {}) {
   const params = new URLSearchParams({
     format: "json",
     countTotal: "true",
     pageSize: String(PAGE_SIZE),
     "query.cond": COND_QUERY,
     "filter.advanced": advanced,
-    fields: FIELDS
+    fields: FIELDS,
+    ...Object.fromEntries(
+      Object.entries(extraParams || {})
+        .filter(([, v]) => v != null && v !== "")
+        .map(([k, v]) => [k, String(v)])
+    )
   });
   if (pageToken) params.set("pageToken", pageToken);
   return `${API_BASE}?${params.toString()}`;
+}
+
+/**
+ * Paginate CT.gov search into flattened ocular docs.
+ */
+async function fetchOcularStudies({ advanced, maxPages, overallStatus = null }) {
+  const studies = [];
+  let token = null;
+  let total = 0;
+  let page = 0;
+  const extra = overallStatus ? { "filter.overallStatus": overallStatus } : {};
+  while (page < maxPages) {
+    page += 1;
+    const data = await httpGetJson(buildSearchUrl(advanced, token, extra));
+    if (page === 1) total = Number(data.totalCount || 0);
+    const batch = data.studies || [];
+    studies.push(...batch);
+    token = data.nextPageToken || null;
+    if (!token || !batch.length) break;
+    await new Promise((r) => setTimeout(r, 80));
+  }
+  return { studies, total, incomplete: Boolean(token) };
+}
+
+/**
+ * Prefer incoming eligibility; keep prior criteria/naïve flags if the live page omitted them.
+ */
+function mergeTrialDocs(prev, next) {
+  if (!prev) return next;
+  const merged = { ...next };
+  if (!merged.eligibilityCriteria && prev.eligibilityCriteria) {
+    merged.eligibilityCriteria = prev.eligibilityCriteria;
+    merged.excludesPriorAvegf = prev.excludesPriorAvegf;
+    merged.treatmentNaiveLikely = prev.treatmentNaiveLikely;
+    merged.treatmentNaiveReason = prev.treatmentNaiveReason;
+    merged.treatmentNaiveEvidence = prev.treatmentNaiveEvidence;
+    merged.treatmentNaiveConfidence = prev.treatmentNaiveConfidence;
+  }
+  if (merged.briefSummary == null && prev.briefSummary) merged.briefSummary = prev.briefSummary;
+  if (merged.detailedDescription == null && prev.detailedDescription) {
+    merged.detailedDescription = prev.detailedDescription;
+  }
+  return merged;
 }
 
 async function ensureContainers(database) {

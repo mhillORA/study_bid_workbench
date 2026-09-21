@@ -27,7 +27,10 @@ const {
   extractIndicationFromQuestion,
   extractCountryFromQuestion,
   extractYearFromQuestion: extractIntelYearFromQuestion,
-  extractTherapeuticFilterFromQuestion
+  extractTherapeuticFilterFromQuestion,
+  wantsTreatmentNaivePopulation,
+  wantsTreatmentNaiveInConversation,
+  conversationContextBlob
 } = require("./intelligence");
 const {
   isLegacyAnteriorQuestion,
@@ -2515,6 +2518,7 @@ async function handleAskFromPack({
         wantsDocumentExport: Boolean(meta.docExportAsk),
         intelligence: contextPayload.intelligence,
         portfolio: contextPayload.portfolio,
+        priorChatAnswer: contextPayload.priorChatAnswer || null,
         clientStudy: contextPayload.workingStudy || null
       });
       if (built.html) {
@@ -2981,9 +2985,21 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         );
       // EVERY Buddy ask queries live Cosmos — no skip/upload-only paths.
       const attachmentBlobForIntel = hasOkUpload ? attachmentTextForIntel(uploaded, 15000) : "";
-      const intelQuestion = attachmentBlobForIntel
+      // Follow-up "make a visual" often drops naïve/indication words — scan recent chat
+      const convoBlob = conversationContextBlob(question, history, "");
+      const naiveFromConvo = wantsTreatmentNaiveInConversation(question, history, "");
+      let intelQuestion = attachmentBlobForIntel
         ? `${question}\n\n--- ATTACHED DOCUMENT TEXT (for extracting filters) ---\n${attachmentBlobForIntel}`
         : question;
+      if (naiveFromConvo && !wantsTreatmentNaivePopulation(question)) {
+        intelQuestion = `${intelQuestion}\n\n--- PRIOR CHAT (carry treatment-naïve / indication) ---\n${convoBlob.slice(0, 6000)}\n[force: treatment-naive recruiting trials]`;
+      } else if (
+        (visualAsk || wantsHtmlVisual(question)) &&
+        !extractIndicationFromQuestion(question) &&
+        extractIndicationFromQuestion(convoBlob)
+      ) {
+        intelQuestion = `${intelQuestion}\n\n--- PRIOR CHAT (carry indication) ---\n${convoBlob.slice(0, 4000)}`;
+      }
 
       const rfpHint = extractRfpScenarioFromQuestion(question, body);
       let indFromFiles = null;
@@ -2993,6 +3009,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
 
       const resolvedIndication =
         qIndication ||
+        extractIndicationFromQuestion(intelQuestion) ||
         (sourceOverviewAsk ? null : hintIndication || snapIndication) ||
         indFromFiles ||
         rfpHint.indication ||
@@ -3518,6 +3535,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
           wantsDocumentExport: docExportAsk,
           intelligence,
           portfolio,
+          priorChatAnswer: contextPayload.priorChatAnswer || null,
           clientStudy: contextPayload.clientStudy || contextPayload.workingStudy || null
         });
         if (built.html) {
