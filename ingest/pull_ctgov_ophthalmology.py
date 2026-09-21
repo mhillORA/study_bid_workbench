@@ -39,7 +39,7 @@ API_BASE = "https://clinicaltrials.gov/api/v2/studies"
 SYNC_ID = "ctgov_ophthalmology"
 DATASET = "clinicaltrials_gov"
 DOC_TYPE = "ora_ctgov_trials"
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 AVEGF_RE = re.compile(
     r"\b(anti[- ]?vegf|a[- ]?vegf|anti\s*vascular\s*endothelial|ranibizumab|aflibercept|"
@@ -203,6 +203,7 @@ INDICATION_RULES: list[tuple[str, str]] = [
 
 FIELDS = [
     "NCTId",
+    "Acronym",
     "BriefTitle",
     "OfficialTitle",
     "OverallStatus",
@@ -214,7 +215,9 @@ FIELDS = [
     "LastUpdatePostDate",
     "StudyFirstPostDate",
     "Condition",
+    "Keyword",
     "InterventionName",
+    "InterventionType",
     "LeadSponsorName",
     "LeadSponsorClass",
     "EnrollmentCount",
@@ -224,7 +227,15 @@ FIELDS = [
     "WhyStopped",
     "HasResults",
     "BriefSummary",
+    "DetailedDescription",
     "EligibilityCriteria",
+    "Sex",
+    "MinimumAge",
+    "MaximumAge",
+    "StdAge",
+    "HealthyVolunteers",
+    "PrimaryOutcomeMeasure",
+    "PrimaryOutcomeDescription",
 ]
 
 
@@ -325,9 +336,31 @@ def flatten_study(raw: dict[str, Any], imported_at: str) -> dict[str, Any]:
         for i in interventions
         if isinstance(i, dict) and i.get("name")
     ]
+    intervention_types = sorted(
+        {
+            str(i.get("type")).strip()
+            for i in interventions
+            if isinstance(i, dict) and i.get("type")
+        }
+    )
     enroll = dig(ps, "designModule", "enrollmentInfo") or {}
     brief_summary = dig(ps, "descriptionModule", "briefSummary") or ""
+    detailed = dig(ps, "descriptionModule", "detailedDescription") or ""
     eligibility = dig(ps, "eligibilityModule", "eligibilityCriteria") or ""
+    keywords = [str(k) for k in as_list(dig(ps, "conditionsModule", "keywords")) if k]
+    primary_outcomes = []
+    for o in as_list(dig(ps, "outcomesModule", "primaryOutcomes")):
+        if not isinstance(o, dict):
+            continue
+        if o.get("measure") or o.get("description"):
+            primary_outcomes.append(
+                {
+                    "measure": (str(o["measure"])[:300] if o.get("measure") else None),
+                    "description": (str(o["description"])[:400] if o.get("description") else None),
+                }
+            )
+        if len(primary_outcomes) >= 5:
+            break
     ora_ind = map_ora_indication([str(c) for c in conditions])
     naive = analyze_avegf_treatment_naive(eligibility)
 
@@ -337,6 +370,7 @@ def flatten_study(raw: dict[str, Any], imported_at: str) -> dict[str, Any]:
         "oraIndication": ora_ind,
         "title": dig(ps, "identificationModule", "briefTitle"),
         "officialTitle": dig(ps, "identificationModule", "officialTitle"),
+        "acronym": dig(ps, "identificationModule", "acronym"),
         "status": dig(ps, "statusModule", "overallStatus"),
         "phases": phases,
         "phase": phases[0] if phases else None,
@@ -348,7 +382,9 @@ def flatten_study(raw: dict[str, Any], imported_at: str) -> dict[str, Any]:
         or dig(ps, "statusModule", "statusVerifiedDate"),
         "studyFirstPostDate": dig(ps, "statusModule", "studyFirstPostDateStruct", "date"),
         "conditions": [str(c) for c in conditions],
+        "keywords": keywords[:30],
         "interventions": intervention_names[:20],
+        "interventionTypes": intervention_types[:12],
         "sponsor": dig(ps, "sponsorCollaboratorsModule", "leadSponsor", "name"),
         "sponsorClass": dig(ps, "sponsorCollaboratorsModule", "leadSponsor", "class"),
         "enrollment": enroll.get("count"),
@@ -358,8 +394,15 @@ def flatten_study(raw: dict[str, Any], imported_at: str) -> dict[str, Any]:
         "nLocations": len(locations),
         "whyStopped": dig(ps, "statusModule", "whyStopped"),
         "hasResults": bool(raw.get("hasResults")),
-        "briefSummary": (str(brief_summary)[:800] if brief_summary else None),
-        "eligibilityCriteria": (str(eligibility)[:6000] if eligibility else None),
+        "briefSummary": (str(brief_summary)[:1200] if brief_summary else None),
+        "detailedDescription": (str(detailed)[:2000] if detailed else None),
+        "eligibilityCriteria": (str(eligibility)[:8000] if eligibility else None),
+        "sex": dig(ps, "eligibilityModule", "sex"),
+        "minimumAge": dig(ps, "eligibilityModule", "minimumAge"),
+        "maximumAge": dig(ps, "eligibilityModule", "maximumAge"),
+        "stdAges": [str(x) for x in as_list(dig(ps, "eligibilityModule", "stdAges"))],
+        "healthyVolunteers": dig(ps, "eligibilityModule", "healthyVolunteers"),
+        "primaryOutcomes": primary_outcomes,
         "docType": DOC_TYPE,
         "dataset": DATASET,
         "schemaVersion": SCHEMA_VERSION,

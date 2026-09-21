@@ -45,7 +45,7 @@ const {
   loadPersistedFeasibilityCatalog
 } = require("./feasibilityArtemis");
 const { loadLiveContext, saveLiveContext } = require("./buddyLiveContext");
-const { runCtgovSync, getCtgovSyncStatus, remapCtgovIndications } = require("./ctgovSync");
+const { runCtgovSync, getCtgovSyncStatus, remapCtgovIndications, backfillCtgovEligibility } = require("./ctgovSync");
 const { runSalesforceCrosswalkSync, getSalesforceSyncStatus } = require("./salesforceSync");
 const { runSalesforceTablesSync, getSalesforceTablesStatus } = require("./salesforceTables");
 const {
@@ -1709,6 +1709,18 @@ app.http("ctgovSync", {
         body.remap === true ||
         body.remapIndications === true ||
         request.query.get("remap") === "true";
+      const backfillEligibility =
+        body.backfillEligibility === true ||
+        body.backfill === true ||
+        request.query.get("backfillEligibility") === "true";
+      if (backfillEligibility && !full) {
+        const backfill = await backfillCtgovEligibility(getDb, {
+          max: Number(body.max) || 500,
+          indication: body.indication || request.query.get("indication") || null,
+          concurrency: Number(body.concurrency) || 5
+        });
+        return json(backfill.ok ? 200 : 500, { ok: backfill.ok, ...backfill });
+      }
       if (remapOnly && !full) {
         const remap = await remapCtgovIndications(getDb, { max: Number(body.max) || 5000 });
         return json(remap.ok ? 200 : 500, { ok: remap.ok, mode: "remap_indications", ...remap });

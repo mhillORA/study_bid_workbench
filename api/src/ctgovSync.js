@@ -10,7 +10,7 @@
 const SYNC_ID = "ctgov_ophthalmology";
 const DATASET = "clinicaltrials_gov";
 const DOC_TYPE = "ora_ctgov_trials";
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const API_BASE = "https://clinicaltrials.gov/api/v2/studies";
 const PAGE_SIZE = 100;
 const OVERLAP_HOURS = 36;
@@ -122,6 +122,7 @@ const INDICATION_RULES = [
 
 const FIELDS = [
   "NCTId",
+  "Acronym",
   "BriefTitle",
   "OfficialTitle",
   "OverallStatus",
@@ -133,7 +134,9 @@ const FIELDS = [
   "LastUpdatePostDate",
   "StudyFirstPostDate",
   "Condition",
+  "Keyword",
   "InterventionName",
+  "InterventionType",
   "LeadSponsorName",
   "LeadSponsorClass",
   "EnrollmentCount",
@@ -143,7 +146,15 @@ const FIELDS = [
   "WhyStopped",
   "HasResults",
   "BriefSummary",
-  "EligibilityCriteria"
+  "DetailedDescription",
+  "EligibilityCriteria",
+  "Sex",
+  "MinimumAge",
+  "MaximumAge",
+  "StdAge",
+  "HealthyVolunteers",
+  "PrimaryOutcomeMeasure",
+  "PrimaryOutcomeDescription"
 ].join(",");
 
 /** Pull rough dollar mentions from free text (CT.gov has no structured CRO bid $). */
@@ -224,14 +235,28 @@ function flattenStudy(raw, importedAt) {
         .filter(Boolean)
     )
   ].sort();
-  const interventions = asList(dig(ps, "armsInterventionsModule", "interventions"))
-    .filter((i) => i && i.name)
-    .map((i) => String(i.name).trim())
-    .slice(0, 20);
   const enroll = dig(ps, "designModule", "enrollmentInfo") || {};
   const briefSummary = dig(ps, "descriptionModule", "briefSummary") || "";
+  const detailedDescription = dig(ps, "descriptionModule", "detailedDescription") || "";
   const eligibilityCriteria = dig(ps, "eligibilityModule", "eligibilityCriteria") || "";
-  const mentionedDollars = extractMentionedDollars(briefSummary);
+  const keywords = asList(dig(ps, "conditionsModule", "keywords")).map(String).filter(Boolean);
+  const interventionsRaw = asList(dig(ps, "armsInterventionsModule", "interventions")).filter(
+    (i) => i && i.name
+  );
+  const interventions = interventionsRaw.map((i) => String(i.name).trim()).slice(0, 20);
+  const interventionTypes = [
+    ...new Set(interventionsRaw.map((i) => String(i.type || "").trim()).filter(Boolean))
+  ].slice(0, 12);
+  const primaryOutcomes = asList(dig(ps, "outcomesModule", "primaryOutcomes"))
+    .filter((o) => o && (o.measure || o.description))
+    .slice(0, 5)
+    .map((o) => ({
+      measure: o.measure ? String(o.measure).slice(0, 300) : null,
+      description: o.description ? String(o.description).slice(0, 400) : null
+    }));
+  const mentionedDollars = extractMentionedDollars(
+    `${briefSummary}\n${detailedDescription}\n${eligibilityCriteria}`
+  );
   const id = String(nct).toUpperCase();
   const { applyAvegfNaiveFields } = require("./ctgovEligibility");
   const base = {
@@ -240,6 +265,7 @@ function flattenStudy(raw, importedAt) {
     oraIndication: mapOraIndication(conditions),
     title: dig(ps, "identificationModule", "briefTitle"),
     officialTitle: dig(ps, "identificationModule", "officialTitle"),
+    acronym: dig(ps, "identificationModule", "acronym") || null,
     status: dig(ps, "statusModule", "overallStatus"),
     phases,
     phase: phases[0] || null,
@@ -252,7 +278,9 @@ function flattenStudy(raw, importedAt) {
       dig(ps, "statusModule", "statusVerifiedDate"),
     studyFirstPostDate: dig(ps, "statusModule", "studyFirstPostDateStruct", "date"),
     conditions,
+    keywords: keywords.slice(0, 30),
     interventions,
+    interventionTypes,
     sponsor: dig(ps, "sponsorCollaboratorsModule", "leadSponsor", "name"),
     sponsorClass: dig(ps, "sponsorCollaboratorsModule", "leadSponsor", "class"),
     enrollment: enroll.count ?? null,
@@ -262,8 +290,15 @@ function flattenStudy(raw, importedAt) {
     nLocations: locations.length,
     whyStopped: dig(ps, "statusModule", "whyStopped"),
     hasResults: Boolean(raw.hasResults),
-    briefSummary: briefSummary ? String(briefSummary).slice(0, 800) : null,
-    eligibilityCriteria: eligibilityCriteria ? String(eligibilityCriteria).slice(0, 6000) : null,
+    briefSummary: briefSummary ? String(briefSummary).slice(0, 1200) : null,
+    detailedDescription: detailedDescription ? String(detailedDescription).slice(0, 2000) : null,
+    eligibilityCriteria: eligibilityCriteria ? String(eligibilityCriteria).slice(0, 8000) : null,
+    sex: dig(ps, "eligibilityModule", "sex") || null,
+    minimumAge: dig(ps, "eligibilityModule", "minimumAge") || null,
+    maximumAge: dig(ps, "eligibilityModule", "maximumAge") || null,
+    stdAges: asList(dig(ps, "eligibilityModule", "stdAges")).map(String),
+    healthyVolunteers: dig(ps, "eligibilityModule", "healthyVolunteers") ?? null,
+    primaryOutcomes,
     mentionedDollars,
     hasMentionedDollars: mentionedDollars.length > 0,
     docType: DOC_TYPE,
@@ -340,7 +375,9 @@ const DELTA_FIELDS = [
   "nCountries",
   "enrollmentType",
   "excludesPriorAvegf",
-  "treatmentNaiveLikely"
+  "treatmentNaiveLikely",
+  "eligibilityCriteria",
+  "acronym"
 ];
 
 function normDeltaVal(v) {
@@ -710,6 +747,94 @@ async function runCtgovSync(getDb, opts = {}) {
   };
 }
 
+/**
+ * Backfill eligibilityCriteria + aVEGF-naïve flags onto existing Cosmos rows
+ * that were ingested before those fields existed.
+ */
+async function backfillCtgovEligibility(getDb, opts = {}) {
+  const database = getDb();
+  await ensureContainers(database);
+  const max = Math.min(3000, Math.max(1, Number(opts.max) || 400));
+  const concurrency = Math.min(8, Math.max(2, Number(opts.concurrency) || 5));
+  const indication = opts.indication ? String(opts.indication).trim() : null;
+  const container = database.container("ora_ctgov_trials");
+  const { fetchEligibilityCriteriaForNct, applyAvegfNaiveFields } = require("./ctgovEligibility");
+
+  const params = [{ name: "@t", value: DOC_TYPE }];
+  let q = `SELECT TOP ${max} c.id, c.nct, c.oraIndication, c.title, c.status, c.phase, c.sponsor,
+            c.enrollment, c.countries, c.startDate, c.conditions, c.briefSummary, c.eligibilityCriteria,
+            c.excludesPriorAvegf, c.treatmentNaiveLikely
+     FROM c WHERE c.docType = @t AND (
+       NOT IS_DEFINED(c.eligibilityCriteria) OR c.eligibilityCriteria = null OR c.eligibilityCriteria = ""
+       OR NOT IS_DEFINED(c.treatmentNaiveLikely)
+     )`;
+  if (indication) {
+    q += ` AND c.oraIndication = @ind`;
+    params.push({ name: "@ind", value: indication });
+  }
+
+  const { resources: rows } = await container.items
+    .query({ query: q, parameters: params }, { enableCrossPartitionQuery: true })
+    .fetchAll();
+
+  let i = 0;
+  let updated = 0;
+  let naiveFlagged = 0;
+  let missing = 0;
+  const errors = [];
+  const t0 = Date.now();
+
+  async function worker() {
+    while (i < rows.length) {
+      const idx = i++;
+      const row = rows[idx];
+      const nct = String(row.nct || row.id || "").toUpperCase();
+      if (!nct) continue;
+      try {
+        const criteria = await fetchEligibilityCriteriaForNct(nct);
+        if (!criteria) {
+          missing += 1;
+          continue;
+        }
+        // Load full doc for upsert (need partition key)
+        const { resource: full } = await container.item(row.id, row.oraIndication).read();
+        if (!full) {
+          missing += 1;
+          continue;
+        }
+        const next = applyAvegfNaiveFields({
+          ...full,
+          eligibilityCriteria: String(criteria).slice(0, 8000),
+          schemaVersion: Math.max(Number(full.schemaVersion) || 0, SCHEMA_VERSION),
+          eligibilityBackfilledAt: new Date().toISOString()
+        });
+        await container.items.upsert(next);
+        updated += 1;
+        if (next.treatmentNaiveLikely) naiveFlagged += 1;
+      } catch (err) {
+        errors.push({ nct, error: String(err.message || err) });
+      }
+    }
+  }
+
+  await Promise.all(Array.from({ length: concurrency }, () => worker()));
+
+  return {
+    ok: errors.length < rows.length,
+    mode: "backfill_eligibility",
+    scannedMissing: rows.length,
+    updated,
+    naiveFlagged,
+    missingOnCtgov: missing,
+    errorCount: errors.length,
+    errors: errors.slice(0, 12),
+    elapsedMs: Date.now() - t0,
+    indicationFilter: indication || null,
+    note:
+      "Pulled EligibilityCriteria from clinicaltrials.gov per NCT and stored aVEGF-naïve flags on ora_ctgov_trials."
+  };
+}
+
 async function getCtgovSyncStatus(getDb) {
   const database = getDb();
   const state = await readSyncState(database);
@@ -744,6 +869,7 @@ module.exports = {
   runCtgovSync,
   getCtgovSyncStatus,
   remapCtgovIndications,
+  backfillCtgovEligibility,
   SYNC_ID,
   COND_QUERY
 };
