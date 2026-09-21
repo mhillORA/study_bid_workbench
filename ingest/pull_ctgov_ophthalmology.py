@@ -21,6 +21,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -38,7 +39,83 @@ API_BASE = "https://clinicaltrials.gov/api/v2/studies"
 SYNC_ID = "ctgov_ophthalmology"
 DATASET = "clinicaltrials_gov"
 DOC_TYPE = "ora_ctgov_trials"
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+
+AVEGF_RE = re.compile(
+    r"\b(anti[- ]?vegf|a[- ]?vegf|anti\s*vascular\s*endothelial|ranibizumab|aflibercept|"
+    r"bevacizumab|faricimab|brolucizumab|pegaptanib|conbercept|lucentis|eylea|avastin|vabysmo|beovu)\b",
+    re.I,
+)
+PRIOR_RE = re.compile(
+    r"\b(prior|previous|previously|history\s+of|prior\s+treatment|previous\s+treatment|"
+    r"previously\s+treated|received|treated\s+with|exposure\s+to|any\s+prior)\b",
+    re.I,
+)
+EXPLICIT_NAIVE_RE = re.compile(
+    r"\b(treatment[- ]?na[iï]ve|tx[- ]?naive|anti[- ]?vegf[- ]?naive|vegf[- ]?naive|"
+    r"previously\s+untreated|no\s+prior\s+(?:anti[- ]?vegf|a[- ]?vegf|intravitreal\s+anti))\b",
+    re.I,
+)
+EXPERIENCED_RE = re.compile(
+    r"\b(prior\s+anti[- ]?vegf\s+(?:treated|treatment|therapy|exposure)|"
+    r"previously\s+treated\s+with\s+anti[- ]?vegf|anti[- ]?vegf[- ]?experienced|"
+    r"treatment[- ]?experienced)\b",
+    re.I,
+)
+
+
+def analyze_avegf_treatment_naive(eligibility_criteria: str | None) -> dict[str, Any]:
+    raw = str(eligibility_criteria or "")
+    empty = {
+        "excludesPriorAvegf": False,
+        "requiresPriorAvegf": False,
+        "treatmentNaiveLikely": False,
+        "treatmentNaiveConfidence": "none",
+        "treatmentNaiveReason": None,
+        "treatmentNaiveEvidence": None,
+    }
+    if not raw.strip():
+        return empty
+    lower = raw.lower()
+    excl_idx = lower.find("exclusion criteria")
+    incl_idx = lower.find("inclusion criteria")
+    inclusion, exclusion = raw, ""
+    if excl_idx >= 0 and incl_idx >= 0:
+        if incl_idx < excl_idx:
+            inclusion, exclusion = raw[incl_idx:excl_idx], raw[excl_idx:]
+        else:
+            exclusion, inclusion = raw[excl_idx:incl_idx], raw[incl_idx:]
+    elif excl_idx >= 0:
+        inclusion, exclusion = raw[:excl_idx], raw[excl_idx:]
+
+    if EXPERIENCED_RE.search(inclusion):
+        return {
+            **empty,
+            "requiresPriorAvegf": True,
+            "treatmentNaiveConfidence": "high",
+            "treatmentNaiveReason": "inclusion_requires_prior_avegf",
+        }
+    if EXPLICIT_NAIVE_RE.search(raw):
+        m = EXPLICIT_NAIVE_RE.search(raw)
+        return {
+            "excludesPriorAvegf": True,
+            "requiresPriorAvegf": False,
+            "treatmentNaiveLikely": True,
+            "treatmentNaiveConfidence": "high",
+            "treatmentNaiveReason": "explicit_treatment_naive_language",
+            "treatmentNaiveEvidence": (m.group(0) if m else None),
+        }
+    if AVEGF_RE.search(exclusion) and PRIOR_RE.search(exclusion):
+        return {
+            "excludesPriorAvegf": True,
+            "requiresPriorAvegf": False,
+            "treatmentNaiveLikely": True,
+            "treatmentNaiveConfidence": "high",
+            "treatmentNaiveReason": "exclusion_prior_avegf",
+            "treatmentNaiveEvidence": exclusion[:220].replace("\n", " ").strip(),
+        }
+    return empty
+
 PAGE_SIZE = 100
 WORKERS = 6
 OVERLAP_HOURS = 36
@@ -146,6 +223,8 @@ FIELDS = [
     "LocationFacility",
     "WhyStopped",
     "HasResults",
+    "BriefSummary",
+    "EligibilityCriteria",
 ]
 
 
@@ -247,7 +326,10 @@ def flatten_study(raw: dict[str, Any], imported_at: str) -> dict[str, Any]:
         if isinstance(i, dict) and i.get("name")
     ]
     enroll = dig(ps, "designModule", "enrollmentInfo") or {}
+    brief_summary = dig(ps, "descriptionModule", "briefSummary") or ""
+    eligibility = dig(ps, "eligibilityModule", "eligibilityCriteria") or ""
     ora_ind = map_ora_indication([str(c) for c in conditions])
+    naive = analyze_avegf_treatment_naive(eligibility)
 
     return {
         "id": nct.upper() if nct else None,
@@ -276,11 +358,14 @@ def flatten_study(raw: dict[str, Any], imported_at: str) -> dict[str, Any]:
         "nLocations": len(locations),
         "whyStopped": dig(ps, "statusModule", "whyStopped"),
         "hasResults": bool(raw.get("hasResults")),
+        "briefSummary": (str(brief_summary)[:800] if brief_summary else None),
+        "eligibilityCriteria": (str(eligibility)[:6000] if eligibility else None),
         "docType": DOC_TYPE,
         "dataset": DATASET,
         "schemaVersion": SCHEMA_VERSION,
         "source": "clinicaltrials.gov/api/v2",
         "importedAt": imported_at,
+        **naive,
     }
 
 

@@ -23,7 +23,10 @@ const INDICATION_GROUPS = [
     "Wet AMD",
     "Neovascular (Wet) Age-Related Macular Degeneration",
     "nAMD",
-    "Wet Age-Related Macular Degeneration"
+    "Wet Age-Related Macular Degeneration",
+    "neovascular AMD",
+    "neovascular age-related macular degeneration",
+    "wetARMD"
   ],
   [
     "Geographic Atrophy / Dry AMD",
@@ -665,10 +668,12 @@ function isLensOpsQuestion(question) {
 function isIntelligenceQuestion(question) {
   const q = String(question || "").toLowerCase();
   if (!q) return false;
+  const indicated = Boolean(extractIndicationFromQuestion(question));
   return (
     isSourceOverviewQuestion(q) ||
     isSalesforceDataQuestion(q) ||
     isLensOpsQuestion(q) ||
+    wantsTreatmentNaivePopulation(question) ||
     /\b(psm|patients?\s*per\s*site|pts?\s*\/\s*site|enrollment rate|enrolment rate)\b/.test(q) ||
     /\b(feasibility|site (mix|selection|performance|capacity)|competing trials?|competitor|competitive landscape)\b/.test(
       q
@@ -687,11 +692,42 @@ function isIntelligenceQuestion(question) {
     /\b(rfp|rfi|pricing|ballpark|goal bid|cost per patient)\b/.test(q) ||
     /\b\d+\s*(patients?|sites?|months?)\b/.test(q) ||
     /\b(protocol|punctal|dry\s*eye|device\s+study)\b/.test(q) ||
+    (indicated &&
+      /\b(trials?|studies|landscape|benchmark|industry|registry|recruiting|competing|naive|naïve)\b/.test(q)) ||
     (/\b(studies|trials)\b/.test(q) &&
       /\b(started|starting|began|start date)\b/.test(q) &&
       Boolean(extractYearFromQuestion(q))) ||
     (/\b(trialhub|trialhuh|trial\s*hu)\b/.test(q) && /\b(studies|trials)\b/.test(q))
   );
+}
+
+/** Treatment-naïve / anti-VEGF-naïve population asks (common for nAMD specialty bids). */
+function wantsTreatmentNaivePopulation(question) {
+  const q = String(question || "");
+  if (!q) return false;
+  return /\b(treatment[- ]?na[iï]ve|tx[- ]?naive|anti[- ]?vegf[- ]?naive|vegf[- ]?naive|previously untreated|no prior (?:anti[- ]?vegf|a[- ]?vegf|treatment)|prior\s+a?vegf\s+exclu|exclu\w*.{0,40}(?:anti[- ]?vegf|a[- ]?vegf))\b/i.test(
+    q
+  );
+}
+
+/**
+ * Treatment-naïve = eligibility excludes prior anti-VEGF (aVEGF), not title keywords.
+ * Prefer eligibilityCriteria / excludesPriorAvegf from CT.gov; title only as weak fallback.
+ */
+function trialLooksTreatmentNaive(trial) {
+  if (!trial || typeof trial !== "object") return false;
+  if (trial.treatmentNaiveLikely === true || trial.excludesPriorAvegf === true) return true;
+  if (trial.requiresPriorAvegf === true) return false;
+  try {
+    const { analyzeAvegfTreatmentNaive } = require("./ctgovEligibility");
+    const analysis = analyzeAvegfTreatmentNaive(trial.eligibilityCriteria);
+    if (analysis.confidence !== "none") return analysis.likely;
+  } catch (_) {
+    /* optional */
+  }
+  // Weak fallback (TrialHub / old rows without criteria): explicit naïve phrase only
+  const blob = [trial.title, trial.briefSummary, trial.officialTitle].filter(Boolean).join(" ");
+  return wantsTreatmentNaivePopulation(blob);
 }
 
 /** Country / region aliases for site + CT.gov geography filters. */
@@ -2002,6 +2038,7 @@ async function benchmarkIndication(database, indication, country = null, opts = 
 
   const recruiting = thTrials.filter((t) => /recruit/i.test(String(t.status || "")));
   const completed = thTrials.filter((t) => /completed/i.test(String(t.status || "")));
+  const naiveTrials = thTrials.filter(trialLooksTreatmentNaive);
   const countryRankAll = rankCountriesFromTrials(thTrials, { ousOnly: false, limit: 12 });
   const countryRankOus = rankCountriesFromTrials(thTrials, { ousOnly: true, limit: 12 });
 
@@ -2013,6 +2050,9 @@ async function benchmarkIndication(database, indication, country = null, opts = 
     orgNames: topSites.map((s) => s.org_clean),
     studyNames: oraStudies.map((s) => s.study_number).filter(Boolean)
   });
+
+  const trialSampleLimit = Math.min(30, Math.max(8, Number(opts.trialSampleLimit) || 12));
+  const naivePrefer = Boolean(opts.treatmentNaive);
 
   return {
     indicationRequested: preferred,
@@ -2063,6 +2103,8 @@ async function benchmarkIndication(database, indication, country = null, opts = 
       inOraIndicationCount: thTrials.filter((t) => t.in_ora_indication).length,
       recruitingCount: recruiting.length,
       completedCount: completed.length,
+      treatmentNaiveCount: naiveTrials.length,
+      treatmentNaiveFilter: naivePrefer,
       trialsWithPsm: thPsm.length,
       psmMedian: round(median(thPsm)),
       psmP25: round(percentile(thPsm, 25)),
@@ -2070,11 +2112,11 @@ async function benchmarkIndication(database, indication, country = null, opts = 
       note:
         relatedLabels.length
           ? `Includes related indications (${relatedLabels.join("; ")}) for country frequency when ${preferred} is thin. Prefer median over mean.`
-          : "psm stats exclude values >= 500 (outlier guard). Prefer median over mean.",
-      sampleTrials: thTrials
-        .filter((t) => typeof (t.psm_common ?? t.th_actual_psm) === "number")
+          : "psm stats exclude values >= 500 (outlier guard). Prefer median over mean. treatmentNaiveSample = title/indication naïve cues (not a structured TrialHub field).",
+      sampleTrials: (naivePrefer && naiveTrials.length ? naiveTrials : thTrials)
+        .filter((t) => typeof (t.psm_common ?? t.th_actual_psm) === "number" || naivePrefer)
         .sort((a, b) => (b.psm_common || b.th_actual_psm || 0) - (a.psm_common || a.th_actual_psm || 0))
-        .slice(0, 8)
+        .slice(0, trialSampleLimit)
         .map((t) => ({
           nct: t.nct,
           title: t.title,
@@ -2086,16 +2128,30 @@ async function benchmarkIndication(database, indication, country = null, opts = 
           sites: t.actual_sites ?? t.planned_sites,
           psm_common: round(t.psm_common),
           recruit_days: t.recruit_days,
-          countries: t.countries
+          countries: t.countries,
+          treatmentNaiveLikely: trialLooksTreatmentNaive(t)
         })),
-      recruitingSample: recruiting.slice(0, 6).map((t) => ({
+      treatmentNaiveSample: naiveTrials.slice(0, trialSampleLimit).map((t) => ({
+        nct: t.nct,
+        title: t.title,
+        sponsor: t.sponsor,
+        phase: t.phase,
+        status: t.status,
+        indication: t.indication,
+        patients: t.patients,
+        sites: t.actual_sites ?? t.planned_sites,
+        psm_common: round(t.psm_common),
+        countries: t.countries
+      })),
+      recruitingSample: recruiting.slice(0, Math.min(12, trialSampleLimit)).map((t) => ({
         nct: t.nct,
         title: t.title,
         sponsor: t.sponsor,
         phase: t.phase,
         patients: t.patients,
         planned_sites: t.planned_sites,
-        countries: t.countries
+        countries: t.countries,
+        treatmentNaiveLikely: trialLooksTreatmentNaive(t)
       })),
       countryRank: ousOnly ? countryRankOus : countryRankAll,
       countryRankOus,
@@ -2477,11 +2533,13 @@ async function crosswalkOverview(database) {
   }
 }
 
-async function ctgovByIndication(database, indication, country = null) {
+async function ctgovByIndication(database, indication, country = null, opts = {}) {
   const aliases = indicationAliases(indication);
   if (!aliases.length) return null;
   const preferred = preferredIndicationLabel(indication) || indication;
   const countries = parseCountryFilter(country);
+  const naiveOnly = Boolean(opts.treatmentNaive);
+  const sampleLimit = Math.min(40, Math.max(10, Number(opts.sampleLimit) || (naiveOnly ? 25 : 10)));
   try {
     const trials = [];
     const merge = (r) => {
@@ -2492,9 +2550,11 @@ async function ctgovByIndication(database, indication, country = null) {
         { name: "@t", value: "ora_ctgov_trials" },
         { name: "@ind", value: alias }
       ];
-      let q = `SELECT TOP 40 c.nct, c.title, c.oraIndication, c.status, c.phase, c.sponsor, c.sponsorClass,
+      let q = `SELECT TOP 80 c.nct, c.title, c.oraIndication, c.status, c.phase, c.sponsor, c.sponsorClass,
                 c.enrollment, c.countries, c.startDate, c.lastUpdatePostDate, c.hasResults,
-                c.hasMentionedDollars, c.mentionedDollars, c.briefSummary, c.conditions
+                c.hasMentionedDollars, c.mentionedDollars, c.briefSummary, c.conditions,
+                c.eligibilityCriteria, c.excludesPriorAvegf, c.requiresPriorAvegf,
+                c.treatmentNaiveLikely, c.treatmentNaiveConfidence, c.treatmentNaiveReason, c.treatmentNaiveEvidence
          FROM c WHERE c.docType = @t AND c.oraIndication = @ind`;
       const geo = ctgovCountrySqlClause(countries, "cg");
       q += geo.sql;
@@ -2503,7 +2563,7 @@ async function ctgovByIndication(database, indication, country = null) {
       for (const r of rows) merge(r);
     }
     // Also match condition text (legacy rows may still have oraIndication=Glaucoma for Neuroprotection)
-    if (trials.length < 8) {
+    if (trials.length < 8 || naiveOnly) {
       const needles = indicationContainsNeedles(preferred);
       for (const needle of needles.slice(0, 3)) {
         if (!needle || needle.length < 4) continue;
@@ -2511,9 +2571,11 @@ async function ctgovByIndication(database, indication, country = null) {
           { name: "@t", value: "ora_ctgov_trials" },
           { name: "@n", value: needle.toLowerCase() }
         ];
-        let q = `SELECT TOP 40 c.nct, c.title, c.oraIndication, c.status, c.phase, c.sponsor, c.sponsorClass,
+        let q = `SELECT TOP 80 c.nct, c.title, c.oraIndication, c.status, c.phase, c.sponsor, c.sponsorClass,
                   c.enrollment, c.countries, c.startDate, c.lastUpdatePostDate, c.hasResults,
-                  c.hasMentionedDollars, c.mentionedDollars, c.briefSummary, c.conditions
+                  c.hasMentionedDollars, c.mentionedDollars, c.briefSummary, c.conditions,
+                  c.eligibilityCriteria, c.excludesPriorAvegf, c.requiresPriorAvegf,
+                  c.treatmentNaiveLikely, c.treatmentNaiveConfidence, c.treatmentNaiveReason, c.treatmentNaiveEvidence
            FROM c WHERE c.docType = @t AND (
              CONTAINS(LOWER(c.oraIndication), @n) OR
              EXISTS (SELECT VALUE x FROM x IN c.conditions WHERE CONTAINS(LOWER(x), @n))
@@ -2529,15 +2591,58 @@ async function ctgovByIndication(database, indication, country = null) {
         }
       }
     }
-    const recruiting = trials.filter((t) => /recruit/i.test(String(t.status || "")));
-    const withDollars = trials.filter((t) => t.hasMentionedDollars || (t.mentionedDollars || []).length);
+    // Live-pull eligibility when missing (existing Cosmos rows predate criteria ingest)
+    let enriched = trials;
+    if (naiveOnly || trials.some((t) => !t.eligibilityCriteria)) {
+      try {
+        const { enrichTrialsWithEligibility } = require("./ctgovEligibility");
+        enriched = await enrichTrialsWithEligibility(trials, { limit: sampleLimit + 10 });
+      } catch (_) {
+        enriched = trials;
+      }
+    }
+    const naiveTrials = enriched.filter(trialLooksTreatmentNaive);
+    const pool = naiveOnly && naiveTrials.length ? naiveTrials : enriched;
+    const recruiting = pool.filter((t) => /recruit/i.test(String(t.status || "")));
+    const withDollars = pool.filter((t) => t.hasMentionedDollars || (t.mentionedDollars || []).length);
     return {
-      trialCount: trials.length,
+      trialCount: pool.length,
+      matchedIndicationCount: enriched.length,
+      treatmentNaiveCount: naiveTrials.length,
+      treatmentNaiveFilter: naiveOnly,
       recruitingCount: recruiting.length,
       countryFilter: countries,
       countryFilterLabel: countries ? countries.join(", ") : "Global",
-      sample: trials.slice(0, 10),
-      recruitingSample: recruiting.slice(0, 8),
+      sample: pool.slice(0, sampleLimit).map((t) => ({
+        nct: t.nct,
+        title: t.title,
+        status: t.status,
+        phase: t.phase,
+        sponsor: t.sponsor,
+        enrollment: t.enrollment,
+        oraIndication: t.oraIndication,
+        countries: t.countries,
+        startDate: t.startDate,
+        treatmentNaiveLikely: trialLooksTreatmentNaive(t),
+        excludesPriorAvegf: t.excludesPriorAvegf === true,
+        treatmentNaiveReason: t.treatmentNaiveReason || null,
+        treatmentNaiveEvidence: t.treatmentNaiveEvidence || null
+      })),
+      treatmentNaiveSample: naiveTrials.slice(0, sampleLimit).map((t) => ({
+        nct: t.nct,
+        title: t.title,
+        status: t.status,
+        phase: t.phase,
+        sponsor: t.sponsor,
+        enrollment: t.enrollment,
+        oraIndication: t.oraIndication,
+        countries: t.countries,
+        startDate: t.startDate,
+        excludesPriorAvegf: t.excludesPriorAvegf === true,
+        treatmentNaiveReason: t.treatmentNaiveReason || null,
+        treatmentNaiveEvidence: t.treatmentNaiveEvidence || null
+      })),
+      recruitingSample: recruiting.slice(0, Math.min(12, sampleLimit)),
       dollarMentions: {
         available: withDollars.length > 0,
         trialCountWithMentions: withDollars.length,
@@ -2553,7 +2658,9 @@ async function ctgovByIndication(database, indication, country = null) {
             ? "CT.gov has no structured bid/cost fields. These are rare free-text dollar mentions only — cite NCT and say they are not Ora bid comps."
             : "CT.gov usually has no dollar amounts. Do not invent costs from CT.gov; use past Ora bids for pricing tiers."
       },
-      note: "From ClinicalTrials.gov daily ophthalmology feed (ora_ctgov_trials). Matches oraIndication aliases and condition text."
+      note: naiveOnly
+        ? `Treatment-naïve = CT.gov eligibility excludes prior anti-VEGF (aVEGF), or inclusion says treatment-naïve / no prior anti-VEGF. Live-enriched criteria when Cosmos rows lack eligibilityCriteria. ${naiveTrials.length} of ${enriched.length} indication matches flagged.`
+        : "From ClinicalTrials.gov daily ophthalmology feed (ora_ctgov_trials). treatmentNaiveSample uses eligibilityCriteria (prior aVEGF exclusion), not title keywords alone."
     };
   } catch (err) {
     return { error: String(err.message || err), note: "CT.gov container may be empty until first pull." };
@@ -2602,10 +2709,37 @@ async function buildReconciliationIntelContext(getDb, opts = {}) {
 
   try {
     if (resolvedIndication) {
-      out.indicationBenchmark = await benchmarkIndication(database, resolvedIndication, resolvedCountries, {});
-      out.ctgov = await ctgovByIndication(database, resolvedIndication, resolvedCountries);
+      const treatmentNaive = wantsTreatmentNaivePopulation(blob);
+      out.query.treatmentNaive = treatmentNaive;
+      out.indicationBenchmark = await benchmarkIndication(database, resolvedIndication, resolvedCountries, {
+        treatmentNaive,
+        trialSampleLimit: treatmentNaive ? 25 : 12
+      });
+      out.ctgov = await ctgovByIndication(database, resolvedIndication, resolvedCountries, {
+        treatmentNaive,
+        sampleLimit: treatmentNaive ? 25 : 12
+      });
       if (out.ctgov && !out.ctgov.error) {
         out.ctgov.countryRank = rankCountriesFromTrials(out.ctgov.sample || [], { limit: 8 });
+      }
+      if (treatmentNaive) {
+        out.treatmentNaiveTrials = {
+          indication: resolvedIndication,
+          filter: true,
+          eligibilitySource: "clinicaltrials.gov",
+          sources: {
+            ctgov: out.ctgov?.treatmentNaiveSample || [],
+            trialhubLandscapeOnly: out.indicationBenchmark?.trialhub?.sampleTrials || [],
+            oraStudies: out.indicationBenchmark?.ora?.sampleStudies || []
+          },
+          counts: {
+            ctgovNaive: out.ctgov?.treatmentNaiveCount ?? 0,
+            trialhubAll: out.indicationBenchmark?.trialhub?.trialCount ?? 0,
+            oraStudies: out.indicationBenchmark?.ora?.studyCount ?? 0
+          },
+          note:
+            "Naïve classification from CT.gov eligibility only (prior aVEGF exclusion). TrialHub has no inclusion/exclusion fields."
+        };
       }
     } else {
       out.indicationMissing = true;
@@ -2789,11 +2923,16 @@ async function buildIntelligenceContext(getDb, opts = {}) {
   const nct = extractNct(question);
   const qIndication = extractIndicationFromQuestion(question);
   const ousOnly = wantsOusOnly(question);
+  const treatmentNaive = wantsTreatmentNaivePopulation(question);
   const enrollmentPlan = extractEnrollmentPlan(question);
   const siteListLimitAsked = extractSiteListLimit(question);
   const startYear = extractYearFromQuestion(question);
   const therapeuticFilter = extractTherapeuticFilterFromQuestion(question);
   const wantsStartedList = /\b(all|every|list|tell me|show me|give me)\b/i.test(question);
+  const wantsTrialLandscape =
+    treatmentNaive ||
+    (Boolean(qIndication || indication) &&
+      /\b(trials?|studies|landscape|competing|industry|registry|recruiting)\b/i.test(question));
   const resolvedCountries = global
     ? null
     : parseCountryFilter(countries != null ? countries : country) ||
@@ -2814,7 +2953,8 @@ async function buildIntelligenceContext(getDb, opts = {}) {
     !wantsSalesforce &&
     !wantsLensOps &&
     !startYear &&
-    !therapeuticFilter
+    !therapeuticFilter &&
+    !treatmentNaive
   ) {
     return null;
   }
@@ -2858,6 +2998,8 @@ async function buildIntelligenceContext(getDb, opts = {}) {
       insightsRmIntent: false,
       startYear: startYear || null,
       therapeuticFilter: therapeuticFilter || null,
+      treatmentNaive,
+      trialLandscape: wantsTrialLandscape,
       enrollmentPlan,
       siteListLimit: siteListLimitAsked || 40
     }
@@ -2892,9 +3034,14 @@ async function buildIntelligenceContext(getDb, opts = {}) {
       if (ind) {
         out.indicationBenchmark = await benchmarkIndication(database, ind, resolvedCountries, {
           ousOnly,
-          siteListLimit: siteListLimitAsked || 40
+          siteListLimit: siteListLimitAsked || 40,
+          treatmentNaive,
+          trialSampleLimit: wantsTrialLandscape ? 25 : 12
         });
-        out.ctgov = await ctgovByIndication(database, ind, resolvedCountries);
+        out.ctgov = await ctgovByIndication(database, ind, resolvedCountries, {
+          treatmentNaive,
+          sampleLimit: wantsTrialLandscape ? 25 : 12
+        });
         if (out.ctgov && !out.ctgov.error) {
           out.ctgov.countryRank = rankCountriesFromTrials(out.ctgov.sample || [], {
             ousOnly,
@@ -2904,6 +3051,27 @@ async function buildIntelligenceContext(getDb, opts = {}) {
             ousOnly: true,
             limit: 12
           });
+        }
+        if (treatmentNaive || wantsTrialLandscape) {
+          out.treatmentNaiveTrials = {
+            indication: ind,
+            filter: treatmentNaive,
+            eligibilitySource: "clinicaltrials.gov",
+            sources: {
+              ctgov: out.ctgov?.treatmentNaiveSample || [],
+              ctgovAllSample: out.ctgov?.sample || [],
+              trialhubLandscapeOnly: out.indicationBenchmark?.trialhub?.sampleTrials || [],
+              oraStudies: out.indicationBenchmark?.ora?.sampleStudies || []
+            },
+            counts: {
+              ctgovNaive: out.ctgov?.treatmentNaiveCount ?? 0,
+              ctgovAll: out.ctgov?.matchedIndicationCount ?? out.ctgov?.trialCount ?? 0,
+              trialhubAll: out.indicationBenchmark?.trialhub?.trialCount ?? 0,
+              oraStudies: out.indicationBenchmark?.ora?.studyCount ?? 0
+            },
+            note:
+              "SOURCE OF TRUTH for treatment-naïve = CT.gov eligibilityCriteria (exclusion of prior anti-VEGF / aVEGF, or inclusion treatment-naïve). Cite treatmentNaiveEvidence. TrialHub has NCT/status/PSM only — NO inclusion/exclusion text; use trialhubLandscapeOnly for industry landscape, not for naïve classification. Ora Veeva = Ora studies/sites. Do not invent NCTs or criteria."
+          };
         }
       } else if (resolvedCountries) {
         // Country-only: live Veeva sites with milestone PSM
@@ -3684,6 +3852,8 @@ module.exports = {
   phraseIncludes,
   extractIndicationFromQuestion,
   extractCountryFromQuestion,
+  wantsTreatmentNaivePopulation,
+  trialLooksTreatmentNaive,
   normalizeCountryName,
   parseCountryFilter,
   getIntelligenceHealth,

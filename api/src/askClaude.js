@@ -127,6 +127,7 @@ const INTELLIGENCE_RULES = [
   "• CT.gov by indication → intelligence.ctgov (trialCount, sample, recruitingSample).",
   "• TrialHub / trial hub / trialhub.com dashboard (no indication) → intelligence.trialhubOverview (totalCount, indicationRank, psmMedian, recentSample, countryRank). If totalCount > 0 you HAVE data — never say TrialHub is empty.",
   "• TrialHub by indication → indicationBenchmark.trialhub.",
+  "• Treatment-naïve / naïve-nAMD / prior aVEGF exclusion → USE CT.gov ONLY for population classification. Look at intelligence.ctgov.treatmentNaiveSample / treatmentNaiveTrials.sources.ctgov — each row has treatmentNaiveEvidence (snippet from Eligibility Criteria) and treatmentNaiveReason (e.g. exclusion_prior_avegf). Treatment-naïve = Inclusion says treatment-naïve / no prior anti-VEGF OR Exclusion bars prior anti-VEGF (ranibizumab/aflibercept/bevacizumab/…). TrialHub does NOT store inclusion/exclusion criteria — never say you looked for naïve status in TrialHub fields, and never treat TrialHub NCT/status rows as eligibility proof. Use TrialHub only for industry PSM / recruiting landscape alongside CT.gov. When CT.gov naïve sample is sparse, say so and use Master Context naïve-nAMD PSM landmarks. Never invent NCTs or criteria text.",
   "• Veeva / Ora history dashboard (no indication) → intelligence.veevaOverview (studyCount, siteCount, psmMedian, indicationRank, sampleStudies, topSites). If studyCount/siteCount > 0 you HAVE data.",
   "• Country-only site asks (no indication) → intelligence.countrySites.topSites — list sites even when site_psm is null.",
   "• Budget dollars / uploaded bid portfolio → UNRELIABLE this sprint. Do not report from context.portfolio. Use Salesforce Total Ora Net, Veeva, TrialHub, CT.gov, NetSuite/RM if attached.",
@@ -1298,6 +1299,9 @@ function formatCosmosFactsBlock(context) {
         `psmMedian=${th.psmMedian ?? "missing"}, recruitingCount=${th.recruitingCount ?? "—"}`
     );
     if (th.note) lines.push(`TrialHub note: ${th.note}`);
+    lines.push(
+      "TrialHub RULE: TrialHub rows are NCT/status/PSM/landscape only — they do NOT include inclusion/exclusion criteria. Never classify treatment-naïve from TrialHub."
+    );
     const sitesPsm = bm.sites?.topSitesByPsm || [];
     const sitesAll = bm.sites?.topSites || [];
     const sites = sitesPsm.length ? sitesPsm : sitesAll;
@@ -1372,6 +1376,28 @@ function formatCosmosFactsBlock(context) {
         ? "Indication not inferred from attachment — use trialhubOverview/veevaOverview below for generic verification, or ask user for indication."
         : "No indicationBenchmark in this response (often OK for portfolio/CT.gov-overview asks)."
     );
+  }
+
+  const naivePack = intel.treatmentNaiveTrials;
+  const ctgNaive = intel.ctgov?.treatmentNaiveSample || naivePack?.sources?.ctgov || [];
+  if (naivePack || (Array.isArray(ctgNaive) && ctgNaive.length) || intel.query?.treatmentNaive) {
+    lines.push(
+      `TREATMENT-NAÏVE (CT.gov eligibility): naïve=${intel.ctgov?.treatmentNaiveCount ?? ctgNaive.length ?? "—"} of ${
+        intel.ctgov?.matchedIndicationCount ?? intel.ctgov?.trialCount ?? "—"
+      } indication matches. Classification = prior anti-VEGF excluded in Eligibility Criteria (not TrialHub).`
+    );
+    for (const t of (ctgNaive || []).slice(0, 12)) {
+      lines.push(
+        `  - ${t.nct || "?"} | ${t.status || "?"} | ${t.phase || "?"} | reason=${
+          t.treatmentNaiveReason || "—"
+        } | evidence=${t.treatmentNaiveEvidence || "—"}`
+      );
+    }
+    if (!ctgNaive.length) {
+      lines.push(
+        "  No CT.gov naïve rows with eligibility evidence yet — say criteria were not matched / need enrich, do not invent from TrialHub NCT lists."
+      );
+    }
   }
 
   const cg = intel.ctgov;

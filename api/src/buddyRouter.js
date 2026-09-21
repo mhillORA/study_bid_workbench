@@ -13,7 +13,9 @@ const {
   isVeevaQuestion,
   isSalesforceDataQuestion,
   extractYearFromQuestion,
-  extractTherapeuticFilterFromQuestion
+  extractTherapeuticFilterFromQuestion,
+  extractIndicationFromQuestion,
+  wantsTreatmentNaivePopulation
 } = require("./intelligence");
 const { wantsHtmlVisual, isLegacyTableAsk, isLegacyAnteriorQuestion, isLegacyOverviewQuestion, userConsentedLegacyEnrollment } = require("./legacyAnterior");
 const { isFeasibilityArtemisQuestion, wantsSiteMatchReport } = require("./feasibilityArtemis");
@@ -277,9 +279,14 @@ function isGeneralKnowledgeAsk(question, { hasOkUpload = false, body = null } = 
 
   const lower = q.toLowerCase();
 
+  // Known indication (nAMD, Dry Eye, …) or treatment-naïve population ask → pull Cosmos
+  if (extractIndicationFromQuestion(q) || wantsTreatmentNaivePopulation(q)) {
+    return false;
+  }
+
   // Ora / workbench domain → pull Cosmos
   if (
-    /\b(ora|cosmos|psm|trialhub|ct\.?\s*gov|clinicaltrials|veeva|feasibility|hlbp|ballpark|sponsor|indication|enroll(?:ment|ed|ing)?|screen(?:ed|ing|fail)?|site\s*score|portfolio|budget|bid|pricing|fee|revenue|alcon|nct-?\d|dry\s*eye|glaucoma|retina|amd|dme|ted\b|cataract|ophthalm|buddy context|opportunity|o-\d{3,}|studies\b|study\b|client|protocol|scorecard|ops dashboard|netsuite|insights?\s*rm|fte|headcount|staffing|gm\s*%|gm\s*pct)\b/i.test(
+    /\b(ora|cosmos|psm|trialhub|ct\.?\s*gov|clinicaltrials|veeva|feasibility|hlbp|ballpark|sponsor|indication|enroll(?:ment|ed|ing)?|screen(?:ed|ing|fail)?|site\s*score|portfolio|budget|bid|pricing|fee|revenue|alcon|nct-?\d|n(?:eo)?(?:vascular)?\s*amd|wet\s*amd|dry\s*amd|dry\s*eye|glaucoma|retina|amd|dme|ted\b|cataract|ophthalm|buddy context|opportunity|o-\d{3,}|studies\b|study\b|trials?\b|client|protocol|scorecard|ops dashboard|netsuite|insights?\s*rm|fte|headcount|staffing|gm\s*%|gm\s*pct|treatment[- ]?na[iï]ve|tx[- ]?naive)\b/i.test(
       lower
     )
   ) {
@@ -442,6 +449,7 @@ function pickTools(ctx) {
   if (
     isFeasibilityArtemisQuestion(ctx.question) ||
     wantsSiteMatchReport(ctx.question) ||
+    wantsTreatmentNaivePopulation(ctx.question) ||
     (workflow === "feasibility" &&
       /\b(site|survey|question|pi|investigator|feasibility)\b/i.test(String(ctx.question || "")))
   ) {
@@ -605,6 +613,7 @@ function routeBuddyAsk(input) {
     isSalesforceDataQuestion(question) ||
     catalogAsk ||
     isIntelligenceQuestion(question) ||
+    wantsTreatmentNaivePopulation(question) ||
     wantsDocumentExport(question) ||
     wantsHtmlVisual(question) ||
     isPricingQuestion(question) ||

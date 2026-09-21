@@ -10,7 +10,7 @@
 const SYNC_ID = "ctgov_ophthalmology";
 const DATASET = "clinicaltrials_gov";
 const DOC_TYPE = "ora_ctgov_trials";
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const API_BASE = "https://clinicaltrials.gov/api/v2/studies";
 const PAGE_SIZE = 100;
 const OVERLAP_HOURS = 36;
@@ -142,7 +142,8 @@ const FIELDS = [
   "LocationFacility",
   "WhyStopped",
   "HasResults",
-  "BriefSummary"
+  "BriefSummary",
+  "EligibilityCriteria"
 ].join(",");
 
 /** Pull rough dollar mentions from free text (CT.gov has no structured CRO bid $). */
@@ -229,9 +230,11 @@ function flattenStudy(raw, importedAt) {
     .slice(0, 20);
   const enroll = dig(ps, "designModule", "enrollmentInfo") || {};
   const briefSummary = dig(ps, "descriptionModule", "briefSummary") || "";
+  const eligibilityCriteria = dig(ps, "eligibilityModule", "eligibilityCriteria") || "";
   const mentionedDollars = extractMentionedDollars(briefSummary);
   const id = String(nct).toUpperCase();
-  return {
+  const { applyAvegfNaiveFields } = require("./ctgovEligibility");
+  const base = {
     id,
     nct: id,
     oraIndication: mapOraIndication(conditions),
@@ -260,6 +263,7 @@ function flattenStudy(raw, importedAt) {
     whyStopped: dig(ps, "statusModule", "whyStopped"),
     hasResults: Boolean(raw.hasResults),
     briefSummary: briefSummary ? String(briefSummary).slice(0, 800) : null,
+    eligibilityCriteria: eligibilityCriteria ? String(eligibilityCriteria).slice(0, 6000) : null,
     mentionedDollars,
     hasMentionedDollars: mentionedDollars.length > 0,
     docType: DOC_TYPE,
@@ -268,6 +272,7 @@ function flattenStudy(raw, importedAt) {
     source: "clinicaltrials.gov/api/v2",
     importedAt
   };
+  return applyAvegfNaiveFields(base);
 }
 
 async function httpGetJson(url) {
@@ -333,7 +338,9 @@ const DELTA_FIELDS = [
   "hasResults",
   "whyStopped",
   "nCountries",
-  "enrollmentType"
+  "enrollmentType",
+  "excludesPriorAvegf",
+  "treatmentNaiveLikely"
 ];
 
 function normDeltaVal(v) {
