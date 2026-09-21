@@ -3494,10 +3494,23 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
     let docExports = [];
     let reportTitle = null;
     let contextIdForVisual = null;
+    const treatmentNaiveAsk =
+      Boolean(intelligence?.query?.treatmentNaive) ||
+      Boolean(intelligence?.treatmentNaiveTrials) ||
+      (Number(intelligence?.recruitingTreatmentNaiveCount) || 0) > 0 ||
+      (Number(intelligence?.ctgov?.recruitingTreatmentNaiveCount) || 0) > 0;
+    // Naïve recruiting list asks must stay chat-only — strip freelanced HTML and skip dashboard shells
+    if (treatmentNaiveAsk && !visualAsk && !docExportAsk) {
+      answer = String(answer || "").replace(
+        /HTML_REPORT_START[\s\S]*?(?:HTML_REPORT_END|$)/gi,
+        ""
+      ).trim();
+    }
     try {
       if (
         !deferVisual &&
         result.provider !== "error" &&
+        !(treatmentNaiveAsk && !visualAsk && !docExportAsk) &&
         (visualAsk || docExportAsk || /HTML_REPORT_START/i.test(String(answer || "")))
       ) {
         const built = await buildBuddyDocExports(answer, question, {

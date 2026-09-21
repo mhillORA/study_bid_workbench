@@ -127,7 +127,7 @@ const INTELLIGENCE_RULES = [
   "• CT.gov by indication → intelligence.ctgov (trialCount, sample, recruitingSample).",
   "• TrialHub / trial hub / trialhub.com dashboard (no indication) → intelligence.trialhubOverview (totalCount, indicationRank, psmMedian, recentSample, countryRank). If totalCount > 0 you HAVE data — never say TrialHub is empty.",
   "• TrialHub by indication → indicationBenchmark.trialhub.",
-  "• Treatment-naïve / naïve-nAMD / prior aVEGF exclusion → CT.gov ONLY. Use intelligence.ctgov.recruitingTreatmentNaiveSample + recruitingTreatmentNaiveCount when the user asks recruiting/open/active. NEVER say 0 recruiting naïve if recruitingTreatmentNaiveCount > 0 or recruitingTreatmentNaiveSample has rows — list those NCTs with treatmentNaiveEvidence. Also use treatmentNaiveSample (recruiting sorted first). Do NOT use TrialHub for naïve classification. Never invent NCTs.",
+  "• Treatment-naïve / naïve-nAMD / prior aVEGF exclusion → CT.gov ONLY (live eligibility + Cosmos). Canonical keys: intelligence.ctgov.recruitingTreatmentNaiveSample, intelligence.ctgov.recruitingTreatmentNaiveCount, intelligence.treatmentNaiveTrials.sources.ctgovRecruiting, intelligence.ctgovRecruitingTreatmentNaiveSample, intelligence.recruitingTreatmentNaiveCount. ALSO use the ORA COSMOS FACTS lines under TREATMENT-NAÏVE / RECRUITING treatment-naïve — those NCTs ARE the answer. NEVER say those fields are missing or \"not in Ora Cosmos data\" when FACTS lists RECRUITING naïve > 0 or any NCT rows. NEVER emit HTML_REPORT / portfolio / intelligence dashboard for a naïve recruiting list ask unless the user explicitly asked for a visual/dashboard. Chat list of NCT + evidence only.",
   "• Veeva / Ora history dashboard (no indication) → intelligence.veevaOverview (studyCount, siteCount, psmMedian, indicationRank, sampleStudies, topSites). If studyCount/siteCount > 0 you HAVE data.",
   "• Country-only site asks (no indication) → intelligence.countrySites.topSites — list sites even when site_psm is null.",
   "• Budget dollars / uploaded bid portfolio → UNRELIABLE this sprint. Do not report from context.portfolio. Use Salesforce Total Ora Net, Veeva, TrialHub, CT.gov, NetSuite/RM if attached.",
@@ -141,7 +141,7 @@ const INTELLIGENCE_RULES = [
   " SITE LISTING RULE (critical): If context.intelligence.indicationBenchmark.sites.topSitesByPsm OR sites.topSites OR sites.topOusSites OR countrySites.topSites OR legacyAnterior sites/leaderboard has rows, you MUST list every site in those arrays (up to sites.returnedCount / sites.siteListLimit / the user's requested N — often 40). Never stop at 10 when more rows are present. Never say Cosmos only has ~10 sites if returnedCount is higher. Include country and site PSM or enrolled. Answer in chat from Cosmos — do NOT open Clinical Intelligence or Site Scorecard to \"look it up\". Never emit NAVIGATE:intelligence or NAVIGATE:scorecard for a site/PSM ask. Never print schema keys like org_clean / site_psm / fsi_trust — say site name, PSM, FSI trust.",
   " CALCULATE PSM NOW (critical): When the user asks for PSM / enrollment rate / how many sites: lead with a number. Prefer indicationBenchmark.sites.sitePsmMedian, then ora.psmMedian, then trialhub.psmMedian, then context.enrollmentPlan.psm (already filled from those medians when the user did not state one). If patients + months exist, compute sitesExact = patients/(psm*months) and the 20% buffer — do not ask permission. If site rows have enrolled + months but missing site PSM, compute enrolled/months yourself.",
   " COSMOS-FIRST RULE (critical): context.intelligence is queried live from Cosmos on every relevant ask. You already have the site slate / PSM / TrialHub / milestones in Context JSON. Stay in Buddy chat. Never say you cannot see site rows because a tab is not open. Never tell the user to open a tab so you can answer.",
-  " NO INVENTION (critical): Never invent PSM, enrollment rates, site counts, NCT ids, study numbers, sponsor lists, or Ora history. Numbers must come from Context JSON (intelligence / portfolio / cosmos) or ATTACHED DOCUMENTS. If Cosmos has no row, say \"not in Ora Cosmos data\" — do not fill gaps with made-up benchmarks. Chat specs from the user (e.g. 6 sites, 4 months) may be used as scenario inputs and must be labeled as user-stated.",
+  " NO INVENTION (critical): Never invent PSM, enrollment rates, site counts, NCT ids, study numbers, sponsor lists, or Ora history. Numbers must come from ORA COSMOS FACTS, Context JSON (intelligence / portfolio / cosmos), or ATTACHED DOCUMENTS. Exception: when FACTS has a TREATMENT-NAÏVE / RECRUITING treatment-naïve block with NCTs, those ARE live CT.gov eligibility results attached this turn — list them; do NOT say \"not in Ora Cosmos data\". Only use that phrase when FACTS/JSON both lack the relevant rows. Chat specs from the user (e.g. 6 sites, 4 months) may be used as scenario inputs and must be labeled as user-stated.",
   " SOURCE PRIORITY: (1) ATTACHED DOCUMENTS for protocol/template/branding/narrative the user provided (2) ORA COSMOS FACTS / context.intelligence for Ora Veeva + TrialHub + CT.gov numbers (3) context.portfolio only for all-studies budget rollups when asked (4) web search only for public commercial facts. Do not let a document attachment replace Cosmos for industry/Ora performance numbers.",
   " NO 'MISSING LEADERBOARD' HEDGE (critical): Never say you lack a dedicated site leaderboard, are grabbing closest matches, or only have known anchors — if trialhub.countryRank / countryRankOus.ranked has countries, THAT is the country leaderboard (cite trialMentions). If sites.topSites or topOusSites has org_clean rows (even with null site_psm), THAT is the site slate. If both are empty, say Cosmos has no Veeva site rows for that indication and lead with TrialHub/CT.gov country ranks only — still give the enrollmentPlan math.",
   " OUS / outside-US asks: lead with [[h]]Enrollment model[[/h]] using context.enrollmentPlan when present (patients, months, psm, sitesExact, sitesRecommendedWith20pctBuffer). Then [[h]]Top OUS countries[[/h]] from indicationBenchmark.trialhub.countryRankOus.ranked (country + trialMentions). Then [[h]]Sites[[/h]] from topOusSites / topSites when present. Propose a country mix that sums to sitesRecommendedWith20pctBuffer. Do not invent PI names.",
@@ -472,7 +472,11 @@ function systemPromptFor(context) {
         : "";
   const visualNote = context?.wantsHtmlVisual
     ? " CRITICAL: wantsHtmlVisual=true — you MUST emit HTML_REPORT_START … HTML_REPORT_END with a complete HTML document after a short chat summary. If branding/template uploads are present, follow them. Do not answer with chat text only. The app will offer PDF/Word downloads from your HTML."
-    : "";
+    : context?.intelligence?.query?.treatmentNaive ||
+        context?.intelligence?.treatmentNaiveTrials ||
+        (context?.intelligence?.recruitingTreatmentNaiveCount || 0) > 0
+      ? " CRITICAL: treatment-naïve ask — answer in chat with NCT list + eligibility evidence from ORA COSMOS FACTS / recruitingTreatmentNaiveSample. Do NOT emit HTML_REPORT, portfolio dashboard, or intelligence overview visuals."
+      : "";
   const docNote = context?.wantsDocumentExport
     ? " CRITICAL: wantsDocumentExport=true — produce a finished document via HTML_REPORT (branding + bid content). User expects downloadable PDF/Word."
     : "";
@@ -1273,6 +1277,41 @@ function formatCosmosFactsBlock(context) {
     );
   }
 
+  // Treatment-naïve FACTS first — model must not miss these under Veeva/TrialHub noise
+  const naivePackEarly = intel.treatmentNaiveTrials;
+  const ctgNaiveEarly = intel.ctgov?.treatmentNaiveSample || naivePackEarly?.sources?.ctgov || [];
+  const ctgRecruitNaiveEarly =
+    intel.ctgov?.recruitingTreatmentNaiveSample ||
+    intel.ctgovRecruitingTreatmentNaiveSample ||
+    naivePackEarly?.sources?.ctgovRecruiting ||
+    [];
+  const recruitNaiveCountEarly =
+    intel.ctgov?.recruitingTreatmentNaiveCount ??
+    intel.recruitingTreatmentNaiveCount ??
+    ctgRecruitNaiveEarly.length;
+  if (
+    naivePackEarly ||
+    intel.query?.treatmentNaive ||
+    ctgNaiveEarly.length ||
+    ctgRecruitNaiveEarly.length
+  ) {
+    lines.push(
+      `TREATMENT-NAÏVE (CT.gov eligibility — ANSWER FROM THIS BLOCK): naïve=${
+        intel.ctgov?.treatmentNaiveCount ?? ctgNaiveEarly.length ?? "—"
+      } | RECRUITING naïve=${recruitNaiveCountEarly ?? "—"}. List these NCTs. Do NOT say missing/not in Cosmos. Do NOT open a portfolio dashboard.`
+    );
+    if (ctgRecruitNaiveEarly.length) {
+      lines.push("RECRUITING treatment-naïve (list these when asked for recruiting):");
+      for (const t of ctgRecruitNaiveEarly.slice(0, 16)) {
+        lines.push(
+          `  - ${t.nct || "?"} | RECRUITING | ${t.phase || "?"} | ${t.sponsor || "?"} | reason=${
+            t.treatmentNaiveReason || "—"
+          } | evidence=${t.treatmentNaiveEvidence || "—"}`
+        );
+      }
+    }
+  }
+
   if (bm) {
     lines.push(
       `Indication: ${bm.indicationRequested || intel.query?.indication || "—"} | Geography: ${
@@ -1381,29 +1420,24 @@ function formatCosmosFactsBlock(context) {
   const naivePack = intel.treatmentNaiveTrials;
   const ctgNaive = intel.ctgov?.treatmentNaiveSample || naivePack?.sources?.ctgov || [];
   const ctgRecruitNaive =
-    intel.ctgov?.recruitingTreatmentNaiveSample || naivePack?.sources?.ctgovRecruiting || [];
+    intel.ctgov?.recruitingTreatmentNaiveSample ||
+    intel.ctgovRecruitingTreatmentNaiveSample ||
+    naivePack?.sources?.ctgovRecruiting ||
+    [];
+  // Detailed NCT lists already emitted at top of FACTS when present; add remaining naïve (non-recruiting) here
   if (naivePack || (Array.isArray(ctgNaive) && ctgNaive.length) || intel.query?.treatmentNaive) {
-    lines.push(
-      `TREATMENT-NAÏVE (CT.gov eligibility): naïve=${intel.ctgov?.treatmentNaiveCount ?? ctgNaive.length ?? "—"} | RECRUITING naïve=${
-        intel.ctgov?.recruitingTreatmentNaiveCount ?? ctgRecruitNaive.length ?? "—"
-      } of Wet AMD/nAMD. NEVER say 0 recruiting if RECRUITING naïve > 0.`
+    const nonRecruiting = (ctgNaive || []).filter(
+      (t) => !/^RECRUITING$/i.test(String(t.status || ""))
     );
-    if (ctgRecruitNaive.length) {
-      lines.push("RECRUITING treatment-naïve (list these when asked for recruiting):");
-      for (const t of ctgRecruitNaive.slice(0, 16)) {
+    if (nonRecruiting.length) {
+      lines.push("Other treatment-naïve (not RECRUITING):");
+      for (const t of nonRecruiting.slice(0, 10)) {
         lines.push(
-          `  - ${t.nct || "?"} | RECRUITING | ${t.phase || "?"} | ${t.sponsor || "?"} | reason=${
+          `  - ${t.nct || "?"} | ${t.status || "?"} | ${t.phase || "?"} | reason=${
             t.treatmentNaiveReason || "—"
           } | evidence=${t.treatmentNaiveEvidence || "—"}`
         );
       }
-    }
-    for (const t of (ctgNaive || []).slice(0, 12)) {
-      lines.push(
-        `  - ${t.nct || "?"} | ${t.status || "?"} | ${t.phase || "?"} | reason=${
-          t.treatmentNaiveReason || "—"
-        } | evidence=${t.treatmentNaiveEvidence || "—"}`
-      );
     }
     if (!ctgNaive.length && !ctgRecruitNaive.length) {
       lines.push(
@@ -2013,20 +2047,89 @@ function contextJsonForModel(context) {
       enrollmentPlan: intel.enrollmentPlan || ctx.enrollmentPlan || undefined,
       ctgov: intel.ctgov
         ? {
-            ...intel.ctgov,
+            trialCount: intel.ctgov.trialCount,
+            matchedIndicationCount: intel.ctgov.matchedIndicationCount,
+            treatmentNaiveCount: intel.ctgov.treatmentNaiveCount,
+            recruitingTreatmentNaiveCount: intel.ctgov.recruitingTreatmentNaiveCount,
+            treatmentNaiveFilter: intel.ctgov.treatmentNaiveFilter,
+            recruitingCount: intel.ctgov.recruitingCount,
+            countryFilterLabel: intel.ctgov.countryFilterLabel,
+            liveCtgovSearch: intel.ctgov.liveCtgovSearch,
+            note: intel.ctgov.note,
             sample: (intel.ctgov.sample || []).slice(0, 10),
-            recruitingSample: (intel.ctgov.recruitingSample || []).slice(0, 6)
+            recruitingSample: (intel.ctgov.recruitingSample || []).slice(0, 6),
+            treatmentNaiveSample: (intel.ctgov.treatmentNaiveSample || []).slice(0, 20),
+            recruitingTreatmentNaiveSample: (
+              intel.ctgov.recruitingTreatmentNaiveSample || []
+            ).slice(0, 20),
+            countryRank: intel.ctgov.countryRank
+              ? { ranked: (intel.ctgov.countryRank.ranked || []).slice(0, 8) }
+              : undefined
           }
         : undefined,
-      ctgovOverview: started ? undefined : trimOverview(intel.ctgovOverview),
+      // Flat aliases — model sometimes looks for these exact keys
+      ctgovRecruitingTreatmentNaiveSample: (
+        intel.ctgovRecruitingTreatmentNaiveSample ||
+        intel.ctgov?.recruitingTreatmentNaiveSample ||
+        []
+      ).slice(0, 20),
+      recruitingTreatmentNaiveCount:
+        intel.recruitingTreatmentNaiveCount ??
+        intel.ctgov?.recruitingTreatmentNaiveCount ??
+        0,
+      treatmentNaiveTrials: intel.treatmentNaiveTrials
+        ? {
+            indication: intel.treatmentNaiveTrials.indication,
+            filter: intel.treatmentNaiveTrials.filter,
+            eligibilitySource: intel.treatmentNaiveTrials.eligibilitySource,
+            counts: intel.treatmentNaiveTrials.counts,
+            note: intel.treatmentNaiveTrials.note,
+            trialhub: intel.treatmentNaiveTrials.trialhub
+              ? {
+                  ingested: intel.treatmentNaiveTrials.trialhub.ingested,
+                  container: intel.treatmentNaiveTrials.trialhub.container,
+                  trialCount: intel.treatmentNaiveTrials.trialhub.trialCount,
+                  note: intel.treatmentNaiveTrials.trialhub.note
+                }
+              : undefined,
+            sources: {
+              ctgov: (intel.treatmentNaiveTrials.sources?.ctgov || []).slice(0, 20),
+              ctgovRecruiting: (
+                intel.treatmentNaiveTrials.sources?.ctgovRecruiting ||
+                intel.ctgov?.recruitingTreatmentNaiveSample ||
+                []
+              ).slice(0, 20),
+              ctgovAllListed: (intel.treatmentNaiveTrials.sources?.ctgovAllListed || []).slice(
+                0,
+                8
+              ),
+              oraStudies: (intel.treatmentNaiveTrials.sources?.oraStudies || []).slice(0, 6)
+            }
+          }
+        : undefined,
+      // Drop feed-wide dashboards on naïve asks — they tempt Buddy into unrelated portfolio HTML
+      ctgovOverview:
+        intel.query?.treatmentNaive || intel.treatmentNaiveTrials
+          ? undefined
+          : started
+            ? undefined
+            : trimOverview(intel.ctgovOverview),
       trialhubOverview: started
         ? {
             totalCount: intel.trialhubOverview?.totalCount,
             note: "Year-filtered list is in trialhubStartedTrials / ORA COSMOS FACTS — not this overview sample."
           }
-        : trimOverview(intel.trialhubOverview),
-      veevaOverview: started ? undefined : trimOverview(intel.veevaOverview, "sampleStudies"),
-      crosswalkOverview: started ? undefined : trimOverview(intel.crosswalkOverview),
+        : intel.query?.treatmentNaive || intel.treatmentNaiveTrials
+          ? undefined
+          : trimOverview(intel.trialhubOverview),
+      veevaOverview:
+        started || intel.query?.treatmentNaive || intel.treatmentNaiveTrials
+          ? undefined
+          : trimOverview(intel.veevaOverview, "sampleStudies"),
+      crosswalkOverview:
+        started || intel.query?.treatmentNaive || intel.treatmentNaiveTrials
+          ? undefined
+          : trimOverview(intel.crosswalkOverview),
       countrySites: intel.countrySites
         ? {
             ...intel.countrySites,

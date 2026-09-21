@@ -541,6 +541,12 @@ function routeBuddyAsk(input) {
 
   const visualAsk =
     !attachmentAnalyzeVerb &&
+    !(
+      wantsTreatmentNaivePopulation(question) &&
+      !/\b(visual|html|chart|graph|dashboard|slide|deck|pdf|docx|report|one[- ]pager)\b/i.test(
+        question
+      )
+    ) &&
     (wantsHtmlVisual(question) ||
       wantsDocumentExport(question) ||
       (hasOkUpload && /\b(create|make|produce|build|generate|draft|export|write)\b/i.test(question)));

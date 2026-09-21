@@ -2769,6 +2769,7 @@ async function buildReconciliationIntelContext(getDb, opts = {}) {
           eligibilitySource: "clinicaltrials.gov",
           sources: {
             ctgov: out.ctgov?.treatmentNaiveSample || [],
+            ctgovRecruiting: out.ctgov?.recruitingTreatmentNaiveSample || [],
             oraStudies: out.indicationBenchmark?.ora?.sampleStudies || []
           },
           trialhub: {
@@ -2779,12 +2780,17 @@ async function buildReconciliationIntelContext(getDb, opts = {}) {
           },
           counts: {
             ctgovNaive: out.ctgov?.treatmentNaiveCount ?? 0,
+            ctgovRecruitingNaive: out.ctgov?.recruitingTreatmentNaiveCount ?? 0,
             trialhubIngestMatched: out.indicationBenchmark?.trialhub?.trialCount ?? 0,
             oraStudies: out.indicationBenchmark?.ora?.studyCount ?? 0
           },
           note:
-            "Naïve from CT.gov eligibility only. TrialHub = full Cosmos ingest (not a sample); no inclusion/exclusion fields."
+            "Naïve from CT.gov eligibility only. For recruiting use sources.ctgovRecruiting / counts.ctgovRecruitingNaive."
         };
+        out.ctgovRecruitingTreatmentNaiveSample =
+          out.ctgov?.recruitingTreatmentNaiveSample || [];
+        out.recruitingTreatmentNaiveCount =
+          out.ctgov?.recruitingTreatmentNaiveCount ?? 0;
       }
     } else {
       out.indicationMissing = true;
@@ -3022,7 +3028,8 @@ async function buildIntelligenceContext(getDb, opts = {}) {
       "For OUS / outside-US asks: use trialhub.countryRankOus (or countryRank) for ranked countries with trialMentions counts — that IS the country leaderboard.",
       "sites.topSites / topSitesByPsm / topOusSites are the site slate. If site_psm is null, still name org_clean. Never say you lack a site leaderboard when these arrays have rows OR countryRank.ranked has rows.",
       "enrollmentPlan (when present) already computed sitesExact / sitesRecommendedWith20pctBuffer — use those numbers; do not invent different math.",
-      "Do not invent PI names or site names that are not in Cosmos context or the Ora always-on playbook. Prefer Cosmos org_clean and TrialHub country ranks."
+      "Do not invent PI names or site names that are not in Cosmos context or the Ora always-on playbook. Prefer Cosmos org_clean and TrialHub country ranks.",
+      "treatmentNaiveTrials / ctgov.recruitingTreatmentNaiveSample / ctgovRecruitingTreatmentNaiveSample = live CT.gov eligibility (prior aVEGF). When recruitingTreatmentNaiveCount > 0, list those NCTs — never say not in Cosmos or emit a portfolio dashboard."
     ],
     query: {
       indication: resolvedIndication || null,
@@ -3125,6 +3132,11 @@ async function buildIntelligenceContext(getDb, opts = {}) {
             note:
               "SOURCE OF TRUTH for treatment-naïve = CT.gov eligibility. For recruiting asks use sources.ctgovRecruiting / counts.ctgovRecruitingNaive — never say 0 if that count > 0."
           };
+          // Flat aliases (model sometimes looks for these exact top-level keys)
+          out.ctgovRecruitingTreatmentNaiveSample =
+            out.ctgov?.recruitingTreatmentNaiveSample || [];
+          out.recruitingTreatmentNaiveCount =
+            out.ctgov?.recruitingTreatmentNaiveCount ?? 0;
         }
       } else if (resolvedCountries) {
         // Country-only: live Veeva sites with milestone PSM
