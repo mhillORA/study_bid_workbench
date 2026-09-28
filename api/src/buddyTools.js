@@ -476,12 +476,13 @@ function planGapFillTools({ context, question, huntReason, history = [] }) {
   }
 
   // Claude-like: go live to CT.gov when naïve/recruiting ask has empty Cosmos pack
-  if (naiveAsk && recruitNaiveN === 0) {
-    tools.push("live_ctgov_naive");
+  if (naiveAsk) {
+    if (recruitNaiveN === 0) tools.push("live_ctgov_naive");
   } else if (
     /\b(recruiting|open\s+trials?)\b/i.test(q) &&
     !(intel?.ctgov?.recruitingSample || []).length &&
-    !(intel?.ctgov?.recruitingCount > 0)
+    !(intel?.ctgov?.recruitingCount > 0) &&
+    !(intel?.ctgov?.recruitingTreatmentNaiveSample || []).length
   ) {
     tools.push("live_ctgov_recruiting");
   }

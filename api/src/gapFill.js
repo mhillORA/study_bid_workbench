@@ -383,9 +383,9 @@ async function runGapFill(getDb, opts = {}) {
   }
 
   return {
+    ...listGapFillers(),
     ok: false,
-    error: `Unknown filler "${filler}"`,
-    ...listGapFillers()
+    error: `Unknown filler "${filler}"`
   };
 }
 
