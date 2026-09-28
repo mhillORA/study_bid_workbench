@@ -49,6 +49,7 @@ const {
 } = require("./feasibilityArtemis");
 const { loadLiveContext, saveLiveContext } = require("./buddyLiveContext");
 const { runCtgovSync, getCtgovSyncStatus, remapCtgovIndications, backfillCtgovEligibility } = require("./ctgovSync");
+const { listGapFillers, runGapFill } = require("./gapFill");
 const { runSalesforceCrosswalkSync, getSalesforceSyncStatus } = require("./salesforceSync");
 const { runSalesforceTablesSync, getSalesforceTablesStatus } = require("./salesforceTables");
 const {
@@ -72,6 +73,7 @@ const { normalizeBuddyAttachments } = require("./buddyAttachments");
 const { buildBuddyDocExports, wantsDocumentExport } = require("./buddyDocExport");
 const { routeBuddyAsk, isCompareTwoStudiesQuestion, isCrossStudyQuestion, isGeneralKnowledgeAsk } = require("./buddyRouter");
 const { fetchBuddyIntelligence, fetchBuddyPortfolio } = require("./buddyCosmosFetch");
+const { prefetchLiveGapFill } = require("./buddyTools");
 const { parseBuddyActions } = require("./buddyActions");
 const { maybeHuntAndRetry, toolTraceFromPrefetch } = require("./buddyHunt");
 const { storeAttachments, loadAttachments } = require("./buddyAttachmentVault");
@@ -1740,6 +1742,82 @@ app.http("ctgovSync", {
   }
 });
 
+/**
+ * Live gap-fill — fetch public data that Cosmos may not have yet.
+ * GET  /api/gap-fill → catalog
+ * POST /api/gap-fill { filler, indication?, nct?, upsert?, ... }
+ */
+app.http("gapFill", {
+  methods: ["GET", "POST", "OPTIONS"],
+  authLevel: "anonymous",
+  route: "gap-fill",
+  handler: async (request, context) => {
+    if (request.method === "OPTIONS") {
+      return {
+        status: 204,
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+          "Access-Control-Allow-Headers":
+            "content-type, authorization, x-copilot-key, x-buddy-session"
+        }
+      };
+    }
+    try {
+      if (request.method === "GET") {
+        const fillerQ = request.query.get("filler") || request.query.get("id");
+        if (!fillerQ) return json(200, listGapFillers());
+        // Allow GET ?filler=ctgov_treatment_naive&indication=Wet%20AMD for quick probes
+        const auth = authorizeCtgovSync(request);
+        if (!auth.ok) {
+          return json(401, {
+            error: "Unauthorized — sign in, Buddy session, or x-copilot-key required to run a filler"
+          });
+        }
+        const result = await runGapFill(getDb, {
+          filler: fillerQ,
+          indication: request.query.get("indication") || undefined,
+          nct: request.query.get("nct") || undefined,
+          upsert: request.query.get("upsert") === "true",
+          force: request.query.get("force") === "true",
+          limit: request.query.get("limit") ? Number(request.query.get("limit")) : undefined,
+          maxPages: request.query.get("maxPages")
+            ? Number(request.query.get("maxPages"))
+            : undefined,
+          max: request.query.get("max") ? Number(request.query.get("max")) : undefined,
+          triggeredBy: `gap_fill_get:${auth.via}`
+        });
+        return json(result.ok ? 200 : 400, result);
+      }
+
+      const auth = authorizeCtgovSync(request);
+      if (!auth.ok) {
+        return json(401, {
+          error: "Unauthorized — sign in, Buddy session, or x-copilot-key required"
+        });
+      }
+      let body = {};
+      try {
+        body = (await request.json()) || {};
+      } catch (_) {
+        body = {};
+      }
+      const result = await runGapFill(getDb, {
+        ...body,
+        filler: body.filler || body.id || request.query.get("filler"),
+        triggeredBy:
+          auth.via === "copilot_key"
+            ? "gap_fill_key"
+            : `gap_fill:${auth.user?.email || auth.user?.userId || auth.via}`
+      });
+      return json(result.ok ? 200 : 400, result);
+    } catch (err) {
+      context.error(err);
+      return json(500, { ok: false, error: String(err.message || err) });
+    }
+  }
+});
+
 app.http("sponsorNewsFeed", {
   methods: ["GET", "OPTIONS"],
   authLevel: "anonymous",
@@ -3033,6 +3111,33 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         question,
         cosmosReconciliation: attachmentCosmosCompareAsk
       });
+      // Claude-style: if Cosmos is thin for public registry asks, go get CT.gov now
+      // (before the model answers — not only after a weak reply).
+      try {
+        const livePrefetch = await prefetchLiveGapFill(getDb, {
+          question: intelQuestion || question,
+          history,
+          intelligence
+        });
+        if (livePrefetch.liveFetched && livePrefetch.intelligence) {
+          intelligence = livePrefetch.intelligence;
+          intelligence.liveGapFillPrefetch = {
+            ok: true,
+            tools: (livePrefetch.toolTrace || []).map((t) => t.tool),
+            elapsedMs: (livePrefetch.toolTrace || []).reduce(
+              (s, t) => s + (t.elapsedMs || 0),
+              0
+            )
+          };
+        }
+      } catch (liveErr) {
+        if (intelligence && typeof intelligence === "object") {
+          intelligence.liveGapFillPrefetch = {
+            ok: false,
+            error: String(liveErr.message || liveErr)
+          };
+        }
+      }
     } catch (err) {
       intelligence = { source: "ora_clinical_intelligence_error", error: String(err.message || err) };
     }

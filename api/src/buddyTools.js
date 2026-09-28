@@ -8,9 +8,12 @@ const {
   buildReconciliationIntelContext,
   buildSlimBuddyIntelContext,
   extractIndicationFromQuestion,
-  extractCountryFromQuestion
+  extractCountryFromQuestion,
+  wantsTreatmentNaivePopulation,
+  wantsTreatmentNaiveInConversation
 } = require("./intelligence");
 const { fetchBuddyPortfolio } = require("./buddyCosmosFetch");
+const { runGapFill } = require("./gapFill");
 
 const TOOL_LABELS = {
   cosmos_default: "Slim Cosmos inventory",
@@ -28,11 +31,92 @@ const TOOL_LABELS = {
   query_intelligence: "Indication intelligence",
   query_portfolio: "Portfolio query",
   query_inventory: "DB inventory",
-  extract_indication: "Extract indication from text"
+  extract_indication: "Extract indication from text",
+  live_ctgov_naive: "Live CT.gov treatment-naïve (go get it)",
+  live_ctgov_nct: "Live CT.gov NCT lookup (go get it)",
+  live_ctgov_recruiting: "Live CT.gov recruiting (go get it)"
 };
 
 function labelFor(tool) {
   return TOOL_LABELS[tool] || tool;
+}
+
+/** Merge a live gap-fill pack into intelligence so Buddy answers from it (Claude-like). */
+function mergeGapFillIntoIntelligence(intel, fill, { indication } = {}) {
+  const base =
+    intel && typeof intel === "object"
+      ? { ...intel }
+      : {
+          source: "ora_clinical_intelligence",
+          attachedFrom: "gap_fill_live",
+          query: {}
+        };
+  base.query = {
+    ...(base.query || {}),
+    indication: indication || base.query?.indication || fill?.indication || null,
+    treatmentNaive:
+      fill?.filler === "ctgov_treatment_naive" ? true : base.query?.treatmentNaive,
+    liveGapFill: true
+  };
+  base.gapFill = {
+    filler: fill?.filler,
+    live: true,
+    counts: fill?.counts || null,
+    note: fill?.note || null,
+    elapsedMs: fill?.elapsedMs
+  };
+
+  if (fill?.filler === "ctgov_treatment_naive") {
+    const recruit = fill.recruitingTreatmentNaiveSample || [];
+    const naive = fill.treatmentNaiveSample || [];
+    base.ctgov = {
+      ...(base.ctgov || {}),
+      treatmentNaiveFilter: true,
+      treatmentNaiveCount: fill.counts?.treatmentNaive ?? naive.length,
+      recruitingTreatmentNaiveCount:
+        fill.counts?.recruitingTreatmentNaive ?? recruit.length,
+      treatmentNaiveSample: naive,
+      recruitingTreatmentNaiveSample: recruit,
+      liveCtgovSearch: { searched: true, fromGapFill: true },
+      note:
+        "Live CT.gov gap-fill (not limited to Cosmos). Prefer recruitingTreatmentNaiveSample."
+    };
+    base.ctgovRecruitingTreatmentNaiveSample = recruit;
+    base.recruitingTreatmentNaiveCount =
+      fill.counts?.recruitingTreatmentNaive ?? recruit.length;
+    base.treatmentNaiveTrials = {
+      indication: indication || fill.indication,
+      filter: true,
+      eligibilitySource: "clinicaltrials.gov",
+      sources: { ctgov: naive, ctgovRecruiting: recruit },
+      counts: {
+        ctgovNaive: fill.counts?.treatmentNaive ?? naive.length,
+        ctgovRecruitingNaive: fill.counts?.recruitingTreatmentNaive ?? recruit.length
+      },
+      note: "Live gap-fill — Node fetched CT.gov because Cosmos was thin/missing."
+    };
+  }
+
+  if (fill?.filler === "ctgov_recruiting") {
+    const sample = fill.recruitingSample || [];
+    base.ctgov = {
+      ...(base.ctgov || {}),
+      recruitingCount: fill.counts?.recruiting ?? sample.length,
+      recruitingSample: sample,
+      sample: sample,
+      note: "Live CT.gov recruiting gap-fill."
+    };
+  }
+
+  if (fill?.filler === "ctgov_nct" && fill.trial) {
+    base.ctgovNct = fill.trial;
+    base.nctLookup = { ...(base.nctLookup || {}), live: fill.trial };
+  }
+
+  base.note =
+    (base.note || "") +
+    " Live gap-fill ran this turn (Claude-style: go get public registry data when Cosmos is thin).";
+  return base;
 }
 
 function traceStep(tool, ok, detail, extra = {}) {
@@ -227,6 +311,107 @@ async function runBuddyTool(name, deps, args = {}) {
           )
         };
       }
+      case "live_ctgov_naive": {
+        if (!getDb) throw new Error("getDb missing");
+        const indication =
+          args.intelBase?.indication ||
+          args.indication ||
+          extractIndicationFromQuestion(args.question || "") ||
+          "Wet AMD";
+        const fill = await runGapFill(getDb, {
+          filler: "ctgov_treatment_naive",
+          indication,
+          upsert: args.upsert === true,
+          limit: args.limit || 25,
+          maxPages: args.maxPages || 3,
+          triggeredBy: "buddy_live_tool"
+        });
+        const intelligence = mergeGapFillIntoIntelligence(args.intelligence || null, fill, {
+          indication
+        });
+        return {
+          result: { intelligence, gapFill: fill, liveFetched: true },
+          trace: traceStep(
+            "live_ctgov_naive",
+            Boolean(fill?.ok),
+            fill?.ok
+              ? `live naïve=${fill.counts?.treatmentNaive ?? "—"} recruiting=${fill.counts?.recruitingTreatmentNaive ?? "—"}`
+              : fill?.error || "failed",
+            {
+              elapsedMs: Date.now() - started,
+              round,
+              n: fill?.counts?.recruitingTreatmentNaive ?? null,
+              resultKey: "intelligence"
+            }
+          )
+        };
+      }
+      case "live_ctgov_nct": {
+        if (!getDb) throw new Error("getDb missing");
+        const nct =
+          args.nct ||
+          (String(args.question || "").match(/\b(NCT\d{8})\b/i) || [])[1] ||
+          null;
+        if (!nct) {
+          return {
+            result: null,
+            trace: traceStep("live_ctgov_nct", false, "no NCT in question", {
+              elapsedMs: Date.now() - started,
+              round
+            })
+          };
+        }
+        const fill = await runGapFill(getDb, {
+          filler: "ctgov_nct",
+          nct,
+          upsert: args.upsert !== false,
+          force: args.force === true,
+          triggeredBy: "buddy_live_tool"
+        });
+        return {
+          result: { gapFill: fill, liveFetched: true, ctgovNctLive: fill?.trial || null },
+          trace: traceStep(
+            "live_ctgov_nct",
+            Boolean(fill?.ok),
+            fill?.ok ? `${nct} ${fill.fromCosmos ? "cosmos+live" : "live"}` : fill?.error || "failed",
+            { elapsedMs: Date.now() - started, round, resultKey: "gapFill" }
+          )
+        };
+      }
+      case "live_ctgov_recruiting": {
+        if (!getDb) throw new Error("getDb missing");
+        const indication =
+          args.intelBase?.indication ||
+          args.indication ||
+          extractIndicationFromQuestion(args.question || "") ||
+          "Wet AMD";
+        const fill = await runGapFill(getDb, {
+          filler: "ctgov_recruiting",
+          indication,
+          upsert: args.upsert === true,
+          limit: args.limit || 25,
+          triggeredBy: "buddy_live_tool"
+        });
+        const intelligence = mergeGapFillIntoIntelligence(args.intelligence || null, fill, {
+          indication
+        });
+        return {
+          result: { intelligence, gapFill: fill, liveFetched: true },
+          trace: traceStep(
+            "live_ctgov_recruiting",
+            Boolean(fill?.ok),
+            fill?.ok
+              ? `live recruiting=${fill.counts?.recruiting ?? "—"}`
+              : fill?.error || "failed",
+            {
+              elapsedMs: Date.now() - started,
+              round,
+              n: fill?.counts?.recruiting ?? null,
+              resultKey: "intelligence"
+            }
+          )
+        };
+      }
       default:
         return {
           result: null,
@@ -269,14 +454,50 @@ async function runHuntTools(toolNames, deps, args = {}) {
 
 /**
  * Decide which tools to run on a second hunt pass given first-pass context + answer.
+ * Live CT.gov tools = Claude-style "go get it" when Cosmos is thin.
  */
-function planGapFillTools({ context, question, huntReason }) {
+function planGapFillTools({ context, question, huntReason, history = [] }) {
   const tools = [];
   const q = String(question || "");
   const intel = context?.intelligence;
+  const naiveAsk =
+    wantsTreatmentNaivePopulation(q) ||
+    wantsTreatmentNaiveInConversation(q, history, "") ||
+    Boolean(intel?.query?.treatmentNaive);
+  const recruitNaiveN =
+    Number(intel?.ctgov?.recruitingTreatmentNaiveCount) ||
+    Number(intel?.recruitingTreatmentNaiveCount) ||
+    (intel?.ctgov?.recruitingTreatmentNaiveSample || []).length ||
+    0;
+  const nct = (q.match(/\b(NCT\d{8})\b/i) || [])[1];
 
   if (huntReason === "feasibility_no_indication" || !intel?.query?.indication) {
     tools.push("extract_indication");
+  }
+
+  // Claude-like: go live to CT.gov when naïve/recruiting ask has empty Cosmos pack
+  if (naiveAsk && recruitNaiveN === 0) {
+    tools.push("live_ctgov_naive");
+  } else if (
+    /\b(recruiting|open\s+trials?)\b/i.test(q) &&
+    !(intel?.ctgov?.recruitingSample || []).length &&
+    !(intel?.ctgov?.recruitingCount > 0)
+  ) {
+    tools.push("live_ctgov_recruiting");
+  }
+
+  if (nct && !intel?.ctgovNct && !intel?.nctLookup) {
+    tools.push("live_ctgov_nct");
+  }
+
+  if (
+    huntReason === "not_in_cosmos" ||
+    huntReason === "high_gaps_weak_answer" ||
+    huntReason === "said_missing_public_data"
+  ) {
+    if (naiveAsk) tools.push("live_ctgov_naive");
+    else if (/\brecruit/i.test(q)) tools.push("live_ctgov_recruiting");
+    if (nct) tools.push("live_ctgov_nct");
   }
 
   // If indication might be in attachments / question — re-query intelligence
@@ -320,10 +541,46 @@ function planGapFillTools({ context, question, huntReason }) {
   return [...new Set(tools)];
 }
 
+/**
+ * Prefetch live public data before the model answers (Claude-style: go get it first).
+ */
+async function prefetchLiveGapFill(getDb, { question, history = [], intelligence = null } = {}) {
+  const tools = planGapFillTools({
+    context: { intelligence },
+    question,
+    history,
+    huntReason: "prefetch"
+  }).filter((t) => t.startsWith("live_"));
+  if (!tools.length || !getDb) {
+    return { intelligence, toolTrace: [], liveFetched: false };
+  }
+  const { merged, toolTrace } = await runHuntTools(tools, { getDb }, {
+    question,
+    intelligence,
+    intelBase: {
+      indication:
+        intelligence?.query?.indication ||
+        extractIndicationFromQuestion(question) ||
+        null,
+      question
+    },
+    upsert: false,
+    round: 0
+  });
+  return {
+    intelligence: merged.intelligence || intelligence,
+    gapFill: merged.gapFill || null,
+    toolTrace,
+    liveFetched: Boolean(merged.liveFetched)
+  };
+}
+
 module.exports = {
   runBuddyTool,
   runHuntTools,
   planGapFillTools,
+  prefetchLiveGapFill,
+  mergeGapFillIntoIntelligence,
   TOOL_LABELS,
   labelFor
 };

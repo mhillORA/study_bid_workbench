@@ -336,6 +336,26 @@ function shouldHuntAgain({ answer, context, toolTrace }) {
   ) {
     return { yes: true, reason: "feasibility_no_indication" };
   }
+  const a = String(answer || "").toLowerCase();
+  // Model claimed public registry data is missing — Node should go get it (Claude-style)
+  if (
+    /not in (ora )?cosmos|not in (the )?pack|no ct\.?\s*gov|don'?t have .{0,40}(nct|trial|recruit)|0 recruiting|zero recruiting|could not find .{0,30}nct/i.test(
+      a
+    )
+  ) {
+    return { yes: true, reason: "said_missing_public_data" };
+  }
+  const recruitN =
+    Number(context?.intelligence?.ctgov?.recruitingTreatmentNaiveCount) ||
+    Number(context?.intelligence?.recruitingTreatmentNaiveCount) ||
+    0;
+  if (
+    context?.intelligence?.query?.treatmentNaive &&
+    recruitN === 0 &&
+    /na[iï]ve|recruit|anti[- ]?vegf/i.test(a)
+  ) {
+    return { yes: true, reason: "naive_pack_empty" };
+  }
   return { yes: false, reason: null };
 }
 

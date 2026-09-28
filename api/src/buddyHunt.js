@@ -53,9 +53,18 @@ async function maybeHuntAndRetry(opts) {
   const answer = firstResult?.answer || "";
   const decision = shouldHuntAgain({ answer, context, toolTrace: initialToolTrace });
 
-  // Second Foundry call is the #1 SWA gateway timeout cause. Prefetch already
-  // loaded Cosmos — skip hunt re-ask unless explicitly enabled.
+  const gapToolsPreview = planGapFillTools({
+    context,
+    question,
+    huntReason: decision.reason || "prefetch",
+    history
+  });
+  const wantsLiveFetch = gapToolsPreview.some((t) => String(t).startsWith("live_"));
+
+  // Second Foundry call is costly. Always allow when we need a live public fetch
+  // (Claude-style go-get-it). Other hunts stay behind BUDDY_HUNT_RETRY=1.
   const huntRetryOn =
+    wantsLiveFetch ||
     String(process.env.BUDDY_HUNT_RETRY || "")
       .trim()
       .toLowerCase() === "1" ||
@@ -84,7 +93,8 @@ async function maybeHuntAndRetry(opts) {
   const gapTools = planGapFillTools({
     context,
     question,
-    huntReason: decision.reason
+    huntReason: decision.reason,
+    history
   });
 
   // Prefer indication from attachments if extract finds one
@@ -134,9 +144,11 @@ async function maybeHuntAndRetry(opts) {
   const fillTools = gapTools.filter((t) => t !== "extract_indication");
   const hunt = await runHuntTools(fillTools, toolDeps, {
     intelBase,
+    intelligence: context.intelligence || null,
     hints: context.queryHints || {},
     buddyDept: context.buddyDept,
     question,
+    upsert: false,
     round: 2
   });
 
@@ -180,18 +192,20 @@ async function maybeHuntAndRetry(opts) {
       .join(", ")}. Prefer freshly attached packs; say missing if still empty.`;
 
   // Only re-ask if we actually got new useful data
+  const gainedLive = Boolean(hunt.merged.liveFetched);
   const gainedIntel =
     hunt.merged.intelligence &&
     !hunt.merged.intelligence.error &&
     (!context.intelligence ||
       context.intelligence.error ||
+      gainedLive ||
       (!context.intelligence.query?.indication && hunt.merged.intelligence.query?.indication));
   const gainedPortfolio =
     hunt.merged.portfolio &&
     hunt.merged.portfolio.source === "cosmos_portfolio" &&
     (!context.portfolio || context.portfolio.skipped || context.portfolio.error);
 
-  if (!gainedIntel && !gainedPortfolio && !hunt.merged.webSearchPlanned) {
+  if (!gainedIntel && !gainedPortfolio && !hunt.merged.webSearchPlanned && !gainedLive) {
     const evidence = buildEvidenceEnvelope({
       context: nextContext,
       question,
