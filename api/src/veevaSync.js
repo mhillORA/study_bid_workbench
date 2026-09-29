@@ -34,8 +34,9 @@ const {
 } = require("./veevaPsm");
 
 const SYNC_ID = "veeva_tables";
-// Function App can run longer than SWA — leave room for milestone__v (~large).
-const TIME_BUDGET_MS = Number(process.env.VEEVA_SYNC_BUDGET_MS || 240000);
+// Background kicks need headroom past metrics alone (~4 min). Default 25 min;
+// host.json functionTimeout must be ≥ this (set to 30 min). Override with VEEVA_SYNC_BUDGET_MS.
+const TIME_BUDGET_MS = Number(process.env.VEEVA_SYNC_BUDGET_MS || 25 * 60 * 1000);
 
 /**
  * Feasibility categorization (Mike Watson Claude Report [Study|Site] Level WIP).
@@ -1209,7 +1210,7 @@ async function runVeevaTablesSync(getDb, opts = {}) {
     triggeredBy: opts.triggeredBy || "api",
     lastDeltas: { results, incomplete, milestoneWide, sitePsmProjection, prioritizeEmpty },
     note: incomplete
-      ? "Time budget hit — re-run Ingest Veeva; empty mirrors (metrics/milestones/subjects) are filled first."
+      ? "Time budget hit — re-run Ingest Veeva (budget default 25 min). Empty mirrors fill first."
       : watermark
         ? "Veeva delta sync into ora_veeva_* (+ fact projection)."
         : "Veeva full sync into ora_veeva_* (+ fact projection). Mike Watson Excel packs superseded where source=veeva_live."

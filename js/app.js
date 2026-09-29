@@ -5885,7 +5885,7 @@
       if (kickRes.status === 202 || kick.accepted) {
         state.intelligence.veevaMessage =
           kick.message ||
-          `Veeva ${modeLabel} started in background. Wait 3–5 min, hit Refresh, then Ingest again if status still says time budget / incomplete. Do not wait on this button — it will not time out anymore.`;
+          `Veeva ${modeLabel} started in background. Wait up to ~25 min (metrics is huge), then Refresh. Only click again if status still says time budget / incomplete.`;
       } else if (!kickRes.ok) {
         state.intelligence.veevaMessage = kick.error || `Veeva kick failed (${kickRes.status})`;
       } else {
