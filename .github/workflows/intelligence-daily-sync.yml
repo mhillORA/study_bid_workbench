@@ -46,7 +46,7 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     name: POST CT.gov / Veeva / Salesforce deltas
-    timeout-minutes: 45
+    timeout-minutes: 150
     steps:
       - name: Resolve API base + auth
         id: prep
@@ -102,21 +102,81 @@ jobs:
         run: |
           set -euo pipefail
           FULL="${{ github.event_name == 'workflow_dispatch' && inputs.veeva_full || false }}"
-          BODY='{}'
-          if [ "$FULL" = "true" ]; then BODY='{"full":true}'; fi
+          # Kick async so Azure's ~230s HTTP gateway can't kill a long Vault pull.
+          # Background worker runs under functionTimeout (60m); we poll progress.
+          if [ "$FULL" = "true" ]; then
+            BODY='{"full":true,"async":true,"prioritizeEmpty":true}'
+          else
+            BODY='{"async":true,"prioritizeEmpty":true}'
+          fi
           URL="$API_BASE/api/veeva/sync"
           echo "POST $URL $BODY"
-          RESP=$(curl -sS -w "\n%{http_code}" -X POST "$URL" \
+          RESP=$(curl -sS -w "\n%{http_code}" --max-time 120 -X POST "$URL" \
             -H "Content-Type: application/json" \
             -H "x-copilot-key: $COPILOT_ASK_KEY" \
             -d "$BODY")
           CODE=$(echo "$RESP" | tail -n1)
           BODY_OUT=$(echo "$RESP" | sed '$d')
           echo "$BODY_OUT"
-          if [ "$CODE" -lt 200 ] || [ "$CODE" -ge 300 ]; then
+          if [ "$CODE" != "202" ] && [ "$CODE" != "200" ]; then
             echo "HTTP $CODE"
             exit 1
           fi
+
+          echo "Polling Veeva sync progress (up to ~90 minutes)…"
+          DEADLINE=$((SECONDS + 5400))
+          LAST=""
+          while [ "$SECONDS" -lt "$DEADLINE" ]; do
+            sleep 30
+            STATUS_JSON=$(curl -sS --max-time 60 "$API_BASE/api/veeva/sync" \
+              -H "Accept: application/json" \
+              -H "x-copilot-key: $COPILOT_ASK_KEY" || true)
+            PARSE=$(STATUS_JSON="$STATUS_JSON" python3 - <<'PY'
+import json, os
+raw = os.environ.get("STATUS_JSON") or ""
+try:
+    d = json.loads(raw or "{}")
+except Exception:
+    print("parse_error||||")
+    raise SystemExit(0)
+sync = d.get("sync") or {}
+prog = sync.get("progress") if isinstance(sync, dict) else None
+if not isinstance(prog, dict):
+    prog = d.get("progress") if isinstance(d.get("progress"), dict) else {}
+status = str(prog.get("status") or "").lower()
+msg = str(prog.get("message") or prog.get("currentObject") or prog.get("currentContainer") or "")[:160]
+done = prog.get("objectsDone")
+total = prog.get("objectsTotal")
+print(f"{status}|{done}|{total}|{msg}")
+PY
+)
+            IFS='|' read -r ST DONE TOTAL MSG <<< "$PARSE"
+            LINE="status=${ST:-?} done=${DONE:-?} total=${TOTAL:-?} ${MSG}"
+            if [ "$LINE" != "$LAST" ]; then
+              echo "$LINE"
+              LAST="$LINE"
+            fi
+            case "$ST" in
+              complete|completed|success)
+                echo "Veeva sync complete."
+                exit 0
+                ;;
+              failed|error)
+                echo "Veeva sync failed: $MSG"
+                exit 1
+                ;;
+              incomplete)
+                echo "Veeva sync incomplete (will resume next run): $MSG"
+                exit 0
+                ;;
+              queued|running|"")
+                ;;
+              *)
+                ;;
+            esac
+          done
+          echo "Timed out waiting for Veeva sync progress"
+          exit 1
 
       - name: Salesforce tables + crosswalk
         if: steps.prep.outputs.skip != 'true' && (github.event_name != 'workflow_dispatch' || inputs.skip_salesforce != true)

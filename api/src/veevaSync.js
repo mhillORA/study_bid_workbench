@@ -36,9 +36,9 @@ const {
 } = require("./veevaPsm");
 
 const SYNC_ID = "veeva_tables";
-// Background kicks need headroom past metrics alone (~4 min). Default 25 min;
-// host.json functionTimeout must be ≥ this (set to 30 min). Override with VEEVA_SYNC_BUDGET_MS.
-const TIME_BUDGET_MS = Number(process.env.VEEVA_SYNC_BUDGET_MS || 25 * 60 * 1000);
+// Daily async sync needs headroom for metrics + sites + subjects. Default 55 min;
+// host.json functionTimeout must be ≥ this (set to 60 min). Override with VEEVA_SYNC_BUDGET_MS.
+const TIME_BUDGET_MS = Number(process.env.VEEVA_SYNC_BUDGET_MS || 55 * 60 * 1000);
 
 /**
  * Feasibility categorization (Mike Watson Claude Report [Study|Site] Level WIP).
