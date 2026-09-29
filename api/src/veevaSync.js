@@ -9,7 +9,9 @@
  * Live mirrors:
  *   ora_veeva_study, ora_veeva_site, ora_veeva_study_country,
  *   ora_veeva_organization, ora_veeva_sponsor,
- *   ora_veeva_metric, ora_veeva_subject, ora_veeva_milestone
+ *   ora_veeva_metric, ora_veeva_subject, ora_veeva_milestone,
+ *   ora_veeva_monitoring_event, ora_veeva_trip_report_answer,
+ *   ora_veeva_trip_report_question_response
  *
  * Also projects:
  *   ora_fact_study, ora_fact_site  (source=veeva_live)
@@ -219,7 +221,8 @@ const VEEVA_TABLES = [
       "site__v",
       "modified_date__v"
     ],
-    feasibilityMetricFilter: true
+    feasibilityMetricFilter: true,
+    criticalFields: ["actual__v", "study__v", "site__v"]
   },
   {
     // Subjects — subject counts / status under study + site
@@ -264,14 +267,94 @@ const VEEVA_TABLES = [
       "modified_date__v"
     ],
     projectFact: "milestone"
+  },
+  {
+    // Monitoring Event — parent for trip reports / CRA visits
+    vaultObject: "monitoring_event__ctms",
+    container: "ora_veeva_monitoring_event",
+    docType: "ora_veeva_monitoring_event",
+    fields: [
+      "id",
+      "name__v",
+      "status__v",
+      "object_type__v",
+      "monitoring_event_type__v",
+      "study__v",
+      "site__v",
+      "study_country__v",
+      "study_name__v",
+      "site_name__v",
+      "planned_start_date__v",
+      "planned_finish_date__v",
+      "actual_start_date__v",
+      "actual_finish_date__v",
+      "start_date__v",
+      "end_date__v",
+      "trip_report_template__v",
+      "highlight_required__v",
+      "ora_project_code__c",
+      "modified_date__v"
+    ]
+  },
+  {
+    // Trip Report Answer — picklist / MC answer definitions used on responses
+    vaultObject: "trip_report_answer__ctms",
+    container: "ora_veeva_trip_report_answer",
+    docType: "ora_veeva_trip_report_answer",
+    fields: [
+      "id",
+      "name__v",
+      "status__v",
+      "object_type__v",
+      "answer_text__v",
+      "text__v",
+      "answer_set__v",
+      "question__v",
+      "question__clin",
+      "order__v",
+      "modified_date__v"
+    ]
+  },
+  {
+    // Trip Report Question Response — CRA answers on a monitoring event
+    vaultObject: "trip_report_question_response__ctms",
+    container: "ora_veeva_trip_report_question_response",
+    docType: "ora_veeva_trip_report_question_response",
+    fields: [
+      "id",
+      "name__v",
+      "status__v",
+      "object_type__v",
+      "monitoring_event__ctms",
+      "monitoring_event__v",
+      "study__v",
+      "site__v",
+      "study_country__v",
+      "question__v",
+      "question__clin",
+      "question_text__v",
+      "answer__v",
+      "trip_report_answer__ctms",
+      "trip_report_section__v",
+      "response_text__ctms",
+      "long_response_text__v",
+      "comment__ctms",
+      "long_comment__v",
+      "order__v",
+      "modified_date__v"
+    ]
   }
 ];
 
-/** Drop unknown fields from VQL until the query succeeds (Vault configs differ). */
+/** Drop unknown fields from VQL until the query succeeds (Vault configs differ).
+ * Only drop on explicit unknown-field errors — never on generic "invalid query"
+ * text that echoes the SELECT list (that was stripping metrics study__/actual__).
+ */
 async function vqlSelectResilient(session, vaultObject, fields, { whereExtra = "", watermark = null } = {}) {
   let active = [...fields];
   const dropped = [];
-  for (let attempt = 0; attempt < 12; attempt++) {
+  let whereCleared = false;
+  for (let attempt = 0; attempt < 16; attempt++) {
     if (!active.length) {
       throw new Error(`No queryable fields left for ${vaultObject}`);
     }
@@ -288,8 +371,8 @@ async function vqlSelectResilient(session, vaultObject, fields, { whereExtra = "
       const m =
         msg.match(/Unknown (?:field|Field)\s+['`]?([a-z0-9_]+)['`]?/i) ||
         msg.match(/Invalid (?:field|Field)\s+['`]?([a-z0-9_]+)['`]?/i) ||
-        msg.match(/field\s+['`]([a-z0-9_]+)['`]/i) ||
-        msg.match(/\b([a-z][a-z0-9_]*(?:__v|__c|__clin|__ctms|__vs))\b.*(?:not found|unknown|invalid)/i);
+        msg.match(/field\s+['`]([a-z0-9_]+)['`]\s+(?:not found|does not exist|unknown)/i) ||
+        msg.match(/\b([a-z][a-z0-9_]*(?:__v|__c|__clin|__ctms|__vs))\b\s+(?:not found|does not exist)/i);
       const bad = m && active.includes(m[1]) ? m[1] : null;
       if (bad) {
         active = active.filter((f) => f !== bad);
@@ -297,8 +380,9 @@ async function vqlSelectResilient(session, vaultObject, fields, { whereExtra = "
         continue;
       }
       // If WHERE references a missing field (e.g. metric_type), clear filter once
-      if (whereExtra && /WHERE|metric_type|metrics_type/i.test(msg) && attempt === 0) {
+      if (whereExtra && !whereCleared && /WHERE|metric_type|metrics_type|TONAME|modified_date/i.test(msg)) {
         whereExtra = "";
+        whereCleared = true;
         continue;
       }
       throw err;
@@ -971,8 +1055,14 @@ async function runVeevaTablesSync(getDb, opts = {}) {
       case "subject__clin":
       case "subject__v":
         return 8;
-      default:
+      case "trip_report_answer__ctms":
         return 9;
+      case "monitoring_event__ctms":
+        return 10;
+      case "trip_report_question_response__ctms":
+        return 11;
+      default:
+        return 12;
     }
   };
   const countsByContainer = {};
@@ -1021,9 +1111,29 @@ async function runVeevaTablesSync(getDb, opts = {}) {
         watermark: tableWatermark,
         whereExtra
       });
-      const criticalDropped = (pulled.fieldsDropped || []).filter((f) =>
-        ["site__v", "study__v", "actual__v", "subject_status__v"].includes(f)
-      );
+      const criticalList = Array.isArray(table.criticalFields)
+        ? table.criticalFields
+        : ["site__v", "study__v", "actual__v", "subject_status__v"];
+      const criticalDropped = (pulled.fieldsDropped || []).filter((f) => criticalList.includes(f));
+
+      // Never write stripped mirrors (e.g. metrics without actual__/study__/site__) — that
+      // marks the container "full" while useless and burns every subsequent budget.
+      if (criticalDropped.length) {
+        incomplete = true;
+        results.push({
+          object: table.vaultObject,
+          container: table.container,
+          ok: false,
+          mode: tableWatermark ? "delta" : "full",
+          fetched: pulled.records.length,
+          upserted: 0,
+          fieldsDropped: pulled.fieldsDropped || [],
+          criticalFieldsDropped: criticalDropped,
+          error: `Refused upsert — critical fields dropped from VQL: ${criticalDropped.join(", ")}`,
+          elapsedMs: Date.now() - t0
+        });
+        continue;
+      }
 
       let upserted = 0;
       const errors = [];

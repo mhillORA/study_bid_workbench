@@ -33,6 +33,9 @@ Ora categorizes feasibility like the Mike Watson Claude Reports:
 | `ora_veeva_metric` | `metrics__ctms` | Enrollment metrics (enrolled, screened, rates, SF%, dropout) |
 | `ora_veeva_subject` | `subject__clin` (fallback `subject__v`) | Subjects |
 | `ora_veeva_milestone` | `milestone__v` | Startup / timeline milestones |
+| `ora_veeva_monitoring_event` | `monitoring_event__ctms` | CRA monitoring visits / trip report parent |
+| `ora_veeva_trip_report_answer` | `trip_report_answer__ctms` | Trip report answer definitions |
+| `ora_veeva_trip_report_question_response` | `trip_report_question_response__ctms` | Trip report Q&A responses on visits |
 
 Optional `VEEVA_FEASIBILITY_FILTERS=1` narrows metric types to the report list; default is **full** pull.
 

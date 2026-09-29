@@ -37,6 +37,9 @@ Source of truth for Ora Veeva clinical data is Vault API → Cosmos live mirrors
   ora_veeva_milestone ← milestone__v
   ora_veeva_metric ← metrics__ctms
   ora_veeva_subject ← subject__clin
+  ora_veeva_monitoring_event ← monitoring_event__ctms
+  ora_veeva_trip_report_answer ← trip_report_answer__ctms
+  ora_veeva_trip_report_question_response ← trip_report_question_response__ctms
 Buddy feasibility / PSM / site lists / scorecard / startup gaps query THESE mirrors directly.
 Do NOT use ora_fact_study / ora_fact_site for Buddy answers (containers may still exist from older projection — ignore them).
 Site PSM = total_enrolled / months(FSI → LSI from ora_veeva_milestone), minimum 1 month.

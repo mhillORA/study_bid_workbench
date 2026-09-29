@@ -177,8 +177,9 @@ function kickAsyncSync(path, body, context) {
   }
   const url = `${buddySelfBaseUrl()}${path.startsWith("/") ? path : `/${path}`}`;
   const payload = { ...(body || {}), async: false, background: false, _asyncKick: true };
-  // Fire second invocation; do not await — this request returns 202 immediately.
-  fetch(url, {
+  // Dispatch the outbound POST and wait briefly so Azure doesn't freeze the
+  // worker before the socket is opened (pure fire-and-forget often never ran).
+  const kickPromise = fetch(url, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -192,12 +193,15 @@ function kickAsyncSync(path, body, context) {
     } catch (_) {
       /* ignore */
     }
+    return null;
   });
   return {
     ok: true,
     accepted: true,
     async: true,
-    message: "Sync started in background on ora-buddy-api. Refresh Data Status / Sources in a few minutes (Veeva may need 2–3 kicks if time budget hits)."
+    _kickPromise: kickPromise,
+    message:
+      "Sync started in background on ora-buddy-api. Refresh Data Status / Sources in a few minutes (Veeva may need 2–3 kicks if time budget hits)."
   };
 }
 
@@ -2130,7 +2134,15 @@ app.http("veevaSync", {
       }
       if (wantsAsyncSync(request, body)) {
         const kick = kickAsyncSync("/api/veeva/sync", body, context);
-        return json(kick.ok ? 202 : 500, kick, request);
+        // Hold ~1.5s so the self-POST is actually on the wire before we return 202.
+        if (kick._kickPromise) {
+          await Promise.race([
+            kick._kickPromise,
+            new Promise((r) => setTimeout(r, 1500))
+          ]);
+        }
+        const { _kickPromise, ...publicKick } = kick;
+        return json(publicKick.ok ? 202 : 500, publicKick, request);
       }
       const triggeredBy =
         auth.via === "copilot_key"

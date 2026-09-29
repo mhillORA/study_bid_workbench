@@ -5316,16 +5316,80 @@
     </div>`;
   }
 
+  /**
+   * Prefer Function App for Data Status / goal reads. SWA managed /api has been
+   * returning 503 or Entra login HTML — ora-buddy-api stays healthy.
+   * Uses Buddy session when minted; otherwise anonymous GET against FA (CORS allow-listed).
+   */
+  async function buddyDataFetch(path, options = {}) {
+    const { requireAuth = false, ...fetchOpts } = options;
+    const p = path.startsWith("/") ? path : `/${path}`;
+    const apiPath = p.startsWith("/api") ? p : `/api${p}`;
+    const session = await ensureBuddySession();
+    const headers = { Accept: "application/json", ...(fetchOpts.headers || {}) };
+
+    const tryUrl = async (url, withAuth) => {
+      const h = { ...headers };
+      if (withAuth && session.token) h.Authorization = `Bearer ${session.token}`;
+      const res = await fetch(url, { ...fetchOpts, headers: h });
+      const ct = String(res.headers.get("content-type") || "");
+      if (ct.includes("text/html")) {
+        const err = new Error("SWA returned login HTML instead of API JSON");
+        err.status = res.status;
+        err.html = true;
+        throw err;
+      }
+      if (res.status === 503) {
+        const err = new Error("API 503");
+        err.status = 503;
+        throw err;
+      }
+      return res;
+    };
+
+    // 1) Function App with session
+    if (session.external && session.apiBase && session.token) {
+      try {
+        return await tryUrl(`${session.apiBase}${apiPath}`, true);
+      } catch (err) {
+        console.warn("[Buddy] FA+session fetch failed", err);
+      }
+    }
+
+    // 2) Function App anonymous GET (reads only) — bypass broken SWA managed API
+    if (!requireAuth && (!fetchOpts.method || fetchOpts.method === "GET")) {
+      const fa = buddyApiBaseRaw() || DEFAULT_BUDDY_API_BASE;
+      try {
+        return await tryUrl(`${fa}${apiPath}`, false);
+      } catch (err) {
+        console.warn("[Buddy] FA anonymous fetch failed", err);
+      }
+    }
+
+    // 3) Same-origin SWA last
+    if (requireAuth && !(session.external && session.token)) {
+      throw new Error(
+        session.mintError ||
+          "Buddy session required (SWA /api is down — hard-refresh after sign-in)."
+      );
+    }
+    return tryUrl(apiUrl(apiPath), false);
+  }
+
   async function loadYearlyGoal() {
     state.intelligence.yearlyGoalLoading = true;
     state.intelligence.yearlyGoalMessage = "";
     if (state.sectionId === "data-status") render();
     try {
-      const res = await fetch(apiUrl("/api/commercial/yearly-goal"));
+      const res = await buddyDataFetch("/api/commercial/yearly-goal");
       const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
+      if (!res.ok || data.ok === false) {
         state.intelligence.yearlyGoal = null;
         state.intelligence.yearlyGoalMessage = data.error || `Goal load failed (${res.status})`;
+      } else if (!data.settings && !data.progress) {
+        state.intelligence.yearlyGoal = null;
+        state.intelligence.yearlyGoalMessage =
+          "Goal load got a non-API response (SWA auth/HTML). Hard-refresh and retry.";
       } else {
         state.intelligence.yearlyGoal = data;
         if (data.settings?.goalOraNet != null && !state.intelligence.yearlyGoalInput) {
@@ -5661,7 +5725,7 @@
   async function loadIntelligenceHealth() {
     state.intelligence.loading = true;
     try {
-      const res = await intelligenceFaFetch("/api/intelligence");
+      const res = await buddyDataFetch("/api/intelligence");
       const data = await res.json().catch(() => ({}));
       state.intelligence.health = res.ok
         ? data
@@ -5670,22 +5734,22 @@
       state.intelligence.health = { ok: false, error: String(err) };
     }
     try {
-      const sres = await fetch(apiUrl("/api/ctgov/sync"));
+      const sres = await buddyDataFetch("/api/ctgov/sync");
       const sdata = await sres.json().catch(() => ({}));
       if (sres.ok) state.intelligence.syncStatus = sdata;
     } catch (_) {}
     try {
-      const sfres = await intelligenceFaFetch("/api/salesforce/sync");
+      const sfres = await buddyDataFetch("/api/salesforce/sync");
       const sfdata = await sfres.json().catch(() => ({}));
       if (sfres.ok) state.intelligence.sfSyncStatus = sfdata;
     } catch (_) {}
     try {
-      const vres = await intelligenceFaFetch("/api/veeva/sync");
+      const vres = await buddyDataFetch("/api/veeva/sync");
       const vdata = await vres.json().catch(() => ({}));
       if (vres.ok) state.intelligence.veevaSyncStatus = vdata;
     } catch (_) {}
     try {
-      const nsres = await intelligenceFaFetch("/api/netsuite/study-sync");
+      const nsres = await buddyDataFetch("/api/netsuite/study-sync");
       const nsdata = await nsres.json().catch(() => ({}));
       if (nsres.ok) state.intelligence.nsStudySyncStatus = nsdata;
     } catch (_) {}
@@ -5850,7 +5914,10 @@
         "sponsor__c",
         "organization__v",
         "study__v",
-        "site__v"
+        "site__v",
+        "trip_report_answer__ctms",
+        "monitoring_event__ctms",
+        "trip_report_question_response__ctms"
       ];
       const tables = Array.isArray(status.tables) ? [...status.tables] : [];
       tables.sort((a, b) => {
@@ -6671,6 +6738,22 @@
         "ora_veeva_milestone",
         "milestone__v",
         vvCount("ora_veeva_milestone") ?? vvFromHealth.milestones
+      ],
+      [
+        "ora_veeva_monitoring_event",
+        "monitoring_event__ctms",
+        vvCount("ora_veeva_monitoring_event") ?? vvFromHealth.monitoringEvents
+      ],
+      [
+        "ora_veeva_trip_report_answer",
+        "trip_report_answer__ctms",
+        vvCount("ora_veeva_trip_report_answer") ?? vvFromHealth.tripReportAnswers
+      ],
+      [
+        "ora_veeva_trip_report_question_response",
+        "trip_report_question_response__ctms",
+        vvCount("ora_veeva_trip_report_question_response") ??
+          vvFromHealth.tripReportQuestionResponses
       ]
     ]
       .map(([id, label, c]) => {

@@ -1643,6 +1643,9 @@ async function getIntelligenceHealth(getDb) {
     "ora_veeva_milestone",
     "ora_veeva_metric",
     "ora_veeva_subject",
+    "ora_veeva_monitoring_event",
+    "ora_veeva_trip_report_answer",
+    "ora_veeva_trip_report_question_response",
     "ora_ns_study",
     "ora_ns_task"
   ];
@@ -1686,6 +1689,9 @@ async function getIntelligenceHealth(getDb) {
     ora_veeva_milestone: counts.ora_veeva_milestone,
     ora_veeva_metric: counts.ora_veeva_metric,
     ora_veeva_subject: counts.ora_veeva_subject,
+    ora_veeva_monitoring_event: counts.ora_veeva_monitoring_event,
+    ora_veeva_trip_report_answer: counts.ora_veeva_trip_report_answer,
+    ora_veeva_trip_report_question_response: counts.ora_veeva_trip_report_question_response,
     ora_ns_study: counts.ora_ns_study,
     ora_ns_task: counts.ora_ns_task,
     lens_ns_projects: counts.lens_ns_projects,
@@ -1785,10 +1791,13 @@ async function getIntelligenceHealth(getDb) {
       milestones: counts.ora_veeva_milestone,
       metrics: counts.ora_veeva_metric,
       subjects: counts.ora_veeva_subject,
+      monitoringEvents: counts.ora_veeva_monitoring_event,
+      tripReportAnswers: counts.ora_veeva_trip_report_answer,
+      tripReportQuestionResponses: counts.ora_veeva_trip_report_question_response,
       livePreferred: liveVault,
       note: liveVault
-        ? "Live Vault mirrors preferred. Feasibility taxonomy: study vs site grain × metrics (enrollment) × milestones (startup) × subjects/geography."
-        : "Run Data Status → Ingest Veeva for study, country, site, metrics, subjects, milestones."
+        ? "Live Vault mirrors preferred. Feasibility + monitoring (trip report Q&A). Study/site × metrics × milestones × subjects × monitoring events."
+        : "Run Data Status → Ingest Veeva for study, country, site, metrics, subjects, milestones, monitoring/trip reports."
     },
     netsuite: lensSlice?.netsuite || {
       projects: counts.lens_ns_projects ?? 0,
