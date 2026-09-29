@@ -1,11 +1,16 @@
 name: Intelligence daily sync (CT.gov + Veeva + Salesforce)
 
-# Daily ~6:00 America/New_York standard time (EST = UTC−5 → 11:00 UTC).
-# During EDT (UTC−4) this fires at 7:00 local — accept seasonal shift or adjust cron.
+# BOTH modes (do not remove either):
+#   1) schedule  — daily DELTA only (full=false). ~6:00 AM ET when EST (11:00 UTC);
+#                  ~7:00 AM ET when EDT. Server-side via x-copilot-key — not browser.
+#   2) manual    — workflow_dispatch and/or Data Status UI for delta OR full backfill.
 #
 # Hits Function App ora-buddy-api (VEEVA_*/SF_*/Cosmos live there).
 # Auth: COPILOT_ASK_KEY secret → x-copilot-key (same value as FA/SWA App Setting).
 # If the secret is missing, scheduled runs soft-skip (warning, exit 0); manual dispatch fails.
+#
+# Browser "Ingest Veeva" is for operators when GH Actions isn't handy; prefer Actions
+# for full pulls so CORS/VPN/45s SWA limits don't kill the run.
 
 on:
   schedule:
@@ -13,11 +18,11 @@ on:
   workflow_dispatch:
     inputs:
       ctgov_full:
-        description: "CT.gov full backfill (usually leave false)"
+        description: "CT.gov FULL backfill (manual only; schedule always delta)"
         type: boolean
         default: false
       veeva_full:
-        description: "Veeva full pull (usually leave false — use UI for backfill)"
+        description: "Veeva FULL pull (manual only; schedule always delta)"
         type: boolean
         default: false
       skip_ctgov:

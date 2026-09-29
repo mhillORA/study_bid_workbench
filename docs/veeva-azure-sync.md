@@ -59,11 +59,17 @@ Optional `VEEVA_FEASIBILITY_FILTERS=1` narrows metric types to the report list; 
 
 UI: **Data Status → Ingest Veeva (full)**
 
-## Schedule
+## Schedule + manual (both)
 
-GitHub Actions workflow **`intelligence-daily-sync.yml`** posts delta daily at **11:00 UTC (~6AM EST / ~7AM EDT)** to `ora-buddy-api` with `x-copilot-key` (`COPILOT_ASK_KEY` Actions secret). Manual full backfill stays in the UI / `workflow_dispatch` with `veeva_full`.
+| Mode | How | What runs |
+|------|-----|-----------|
+| **Scheduled delta** | GitHub Actions `intelligence-daily-sync.yml` cron `0 11 * * *` (≈6AM EST / 7AM EDT) | Veeva **delta** only (`full: false`) + CT.gov delta + SF tables + dashboard brief |
+| **Manual delta or full** | Actions → **Run workflow** (`workflow_dispatch`), set `veeva_full` true for full | Same API, operator-controlled |
+| **Manual UI** | Data Status → **Ingest Veeva (new/full)** | One Vault object per browser call (fragile on CORS/VPN); prefer Actions for full |
 
-**Resume / empty mirrors:** Full ingest sorts empty containers first (metrics, milestones, subjects, …) before redoing sites. Incomplete runs do **not** advance `lastSuccessfulSync`, so history is not skipped. Re-click **Ingest Veeva (full)** until metrics/subjects/milestones show counts.
+Auth: `COPILOT_ASK_KEY` Actions secret → `x-copilot-key` on `ora-buddy-api` (same App Setting value).
+
+**Resume / empty mirrors:** Full ingest sorts empty containers first (metrics, milestones, subjects, …) before redoing sites. Incomplete runs do **not** advance `lastSuccessfulSync`, so history is not skipped. Re-run full until metrics/subjects/milestones show counts.
 
 ## Buddy / crosswalk behavior
 

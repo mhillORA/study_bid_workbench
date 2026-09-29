@@ -71,6 +71,9 @@
       veevaSyncStatus: null,
       veevaBusy: false,
       veevaMessage: "",
+      nsStudySyncStatus: null,
+      nsStudyBusy: false,
+      nsStudyMessage: "",
       trialhubUploadBusy: false,
       trialhubUploadMessage: "",
       trialhubUploadResult: null,
@@ -5681,6 +5684,11 @@
       const vdata = await vres.json().catch(() => ({}));
       if (vres.ok) state.intelligence.veevaSyncStatus = vdata;
     } catch (_) {}
+    try {
+      const nsres = await intelligenceFaFetch("/api/netsuite/study-sync");
+      const nsdata = await nsres.json().catch(() => ({}));
+      if (nsres.ok) state.intelligence.nsStudySyncStatus = nsdata;
+    } catch (_) {}
     state.intelligence.loading = false;
     if (state.sectionId === "intelligence" || isDataStatusTab()) render();
   }
@@ -5929,6 +5937,41 @@
       state.intelligence.veevaMessage = `Veeva sync error: ${formatVeevaFetchError(err)}`;
     } finally {
       state.intelligence.veevaBusy = false;
+      refreshDataStatusIfOpen();
+    }
+  }
+
+  async function refreshNetSuiteStudyStatus() {
+    if (state.intelligence.nsStudyBusy) return;
+    state.intelligence.nsStudyBusy = true;
+    state.intelligence.nsStudyMessage = "Refreshing NetSuite study intel status…";
+    refreshDataStatusIfOpen();
+    try {
+      const res = await intelligenceFaFetch("/api/netsuite/study-sync");
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        state.intelligence.nsStudyMessage =
+          data.error || `NetSuite study status failed (${res.status})`;
+      } else {
+        state.intelligence.nsStudySyncStatus = data;
+        const studies =
+          (Array.isArray(data.containers)
+            ? data.containers.find((c) => c.container === "ora_ns_study")
+            : null)?.count ?? "—";
+        const tasks =
+          (Array.isArray(data.containers)
+            ? data.containers.find((c) => c.container === "ora_ns_task")
+            : null)?.count ?? "—";
+        const last = data.lastSuccessfulSync || "never";
+        state.intelligence.nsStudyMessage = `ora_ns_study ${studies} · ora_ns_task ${tasks} · last sync ${last} · YY-DEPT-SEQ (25-150-0005 = year 2025, dept 150, seq 0005)`;
+      }
+      await loadIntelligenceHealth();
+    } catch (err) {
+      state.intelligence.nsStudyMessage = `NetSuite study status error: ${String(
+        err?.message || err
+      )}`;
+    } finally {
+      state.intelligence.nsStudyBusy = false;
       refreshDataStatusIfOpen();
     }
   }
@@ -6519,22 +6562,80 @@
       })
       .join("");
     const nsFromHealth = h.netsuite || {};
+    const nsStudyFromHealth = h.netsuiteStudy || {};
+    const nsStudyStatus = state.intelligence.nsStudySyncStatus || {};
+    const nsStudyTables = Array.isArray(nsStudyStatus.containers) ? nsStudyStatus.containers : [];
     const nsCount =
       typeof counts.lens_ns_projects === "number"
         ? counts.lens_ns_projects
         : typeof nsFromHealth.projects === "number"
           ? nsFromHealth.projects
           : null;
+    const nsStudyCount =
+      typeof counts.ora_ns_study === "number"
+        ? counts.ora_ns_study
+        : typeof nsStudyFromHealth.studies === "number"
+          ? nsStudyFromHealth.studies
+          : typeof nsStudyTables.find((t) => t.container === "ora_ns_study")?.count === "number"
+            ? nsStudyTables.find((t) => t.container === "ora_ns_study").count
+            : null;
+    const nsTaskCount =
+      typeof counts.ora_ns_task === "number"
+        ? counts.ora_ns_task
+        : typeof nsStudyFromHealth.tasks === "number"
+          ? nsStudyFromHealth.tasks
+          : typeof nsStudyTables.find((t) => t.container === "ora_ns_task")?.count === "number"
+            ? nsStudyTables.find((t) => t.container === "ora_ns_task").count
+            : null;
     const nsLiveRows = (() => {
-      const n = typeof nsCount === "number" ? nsCount : null;
-      const badge =
-        n != null && n > 0
-          ? `<span class="badge" style="background:#D1FAE5;color:#065F46;">live NS</span>`
+      const rows = [];
+      const gmN = typeof nsCount === "number" ? nsCount : null;
+      const gmBadge =
+        gmN != null && gmN > 0
+          ? `<span class="badge" style="background:#D1FAE5;color:#065F46;">live NS GM</span>`
           : `<span class="badge" style="background:#FEF3C7;color:#92400E;">empty</span>`;
-      return `<tr><td><code>lens_ns_projects</code> <span class="muted">(NetSuite GM)</span></td><td>${intelStatNum(
-        n
-      )}</td><td>NS extract</td><td>${badge}</td></tr>`;
+      rows.push(
+        `<tr><td><code>lens_ns_projects</code> <span class="muted">(NetSuite GM)</span></td><td>${intelStatNum(
+          gmN
+        )}</td><td>NS profitability</td><td>${gmBadge}</td></tr>`
+      );
+      const studyN = typeof nsStudyCount === "number" ? nsStudyCount : null;
+      const studyBadge =
+        studyN != null && studyN > 0
+          ? `<span class="badge" style="background:#D1FAE5;color:#065F46;">live study intel</span>`
+          : `<span class="badge" style="background:#FEF3C7;color:#92400E;">empty</span>`;
+      rows.push(
+        `<tr><td><code>ora_ns_study</code> <span class="muted">(YY-DEPT-SEQ study KPIs)</span></td><td>${intelStatNum(
+          studyN
+        )}</td><td>NS study pull → Cosmos</td><td>${studyBadge}</td></tr>`
+      );
+      const taskN = typeof nsTaskCount === "number" ? nsTaskCount : null;
+      const taskBadge =
+        taskN != null && taskN > 0
+          ? `<span class="badge" style="background:#D1FAE5;color:#065F46;">live tasks</span>`
+          : `<span class="badge" style="background:#FEF3C7;color:#92400E;">empty</span>`;
+      rows.push(
+        `<tr><td><code>ora_ns_task</code> <span class="muted">(BVA / % complete rows)</span></td><td>${intelStatNum(
+          taskN
+        )}</td><td>NS study pull → Cosmos</td><td>${taskBadge}</td></tr>`
+      );
+      return rows.join("");
     })();
+    const nsStudySync = nsStudyFromHealth.sync || {};
+    const nsStudyMeta = `<p class="muted" style="margin:0.35rem 0 0;">NetSuite study intel · last sync ${
+      escapeHtml(
+        String(
+          nsStudyStatus.lastSuccessfulSync ||
+            nsStudySync.lastSuccessfulSync ||
+            "—"
+        )
+      )
+    } · format <code>YY-DEPT-SEQ</code> (e.g. 25-150-0005) · join Veeva on project_number · Excel still from netsuite-pull-job</p>`;
+    const nsStudyMsg = state.intelligence.nsStudyMessage
+      ? `<p class="muted" style="margin-top:0.5rem;">${escapeHtml(state.intelligence.nsStudyMessage)}</p>`
+      : "";
+    const nsStudyBusy = state.intelligence.nsStudyBusy;
+    const nsStudyDisabled = nsStudyBusy ? "disabled" : "";
     const rmFromHealth = h.insightsRm || {};
     const rmCounts = rmFromHealth.counts || {};
     const rmLiveRows = [
@@ -6678,6 +6779,9 @@
           <button type="button" class="btn btn-secondary" id="btnVeevaSync" ${veevaDisabled}>${
             veevaBusy ? "Ingesting Veeva…" : "Ingest Veeva (full)"
           }</button>
+          <button type="button" class="btn btn-secondary" id="btnNsStudyStatus" ${nsStudyDisabled}>${
+            nsStudyBusy ? "Refreshing NS…" : "Refresh NetSuite study status"
+          }</button>
           <button type="button" class="btn btn-secondary" id="btnSponsorNewsCrawl" ${
             state.intelligence.sponsorNewsBusy ? "disabled" : ""
           }>${
@@ -6693,6 +6797,8 @@
         ${sfTablesMsg}
         ${veevaMeta}
         ${veevaMsg}
+        ${nsStudyMeta}
+        ${nsStudyMsg}
         ${rmMeta}
         ${
           state.intelligence.sponsorNewsMessage
@@ -11083,6 +11189,10 @@
       }
       if (e.target.id === "btnVeevaSyncDelta") {
         runVeevaSyncManual({ full: false });
+        return;
+      }
+      if (e.target.id === "btnNsStudyStatus") {
+        refreshNetSuiteStudyStatus();
         return;
       }
       if (e.target.id === "btnSponsorNewsCrawl") {

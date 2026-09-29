@@ -85,13 +85,19 @@ jobs:
           sku: flexconsumption
 
       # Platform CORS (not BUDDY_CORS_ORIGIN alone) — needed so browser can call visual hops.
+      # App setting BUDDY_CORS_ORIGIN can be comma-separated; platform CORS needs each origin listed.
       - name: Allow SWA origin CORS
         uses: azure/CLI@v2
         with:
           inlineScript: |
             set -e
-            ORIGIN="https://white-river-0de1aed0f.7.azurestaticapps.net"
             RG=$(az functionapp list --query "[?name=='ora-buddy-api'].resourceGroup | [0]" -o tsv)
             echo "Resource group: ${RG}"
-            az functionapp cors add -g "$RG" -n ora-buddy-api --allowed-origins "$ORIGIN" || true
+            for ORIGIN in \
+              "https://white-river-0de1aed0f.7.azurestaticapps.net" \
+              "https://black-stone-03061770f.7.azurestaticapps.net"
+            do
+              echo "CORS add: ${ORIGIN}"
+              az functionapp cors add -g "$RG" -n ora-buddy-api --allowed-origins "$ORIGIN" || true
+            done
             az functionapp cors show -g "$RG" -n ora-buddy-api -o table

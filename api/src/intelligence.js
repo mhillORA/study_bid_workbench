@@ -1642,7 +1642,9 @@ async function getIntelligenceHealth(getDb) {
     "ora_veeva_sponsor",
     "ora_veeva_milestone",
     "ora_veeva_metric",
-    "ora_veeva_subject"
+    "ora_veeva_subject",
+    "ora_ns_study",
+    "ora_ns_task"
   ];
   const counts = {};
   for (const id of containers) {
@@ -1684,6 +1686,8 @@ async function getIntelligenceHealth(getDb) {
     ora_veeva_milestone: counts.ora_veeva_milestone,
     ora_veeva_metric: counts.ora_veeva_metric,
     ora_veeva_subject: counts.ora_veeva_subject,
+    ora_ns_study: counts.ora_ns_study,
+    ora_ns_task: counts.ora_ns_task,
     lens_ns_projects: counts.lens_ns_projects,
     lens_rm_studies: counts.lens_rm_studies,
     lens_rm_actuals: counts.lens_rm_actuals,
@@ -1728,6 +1732,25 @@ async function getIntelligenceHealth(getDb) {
   } catch (_) {
     sfSyncState = null;
   }
+  let nsStudySyncState = null;
+  try {
+    const { resource } = await database
+      .container("syncState")
+      .item("netsuite_study_intel", "netsuite_study_intel")
+      .read();
+    nsStudySyncState = resource
+      ? {
+          lastSuccessfulSync: resource.lastSuccessfulSync || null,
+          lastTriggeredBy: resource.lastTriggeredBy || null,
+          lastSource: resource.lastSource || null,
+          studyCount: resource.studyCount ?? null,
+          taskCount: resource.taskCount ?? null,
+          sampleProjectNumbers: resource.sampleProjectNumbers || []
+        }
+      : null;
+  } catch (_) {
+    nsStudySyncState = null;
+  }
   return {
     dataset: DATASET,
     // ok = health endpoint succeeded; countsMatch = Excel pack sizes still align (legacy check)
@@ -1770,6 +1793,14 @@ async function getIntelligenceHealth(getDb) {
     netsuite: lensSlice?.netsuite || {
       projects: counts.lens_ns_projects ?? 0,
       note: "NetSuite Project Profitability → lens_ns_projects."
+    },
+    netsuiteStudy: {
+      studies: typeof counts.ora_ns_study === "number" ? counts.ora_ns_study : 0,
+      tasks: typeof counts.ora_ns_task === "number" ? counts.ora_ns_task : 0,
+      sync: nsStudySyncState,
+      projectNumberFormat: "YY-DEPT-SEQ (25-150-0005 = year 2025, dept 150, seq 0005)",
+      note:
+        "Study intel from netsuite-pull-job (SuiteQL → Excel + POST /api/netsuite/study-sync). Join Veeva on project_number."
     },
     insightsRm: lensSlice?.insightsRm || {
       counts: {},

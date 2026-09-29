@@ -58,6 +58,10 @@ const {
   runtimeHostHint
 } = require("./salesforceClient");
 const { runVeevaTablesSync, getVeevaSyncStatus } = require("./veevaSync");
+const {
+  upsertNetSuiteStudyIntel,
+  getNetSuiteStudySyncStatus
+} = require("./netsuiteStudySync");
 const { ingestTrialHubUpload } = require("./trialhubIngest");
 const {
   runSponsorNewsCrawl,
@@ -145,9 +149,12 @@ function authorizeCtgovSync(request) {
 }
 
 function corsHeaders(request = null) {
-  const allowed = String(process.env.BUDDY_CORS_ORIGIN || "")
-    .trim()
-    .replace(/\/$/, "");
+  // Comma-separated allow-list, e.g.
+  // BUDDY_CORS_ORIGIN=https://white-river-….azurestaticapps.net,https://black-stone-….azurestaticapps.net
+  const allowedList = String(process.env.BUDDY_CORS_ORIGIN || "")
+    .split(",")
+    .map((s) => s.trim().replace(/\/$/, ""))
+    .filter(Boolean);
   const reqOrigin = request
     ? String(
         (typeof request.headers?.get === "function"
@@ -157,16 +164,17 @@ function corsHeaders(request = null) {
         .trim()
         .replace(/\/$/, "")
     : "";
-  // Prefer echoing the browser Origin when it matches allow-list (required for CORS).
+  // Echo the browser Origin when it matches allow-list (required for credentialed/preflight CORS).
   let origin = "*";
-  if (allowed) {
-    origin = reqOrigin && reqOrigin === allowed ? reqOrigin : allowed;
+  if (allowedList.length) {
+    if (reqOrigin && allowedList.includes(reqOrigin)) origin = reqOrigin;
+    else origin = allowedList[0];
   } else if (reqOrigin) {
     origin = reqOrigin;
   }
   return {
     "Access-Control-Allow-Origin": origin,
-    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
     "Access-Control-Allow-Headers":
       "content-type, authorization, x-copilot-key, x-buddy-session",
     "Access-Control-Max-Age": "86400",
@@ -2101,6 +2109,54 @@ app.http("veevaSync", {
         },
         request
       );
+    } catch (err) {
+      context.error(err);
+      return json(500, { ok: false, error: String(err.message || err) }, request);
+    }
+  }
+});
+
+/** NetSuite study intel (SuiteQL → Excel + Cosmos). Push from netsuite-pull-job; status for Data Status. */
+app.http("netsuiteStudySync", {
+  methods: ["GET", "POST", "OPTIONS"],
+  authLevel: "anonymous",
+  route: "netsuite/study-sync",
+  handler: async (request, context) => {
+    if (request.method === "OPTIONS") {
+      return optionsOk(request);
+    }
+    try {
+      if (request.method === "GET") {
+        const status = await getNetSuiteStudySyncStatus(getDb);
+        return json(200, status, request);
+      }
+
+      const auth = authorizeCtgovSync(request);
+      if (!auth.ok) {
+        return json(
+          401,
+          {
+            error: "Unauthorized — sign in, or pass x-copilot-key (same as Copilot Ask key)"
+          },
+          request
+        );
+      }
+
+      let body = {};
+      try {
+        body = (await request.json()) || {};
+      } catch (_) {
+        body = {};
+      }
+      const triggeredBy =
+        auth.via === "copilot_key"
+          ? "netsuite_pull_or_key"
+          : `ui:${auth.user?.email || auth.user?.userId || "user"}`;
+      const result = await upsertNetSuiteStudyIntel(getDb, {
+        ...body,
+        triggeredBy
+      });
+      return json(result.ok ? 200 : 400, result, request);
     } catch (err) {
       context.error(err);
       return json(500, { ok: false, error: String(err.message || err) }, request);
