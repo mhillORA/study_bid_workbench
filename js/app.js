@@ -5823,7 +5823,7 @@
     state.intelligence.veevaBusy = true;
     const modeLabel = full ? "full" : "delta (new/changed)";
     state.intelligence.veevaMessage =
-      `Starting Veeva ${modeLabel} ingest (one object per request so the browser does not time out)…`;
+      `Starting Veeva ${modeLabel} in background (does not wait — metrics alone can take ~4 min)…`;
     refreshDataStatusIfOpen();
     try {
       const statusRes = await intelligenceFaFetch("/api/veeva/sync", { requireExternal: true });
@@ -5840,6 +5840,8 @@
         return;
       }
 
+      // Prefer empty/critical objects first, but kick each as async:true so the browser
+      // never waits on a 4‑minute metrics pull (that was the "Veeva timed out" error).
       const prefer = [
         "metrics__ctms",
         "milestone__v",
@@ -5852,7 +5854,6 @@
       ];
       const tables = Array.isArray(status.tables) ? [...status.tables] : [];
       tables.sort((a, b) => {
-        // Full: empty containers first. Delta: populated first (watermarked new/changed).
         const aEmpty = (a.count || 0) === 0 ? 0 : 1;
         const bEmpty = (b.count || 0) === 0 ? 0 : 1;
         const emptyRank = full ? aEmpty - bEmpty : bEmpty - aEmpty;
@@ -5861,80 +5862,38 @@
         const bi = prefer.indexOf(b.vaultObject);
         return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi);
       });
-      // Delta: prefer objects that already have rows (new/changed since watermark).
-      // Full: empty-first so cold containers get history.
-      const targets = tables.length
-        ? tables.map((t) => t.vaultObject)
-        : prefer;
+      const targets = tables.length ? tables.map((t) => t.vaultObject) : prefer;
 
-      const summaries = [];
-      let stopped = false;
-      for (let i = 0; i < targets.length; i++) {
-        const obj = targets[i];
-        const prior = tables.find((t) => t.vaultObject === obj);
-        state.intelligence.veevaMessage = `Veeva ${modeLabel} ${i + 1}/${targets.length}: ${obj}${
-          prior && prior.count != null ? ` (was ${prior.count})` : ""
-        }…`;
-        refreshDataStatusIfOpen();
-
-        let res;
-        let data = {};
-        try {
-          res = await intelligenceFaFetch("/api/veeva/sync", {
-            requireExternal: true,
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              full: Boolean(full),
-              only: [obj],
-              prioritizeEmpty: Boolean(full)
-            })
-          });
-          data = await res.json().catch(() => ({}));
-        } catch (chunkErr) {
-          summaries.push(`${obj}: ${formatVeevaFetchError(chunkErr)}`);
-          stopped = true;
-          break;
-        }
-
-        if (res.status === 401) {
-          summaries.push(`${obj}: unauthorized`);
-          stopped = true;
-          break;
-        }
-        if (data.skipped) {
-          summaries.push(`${obj}: ${data.error || "skipped"}`);
-          stopped = true;
-          break;
-        }
-        const row = (data.results || [])[0] || {};
-        if (row.error) {
-          summaries.push(`${obj}: ${row.error}`);
-        } else if (row.skipped) {
-          summaries.push(`${obj}: skipped(${row.reason || "budget"})`);
-          stopped = true;
-          break;
-        } else {
-          summaries.push(
-            `${obj}: ${row.upserted ?? 0}/${row.fetched ?? 0}${row.mode ? ` [${row.mode}]` : ""}`
-          );
-        }
-        if (data.incomplete) {
-          summaries.push("time budget — continue from next click");
-          stopped = true;
-          break;
-        }
+      // One background kick covering prioritizeEmpty / delta — server self-invokes and runs
+      // until VEEVA_SYNC_BUDGET_MS. Click again after a few minutes if still incomplete.
+      const kickRes = await intelligenceFaFetch("/api/veeva/sync", {
+        requireExternal: true,
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          async: true,
+          full: Boolean(full),
+          prioritizeEmpty: true,
+          only: full ? undefined : targets.slice(0, 3)
+        })
+      });
+      const kick = await kickRes.json().catch(() => ({}));
+      if (kickRes.status === 401) {
+        state.intelligence.veevaMessage = kick.error || "Unauthorized for Veeva sync.";
+        return;
       }
-
-      state.intelligence.veevaMessage = [
-        stopped ? `Partial Veeva ${modeLabel}` : `Veeva ${modeLabel} OK`,
-        summaries.join(" · ")
-      ]
-        .filter(Boolean)
-        .join(" — ");
+      if (kickRes.status === 202 || kick.accepted) {
+        state.intelligence.veevaMessage =
+          kick.message ||
+          `Veeva ${modeLabel} started in background. Wait 3–5 min, hit Refresh, then Ingest again if status still says time budget / incomplete. Do not wait on this button — it will not time out anymore.`;
+      } else if (!kickRes.ok) {
+        state.intelligence.veevaMessage = kick.error || `Veeva kick failed (${kickRes.status})`;
+      } else {
+        state.intelligence.veevaMessage = `Veeva ${modeLabel}: ${kick.message || "request accepted"}`;
+      }
       await loadIntelligenceHealth();
     } catch (err) {
-      state.intelligence.veevaMessage = `Veeva sync error: ${formatVeevaFetchError(err)}`;
+      state.intelligence.veevaMessage = `Veeva sync error: ${formatVeevaFetchError(err)} — if this was a timeout, refresh Data Status; a background run may still have started.`;
     } finally {
       state.intelligence.veevaBusy = false;
       refreshDataStatusIfOpen();
