@@ -155,6 +155,7 @@ function taskDocFromPayload(row, meta = {}) {
     total_projected: row.total_projected ?? null,
     pct_complete: row.pct_complete ?? row.percent_complete ?? null,
     is_milestone: row.is_milestone ?? null,
+    milestone_amount: row.milestone_amount ?? row.milestoneAmount ?? null,
     source: meta.source || "netsuite-pull-job",
     pulledAt: meta.pulledAt || new Date().toISOString()
   };
