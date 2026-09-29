@@ -66,7 +66,7 @@ UI: **Data Status → Ingest Veeva (full)**
 
 | Mode | How | What runs |
 |------|-----|-----------|
-| **Scheduled delta** | GitHub Actions `intelligence-daily-sync.yml` cron `0 11 * * *` (≈6AM EST / 7AM EDT) | Veeva **delta** only (`full: false`) + CT.gov delta + SF tables + dashboard brief |
+| **Scheduled delta** | GitHub Actions `intelligence-daily-sync.yml` cron `0 4 * * *` UTC (12:00 AM EDT / 11:00 PM EST) | Veeva **delta** only (`full: false`) + CT.gov delta + SF tables + dashboard brief |
 | **Manual delta or full** | Actions → **Run workflow** (`workflow_dispatch`), set `veeva_full` true for full | Same API, operator-controlled |
 | **Manual UI** | Data Status → **Ingest Veeva (new/full)** | One Vault object per browser call (fragile on CORS/VPN); prefer Actions for full |
 

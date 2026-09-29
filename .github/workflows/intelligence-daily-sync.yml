@@ -1,8 +1,9 @@
 name: Intelligence daily sync (CT.gov + Veeva + Salesforce)
 
 # BOTH modes (do not remove either):
-#   1) schedule  — daily DELTA only (full=false). ~6:00 AM ET when EST (11:00 UTC);
-#                  ~7:00 AM ET when EDT. Server-side via x-copilot-key — not browser.
+#   1) schedule  — daily DELTA only (full=false) at 12:00 AM Eastern (EDT).
+#                  cron 0 4 * * * UTC = midnight EDT / 11:00 PM EST.
+#                  (GitHub Actions is UTC-only; no DST auto-adjust.)
 #   2) manual    — workflow_dispatch and/or Data Status UI for delta OR full backfill.
 #
 # Hits Function App ora-buddy-api (VEEVA_*/SF_*/Cosmos live there).
@@ -14,7 +15,7 @@ name: Intelligence daily sync (CT.gov + Veeva + Salesforce)
 
 on:
   schedule:
-    - cron: "0 11 * * *"
+    - cron: "0 4 * * *"
   workflow_dispatch:
     inputs:
       ctgov_full:
