@@ -1,6 +1,5 @@
 {
   "auth": {
-    "rolesSource": "/api/GetRoles",
     "identityProviders": {
       "azureActiveDirectory": {
         "registration": {
@@ -21,52 +20,8 @@
       "rewrite": "/.auth/login/aad"
     },
     {
-      "route": "/api/GetRoles",
-      "allowedRoles": ["anonymous"]
-    },
-    {
-      "route": "/api/health",
-      "allowedRoles": ["anonymous", "authenticated"]
-    },
-    {
-      "route": "/api/buddy/session",
-      "allowedRoles": ["anonymous", "authenticated"]
-    },
-    {
-      "route": "/api/commercial/yearly-goal",
-      "allowedRoles": ["anonymous", "authenticated"]
-    },
-    {
-      "route": "/api/intelligence",
-      "allowedRoles": ["anonymous", "authenticated"]
-    },
-    {
-      "route": "/api/intelligence/*",
-      "allowedRoles": ["anonymous", "authenticated"]
-    },
-    {
-      "route": "/api/copilot/ask",
-      "allowedRoles": ["anonymous", "authenticated"]
-    },
-    {
-      "route": "/api/ctgov/sync",
-      "allowedRoles": ["anonymous", "authenticated"]
-    },
-    {
-      "route": "/api/salesforce/sync",
-      "allowedRoles": ["anonymous", "authenticated"]
-    },
-    {
-      "route": "/api/veeva/sync",
-      "allowedRoles": ["anonymous", "authenticated"]
-    },
-    {
-      "route": "/api/netsuite/study-sync",
-      "allowedRoles": ["anonymous", "authenticated"]
-    },
-    {
       "route": "/api/*",
-      "allowedRoles": ["authenticated"]
+      "allowedRoles": ["anonymous", "authenticated"]
     },
     {
       "route": "/css/*",

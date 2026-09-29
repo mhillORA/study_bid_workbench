@@ -27,7 +27,9 @@ jobs:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
           action: "upload"
           app_location: "/"
-          api_location: "api"
+          # Managed SWA Functions have been failing deploy ("Failed to deploy the Azure Functions").
+          # All live APIs run on ora-buddy-api — ship static UI only.
+          api_location: ""
           output_location: "."
           skip_app_build: true
         env:

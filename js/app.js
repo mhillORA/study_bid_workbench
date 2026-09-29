@@ -1362,7 +1362,7 @@
     return msg;
   }
 
-  /** Mint JWT for Function App. No-op if SWA secret missing. */
+  /** Mint JWT for Function App. Prefer FA when SWA managed /api is 503/HTML. */
   async function ensureBuddySession() {
     if (state._buddyExternalDisabled) {
       return {
@@ -1388,20 +1388,12 @@
         external: true
       };
     }
-    try {
-      const res = await fetch(apiUrl("/api/buddy/session"), {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user: state.entraUser || undefined })
-      });
-      const data = await res.json().catch(() => ({}));
-      // SWA app setting often pastes host-only → relative URL → 405 on white-river/.../ora-buddy-api...
+
+    const applyMint = (data, apiBaseFallback) => {
       const apiBase = normalizeBuddyApiBase(
-        data.apiBase || window.BUDDY_API_BASE || DEFAULT_BUDDY_API_BASE || ""
+        data.apiBase || apiBaseFallback || window.BUDDY_API_BASE || DEFAULT_BUDDY_API_BASE || ""
       );
       if (data.ok && data.token && apiBase) {
-        // Mint succeeded — use Function App. Do NOT CORS-probe-and-discard (that
-        // falsely told people the SWA secret was missing).
         state.buddySessionToken = data.token;
         state.buddyApiBase = apiBase;
         state._buddyPreferExternal = true;
@@ -1410,6 +1402,40 @@
           : now + (Number(data.expiresIn) || 3600) * 1000;
         return { ok: true, token: data.token, apiBase, external: true };
       }
+      return null;
+    };
+
+    const mintBody = JSON.stringify({ user: state.entraUser || undefined });
+    const mintHeaders = { "Content-Type": "application/json", Accept: "application/json" };
+
+    // 1) Function App first — SWA managed /api has been 503 / login-HTML
+    try {
+      const fa = buddyApiBaseRaw() || DEFAULT_BUDDY_API_BASE;
+      const res = await fetch(`${fa}/api/buddy/session`, {
+        method: "POST",
+        headers: mintHeaders,
+        body: mintBody
+      });
+      const ct = String(res.headers.get("content-type") || "");
+      if (!ct.includes("text/html")) {
+        const data = await res.json().catch(() => ({}));
+        const applied = applyMint(data, fa);
+        if (applied) return applied;
+      }
+    } catch (err) {
+      console.warn("[Buddy] FA session mint failed", err);
+    }
+
+    // 2) Same-origin SWA (legacy managed API)
+    try {
+      const res = await fetch(apiUrl("/api/buddy/session"), {
+        method: "POST",
+        headers: mintHeaders,
+        body: mintBody
+      });
+      const data = await res.json().catch(() => ({}));
+      const applied = applyMint(data, DEFAULT_BUDDY_API_BASE);
+      if (applied) return applied;
       state.buddySessionToken = null;
       state.buddyApiBase = "";
       state._buddyPreferExternal = false;
