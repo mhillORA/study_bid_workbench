@@ -148,6 +148,59 @@ function authorizeCtgovSync(request) {
   return { ok: false };
 }
 
+/**
+ * Data Lens SWA API times out ~30s; Veeva/SF syncs take minutes.
+ * async:true → return 202 and self-POST a second invocation that runs the real sync.
+ */
+function wantsAsyncSync(request, body = {}) {
+  return (
+    body.async === true ||
+    body.background === true ||
+    String(request.query.get("async") || "").toLowerCase() === "true" ||
+    String(request.query.get("background") || "").toLowerCase() === "true"
+  );
+}
+
+function buddySelfBaseUrl() {
+  const host = String(process.env.WEBSITE_HOSTNAME || "").trim();
+  if (host) return `https://${host}`;
+  return "https://ora-buddy-api-hrdbgqh9cvaub5ft.eastus2-01.azurewebsites.net";
+}
+
+function kickAsyncSync(path, body, context) {
+  const key = String(process.env.COPILOT_ASK_KEY || "").trim();
+  if (!key || key.includes("SET_IN")) {
+    return {
+      ok: false,
+      error: "COPILOT_ASK_KEY missing on ora-buddy-api — cannot background-kick sync."
+    };
+  }
+  const url = `${buddySelfBaseUrl()}${path.startsWith("/") ? path : `/${path}`}`;
+  const payload = { ...(body || {}), async: false, background: false, _asyncKick: true };
+  // Fire second invocation; do not await — this request returns 202 immediately.
+  fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Accept: "application/json",
+      "x-copilot-key": key
+    },
+    body: JSON.stringify(payload)
+  }).catch((err) => {
+    try {
+      context?.error?.("async sync kick failed", err);
+    } catch (_) {
+      /* ignore */
+    }
+  });
+  return {
+    ok: true,
+    accepted: true,
+    async: true,
+    message: "Sync started in background on ora-buddy-api. Refresh Data Status / Sources in a few minutes (Veeva may need 2–3 kicks if time budget hits)."
+  };
+}
+
 function corsHeaders(request = null) {
   // Comma-separated allow-list, e.g.
   // BUDDY_CORS_ORIGIN=https://white-river-….azurestaticapps.net,https://black-stone-….azurestaticapps.net
@@ -1717,6 +1770,10 @@ app.http("ctgovSync", {
       } catch (_) {
         body = {};
       }
+      if (wantsAsyncSync(request, body)) {
+        const kick = kickAsyncSync("/api/ctgov/sync", body, context);
+        return json(kick.ok ? 202 : 500, kick, request);
+      }
       const full = body.full === true || request.query.get("full") === "true";
       const remapOnly =
         body.remap === true ||
@@ -2071,6 +2128,10 @@ app.http("veevaSync", {
       } catch (_) {
         body = {};
       }
+      if (wantsAsyncSync(request, body)) {
+        const kick = kickAsyncSync("/api/veeva/sync", body, context);
+        return json(kick.ok ? 202 : 500, kick, request);
+      }
       const triggeredBy =
         auth.via === "copilot_key"
           ? "scheduler_or_key"
@@ -2203,6 +2264,10 @@ app.http("salesforceSync", {
         body = (await request.json()) || {};
       } catch (_) {
         body = {};
+      }
+      if (wantsAsyncSync(request, body)) {
+        const kick = kickAsyncSync("/api/salesforce/sync", body, context);
+        return json(kick.ok ? 202 : 500, kick);
       }
       const dryRun = body.dryRun === true || request.query.get("dryRun") === "true";
       const tables =
