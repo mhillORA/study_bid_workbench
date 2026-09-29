@@ -150,6 +150,13 @@
       status: "",
       loading: false
     },
+    pmDashboard: {
+      pack: null,
+      selectedPm: "",
+      loading: false,
+      status: "",
+      filter: ""
+    },
     dashboard: {
       brief: null,
       loading: false,
@@ -678,6 +685,9 @@
     if (sectionId === "ops") {
       ensureOpsLoaded();
     }
+    if (sectionId === "pm-dashboard") {
+      ensurePmDashboardLoaded();
+    }
     if (sectionId === "dashboard") {
       ensureDashboardLoaded();
     }
@@ -698,6 +708,41 @@
     ]);
     state.ops.loading = false;
     if (state.sectionId === "ops") render();
+  }
+
+  async function ensurePmDashboardLoaded({ force = false } = {}) {
+    if (state.pmDashboard.loading) return;
+    if (!force && state.pmDashboard.pack?.ok) return;
+    state.pmDashboard.loading = true;
+    state.pmDashboard.status = "Loading PM portfolios…";
+    if (state.sectionId === "pm-dashboard") render();
+    try {
+      const params = new URLSearchParams();
+      params.set("activeOnly", "true");
+      if (state.pmDashboard.selectedPm) params.set("pm", state.pmDashboard.selectedPm);
+      const res = await intelligenceFaFetch(`/api/pm/dashboard?${params.toString()}`, {
+        requireExternal: true
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || data.ok === false) {
+        throw new Error(data.error || `PM dashboard HTTP ${res.status}`);
+      }
+      state.pmDashboard.pack = data;
+      if (!state.pmDashboard.selectedPm && data.selected?.name) {
+        state.pmDashboard.selectedPm = data.selected.name;
+      }
+      state.pmDashboard.status = data.viewer_name
+        ? `Matched viewer · ${data.viewer_name}`
+        : `${data.pm_count || 0} PMs · ${data.study_count || 0} active studies`;
+    } catch (err) {
+      state.pmDashboard.status = String(err.message || err);
+      if (!state.pmDashboard.pack) {
+        state.pmDashboard.pack = { ok: false, error: state.pmDashboard.status, pms: [] };
+      }
+    } finally {
+      state.pmDashboard.loading = false;
+      if (state.sectionId === "pm-dashboard") render();
+    }
   }
 
   async function ensureDashboardLoaded({ forceRefresh = false } = {}) {
@@ -1588,6 +1633,14 @@
     scorecard: ["scorecard", "site scorecard", "site scores", "sites"],
     "buddy-context": ["buddy context", "context", "live context", "ingest context", "buddy ingest"],
     ops: ["ops", "ops dashboard", "operations", "operations dashboard", "workflow"],
+    "pm-dashboard": [
+      "pm dashboard",
+      "pm",
+      "project manager",
+      "my studies",
+      "pm board",
+      "project managers"
+    ],
     hlbp: [
       "hlbp",
       "high level ballpark",
@@ -9799,6 +9852,7 @@
             <button type="button" class="btn btn-secondary" data-jump="upload">Upload</button>
             <button type="button" class="btn btn-secondary" data-jump="intelligence">Intelligence</button>
             <button type="button" class="btn btn-secondary" data-jump="scorecard">Site Scorecard</button>
+            <button type="button" class="btn btn-secondary" data-jump="pm-dashboard">PM Dashboard</button>
             <button type="button" class="btn btn-ghost" id="btnOpsRefresh">${
               state.ops.loading ? "Refreshing…" : "Refresh"
             }</button>
@@ -9834,6 +9888,174 @@
           <table class="table">
             <thead><tr><th>Study</th><th>Client</th><th>Indication / TA</th><th>Updated</th></tr></thead>
             <tbody>${recentRows}</tbody>
+          </table>
+        </div>
+      </div>`;
+  }
+
+  function fmtPmMoney(n) {
+    if (n == null || !Number.isFinite(Number(n))) return "—";
+    const v = Number(n);
+    if (Math.abs(v) >= 1e6) return `$${(v / 1e6).toFixed(1)}M`;
+    if (Math.abs(v) >= 1e3) return `$${(v / 1e3).toFixed(0)}k`;
+    return `$${Math.round(v).toLocaleString()}`;
+  }
+
+  function renderPmDashboard() {
+    const pack = state.pmDashboard.pack || {};
+    const loading = state.pmDashboard.loading;
+    const selectedName = state.pmDashboard.selectedPm || pack.selected?.name || "";
+    const filter = String(state.pmDashboard.filter || "").trim().toLowerCase();
+    const pms = (pack.pms || []).filter((p) => {
+      if (!filter) return true;
+      return String(p.name || "").toLowerCase().includes(filter);
+    });
+    const selected =
+      pack.selected && pack.selected.name === selectedName
+        ? pack.selected
+        : null;
+    const mine = pack.mine || null;
+
+    const pmRows = pms.length
+      ? pms
+          .map((p) => {
+            const active = p.name === selectedName;
+            return `<tr class="${active ? "row-active" : ""}" style="${
+              p.is_viewer ? "background:rgba(13,148,136,0.08)" : ""
+            }">
+              <td>
+                <button type="button" class="btn btn-ghost" data-pm-select="${escapeAttr(p.name)}">${
+                  p.is_viewer ? "★ " : ""
+                }${escapeHtml(p.name)}</button>
+              </td>
+              <td>${intelStatNum(p.active_count)}</td>
+              <td>${escapeHtml((p.depts || []).slice(0, 4).join(", ") || "—")}</td>
+              <td>${escapeHtml(fmtPmMoney(p.inv_fee_budget))}</td>
+              <td>${escapeHtml(fmtPmMoney(p.ptc_budget))}</td>
+            </tr>`;
+          })
+          .join("")
+      : `<tr><td colspan="5" class="muted">${
+          loading ? "Loading…" : pack.error || "No PMs found in ora_ns_study."
+        }</td></tr>`;
+
+    const studyRows =
+      selected && (selected.studies || []).length
+        ? selected.studies
+            .map(
+              (s) => `<tr>
+                <td><code>${escapeHtml(s.project_number || "—")}</code>${
+                  s.mine ? ' <span class="badge" style="background:#CCFBF1;color:#115E59;">yours</span>' : ""
+                }</td>
+                <td>${escapeHtml(s.project_name || "—")}</td>
+                <td>${escapeHtml(s.project_status || "—")}</td>
+                <td>${escapeHtml(s.service_line || "—")}</td>
+                <td>${
+                  s.percent_complete != null ? `${escapeHtml(String(s.percent_complete))}%` : "—"
+                }</td>
+                <td>${escapeHtml(fmtPmMoney(s.inv_fee_budget))}</td>
+                <td>${escapeHtml(fmtPmMoney(s.inv_fee_actual))}</td>
+                <td>${escapeHtml(fmtPmMoney(s.ptc_budget))}</td>
+              </tr>`
+            )
+            .join("")
+        : `<tr><td colspan="8" class="muted">${
+            selectedName
+              ? loading
+                ? "Loading studies…"
+                : "No active studies for this PM."
+              : "Select a PM from the list."
+          }</td></tr>`;
+
+    const mineStrip =
+      mine && mine.study_count
+        ? `<div class="card wide" style="border-left:4px solid #0d9488;">
+            <h3>Your studies (${mine.study_count}) · ${escapeHtml(mine.viewer_name || "signed in")}</h3>
+            <p class="muted" style="margin:0.35rem 0 0.65rem;">Matched via Entra display name / email → NetSuite project_manager.</p>
+            <table class="table">
+              <thead><tr><th>Project</th><th>Name</th><th>Role</th><th>Status</th><th>% done</th></tr></thead>
+              <tbody>${mine.studies
+                .slice(0, 20)
+                .map(
+                  (s) => `<tr>
+                    <td><code>${escapeHtml(s.project_number || "—")}</code></td>
+                    <td>${escapeHtml(s.project_name || "—")}</td>
+                    <td>${escapeHtml(s.my_role || "—")}</td>
+                    <td>${escapeHtml(s.project_status || "—")}</td>
+                    <td>${
+                      s.percent_complete != null
+                        ? `${escapeHtml(String(s.percent_complete))}%`
+                        : "—"
+                    }</td>
+                  </tr>`
+                )
+                .join("")}</tbody>
+            </table>
+          </div>`
+        : `<div class="card wide">
+            <h3>Your studies</h3>
+            <p class="muted">${
+              pack.viewer_name
+                ? `Signed in as ${escapeHtml(pack.viewer_name)} — no PM/PD name match on active ora_ns_study rows.`
+                : "Sign in so we can pin studies where you are the NetSuite project manager."
+            }</p>
+          </div>`;
+
+    const selectedHead = selected
+      ? `${escapeHtml(selected.name)} · ${intelStatNum(selected.active_count)} active · inv ${escapeHtml(
+          fmtPmMoney(selected.inv_fee_budget)
+        )} · PTC ${escapeHtml(fmtPmMoney(selected.ptc_budget))}`
+      : selectedName
+        ? escapeHtml(selectedName)
+        : "Select a PM";
+
+    return `
+      <div class="grid">
+        <div class="card wide">
+          <h3>PM Dashboard</h3>
+          <p class="muted">Active NetSuite studies (<code>ora_ns_study</code>) grouped by project manager. Your portfolio pins to the top when Entra name matches.</p>
+          <div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;margin-top:0.75rem;">
+            <input id="pmDashFilter" class="input" style="max-width:220px;" placeholder="Filter PMs…" value="${escapeAttr(
+              state.pmDashboard.filter || ""
+            )}" />
+            <button type="button" class="btn btn-secondary" id="btnPmDashRefresh" ${
+              loading ? "disabled" : ""
+            }>${loading ? "Refreshing…" : "Refresh"}</button>
+            <button type="button" class="btn btn-ghost" data-jump="data-status">Data Status</button>
+            <button type="button" class="btn btn-ghost" data-jump="ops">Ops</button>
+          </div>
+          <p class="muted" style="margin:0.5rem 0 0;">${escapeHtml(
+            state.pmDashboard.status || pack.note || ""
+          )}</p>
+        </div>
+        ${mineStrip}
+        <div class="card">
+          <h3>PMs</h3>
+          <div class="stat">${intelStatNum(pack.pm_count)}</div>
+          <p class="muted">with active studies</p>
+        </div>
+        <div class="card">
+          <h3>Active studies</h3>
+          <div class="stat">${intelStatNum(pack.study_count)}</div>
+          <p class="muted">ora_ns_study (not closed)</p>
+        </div>
+        <div class="card">
+          <h3>Yours</h3>
+          <div class="stat">${intelStatNum(mine?.study_count)}</div>
+          <p class="muted">PM/PD name match</p>
+        </div>
+        <div class="card wide">
+          <h3>Project managers</h3>
+          <table class="table">
+            <thead><tr><th>PM</th><th>Active</th><th>Depts</th><th>Inv budget</th><th>PTC budget</th></tr></thead>
+            <tbody>${pmRows}</tbody>
+          </table>
+        </div>
+        <div class="card wide">
+          <h3>${selectedHead}</h3>
+          <table class="table">
+            <thead><tr><th>Project</th><th>Name</th><th>Status</th><th>Service line</th><th>% done</th><th>Inv bud</th><th>Inv act</th><th>PTC bud</th></tr></thead>
+            <tbody>${studyRows}</tbody>
           </table>
         </div>
       </div>`;
@@ -10913,6 +11135,7 @@
       case "buddy": html = renderBuddyPage(); break;
       case "hlbp": html = renderHlbp(); break;
       case "ops": html = renderOpsDashboard(); break;
+      case "pm-dashboard": html = renderPmDashboard(); break;
       case "upload": html = renderUpload(); break;
       case "studies": html = renderVeevaStudies(); break;
       case "budget-studies": html = renderBudgetStudies(); break;
@@ -11015,6 +11238,11 @@
       if (!e.target) return;
       if (e.target.id === "intelIndication") state.intelligence.indication = e.target.value;
       if (e.target.id === "scoreIndication") state.scorecard.indication = e.target.value;
+      if (e.target.id === "pmDashFilter") {
+        state.pmDashboard.filter = e.target.value;
+        if (state.sectionId === "pm-dashboard") render();
+        return;
+      }
       if (e.target.id === "diveEnrolledGoal" && state.scorecard.dive) {
         state.scorecard.dive.enrolledGoal = Number(e.target.value) || 0;
       }
@@ -11353,6 +11581,18 @@
       if (e.target.id === "btnOpsRefresh") {
         state.studiesList = [];
         ensureOpsLoaded();
+        return;
+      }
+      if (e.target.id === "btnPmDashRefresh") {
+        state.pmDashboard.pack = null;
+        ensurePmDashboardLoaded({ force: true });
+        return;
+      }
+      const pmSelect = e.target.closest("[data-pm-select]");
+      if (pmSelect) {
+        state.pmDashboard.selectedPm = pmSelect.getAttribute("data-pm-select") || "";
+        state.pmDashboard.pack = null;
+        ensurePmDashboardLoaded({ force: true });
         return;
       }
       if (e.target.id === "btnDashRefresh") {

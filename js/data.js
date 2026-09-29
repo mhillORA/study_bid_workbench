@@ -18,6 +18,7 @@ SBW.sections = [
   { id: "buddy", label: "Buddy", department: null },
   { id: "data-status", label: "Data Status", department: null },
   { id: "ops", label: "Ops Dashboard", department: null },
+  { id: "pm-dashboard", label: "PM Dashboard", department: null },
   { id: "buddy-context", label: "Buddy Context", department: null },
   { id: "studies", label: "Studies", department: null },
   { id: "hlbp", label: "HLBP", department: null, navGroup: "budget" },
@@ -130,6 +131,11 @@ SBW.bdShortcuts = [
     id: "ops",
     title: "Ops Dashboard",
     blurb: "Workflow status and data health"
+  },
+  {
+    id: "pm-dashboard",
+    title: "PM Dashboard",
+    blurb: "Active studies by project manager — yours pinned when signed in"
   },
   {
     id: "hlbp",

@@ -62,6 +62,7 @@ const {
   upsertNetSuiteStudyIntel,
   getNetSuiteStudySyncStatus
 } = require("./netsuiteStudySync");
+const { buildPmDashboard } = require("./pmDashboard");
 const { ingestTrialHubUpload } = require("./trialhubIngest");
 const {
   runSponsorNewsCrawl,
@@ -2244,6 +2245,44 @@ app.http("netsuiteStudySync", {
         triggeredBy
       });
       return json(result.ok ? 200 : 400, result, request);
+    } catch (err) {
+      context.error(err);
+      return json(500, { ok: false, error: String(err.message || err) }, request);
+    }
+  }
+});
+
+/**
+ * Per-PM dashboard — active ora_ns_study rows grouped by project_manager.
+ * Optional ?pm=Name selects one PM; Entra/buddy session pins "your" studies.
+ */
+app.http("pmDashboard", {
+  methods: ["GET", "OPTIONS"],
+  authLevel: "anonymous",
+  route: "pm/dashboard",
+  handler: async (request, context) => {
+    if (request.method === "OPTIONS") {
+      return optionsOk(request);
+    }
+    try {
+      const auth = authorizeCtgovSync(request);
+      const principal = auth.ok && auth.user
+        ? {
+            email: auth.user.email || null,
+            displayName: auth.user.displayName || auth.user.name || null,
+            userId: auth.user.userId || null
+          }
+        : null;
+      const pm = request.query.get("pm") || request.query.get("manager") || "";
+      const activeOnly =
+        String(request.query.get("activeOnly") || "true").toLowerCase() !== "false";
+      const pack = await buildPmDashboard(getDb, {
+        principal,
+        pm,
+        activeOnly,
+        limit: Number(request.query.get("limit")) || 800
+      });
+      return json(pack.ok ? 200 : 500, pack, request);
     } catch (err) {
       context.error(err);
       return json(500, { ok: false, error: String(err.message || err) }, request);
