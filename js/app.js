@@ -70,6 +70,7 @@
       sfTablesMessage: "",
       veevaSyncStatus: null,
       veevaBusy: false,
+      veevaWatching: false,
       veevaMessage: "",
       nsStudySyncStatus: null,
       nsStudyBusy: false,
@@ -5772,7 +5773,17 @@
     try {
       const vres = await buddyDataFetch("/api/veeva/sync");
       const vdata = await vres.json().catch(() => ({}));
-      if (vres.ok) state.intelligence.veevaSyncStatus = vdata;
+      if (vres.ok) {
+        state.intelligence.veevaSyncStatus = vdata;
+        const pStatus = String(vdata.sync?.progress?.status || "").toLowerCase();
+        if (
+          (pStatus === "running" || pStatus === "queued") &&
+          !state.intelligence.veevaWatching &&
+          isDataStatusTab()
+        ) {
+          startVeevaProgressWatch();
+        }
+      }
     } catch (_) {}
     try {
       const nsres = await buddyDataFetch("/api/netsuite/study-sync");
@@ -5911,7 +5922,7 @@
   async function runVeevaSyncManual({ full = false } = {}) {
     if (state.intelligence.veevaBusy) return;
     state.intelligence.veevaBusy = true;
-    const modeLabel = full ? "full" : "delta (new/changed)";
+    const modeLabel = full ? "full" : "delta (empty first)";
     state.intelligence.veevaMessage =
       `Starting Veeva ${modeLabel} in background (does not wait — metrics alone can take ~4 min)…`;
     refreshDataStatusIfOpen();
@@ -5933,6 +5944,9 @@
       // Prefer empty/critical objects first, but kick each as async:true so the browser
       // never waits on a 4‑minute metrics pull (that was the "Veeva timed out" error).
       const prefer = [
+        "trip_report_answer__ctms",
+        "monitoring_event__ctms",
+        "trip_report_question_response__ctms",
         "metrics__ctms",
         "milestone__v",
         "subject__clin",
@@ -5941,21 +5955,29 @@
         "organization__v",
         "study__v",
         "site__v",
-        "trip_report_answer__ctms",
-        "monitoring_event__ctms",
-        "trip_report_question_response__ctms"
+        "country__v"
       ];
       const tables = Array.isArray(status.tables) ? [...status.tables] : [];
+      // Always fill empty mirrors first — prior delta sort inverted this and kept
+      // monitoring tables at 0 while re-pulling metrics/milestones.
       tables.sort((a, b) => {
         const aEmpty = (a.count || 0) === 0 ? 0 : 1;
         const bEmpty = (b.count || 0) === 0 ? 0 : 1;
-        const emptyRank = full ? aEmpty - bEmpty : bEmpty - aEmpty;
-        if (emptyRank !== 0) return emptyRank;
+        if (aEmpty !== bEmpty) return aEmpty - bEmpty;
         const ai = prefer.indexOf(a.vaultObject);
         const bi = prefer.indexOf(b.vaultObject);
         return (ai < 0 ? 99 : ai) - (bi < 0 ? 99 : bi);
       });
+      const emptyObjects = tables
+        .filter((t) => (t.count || 0) === 0)
+        .map((t) => t.vaultObject);
       const targets = tables.length ? tables.map((t) => t.vaultObject) : prefer;
+      // Delta: only empty objects (cap 4 so budget can finish). Full: all tables.
+      const only = full
+        ? undefined
+        : emptyObjects.length
+          ? emptyObjects.slice(0, 4)
+          : targets.slice(0, 3);
 
       // One background kick covering prioritizeEmpty / delta — server self-invokes and runs
       // until VEEVA_SYNC_BUDGET_MS. Click again after a few minutes if still incomplete.
@@ -5967,7 +5989,7 @@
           async: true,
           full: Boolean(full),
           prioritizeEmpty: true,
-          only: full ? undefined : targets.slice(0, 3)
+          only
         })
       });
       const kick = await kickRes.json().catch(() => ({}));
@@ -5976,21 +5998,133 @@
         return;
       }
       if (kickRes.status === 202 || kick.accepted) {
+        const focus =
+          Array.isArray(only) && only.length
+            ? ` Focusing: ${only.join(", ")}.`
+            : " Full object list.";
         state.intelligence.veevaMessage =
-          kick.message ||
-          `Veeva ${modeLabel} started in background. Wait up to ~25 min (metrics is huge), then Refresh. Only click again if status still says time budget / incomplete.`;
+          (kick.message || `Veeva ${modeLabel} started in background.`) +
+          focus +
+          " Progress bar updates automatically.";
+        startVeevaProgressWatch();
       } else if (!kickRes.ok) {
         state.intelligence.veevaMessage = kick.error || `Veeva kick failed (${kickRes.status})`;
       } else {
         state.intelligence.veevaMessage = `Veeva ${modeLabel}: ${kick.message || "request accepted"}`;
+        startVeevaProgressWatch();
       }
       await loadIntelligenceHealth();
     } catch (err) {
       state.intelligence.veevaMessage = `Veeva sync error: ${formatVeevaFetchError(err)} — if this was a timeout, refresh Data Status; a background run may still have started.`;
+      startVeevaProgressWatch();
     } finally {
       state.intelligence.veevaBusy = false;
       refreshDataStatusIfOpen();
     }
+  }
+
+  function stopVeevaProgressWatch() {
+    if (state._veevaProgressTimer) {
+      clearInterval(state._veevaProgressTimer);
+      state._veevaProgressTimer = null;
+    }
+    state.intelligence.veevaWatching = false;
+  }
+
+  function startVeevaProgressWatch() {
+    stopVeevaProgressWatch();
+    state.intelligence.veevaWatching = true;
+    state._veevaProgressStartedAt = Date.now();
+    refreshDataStatusIfOpen();
+    const tick = async () => {
+      if (!isDataStatusTab() && !state.intelligence.veevaWatching) {
+        stopVeevaProgressWatch();
+        return;
+      }
+      // Hard stop after ~30 min (matches functionTimeout).
+      if (Date.now() - (state._veevaProgressStartedAt || 0) > 32 * 60 * 1000) {
+        stopVeevaProgressWatch();
+        state.intelligence.veevaMessage =
+          (state.intelligence.veevaMessage || "") + " · watch timed out — click Refresh.";
+        refreshDataStatusIfOpen();
+        return;
+      }
+      try {
+        const res = await buddyDataFetch("/api/veeva/sync");
+        const data = await res.json().catch(() => ({}));
+        if (res.ok) {
+          state.intelligence.veevaSyncStatus = data;
+          const prog = data.sync?.progress || null;
+          const status = String(prog?.status || "").toLowerCase();
+          if (prog?.message) {
+            state.intelligence.veevaMessage = prog.message;
+          }
+          if (status && status !== "running" && status !== "queued") {
+            stopVeevaProgressWatch();
+            await loadIntelligenceHealth();
+            return;
+          }
+        }
+      } catch (_) {
+        /* keep polling */
+      }
+      refreshDataStatusIfOpen();
+    };
+    // Immediate first poll, then every 5s.
+    tick();
+    state._veevaProgressTimer = setInterval(tick, 5000);
+  }
+
+  function renderVeevaProgressBlock() {
+    const prog = state.intelligence.veevaSyncStatus?.sync?.progress || null;
+    const watching = state.intelligence.veevaWatching;
+    if (!prog && !watching) return "";
+    const status = String(prog?.status || (watching ? "queued" : "")).toLowerCase();
+    const total = Number(prog?.objectsTotal) || 0;
+    const done = Number(prog?.objectsDone) || 0;
+    const pct =
+      total > 0
+        ? Math.min(100, Math.round((done / total) * 100))
+        : status === "running" || status === "queued"
+          ? 8
+          : status === "complete"
+            ? 100
+            : 0;
+    const current = prog?.currentObject
+      ? `${prog.currentObject}${prog.currentContainer ? ` → ${prog.currentContainer}` : ""}`
+      : status === "queued"
+        ? "queued…"
+        : "—";
+    const upserted =
+      typeof prog?.upsertedTotal === "number"
+        ? prog.upsertedTotal.toLocaleString()
+        : "—";
+    const label =
+      status === "running"
+        ? `Ingesting · ${done}/${total || "?"} objects · ${escapeHtml(current)}`
+        : status === "queued"
+          ? "Queued on ora-buddy-api…"
+          : status === "incomplete"
+            ? `Paused (time budget) · ${done}/${total || "?"} · click Ingest again for empties`
+            : status === "complete"
+              ? `Complete · ${done}/${total || "?"} objects · ${upserted} upserted`
+              : status === "failed"
+                ? `Failed · ${escapeHtml(prog?.message || "see logs")}`
+                : watching
+                  ? "Watching for progress…"
+                  : "";
+    if (!label) return "";
+    return `
+      <div class="upload-progress" style="margin-top:0.75rem;" aria-live="polite">
+        <div class="muted" style="font-size:0.9rem;">${label}${
+          typeof prog?.upsertedTotal === "number" && status === "running"
+            ? ` · ${upserted} upserted so far`
+            : ""
+        }</div>
+        <div class="upload-progress-track">
+          <div class="upload-progress-bar" style="width:${pct}%"></div>
+        </div>
+      </div>`;
   }
 
   async function refreshNetSuiteStudyStatus() {
@@ -6793,11 +6927,12 @@
         )})</span></td><td>${intelStatNum(n)}</td><td>Veeva ingest</td><td>${badge}</td></tr>`;
       })
       .join("");
-    const veevaBusy = state.intelligence.veevaBusy;
+    const veevaBusy = state.intelligence.veevaBusy || state.intelligence.veevaWatching;
     const veevaDisabled = veevaBusy ? "disabled" : "";
     const veevaMsg = state.intelligence.veevaMessage
       ? `<p class="muted" style="margin-top:0.5rem;">${escapeHtml(state.intelligence.veevaMessage)}</p>`
       : "";
+    const veevaProgress = renderVeevaProgressBlock();
     const vvLast = vv.sync?.lastSuccessfulSync || vv.sync?.lastRunAt || null;
     const vvCountBits = [
       ["study", vvCount("ora_veeva_study") ?? vvFromHealth.studies],
@@ -6842,10 +6977,18 @@
             sfTablesBusy ? "Ingesting SF…" : "Ingest SF + crosswalk"
           }</button>
           <button type="button" class="btn btn-primary" id="btnVeevaSyncDelta" ${veevaDisabled}>${
-            veevaBusy ? "Ingesting Veeva…" : "Ingest Veeva (new)"
+            state.intelligence.veevaBusy
+              ? "Starting…"
+              : state.intelligence.veevaWatching
+                ? "Ingesting Veeva…"
+                : "Ingest Veeva (new)"
           }</button>
           <button type="button" class="btn btn-secondary" id="btnVeevaSync" ${veevaDisabled}>${
-            veevaBusy ? "Ingesting Veeva…" : "Ingest Veeva (full)"
+            state.intelligence.veevaBusy
+              ? "Starting…"
+              : state.intelligence.veevaWatching
+                ? "Ingesting Veeva…"
+                : "Ingest Veeva (full)"
           }</button>
           <button type="button" class="btn btn-secondary" id="btnNsStudyStatus" ${nsStudyDisabled}>${
             nsStudyBusy ? "Refreshing NS…" : "Refresh NetSuite study status"
@@ -6865,6 +7008,7 @@
         ${sfTablesMsg}
         ${veevaMeta}
         ${veevaMsg}
+        ${veevaProgress}
         ${nsStudyMeta}
         ${nsStudyMsg}
         ${rmMeta}

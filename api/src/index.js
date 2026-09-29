@@ -57,7 +57,7 @@ const {
   resolveSalesforceConfig,
   runtimeHostHint
 } = require("./salesforceClient");
-const { runVeevaTablesSync, getVeevaSyncStatus } = require("./veevaSync");
+const { runVeevaTablesSync, getVeevaSyncStatus, markVeevaSyncProgress } = require("./veevaSync");
 const {
   upsertNetSuiteStudyIntel,
   getNetSuiteStudySyncStatus
@@ -2133,6 +2133,20 @@ app.http("veevaSync", {
         body = {};
       }
       if (wantsAsyncSync(request, body)) {
+        try {
+          await markVeevaSyncProgress(getDb, {
+            status: "queued",
+            startedAt: new Date().toISOString(),
+            currentObject: null,
+            currentContainer: null,
+            objectsTotal: null,
+            objectsDone: 0,
+            upsertedTotal: 0,
+            message: "Veeva ingest queued on ora-buddy-api…"
+          });
+        } catch (_) {
+          /* progress is best-effort */
+        }
         const kick = kickAsyncSync("/api/veeva/sync", body, context);
         // Hold ~1.5s so the self-POST is actually on the wire before we return 202.
         if (kick._kickPromise) {

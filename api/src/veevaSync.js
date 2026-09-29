@@ -444,6 +444,21 @@ async function writeSyncState(database, patch) {
   return doc;
 }
 
+/** Merge into syncState.progress so Data Status can poll live ingest. */
+async function markVeevaSyncProgress(getDb, patch = {}) {
+  const database = getDb();
+  const prev = (await readSyncState(database)) || {};
+  const prevProg = prev.progress && typeof prev.progress === "object" ? prev.progress : {};
+  const now = new Date().toISOString();
+  return writeSyncState(database, {
+    progress: {
+      ...prevProg,
+      ...patch,
+      updatedAt: now
+    }
+  });
+}
+
 async function countWithField(database, containerId, docType, field) {
   try {
     const rows = await queryAll(
@@ -1087,6 +1102,27 @@ async function runVeevaTablesSync(getDb, opts = {}) {
   const results = [];
   let incomplete = false;
   const syncedAt = new Date().toISOString();
+  let upsertedTotal = 0;
+
+  await writeSyncState(database, {
+    lastRunAt: syncedAt,
+    incomplete: true,
+    progress: {
+      status: "running",
+      startedAt: syncedAt,
+      updatedAt: syncedAt,
+      mode: watermark ? "delta" : "full",
+      triggeredBy: opts.triggeredBy || "api",
+      currentObject: null,
+      currentContainer: null,
+      objectsTotal: tables.length,
+      objectsDone: 0,
+      objectsSkipped: 0,
+      upsertedTotal: 0,
+      message: `Starting Veeva ${watermark ? "delta" : "full"} sync (${tables.length} objects)…`,
+      results: []
+    }
+  });
 
   for (const table of tables) {
     if (Date.now() - started > TIME_BUDGET_MS) {
@@ -1099,6 +1135,23 @@ async function runVeevaTablesSync(getDb, opts = {}) {
       });
       continue;
     }
+    await writeSyncState(database, {
+      progress: {
+        status: "running",
+        startedAt: syncedAt,
+        updatedAt: new Date().toISOString(),
+        mode: watermark ? "delta" : "full",
+        triggeredBy: opts.triggeredBy || "api",
+        currentObject: table.vaultObject,
+        currentContainer: table.container,
+        objectsTotal: tables.length,
+        objectsDone: results.filter((r) => !r.skipped || r.reason !== "time_budget").length,
+        objectsSkipped: results.filter((r) => r.skipped).length,
+        upsertedTotal,
+        message: `Pulling ${table.vaultObject} → ${table.container}…`,
+        results: results.slice(-8)
+      }
+    });
     const t0 = Date.now();
     try {
       const container = await ensureContainer(database, table.container);
@@ -1212,6 +1265,7 @@ async function runVeevaTablesSync(getDb, opts = {}) {
       }
 
       countsByContainer[table.container] = (countsByContainer[table.container] || 0) + upserted;
+      upsertedTotal += upserted;
       results.push({
         object: table.vaultObject,
         container: table.container,
@@ -1229,6 +1283,23 @@ async function runVeevaTablesSync(getDb, opts = {}) {
         errorCount: errors.length,
         errors: errors.slice(0, 5),
         elapsedMs: Date.now() - t0
+      });
+      await writeSyncState(database, {
+        progress: {
+          status: "running",
+          startedAt: syncedAt,
+          updatedAt: new Date().toISOString(),
+          mode: watermark ? "delta" : "full",
+          triggeredBy: opts.triggeredBy || "api",
+          currentObject: table.vaultObject,
+          currentContainer: table.container,
+          objectsTotal: tables.length,
+          objectsDone: results.length,
+          objectsSkipped: results.filter((r) => r.skipped).length,
+          upsertedTotal,
+          message: `Finished ${table.vaultObject} (${upserted.toLocaleString()} upserted)`,
+          results: results.slice(-8)
+        }
       });
     } catch (err) {
       const msg = String(err.message || err);
@@ -1264,6 +1335,7 @@ async function runVeevaTablesSync(getDb, opts = {}) {
             fieldsDropped: pulled.fieldsDropped || [],
             elapsedMs: Date.now() - t0
           });
+          upsertedTotal += upserted;
           continue;
         } catch (err2) {
           results.push({
@@ -1294,6 +1366,23 @@ async function runVeevaTablesSync(getDb, opts = {}) {
       (r.upserted > 0 || r.fetched > 0)
   );
   if (didMilestones && Date.now() - started < TIME_BUDGET_MS) {
+    await writeSyncState(database, {
+      progress: {
+        status: "running",
+        startedAt: syncedAt,
+        updatedAt: new Date().toISOString(),
+        mode: watermark ? "delta" : "full",
+        triggeredBy: opts.triggeredBy || "api",
+        currentObject: "milestone_projection",
+        currentContainer: "ora_veeva_milestones",
+        objectsTotal: tables.length,
+        objectsDone: results.length,
+        objectsSkipped: results.filter((r) => r.skipped).length,
+        upsertedTotal,
+        message: "Projecting milestone / site PSM facts…",
+        results: results.slice(-8)
+      }
+    });
     try {
       milestoneWide = await projectWideMilestones(database, { syncedAt });
     } catch (err) {
@@ -1312,6 +1401,14 @@ async function runVeevaTablesSync(getDb, opts = {}) {
   // Do not advance the watermark while incomplete — otherwise empty mirrors
   // (metrics/subjects/milestones) never get a historical full pull on delta.
   const advanceWatermark = !hardFail && !incomplete;
+  const progressStatus = hardFail ? "failed" : incomplete ? "incomplete" : "complete";
+  const progressMessage = hardFail
+    ? "Veeva sync failed — see last object errors."
+    : incomplete
+      ? "Time budget hit — re-run Ingest Veeva (empty mirrors fill first)."
+      : watermark
+        ? "Veeva delta sync finished."
+        : "Veeva full sync finished.";
   const state = await writeSyncState(database, {
     lastRunAt: syncedAt,
     lastSuccessfulSync: advanceWatermark ? syncedAt : prev.lastSuccessfulSync || null,
@@ -1323,7 +1420,23 @@ async function runVeevaTablesSync(getDb, opts = {}) {
       ? "Time budget hit — re-run Ingest Veeva (budget default 25 min). Empty mirrors fill first."
       : watermark
         ? "Veeva delta sync into ora_veeva_* (+ fact projection)."
-        : "Veeva full sync into ora_veeva_* (+ fact projection). Mike Watson Excel packs superseded where source=veeva_live."
+        : "Veeva full sync into ora_veeva_* (+ fact projection). Mike Watson Excel packs superseded where source=veeva_live.",
+    progress: {
+      status: progressStatus,
+      startedAt: syncedAt,
+      updatedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      mode: watermark ? "delta" : "full",
+      triggeredBy: opts.triggeredBy || "api",
+      currentObject: null,
+      currentContainer: null,
+      objectsTotal: tables.length,
+      objectsDone: results.length,
+      objectsSkipped: results.filter((r) => r.skipped).length,
+      upsertedTotal,
+      message: progressMessage,
+      results: results.slice(-12)
+    }
   });
 
   return {
@@ -1416,7 +1529,9 @@ async function getVeevaSyncStatus(getDb) {
           lastRunAt: sync.lastRunAt || null,
           mode: sync.mode || null,
           note: sync.note || null,
-          lastDeltas: sync.lastDeltas || null
+          incomplete: Boolean(sync.incomplete),
+          lastDeltas: sync.lastDeltas || null,
+          progress: sync.progress || null
         }
       : null
   };
@@ -1431,5 +1546,6 @@ module.exports = {
   FEASIBILITY_MILESTONE_TYPES_STUDY,
   runVeevaTablesSync,
   getVeevaSyncStatus,
+  markVeevaSyncProgress,
   projectWideMilestones
 };
