@@ -43,7 +43,7 @@ Endpoints:
 
 ## Schedule
 
-GitHub Actions **`intelligence-daily-sync.yml`** runs tables + crosswalk daily at **11:00 UTC (~6AM EST / ~7AM EDT)** against `ora-buddy-api` (`x-copilot-key` = `COPILOT_ASK_KEY` secret). SF tables are a full upsert of Account / Opportunity / `Activity_Request__c` (not a modified-date delta yet).
+GitHub Actions **`intelligence-daily-sync.yml`** runs tables + crosswalk daily at **04:00 UTC (12:00 AM EDT / 11:00 PM EST)** against `ora-buddy-api` (`x-copilot-key` = `COPILOT_ASK_KEY` secret). SF tables are a full upsert of Account / Opportunity / `Activity_Request__c` (not a modified-date delta yet).
 
 ## Salesforce (already done checklist)
 
