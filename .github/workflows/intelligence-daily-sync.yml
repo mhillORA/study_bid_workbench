@@ -131,25 +131,19 @@ jobs:
             STATUS_JSON=$(curl -sS --max-time 60 "$API_BASE/api/veeva/sync" \
               -H "Accept: application/json" \
               -H "x-copilot-key: $COPILOT_ASK_KEY" || true)
-            PARSE=$(STATUS_JSON="$STATUS_JSON" python3 - <<'PY'
-import json, os
-raw = os.environ.get("STATUS_JSON") or ""
+            PARSE=$(STATUS_JSON="$STATUS_JSON" python3 -c 'import json,os
+raw=os.environ.get("STATUS_JSON") or ""
 try:
-    d = json.loads(raw or "{}")
+ d=json.loads(raw or "{}")
 except Exception:
-    print("parse_error||||")
-    raise SystemExit(0)
-sync = d.get("sync") or {}
-prog = sync.get("progress") if isinstance(sync, dict) else None
+ print("parse_error||||"); raise SystemExit(0)
+sync=d.get("sync") or {}
+prog=sync.get("progress") if isinstance(sync, dict) else None
 if not isinstance(prog, dict):
-    prog = d.get("progress") if isinstance(d.get("progress"), dict) else {}
-status = str(prog.get("status") or "").lower()
-msg = str(prog.get("message") or prog.get("currentObject") or prog.get("currentContainer") or "")[:160]
-done = prog.get("objectsDone")
-total = prog.get("objectsTotal")
-print(f"{status}|{done}|{total}|{msg}")
-PY
-)
+ prog=d.get("progress") if isinstance(d.get("progress"), dict) else {}
+status=str(prog.get("status") or "").lower()
+msg=str(prog.get("message") or prog.get("currentObject") or prog.get("currentContainer") or "")[:160]
+print("%s|%s|%s|%s" % (status, prog.get("objectsDone"), prog.get("objectsTotal"), msg))')
             IFS='|' read -r ST DONE TOTAL MSG <<< "$PARSE"
             LINE="status=${ST:-?} done=${DONE:-?} total=${TOTAL:-?} ${MSG}"
             if [ "$LINE" != "$LAST" ]; then
