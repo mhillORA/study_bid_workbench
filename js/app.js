@@ -6024,13 +6024,9 @@
       const emptyObjects = tables
         .filter((t) => (t.count || 0) === 0)
         .map((t) => t.vaultObject);
-      const targets = tables.length ? tables.map((t) => t.vaultObject) : prefer;
-      // Delta: only empty objects (cap 4 so budget can finish). Full: all tables.
-      const only = full
-        ? undefined
-        : emptyObjects.length
-          ? emptyObjects.slice(0, 4)
-          : targets.slice(0, 3);
+      // Do not pass `only: emptyObjects` — empty monitoring/trip-report tables can
+      // fail schema checks and then freeze lastSuccessfulSync. Server already sorts
+      // empty first via prioritizeEmpty, then continues into core deltas.
 
       // One background kick covering prioritizeEmpty / delta — server self-invokes and runs
       // until VEEVA_SYNC_BUDGET_MS. Click again after a few minutes if still incomplete.
@@ -6041,8 +6037,7 @@
         body: JSON.stringify({
           async: true,
           full: Boolean(full),
-          prioritizeEmpty: true,
-          only
+          prioritizeEmpty: true
         })
       });
       const kick = await kickRes.json().catch(() => ({}));
@@ -6051,10 +6046,9 @@
         return;
       }
       if (kickRes.status === 202 || kick.accepted) {
-        const focus =
-          Array.isArray(only) && only.length
-            ? ` Focusing: ${only.join(", ")}.`
-            : " Full object list.";
+        const focus = emptyObjects.length
+          ? ` Empty first: ${emptyObjects.slice(0, 4).join(", ")}${emptyObjects.length > 4 ? "…" : ""}.`
+          : " Delta across all objects.";
         state.intelligence.veevaMessage =
           (kick.message || `Veeva ${modeLabel} started in background.`) +
           focus +

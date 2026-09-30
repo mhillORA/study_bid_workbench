@@ -274,9 +274,12 @@ const VEEVA_TABLES = [
   },
   {
     // Monitoring Event — parent for trip reports / CRA visits
+    // Ora Vault CTMS often lacks study__v/site__v on this object; do not treat them as critical.
     vaultObject: "monitoring_event__ctms",
     container: "ora_veeva_monitoring_event",
     docType: "ora_veeva_monitoring_event",
+    optional: true,
+    criticalFields: ["id"],
     fields: [
       "id",
       "name__v",
@@ -284,7 +287,9 @@ const VEEVA_TABLES = [
       "object_type__v",
       "monitoring_event_type__v",
       "study__v",
+      "study__clin",
       "site__v",
+      "site__clin",
       "study_country__v",
       "study_name__v",
       "site_name__v",
@@ -305,6 +310,8 @@ const VEEVA_TABLES = [
     vaultObject: "trip_report_answer__ctms",
     container: "ora_veeva_trip_report_answer",
     docType: "ora_veeva_trip_report_answer",
+    optional: true,
+    criticalFields: ["id"],
     fields: [
       "id",
       "name__v",
@@ -324,6 +331,8 @@ const VEEVA_TABLES = [
     vaultObject: "trip_report_question_response__ctms",
     container: "ora_veeva_trip_report_question_response",
     docType: "ora_veeva_trip_report_question_response",
+    optional: true,
+    criticalFields: ["id", "monitoring_event__ctms"],
     fields: [
       "id",
       "name__v",
@@ -332,7 +341,9 @@ const VEEVA_TABLES = [
       "monitoring_event__ctms",
       "monitoring_event__v",
       "study__v",
+      "study__clin",
       "site__v",
+      "site__clin",
       "study_country__v",
       "question__v",
       "question__clin",
@@ -1203,11 +1214,13 @@ async function runVeevaTablesSync(getDb, opts = {}) {
       // Never write stripped mirrors (e.g. metrics without actual__/study__/site__) — that
       // marks the container "full" while useless and burns every subsequent budget.
       if (criticalDropped.length) {
-        incomplete = true;
+        const optional = table.optional === true;
+        if (!optional) incomplete = true;
         results.push({
           object: table.vaultObject,
           container: table.container,
           ok: false,
+          optional,
           mode: tableWatermark ? "delta" : "full",
           fetched: pulled.records.length,
           upserted: 0,
@@ -1428,18 +1441,28 @@ async function runVeevaTablesSync(getDb, opts = {}) {
     }
   }
 
-  const hardFail = results.length > 0 && results.every((r) => r.error || r.ok === false);
+  const coreResults = results.filter((r) => r.optional !== true);
+  // Optional CTMS tables (monitoring / trip reports) must not block the watermark —
+  // otherwise a bad schema on empty mirrors freezes lastSuccessfulSync forever.
+  const hardFail =
+    coreResults.length > 0 && coreResults.every((r) => r.error || r.ok === false);
+  const onlyOptionalFailed =
+    !hardFail &&
+    results.length > 0 &&
+    results.every((r) => r.optional === true && (r.error || r.ok === false));
   // Do not advance the watermark while incomplete — otherwise empty mirrors
   // (metrics/subjects/milestones) never get a historical full pull on delta.
-  const advanceWatermark = !hardFail && !incomplete;
+  const advanceWatermark = !hardFail && !incomplete && !onlyOptionalFailed;
   const progressStatus = hardFail ? "failed" : incomplete ? "incomplete" : "complete";
   const progressMessage = hardFail
     ? "Veeva sync failed — see last object errors."
     : incomplete
       ? "Time budget hit — re-run Ingest Veeva (empty mirrors fill first)."
-      : watermark
-        ? "Veeva delta sync finished."
-        : "Veeva full sync finished.";
+      : onlyOptionalFailed
+        ? "Core Veeva objects OK — optional monitoring/trip-report tables need field mapping."
+        : watermark
+          ? "Veeva delta sync finished."
+          : "Veeva full sync finished.";
   const state = await writeSyncState(database, {
     lastRunAt: syncedAt,
     lastSuccessfulSync: advanceWatermark ? syncedAt : prev.lastSuccessfulSync || null,
@@ -1448,10 +1471,12 @@ async function runVeevaTablesSync(getDb, opts = {}) {
     triggeredBy: opts.triggeredBy || "api",
     lastDeltas: { results, incomplete, milestoneWide, sitePsmProjection, prioritizeEmpty },
     note: incomplete
-      ? "Time budget hit — re-run Ingest Veeva (budget default 25 min). Empty mirrors fill first."
-      : watermark
-        ? "Veeva delta sync into ora_veeva_* (+ fact projection)."
-        : "Veeva full sync into ora_veeva_* (+ fact projection). Mike Watson Excel packs superseded where source=veeva_live.",
+      ? "Time budget hit — re-run Ingest Veeva (budget default 55 min). Empty mirrors fill first."
+      : onlyOptionalFailed
+        ? "Optional CTMS monitoring/trip-report objects failed schema checks — core ora_veeva_* mirrors are unchanged."
+        : watermark
+          ? "Veeva delta sync into ora_veeva_* (+ fact projection)."
+          : "Veeva full sync into ora_veeva_* (+ fact projection). Mike Watson Excel packs superseded where source=veeva_live.",
     progress: {
       status: progressStatus,
       startedAt: syncedAt,
