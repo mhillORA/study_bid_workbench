@@ -9,9 +9,8 @@
  * Live mirrors:
  *   ora_veeva_study, ora_veeva_site, ora_veeva_study_country,
  *   ora_veeva_organization, ora_veeva_sponsor,
- *   ora_veeva_metric, ora_veeva_subject, ora_veeva_milestone,
- *   ora_veeva_monitoring_event, ora_veeva_trip_report_answer,
- *   ora_veeva_trip_report_question_response
+ *   ora_veeva_metric, ora_veeva_subject, ora_veeva_milestone
+ * (Monitoring / trip-report CTMS objects intentionally not synced.)
  *
  * Also projects:
  *   ora_fact_study, ora_fact_site  (source=veeva_live)
@@ -271,93 +270,6 @@ const VEEVA_TABLES = [
       "modified_date__v"
     ],
     projectFact: "milestone"
-  },
-  {
-    // Monitoring Event — parent for trip reports / CRA visits
-    // Ora Vault CTMS often lacks study__v/site__v on this object; do not treat them as critical.
-    vaultObject: "monitoring_event__ctms",
-    container: "ora_veeva_monitoring_event",
-    docType: "ora_veeva_monitoring_event",
-    optional: true,
-    criticalFields: ["id"],
-    fields: [
-      "id",
-      "name__v",
-      "status__v",
-      "object_type__v",
-      "monitoring_event_type__v",
-      "study__v",
-      "study__clin",
-      "site__v",
-      "site__clin",
-      "study_country__v",
-      "study_name__v",
-      "site_name__v",
-      "planned_start_date__v",
-      "planned_finish_date__v",
-      "actual_start_date__v",
-      "actual_finish_date__v",
-      "start_date__v",
-      "end_date__v",
-      "trip_report_template__v",
-      "highlight_required__v",
-      "ora_project_code__c",
-      "modified_date__v"
-    ]
-  },
-  {
-    // Trip Report Answer — picklist / MC answer definitions used on responses
-    vaultObject: "trip_report_answer__ctms",
-    container: "ora_veeva_trip_report_answer",
-    docType: "ora_veeva_trip_report_answer",
-    optional: true,
-    criticalFields: ["id"],
-    fields: [
-      "id",
-      "name__v",
-      "status__v",
-      "object_type__v",
-      "answer_text__v",
-      "text__v",
-      "answer_set__v",
-      "question__v",
-      "question__clin",
-      "order__v",
-      "modified_date__v"
-    ]
-  },
-  {
-    // Trip Report Question Response — CRA answers on a monitoring event
-    vaultObject: "trip_report_question_response__ctms",
-    container: "ora_veeva_trip_report_question_response",
-    docType: "ora_veeva_trip_report_question_response",
-    optional: true,
-    criticalFields: ["id", "monitoring_event__ctms"],
-    fields: [
-      "id",
-      "name__v",
-      "status__v",
-      "object_type__v",
-      "monitoring_event__ctms",
-      "monitoring_event__v",
-      "study__v",
-      "study__clin",
-      "site__v",
-      "site__clin",
-      "study_country__v",
-      "question__v",
-      "question__clin",
-      "question_text__v",
-      "answer__v",
-      "trip_report_answer__ctms",
-      "trip_report_section__v",
-      "response_text__ctms",
-      "long_response_text__v",
-      "comment__ctms",
-      "long_comment__v",
-      "order__v",
-      "modified_date__v"
-    ]
   }
 ];
 
@@ -1112,14 +1024,8 @@ async function runVeevaTablesSync(getDb, opts = {}) {
       case "subject__clin":
       case "subject__v":
         return 8;
-      case "trip_report_answer__ctms":
-        return 9;
-      case "monitoring_event__ctms":
-        return 10;
-      case "trip_report_question_response__ctms":
-        return 11;
       default:
-        return 12;
+        return 9;
     }
   };
   const countsByContainer = {};

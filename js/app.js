@@ -5997,9 +5997,6 @@
       // Prefer empty/critical objects first, but kick each as async:true so the browser
       // never waits on a 4‑minute metrics pull (that was the "Veeva timed out" error).
       const prefer = [
-        "trip_report_answer__ctms",
-        "monitoring_event__ctms",
-        "trip_report_question_response__ctms",
         "metrics__ctms",
         "milestone__v",
         "subject__clin",
@@ -6945,22 +6942,6 @@
         "ora_veeva_milestone",
         "milestone__v",
         vvCount("ora_veeva_milestone") ?? vvFromHealth.milestones
-      ],
-      [
-        "ora_veeva_monitoring_event",
-        "monitoring_event__ctms",
-        vvCount("ora_veeva_monitoring_event") ?? vvFromHealth.monitoringEvents
-      ],
-      [
-        "ora_veeva_trip_report_answer",
-        "trip_report_answer__ctms",
-        vvCount("ora_veeva_trip_report_answer") ?? vvFromHealth.tripReportAnswers
-      ],
-      [
-        "ora_veeva_trip_report_question_response",
-        "trip_report_question_response__ctms",
-        vvCount("ora_veeva_trip_report_question_response") ??
-          vvFromHealth.tripReportQuestionResponses
       ]
     ]
       .map(([id, label, c]) => {
