@@ -147,6 +147,7 @@ const VEEVA_TABLES = [
       "study_name__v",
       "organization__clin",
       "country__v",
+      "country__vr.name__v",
       "study_country__v",
       "site_status__v",
       "status__v",
@@ -156,6 +157,9 @@ const VEEVA_TABLES = [
       "location_city__v",
       "location_stateprovince__v",
       "principal_investigator__v",
+      "principal_investigator__vr.name__v",
+      "principal_investigator__vr.first_name__v",
+      "principal_investigator__vr.last_name__v",
       "no_subjects_enrolled__v",
       "site_selected_date__v",
       "ora_project_code__c",
@@ -369,10 +373,10 @@ async function vqlSelectResilient(session, vaultObject, fields, { whereExtra = "
     } catch (err) {
       const msg = String(err.message || err);
       const m =
-        msg.match(/Unknown (?:field|Field)\s+['`]?([a-z0-9_]+)['`]?/i) ||
-        msg.match(/Invalid (?:field|Field)\s+['`]?([a-z0-9_]+)['`]?/i) ||
-        msg.match(/field\s+['`]([a-z0-9_]+)['`]\s+(?:not found|does not exist|unknown)/i) ||
-        msg.match(/\b([a-z][a-z0-9_]*(?:__v|__c|__clin|__ctms|__vs))\b\s+(?:not found|does not exist)/i);
+        msg.match(/Unknown (?:field|Field)\s+['`]?([a-z0-9_.]+)['`]?/i) ||
+        msg.match(/Invalid (?:field|Field)\s+['`]?([a-z0-9_.]+)['`]?/i) ||
+        msg.match(/field\s+['`]([a-z0-9_.]+)['`]\s+(?:not found|does not exist|unknown)/i) ||
+        msg.match(/\b([a-z][a-z0-9_]*(?:__v|__c|__clin|__ctms|__vs)(?:\.[a-z][a-z0-9_]*(?:__v|__c))?)\b\s+(?:not found|does not exist)/i);
       const bad = m && active.includes(m[1]) ? m[1] : null;
       if (bad) {
         active = active.filter((f) => f !== bad);
@@ -504,7 +508,7 @@ function toMirrorDoc(rec, docType, syncedAt) {
   const flat = flattenVeevaRecord(rec);
   const id = String(flat.id || "").trim();
   if (!id) return null;
-  return {
+  const doc = {
     ...flat,
     id,
     veevaId: id,
@@ -515,6 +519,33 @@ function toMirrorDoc(rec, docType, syncedAt) {
     veevaSyncSource: "vault_api",
     source: "veeva_live"
   };
+  // Flatten relationship labels so consumers never need dotted Vault keys.
+  if (docType === "ora_veeva_site") {
+    const countryName =
+      flat["country__vr.name__v"] ||
+      (typeof flat.country__vr === "string" ? flat.country__vr : null) ||
+      flat.country_name ||
+      null;
+    if (countryName && !/^00C/i.test(String(countryName))) {
+      doc.country_name = String(countryName).trim();
+    }
+    const piFirst = flat["principal_investigator__vr.first_name__v"];
+    const piLast = flat["principal_investigator__vr.last_name__v"];
+    const piName =
+      flat["principal_investigator__vr.name__v"] ||
+      (typeof flat.principal_investigator__vr === "string" ? flat.principal_investigator__vr : null) ||
+      [piFirst, piLast].filter(Boolean).join(" ").trim() ||
+      flat.principal_investigator_name ||
+      null;
+    if (piName && !/^00[A-Za-z]/i.test(String(piName)) && !/^[A-Z]{2,4}[0-9A-Za-z]{10,}$/i.test(String(piName))) {
+      doc.principal_investigator_name = String(piName).trim();
+    }
+  }
+  if (docType === "ora_veeva_country") {
+    const name = flat.name__v || flat.abbreviation__v;
+    if (name) doc.country_name = String(name).trim();
+  }
+  return doc;
 }
 
 function picklistLabel(v) {
