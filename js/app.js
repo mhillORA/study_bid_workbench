@@ -1388,7 +1388,7 @@
       url = `${session.apiBase}${apiPath}`;
       headers.Authorization = `Bearer ${session.token}`;
     } else if (requireExternal) {
-      const why = session.mintError || "Buddy session mint failed";
+      const why = session.mintError || "Monet session mint failed";
       throw new Error(
         `ora-buddy-api session required (${why}). Sign in, confirm BUDDY_SESSION_SECRET on SWA, and Portal → ora-buddy-api → CORS allows this site.`
       );
@@ -1469,7 +1469,7 @@
         if (applied) return applied;
       }
     } catch (err) {
-      console.warn("[Buddy] FA session mint failed", err);
+      console.warn("[Monet] FA session mint failed", err);
     }
 
     // 2) Same-origin SWA (legacy managed API)
@@ -1491,7 +1491,7 @@
         (res.status === 401 || res.status === 302
           ? "sign_in_required"
           : `session_http_${res.status}`);
-      console.warn("[Buddy] session mint failed", { status: res.status, error: mintError, data });
+      console.warn("[Monet] session mint failed", { status: res.status, error: mintError, data });
       return {
         ok: true,
         token: null,
@@ -1501,7 +1501,7 @@
         mintError
       };
     } catch (err) {
-      console.warn("[Buddy] session mint failed", err);
+      console.warn("[Monet] session mint failed", err);
       return {
         ok: true,
         token: null,
@@ -1514,7 +1514,7 @@
   }
 
   function disableBuddyExternal(reason) {
-    console.warn("[Buddy] disabling Function App hops:", reason);
+    console.warn("[Monet] disabling Function App hops:", reason);
     state._buddyExternalDisabled = true;
     state._buddyExternalDisableReason = String(reason || "disabled");
     state.buddySessionToken = null;
@@ -1599,7 +1599,7 @@
       "hub",
       "home"
     ],
-    buddy: ["buddy", "ask buddy", "ask", "chat", "talk to buddy"],
+    buddy: ["buddy", "monet", "ask buddy", "ask monet", "ask", "chat", "talk to buddy", "talk to monet"],
     studies: ["studies", "study list", "veeva studies", "ora studies"],
     "budget-studies": ["budget studies", "budget files", "cosmos studies", "bid studies"],
     versions: ["versions", "diff", "versions / diff"],
@@ -1631,7 +1631,7 @@
       "trialhub upload"
     ],
     scorecard: ["scorecard", "site scorecard", "site scores", "sites"],
-    "buddy-context": ["buddy context", "context", "live context", "ingest context", "buddy ingest"],
+    "buddy-context": ["buddy context", "monet context", "context", "live context", "ingest context", "buddy ingest", "monet ingest"],
     ops: ["ops", "ops dashboard", "operations", "operations dashboard", "workflow"],
     "pm-dashboard": [
       "pm dashboard",
@@ -1821,7 +1821,7 @@
     );
   }
 
-  /** Full editable catalog with clean names + tab context for Buddy. */
+  /** Full editable catalog with clean names + tab context for Monet. */
   function buildEditableFieldCatalog() {
     const study = state.study || {};
     const fields = [];
@@ -1983,7 +1983,7 @@
     if (els.buddyBody) els.buddyBody.classList.remove("has-doc");
   }
 
-  /** Show HTML beside chat as a canvas. Opens full Buddy tab if needed. */
+  /** Show HTML beside chat as a canvas. Opens full Monet tab if needed. */
   function showBuddyDoc(html, { title, id, openWorkspace = true } = {}) {
     const full = ensureBuddyReportHtml(html);
     if (!full) return false;
@@ -2076,10 +2076,10 @@
     const on = state.sectionId === "buddy";
     document.documentElement.classList.toggle("buddy-workspace", on);
     if (els.buddyClose) {
-      els.buddyClose.title = on ? "Show as floating window" : "Close Buddy";
+      els.buddyClose.title = on ? "Show as floating window" : "Close Monet";
       els.buddyClose.setAttribute(
         "aria-label",
-        on ? "Show Buddy as floating window" : "Close Buddy"
+        on ? "Show Monet as floating window" : "Close Monet"
       );
     }
     if (on) {
@@ -2495,21 +2495,21 @@
       const label =
         data?.llm?.displayName ||
         (String(data?.llm?.deployment || "").toLowerCase().includes("budgetbuddy")
-          ? "Budget Buddy"
+          ? "Monet"
           : "") ||
         data?.llm?.deployment ||
         "";
       if (label) {
-        el.dataset.baseLabel = `Ask Buddy · ${label}`;
+        el.dataset.baseLabel = `Ask Monet · ${label}`;
       } else if (data?.llm?.active) {
-        el.dataset.baseLabel = "Ask Buddy · online";
+        el.dataset.baseLabel = "Ask Monet · online";
       }
     } catch (_) {}
     paintBuddyModelLabel();
   }
 
   function setBuddyMode(_mode, { persist = true } = {}) {
-    // Do mode UI paused — Buddy is chat-only for now.
+    // Do mode UI paused — Monet is chat-only for now.
     state.buddyMode = "chat";
     if (persist) localStorage.setItem("sbw.buddyMode", "chat");
     document.querySelectorAll("[data-buddy-mode]").forEach((btn) => {
@@ -2520,10 +2520,10 @@
       const wf = state.buddyWorkflow || "auto";
       els.askInput.placeholder =
         wf === "feasibility"
-          ? "Ask Buddy about PSM, sites, TrialHub, CT.gov, scorecard…"
+          ? "Ask Monet about PSM, sites, TrialHub, CT.gov, scorecard…"
           : wf === "budget"
-            ? "Ask Buddy about budget, HLBP, uploaded fees…"
-            : "Ask Buddy about feasibility, sites, pipeline…";
+            ? "Ask Monet about budget, HLBP, uploaded fees…"
+            : "Ask Monet about feasibility, sites, pipeline…";
     }
     paintBuddyModelLabel();
   }
@@ -2555,7 +2555,7 @@
             ? "Teach"
             : "Auto";
     if (!el.dataset.baseLabel) {
-      el.dataset.baseLabel = "Ask Buddy · Budget Buddy";
+      el.dataset.baseLabel = "Ask Monet · Monet";
     }
     el.textContent = `${el.dataset.baseLabel} · ${wf}`;
     if (state.buddyPendingTask?.type) {
@@ -2597,13 +2597,13 @@
         const t = state.askHistory[i];
         if (t.role === "assistant" && String(t.content || "").trim()) {
           addition = String(t.content).trim().slice(0, 4000);
-          from = "last Buddy reply";
+          from = "last Monet reply";
           break;
         }
       }
     }
     if (!addition) {
-      if (els.askStatus) els.askStatus.textContent = "Type a note first, or get a Buddy reply to save.";
+      if (els.askStatus) els.askStatus.textContent = "Type a note first, or get a Monet reply to save.";
       return;
     }
     const learn = normalizeLearnPayload({
@@ -2627,25 +2627,25 @@
     if (els.askInput) els.askInput.value = "";
     state.askHistory.push({
       role: "user",
-      content: from === "compose" ? `Remember this: ${addition}` : `Remember the last Buddy reply`
+      content: from === "compose" ? `Remember this: ${addition}` : `Remember the last Monet reply`
     });
     pushLearnProposal(
       from === "compose"
-        ? "Proposed a note for Buddy live context — click Save to store it."
-        : "Proposed saving the last Buddy reply to live context — click Save to store it.",
+        ? "Proposed a note for Monet live context — click Save to store it."
+        : "Proposed saving the last Monet reply to live context — click Save to store it.",
       learn
     );
     paintBuddyChat();
   }
 
   function closeBuddy() {
-    // Full-page Buddy tab → float (same chat), so both modes stay available
+    // Full-page Monet tab → float (same chat), so both modes stay available
     if (isBuddyWorkspace()) {
       state.sectionId = "dashboard";
       document.documentElement.classList.remove("buddy-workspace");
       if (els.buddyClose) {
-        els.buddyClose.title = "Close Buddy";
-        els.buddyClose.setAttribute("aria-label", "Close Buddy");
+        els.buddyClose.title = "Close Monet";
+        els.buddyClose.setAttribute("aria-label", "Close Monet");
       }
       applyBuddyPanelSize();
       render();
@@ -2680,7 +2680,7 @@
     const prevScrollTop = log.scrollTop;
     const turns = state.askHistory
       .map((t, idx) => {
-        const who = t.role === "user" ? "You" : "Buddy";
+        const who = t.role === "user" ? "You" : "Monet";
         let proposalHtml = "";
         if (t.proposal) {
           const st = t.proposal.status || "pending";
@@ -2706,10 +2706,10 @@
             const actions =
               st === "pending"
                 ? `<div class="buddy-proposal-actions">
-                  <button type="button" class="btn btn-primary" data-buddy-learn="${t.proposal.id}">Save to Buddy context</button>
+                  <button type="button" class="btn btn-primary" data-buddy-learn="${t.proposal.id}">Save to Monet context</button>
                   <button type="button" class="btn btn-ghost" data-buddy-reject="${t.proposal.id}">Reject</button>
                 </div>`
-                : `<p class="muted">${st === "applied" ? "Saved to live Buddy context." : "Rejected — not saved."}</p>`;
+                : `<p class="muted">${st === "applied" ? "Saved to live Monet context." : "Rejected — not saved."}</p>`;
             proposalHtml = `<div class="buddy-proposal ${escapeAttr(st)}">
               <div class="chat-who">Remember this</div>
               <p class="muted" style="margin:0.25rem 0;">${meta}</p>
@@ -2765,7 +2765,7 @@
       })
       .join("");
     log.innerHTML = turns ||
-      "<p class=\"muted\">Try “create a new study…”, “set enrolled subjects to 120”, or “remember this: OUS sites prefer…”. Speak “remember / learn / save that” to store a note in Buddy context.</p>";
+      "<p class=\"muted\">Try “create a new study…”, “set enrolled subjects to 120”, or “remember this: OUS sites prefer…”. Speak “remember / learn / save that” to store a note in Monet context.</p>";
     log.scrollTop = stickBottom ? log.scrollHeight : prevScrollTop;
     if (els.askStatus) {
       if (state.buddyBusy) {
@@ -2789,7 +2789,7 @@
   function resolveSectionId(target) {
     const t = String(target || "").toLowerCase().trim();
     if (!t) return null;
-    if (["ask", "ask buddy", "buddy", "chat", "talk to buddy"].includes(t)) return "buddy";
+    if (["ask", "ask buddy", "ask monet", "buddy", "monet", "chat", "talk to buddy", "talk to monet"].includes(t)) return "buddy";
     if (t === "__buddy__") return "buddy";
     for (const s of SBW.sections) {
       if (s.id === t || s.label.toLowerCase() === t) return s.id;
@@ -2872,7 +2872,7 @@
     if (state.buddyPendingTask?.type) return false;
     const lower = q.toLowerCase();
     if (
-      /\b(ora|cosmos|psm|trialhub|ct\.?\s*gov|clinicaltrials|veeva|feasibility|hlbp|ballpark|sponsor|indication|enroll(?:ment|ed|ing)?|screen(?:ed|ing|fail)?|site\s*score|portfolio|budget|bid|pricing|fee|revenue|alcon|nct-?\d|dry\s*eye|glaucoma|retina|amd|dme|ted\b|cataract|ophthalm|buddy context|opportunity|o-\d{3,}|studies\b|study\b|client|protocol|scorecard|ops dashboard|netsuite)\b/i.test(
+      /\b(ora|cosmos|psm|trialhub|ct\.?\s*gov|clinicaltrials|veeva|feasibility|hlbp|ballpark|sponsor|indication|enroll(?:ment|ed|ing)?|screen(?:ed|ing|fail)?|site\s*score|portfolio|budget|bid|pricing|fee|revenue|alcon|nct-?\d|dry\s*eye|glaucoma|retina|amd|dme|ted\b|cataract|ophthalm|buddy context|monet context|opportunity|o-\d{3,}|studies\b|study\b|client|protocol|scorecard|ops dashboard|netsuite)\b/i.test(
         lower
       )
     ) {
@@ -2901,7 +2901,7 @@
     const studyBit = hasOpenStudy()
       ? ` You’ve got [[i]]${state.study.studyId}[[/i]] open.`
       : " You’re in all-studies / portfolio mode.";
-    return `${hi} — Buddy here.${studyBit} Ask me about fees, feasibility, sites, or drop a file.`;
+    return `${hi} — Monet here.${studyBit} Ask me about fees, feasibility, sites, or drop a file.`;
   }
 
   function normalizeFieldToken(s) {
@@ -3210,7 +3210,7 @@
   }
 
   function isBuddyDoMode() {
-    // Do mode UI paused — Buddy is chat-only for now.
+    // Do mode UI paused — Monet is chat-only for now.
     return false;
   }
 
@@ -3933,7 +3933,7 @@
       if (navMatch) {
         const wanted = resolveSectionId(navMatch[1]);
         // Ignore Intelligence/Scorecard jumps unless the user asked to open that tab —
-        // Buddy must answer PSM/site lists from Cosmos in chat, not bounce the UI.
+        // Monet must answer PSM/site lists from Cosmos in chat, not bounce the UI.
         const lastUser = [...(state.askHistory || [])]
           .reverse()
           .find((t) => t && t.role === "user");
@@ -3968,11 +3968,11 @@
     if (!text) {
       if (report.html) text = "Document ready — Open or Download below.";
       else if (created.create) text = "Proposed a new study — click Create study to open it.";
-      else if (learned.learn) text = "Proposed a note for Buddy context — click Save to store it.";
+      else if (learned.learn) text = "Proposed a note for Monet context — click Save to store it.";
       else if (extracted.patches.length) {
         text = "Filling those fields on the open study.";
       } else if (sectionId === "buddy") {
-        text = "Buddy is ready — ask anything about this study or the portfolio.";
+        text = "Monet is ready — ask anything about this study or the portfolio.";
       } else if (sectionId) {
         text = `Opened ${(SBW.sections.find((s) => s.id === sectionId) || {}).label || sectionId}.`;
       } else {
@@ -4059,7 +4059,7 @@
     if (sectionId === "buddy") setSection("buddy");
     else if (sectionId) {
       setSection(sectionId);
-      // Buddy used to NAVIGATE:intelligence without answering — actually run the query so the tab isn't empty
+      // Monet used to NAVIGATE:intelligence without answering — actually run the query so the tab isn't empty
       if (sectionId === "intelligence") {
         const ind = String(
           state.intelligence.indication || state.scorecard.indication || state.study.indication || ""
@@ -4085,7 +4085,7 @@
     return Boolean(state.study && String(state.study.studyId || "").trim());
   }
 
-  /** Deselect open study — Buddy / portfolio questions hit all Cosmos studies with no working copy. */
+  /** Deselect open study — Monet / portfolio questions hit all Cosmos studies with no working copy. */
   function clearOpenStudy({ confirmIfDirty = true } = {}) {
     if (confirmIfDirty && state.dirty && hasOpenStudy()) {
       const ok = window.confirm("Clear the open study? Unsaved changes will be discarded from the workspace.");
@@ -4292,16 +4292,16 @@
           `Saved from chat · ${payload.deptLabel || payload.dept} / ${payload.categoryLabel || payload.category}`;
       }
       pushAssistant(
-        `Saved to Buddy live context under ${payload.deptLabel || payload.dept || "general"} → ${
+        `Saved to Monet live context under ${payload.deptLabel || payload.dept || "general"} → ${
           payload.categoryLabel || payload.category || "other"
-        }. Ask “what’s in live context?” anytime, or open the Buddy Context tab.`
+        }. Ask “what’s in live context?” anytime, or open the Monet Context tab.`
       );
       if (state.sectionId === "buddy-context") {
         loadBuddyContext().catch(() => {});
       }
     } catch (err) {
       proposal.status = "pending";
-      pushAssistant(`Could not save to Buddy context: ${err.message || err}`);
+      pushAssistant(`Could not save to Monet context: ${err.message || err}`);
     }
     paintBuddyChat();
   }
@@ -4388,7 +4388,7 @@
       proposal.kind === "create_study"
         ? "Okay — did not create that study."
         : proposal.kind === "learn_context"
-          ? "Okay — did not save that to Buddy context."
+          ? "Okay — did not save that to Monet context."
           : "Okay — left those fields unchanged."
     );
     paintBuddyChat();
@@ -4590,7 +4590,7 @@
     if (navOnly) {
       if (navOnly === "buddy") {
         setSection("buddy");
-        pushAssistant("Buddy is ready — ask anything about this study or the portfolio.");
+        pushAssistant("Monet is ready — ask anything about this study or the portfolio.");
         paintBuddyChat();
         return;
       }
@@ -4695,7 +4695,7 @@
     const rememberOnly = !pendingFiles.length ? matchRememberOnly(question) : null;
     if (rememberOnly) {
       pushLearnProposal(
-        "Proposed a note for Buddy live context — click Save to store it.",
+        "Proposed a note for Monet live context — click Save to store it.",
         rememberOnly
       );
       paintBuddyChat();
@@ -4776,7 +4776,7 @@
       }
       if (!canExternal) {
         console.warn(
-          "[Buddy] No Function App session — SWA ~45s risk.",
+          "[Monet] No Function App session — SWA ~45s risk.",
           session.mintError || null
         );
       }
@@ -5137,20 +5137,20 @@
         ));
         if (/sign in to your account|login\.microsoftonline|AADSTS/i.test(rawText)) {
           pushAssistant(
-            "Your session expired — sign in again (refresh the page), then retry. Buddy cannot answer while Azure AD is asking for login."
+            "Your session expired — sign in again (refresh the page), then retry. Monet cannot answer while Azure AD is asking for login."
           );
         } else if (data.answer) {
           applyAskResult(data, res);
         } else if (!res.ok) {
           const where = canExternal ? "Function App" : "SWA";
           pushAssistant(
-            `Buddy could not answer via ${where} (HTTP ${res.status || "?"}). Try again in a moment.`
+            `Monet could not answer via ${where} (HTTP ${res.status || "?"}). Try again in a moment.`
           );
           if (els.askStatus) els.askStatus.textContent = where;
         } else {
           pushAssistant(
             data.error ||
-              "Buddy returned an empty answer. Try rephrasing, or refresh if your session expired."
+              "Monet returned an empty answer. Try rephrasing, or refresh if your session expired."
           );
         }
         state.buddyBusy = false;
@@ -5184,7 +5184,7 @@
 
       if (/sign in to your account|login\.microsoftonline|AADSTS/i.test(rawText)) {
         pushAssistant(
-          "Your session expired — sign in again (refresh the page), then retry. Buddy cannot answer while Azure AD is asking for login."
+          "Your session expired — sign in again (refresh the page), then retry. Monet cannot answer while Azure AD is asking for login."
         );
         if (els.askStatus) els.askStatus.textContent = "";
         state.buddyBusy = false;
@@ -5198,7 +5198,7 @@
       if (!res.ok && !data.contextId && !data.answer) {
         const where = canExternal ? "Function App" : "SWA";
         pushAssistant(
-          `Buddy could not finish prepare via ${where} (HTTP ${res.status || "?"}). Try again in a moment.`
+          `Monet could not finish prepare via ${where} (HTTP ${res.status || "?"}). Try again in a moment.`
         );
         if (els.askStatus) els.askStatus.textContent = where;
       } else if (data.answer && !data.contextId) {
@@ -5214,7 +5214,7 @@
         ({ res, rawText, data } = await buddyHop(
           "/api/ask",
           { askPhase: "auto" },
-          deepCue ? "Deep · asking Buddy…" : "Fast · asking Buddy…"
+          deepCue ? "Deep · asking Monet…" : "Fast · asking Monet…"
         ));
         if (/sign in to your account|login\.microsoftonline|AADSTS/i.test(rawText)) {
           pushAssistant(
@@ -5228,14 +5228,14 @@
         } else if (!res.ok) {
           pushAssistant(
             canExternal
-              ? `Buddy hit an error before finishing (HTTP ${res.status || "?"}). Try again.`
-              : `Buddy hit a gateway on SWA (~45s). Status should say Function App. Mint: ${session.mintError || "n/a"}. If secret is set, check Portal → ora-buddy-api → CORS allows this site, then hard-refresh.`
+              ? `Monet hit an error before finishing (HTTP ${res.status || "?"}). Try again.`
+              : `Monet hit a gateway on SWA (~45s). Status should say Function App. Mint: ${session.mintError || "n/a"}. If secret is set, check Portal → ora-buddy-api → CORS allows this site, then hard-refresh.`
           );
           if (els.askStatus) els.askStatus.textContent = canExternal ? "Function App" : "SWA";
         } else {
           pushAssistant(
             data.error ||
-              "Buddy returned an empty answer. Try rephrasing, or refresh if your session expired."
+              "Monet returned an empty answer. Try rephrasing, or refresh if your session expired."
           );
           if (els.askStatus) els.askStatus.textContent = "Fast";
         }
@@ -5252,7 +5252,7 @@
         ({ res, rawText, data } = await buddyHop(
           "/api/ask",
           { askPhase: "answer", contextId },
-          data.statusHint || (deepCue ? "Deep · asking Buddy…" : "Fast · asking Buddy…")
+          data.statusHint || (deepCue ? "Deep · asking Monet…" : "Fast · asking Monet…")
         ));
         if (/sign in to your account|login\.microsoftonline|AADSTS/i.test(rawText)) {
           pushAssistant(
@@ -5266,14 +5266,14 @@
         } else if (!res.ok) {
           pushAssistant(
             canExternal
-              ? `Buddy hit an error before finishing (HTTP ${res.status || "?"}). Try again.`
-              : `Buddy hit a gateway on SWA (~45s). Status should say Function App. Mint: ${session.mintError || "n/a"}. If secret is set, check Portal → ora-buddy-api → CORS allows this site, then hard-refresh.`
+              ? `Monet hit an error before finishing (HTTP ${res.status || "?"}). Try again.`
+              : `Monet hit a gateway on SWA (~45s). Status should say Function App. Mint: ${session.mintError || "n/a"}. If secret is set, check Portal → ora-buddy-api → CORS allows this site, then hard-refresh.`
           );
           if (els.askStatus) els.askStatus.textContent = canExternal ? "Function App" : "SWA";
         } else {
           pushAssistant(
             data.error ||
-              "Buddy returned an empty answer. Try rephrasing, or refresh if your session expired."
+              "Monet returned an empty answer. Try rephrasing, or refresh if your session expired."
           );
           if (els.askStatus) els.askStatus.textContent = "Fast";
         }
@@ -5284,8 +5284,8 @@
         aborted
           ? state._askStopped
             ? "Stopped."
-            : "Buddy took too long on that hop. Try a simpler ask — chat first; visuals come second."
-          : `Could not reach Buddy. ${String(err.message || err)}`
+            : "Monet took too long on that hop. Try a simpler ask — chat first; visuals come second."
+          : `Could not reach Monet. ${String(err.message || err)}`
       );
       state._askStopped = false;
       if (els.askStatus) els.askStatus.textContent = "Fast";
@@ -5390,7 +5390,7 @@
       .join("");
     return `<div class="card wide">
       <h3>Create intelligence docs</h3>
-      <p class="muted">Buddy builds HTML leave-behinds beside the chat. Set indication and geography below first, then pick a starter — or ask Buddy to refine the draft.</p>
+      <p class="muted">Monet builds HTML leave-behinds beside the chat. Set indication and geography below first, then pick a starter — or ask Monet to refine the draft.</p>
       <p class="muted" style="margin-top:0.35rem;">Current scope: <strong>${ind}</strong> · ${geo}</p>
       <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.85rem;">${buttons}</div>
     </div>`;
@@ -5399,7 +5399,7 @@
   /**
    * Prefer Function App for Data Status / goal reads. SWA managed /api has been
    * returning 503 or Entra login HTML — ora-buddy-api stays healthy.
-   * Uses Buddy session when minted; otherwise anonymous GET against FA (CORS allow-listed).
+   * Uses Monet session when minted; otherwise anonymous GET against FA (CORS allow-listed).
    */
   async function buddyDataFetch(path, options = {}) {
     const { requireAuth = false, ...fetchOpts } = options;
@@ -5432,7 +5432,7 @@
       try {
         return await tryUrl(`${session.apiBase}${apiPath}`, true);
       } catch (err) {
-        console.warn("[Buddy] FA+session fetch failed", err);
+        console.warn("[Monet] FA+session fetch failed", err);
       }
     }
 
@@ -5442,7 +5442,7 @@
       try {
         return await tryUrl(`${fa}${apiPath}`, false);
       } catch (err) {
-        console.warn("[Buddy] FA anonymous fetch failed", err);
+        console.warn("[Monet] FA anonymous fetch failed", err);
       }
     }
 
@@ -5450,7 +5450,7 @@
     if (requireAuth && !(session.external && session.token)) {
       throw new Error(
         session.mintError ||
-          "Buddy session required (SWA /api is down — hard-refresh after sign-in)."
+          "Monet session required (SWA /api is down — hard-refresh after sign-in)."
       );
     }
     return tryUrl(apiUrl(apiPath), false);
@@ -5904,7 +5904,7 @@
       if (res.status === 401) {
         state.intelligence.sponsorNewsMessage =
           data.error ||
-          "Sign in required (or Buddy session mint failed) to crawl sponsor news on ora-buddy-api.";
+          "Sign in required (or Monet session mint failed) to crawl sponsor news on ora-buddy-api.";
       } else if (!res.ok) {
         state.intelligence.sponsorNewsMessage =
           data.error || `Sponsor news crawl failed (${res.status})`;
@@ -5985,7 +5985,7 @@
       if (statusRes.status === 401) {
         state.intelligence.veevaMessage =
           status.error ||
-          "Sign in required (or Buddy session mint failed) to run Veeva ingest on ora-buddy-api.";
+          "Sign in required (or Monet session mint failed) to run Veeva ingest on ora-buddy-api.";
         return;
       }
       if (status.configured === false) {
@@ -6222,7 +6222,7 @@
       if (res.status === 401) {
         state.intelligence.sfSyncMessage =
           data.error ||
-          "Sign in required (or Buddy session mint failed) — SF must run on ora-buddy-api, not SWA.";
+          "Sign in required (or Monet session mint failed) — SF must run on ora-buddy-api, not SWA.";
       } else if (!res.ok) {
         state.intelligence.sfSyncMessage = data.error || `Salesforce sync failed (${res.status})`;
       } else if (data.skipped) {
@@ -6314,7 +6314,7 @@
         if (res.status === 401) {
           state.intelligence.sfTablesMessage =
             data.error ||
-            "Sign in required (or Buddy session mint failed) to run SF ingest on ora-buddy-api.";
+            "Sign in required (or Monet session mint failed) to run SF ingest on ora-buddy-api.";
           anyFail = true;
           break;
         }
@@ -6988,7 +6988,7 @@
         <h3>Data status ${
           h.ok === false && h.error ? "· error" : countsMatch ? "· loaded" : "· check counts"
         }</h3>
-        <p class="muted">Ora Veeva + TrialHub + Salesforce + NetSuite + Insights RM reference tables in Cosmos (<code>bd-budgets</code>). Buddy reads summaries from these.</p>
+        <p class="muted">Ora Veeva + TrialHub + Salesforce + NetSuite + Insights RM reference tables in Cosmos (<code>bd-budgets</code>). Monet reads summaries from these.</p>
         <table class="table">
           <thead><tr><th>Container</th><th>Loaded</th><th>Expected</th><th>Status</th></tr></thead>
           <tbody>${rows}${liveRows}${sfLiveRows}${veevaLiveRows}${nsLiveRows}${rmLiveRows}</tbody>
@@ -7217,7 +7217,7 @@
         </div>
         <button type="button" class="btn btn-primary" data-intel-ask="${escapeAttr(
           b.indicationRequested || state.intelligence.indication
-        )}">Ask Buddy about this</button>
+        )}">Ask Monet about this</button>
       </div>
       ${oraCard}
       ${thCard}
@@ -7233,7 +7233,7 @@
       <div class="grid">
         <div class="card wide">
           <h3>Data Status</h3>
-          <p class="muted">Upload and sync feeds Buddy uses (TrialHub, CT.gov, Salesforce). Benchmark queries stay on Ora Clinical Intelligence.</p>
+          <p class="muted">Upload and sync feeds Monet uses (TrialHub, CT.gov, Salesforce). Benchmark queries stay on Ora Clinical Intelligence.</p>
         </div>
         ${renderYearlyGoalCard()}
         ${renderIntelligenceHealthCard()}
@@ -7635,12 +7635,12 @@
       )
       .join("");
     const thin = (state.buddyDeptPack?.thinDepts || []).length
-      ? `<p class="muted">Playbooks still thin for: ${escapeHtml(state.buddyDeptPack.thinDepts.join(", "))} — Buddy will ask learning questions until these are filled.</p>`
+      ? `<p class="muted">Playbooks still thin for: ${escapeHtml(state.buddyDeptPack.thinDepts.join(", "))} — Monet will ask learning questions until these are filled.</p>`
       : "";
     return `
       <div class="card wide" style="margin-top:1rem;">
         <h3>Department playbooks</h3>
-        <p class="muted">How each department works at Ora — attached on every Buddy ask (all playbooks). Saved to Cosmos (and git mirror when configured).</p>
+        <p class="muted">How each department works at Ora — attached on every Monet ask (all playbooks). Saved to Cosmos (and git mirror when configured).</p>
         ${thin}
         <p class="muted">${escapeHtml(bc.deptPlaybookStatus || "")}${
           state.buddyDeptPack?.updatedAt ? ` · updated ${escapeHtml(state.buddyDeptPack.updatedAt)}` : ""
@@ -7651,7 +7651,7 @@
         </label>
         <label class="field" style="margin-top:0.75rem;">
           <span>Playbook (process, priorities, vocabulary)</span>
-          <textarea id="buddyDeptPlaybookContext" class="input" rows="10" placeholder="How this department uses the workbench, what they need from Buddy, typical asks…">${escapeHtml(
+          <textarea id="buddyDeptPlaybookContext" class="input" rows="10" placeholder="How this department uses the workbench, what they need from Monet, typical asks…">${escapeHtml(
             cur.context || ""
           )}</textarea>
         </label>
@@ -7719,8 +7719,8 @@
     const viewingAll = viewDept === "*" || viewCategory === "*";
     return `
       <div class="card wide">
-        <h3>Buddy live context</h3>
-        <p class="muted">Append SME notes, OUS playbook updates, or excerpts here. Saved to Cosmos and attached on every Buddy ask — <strong>no redeploy</strong>. Append-only: you cannot replace the whole context. In chat, say “remember this…” and confirm Save. Ask Buddy “what’s in live context?” anytime for a summary.</p>
+        <h3>Monet live context</h3>
+        <p class="muted">Append SME notes, OUS playbook updates, or excerpts here. Saved to Cosmos and attached on every Monet ask — <strong>no redeploy</strong>. Append-only: you cannot replace the whole context. In chat, say “remember this…” and confirm Save. Ask Monet “what’s in live context?” anytime for a summary.</p>
         <p class="muted" style="margin-top:0.35rem;">${escapeHtml(bc.status || "")}${
           bc.updatedAt ? ` · last update ${escapeHtml(bc.updatedAt)}${bc.updatedBy ? ` by ${escapeHtml(bc.updatedBy)}` : ""}` : ""
         }</p>
@@ -7744,7 +7744,7 @@
         </label>
         <div style="display:flex;gap:0.6rem;flex-wrap:wrap;margin-top:0.65rem;">
           <button type="button" class="btn btn-primary" id="btnBuddyCtxAppend" ${bc.saving ? "disabled" : ""}>${
-            bc.saving ? "Saving…" : "Append to Buddy context"
+            bc.saving ? "Saving…" : "Append to Monet context"
           }</button>
           <button type="button" class="btn btn-secondary" id="btnBuddyCtxRefresh" ${bc.loading ? "disabled" : ""}>Refresh</button>
         </div>
@@ -8609,7 +8609,7 @@
               <p class="muted" style="margin-top:0.35rem;">
                 ${hasOpenStudy()
                   ? `Open a study into the workbench, or click <strong>All studies</strong> to clear selection. Current: <strong>${escapeHtml(state.study.studyId)}</strong>`
-                  : "<strong>No study selected</strong> — Buddy will query all Cosmos studies with no open-study bias."}
+                  : "<strong>No study selected</strong> — Monet will query all Cosmos studies with no open-study bias."}
               </p>
             </div>
             <div style="display:flex;gap:0.5rem;flex-wrap:wrap;align-items:center;">
@@ -9188,7 +9188,7 @@
       state.hlbpBaseline = null;
       state.editingSectionId = null;
       state.lockStatus = "";
-      // Fresh Buddy thread when switching studies — keep prior chats in the Chats list
+      // Fresh Monet thread when switching studies — keep prior chats in the Chats list
       startNewBuddyChat({ seedTitle: `Study ${state.study.studyId || ""}`.trim() });
       if (String(state.study.budgetType || "").toUpperCase() === "HLBP") {
         captureHlbpBaseline();
@@ -9587,7 +9587,7 @@
             <button type="button" class="btn btn-primary" id="btnDashLeadershipVisual" ${
               state.dashboard.visualBusy || loading ? "disabled" : ""
             }>${
-              state.dashboard.visualBusy ? "Opening Buddy…" : "Produce leadership visual"
+              state.dashboard.visualBusy ? "Opening Monet…" : "Produce leadership visual"
             }</button>
             <button type="button" class="btn btn-secondary" id="btnDashRefresh" ${
               loading ? "disabled" : ""
@@ -9779,7 +9779,7 @@
           </table>
           <div style="margin-top:0.75rem;display:flex;gap:0.5rem;flex-wrap:wrap;">
             <button type="button" class="btn btn-primary" data-jump="reviews">Go to Reviews</button>
-            <button type="button" class="btn btn-secondary" data-buddy-ask="ops">Ask Buddy for ops briefing</button>
+            <button type="button" class="btn btn-secondary" data-buddy-ask="ops">Ask Monet for ops briefing</button>
           </div>
         </div>
         <div class="card">
@@ -9803,7 +9803,7 @@
           <p class="muted">No study selected — open one from Studies to track department status and fill requests. Portfolio pulse below still works.</p>
           <div style="display:flex;gap:0.5rem;flex-wrap:wrap;margin-top:0.75rem;">
             <button type="button" class="btn btn-primary" data-jump="budget-studies">Browse budget studies</button>
-            <button type="button" class="btn btn-secondary" data-buddy-ask="ops">Ask Buddy for ops briefing</button>
+            <button type="button" class="btn btn-secondary" data-buddy-ask="ops">Ask Monet for ops briefing</button>
           </div>
         </div>`;
 
@@ -10235,7 +10235,7 @@
           </table>
           <div style="margin-top:0.75rem;display:flex;gap:0.5rem;flex-wrap:wrap;">
             <button type="button" class="btn btn-secondary" id="btnHlbpAddSite" ${dis}>Add country</button>
-            <button type="button" class="btn btn-secondary" data-buddy-ask="hlbp">Ask Buddy to guide</button>
+            <button type="button" class="btn btn-secondary" data-buddy-ask="hlbp">Ask Monet to guide</button>
           </div>
         </div>
         <div class="card wide">
@@ -10448,7 +10448,7 @@
           </tr>`).join("");
           return `<div class="card wide">
             <h3>All workbook sheets</h3>
-            <p class="muted">${harvest.sheetCount || harvest.sheets.length} sheets · ${harvest.structuredCount || 0} fully mapped · ${harvest.unstructuredCount || 0} harvested for Ask Buddy / later adapters. Re-upload to refresh.</p>
+            <p class="muted">${harvest.sheetCount || harvest.sheets.length} sheets · ${harvest.structuredCount || 0} fully mapped · ${harvest.unstructuredCount || 0} harvested for Ask Monet / later adapters. Re-upload to refresh.</p>
             <div style="overflow:auto;">
               <table class="table">
                 <thead><tr><th>Sheet</th><th>Status</th><th>Rows</th><th>Label/values</th><th>Cell dump</th></tr></thead>
@@ -10979,7 +10979,7 @@
     return s;
   }
 
-  /** Buddy chat: [[h]] blue headers, [[i]] red important — repair mangled tags, keep text. */
+  /** Monet chat: [[h]] blue headers, [[i]] red important — repair mangled tags, keep text. */
   function formatBuddyHtml(raw) {
     let s = normalizeBuddyTags(raw);
     s = s.replace(/^#{1,6}\s+/gm, "");
@@ -11067,7 +11067,7 @@
 
   function renderBuddyPage() {
     return `<div class="buddy-page-shell">
-      <p class="muted">Buddy fills this workspace. HTML reports open <strong>beside</strong> the chat — tell Buddy what to change and the preview updates. On other tabs, use the floating Buddy button for a side chat.</p>
+      <p class="muted">Monet fills this workspace. HTML reports open <strong>beside</strong> the chat — tell Monet what to change and the preview updates. On other tabs, use the floating Monet button for a side chat.</p>
     </div>`;
   }
 
@@ -11082,17 +11082,17 @@
     els.pageTitle.textContent = section.label;
     els.pageSubtitle.textContent =
       section.id === "buddy"
-        ? "Talk to Buddy full-screen — floating chat stays available on other tabs"
+        ? "Talk to Monet full-screen — floating chat stays available on other tabs"
         : section.id === "dashboard"
           ? "Weekly commercial brief — chase, watch, concentration — waiting when you arrive"
         : section.id === "intelligence"
-          ? "Benchmark queries and Buddy HTML intelligence docs"
+          ? "Benchmark queries and Monet HTML intelligence docs"
         : section.id === "study-info"
           ? "Prior Ora timelines and sponsor news — win moves for BD"
         : section.id === "studies"
           ? "Ora Veeva studies — drill into milestone timelines"
         : !hasOpenStudy()
-          ? "Portfolio mode — Buddy answers from all Cosmos studies"
+          ? "Portfolio mode — Monet answers from all Cosmos studies"
           : section.department
             ? `Editable by ${section.department}${canEdit(section.department) ? "" : " (view only for you)"}`
             : "Shared study workspace";
@@ -12232,7 +12232,7 @@
         displayName,
         firstName
       };
-      // Re-bind Buddy chat list to this signed-in user (preserve anonymous thread if needed)
+      // Re-bind Monet chat list to this signed-in user (preserve anonymous thread if needed)
       try {
         if ((state.askHistory || []).length) persistBuddyHistory();
         loadBuddyHistory();

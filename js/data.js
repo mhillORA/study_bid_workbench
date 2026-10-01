@@ -15,11 +15,11 @@ SBW.sections = [
   { id: "intelligence", label: "Ora Clinical Intelligence", department: null },
   { id: "study-info", label: "Study Info", department: null },
   { id: "scorecard", label: "Site Scorecard", department: null },
-  { id: "buddy", label: "Buddy", department: null },
+  { id: "buddy", label: "Monet", department: null },
   { id: "data-status", label: "Data Status", department: null },
   { id: "ops", label: "Ops Dashboard", department: null },
   { id: "pm-dashboard", label: "PM Dashboard", department: null },
-  { id: "buddy-context", label: "Buddy Context", department: null },
+  { id: "buddy-context", label: "Monet Context", department: null },
   { id: "studies", label: "Studies", department: null },
   { id: "hlbp", label: "HLBP", department: null, navGroup: "budget" },
   { id: "budget-studies", label: "Budget studies", department: null, navGroup: "budget" },
@@ -105,7 +105,7 @@ SBW.bdShortcuts = [
   {
     id: "intelligence",
     title: "Intelligence docs",
-    blurb: "Benchmark + Buddy HTML leave-behinds for BD"
+    blurb: "Benchmark + Monet HTML leave-behinds for BD"
   },
   {
     id: "study-info",
@@ -144,7 +144,7 @@ SBW.bdShortcuts = [
   }
 ];
 
-/** Intelligence tab — Buddy starters (uses current indication / geography when set). */
+/** Intelligence tab — Monet starters (uses current indication / geography when set). */
 SBW.intelDocStarters = [
   {
     id: "feasibility-brief",
@@ -172,7 +172,7 @@ SBW.intelDocStarters = [
   }
 ];
 
-/** Prefill Ask Buddy from Hub. */
+/** Prefill Ask Monet from Hub. */
 SBW.buddyQuickAsks = [
   {
     id: "pitch",

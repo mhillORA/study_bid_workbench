@@ -55,8 +55,8 @@
         <div class="topbar-actions">
           <span class="pill" id="saveStatus">Saved</span>
           <button type="button" class="btn btn-primary" id="btnNewStudy">New study</button>
-          <button type="button" class="btn btn-secondary" id="btnClearStudy" title="Deselect open study — Buddy queries all Cosmos studies">All studies</button>
-          <button type="button" class="btn btn-secondary" id="btnBuddyOpen" title="Open Buddy full-screen tab">Buddy</button>
+          <button type="button" class="btn btn-secondary" id="btnClearStudy" title="Deselect open study — Monet queries all Cosmos studies">All studies</button>
+          <button type="button" class="btn btn-secondary" id="btnBuddyOpen" title="Open Monet full-screen tab">Monet</button>
           <button type="button" class="btn btn-secondary" id="btnRequestFill">Request fill</button>
         </div>
       </header>
@@ -65,29 +65,29 @@
     </main>
   </div>
 
-  <button type="button" class="buddy-fab" id="buddyFab" aria-controls="buddyPanel" aria-expanded="false" title="Ask Buddy">
-    Buddy
+  <button type="button" class="buddy-fab" id="buddyFab" aria-controls="buddyPanel" aria-expanded="false" title="Ask Monet">
+    Monet
   </button>
 
-  <aside class="buddy-panel" id="buddyPanel" hidden aria-hidden="true" role="dialog" aria-label="Ask Buddy">
+  <aside class="buddy-panel" id="buddyPanel" hidden aria-hidden="true" role="dialog" aria-label="Ask Monet">
     <header class="buddy-panel-head">
       <div>
-        <strong>Ask Buddy</strong>
-        <p class="muted" id="buddyModelLabel">Ask Buddy · Budget Buddy</p>
+        <strong>Ask Monet</strong>
+        <p class="muted" id="buddyModelLabel">Ask Monet · Monet</p>
       </div>
       <div class="buddy-panel-actions">
         <button type="button" class="btn btn-ghost buddy-icon-btn" id="buddyChatsToggle" title="Previous chats" aria-label="Previous chats" aria-expanded="false">Chats</button>
         <button type="button" class="btn btn-ghost buddy-icon-btn" id="buddyNewChat" title="Start a new chat" aria-label="New chat">New</button>
-        <button type="button" class="btn btn-ghost buddy-icon-btn" id="buddyClear" title="Clear current chat" aria-label="Clear current Buddy chat">Clear</button>
-        <button type="button" class="btn btn-ghost buddy-icon-btn" id="buddyPopout" title="Open in new window" aria-label="Open Buddy in new window">↗</button>
-        <button type="button" class="btn btn-ghost buddy-close" id="buddyClose" aria-label="Close Buddy">×</button>
+        <button type="button" class="btn btn-ghost buddy-icon-btn" id="buddyClear" title="Clear current chat" aria-label="Clear current Monet chat">Clear</button>
+        <button type="button" class="btn btn-ghost buddy-icon-btn" id="buddyPopout" title="Open in new window" aria-label="Open Monet in new window">↗</button>
+        <button type="button" class="btn btn-ghost buddy-close" id="buddyClose" aria-label="Close Monet">×</button>
       </div>
     </header>
-    <div class="buddy-workflow" role="tablist" aria-label="Buddy workflow">
+    <div class="buddy-workflow" role="tablist" aria-label="Monet workflow">
       <button type="button" class="buddy-workflow-btn" data-buddy-workflow="auto" role="tab" aria-selected="true" title="Default to feasibility; budget if you ask about fees/HLBP">Auto</button>
       <button type="button" class="buddy-workflow-btn" data-buddy-workflow="feasibility" role="tab" aria-selected="false" title="PSM, sites, TrialHub, CT.gov, win themes">Feasibility</button>
       <button type="button" class="buddy-workflow-btn" data-buddy-workflow="budget" role="tab" aria-selected="false" title="HLBP, bids, drivers, uploaded fees">Budget</button>
-      <button type="button" class="buddy-workflow-btn" data-buddy-workflow="teach" role="tab" aria-selected="false" title="Save notes into Buddy live context from chat">Teach</button>
+      <button type="button" class="buddy-workflow-btn" data-buddy-workflow="teach" role="tab" aria-selected="false" title="Save notes into Monet live context from chat">Teach</button>
     </div>
     <div class="buddy-chats-drawer" id="buddyChatsDrawer" hidden>
       <div class="buddy-chats-head">
@@ -101,23 +101,23 @@
         <div class="chat-log buddy-chat-log" id="askLog"></div>
         <div class="ask-compose buddy-compose">
           <div class="buddy-attach-chips" id="buddyAttachChips" hidden></div>
-          <textarea id="askInput" class="textarea" rows="3" placeholder="Ask Buddy… attach multiple files (protocol, slides, template…)"></textarea>
+          <textarea id="askInput" class="textarea" rows="3" placeholder="Ask Monet… attach multiple files (protocol, slides, template…)"></textarea>
           <div class="buddy-compose-row">
             <input type="file" id="buddyFileInput" hidden accept=".pdf,.docx,.pptx,.xlsx,.xlsm,.csv,.txt,.md,.json,.html,.htm" multiple />
             <button type="button" class="btn btn-ghost" id="btnBuddyAttach" title="Attach multiple files (Ctrl/Cmd+click or Shift+click in the picker)">Attach files</button>
-            <button type="button" class="btn btn-ghost" id="btnBuddyRemember" title="Save typed note (or last Buddy reply) to live context">Remember</button>
+            <button type="button" class="btn btn-ghost" id="btnBuddyRemember" title="Save typed note (or last Monet reply) to live context">Remember</button>
             <button type="button" class="btn btn-primary" id="btnAsk">Send</button>
             <button type="button" class="btn btn-ghost" id="btnAskStop" hidden title="Stop this ask">Stop</button>
             <span class="muted" id="askStatus"></span>
           </div>
         </div>
       </div>
-      <aside class="buddy-doc-pane" id="buddyDocPane" hidden aria-label="Buddy canvas">
+      <aside class="buddy-doc-pane" id="buddyDocPane" hidden aria-label="Monet canvas">
         <header class="buddy-doc-head">
           <div>
             <span class="buddy-doc-kicker">Canvas</span>
             <strong id="buddyDocTitle">Leave-behind</strong>
-            <p class="muted" id="buddyDocHint">Ask Buddy to revise — updates stay in this pane</p>
+            <p class="muted" id="buddyDocHint">Ask Monet to revise — updates stay in this pane</p>
           </div>
           <div class="buddy-doc-actions">
             <button type="button" class="btn btn-ghost" id="buddyDocDownload" title="Download HTML">Download HTML</button>
@@ -125,7 +125,7 @@
             <button type="button" class="btn btn-ghost buddy-icon-btn" id="buddyDocClose" title="Hide canvas" aria-label="Hide canvas">×</button>
           </div>
         </header>
-        <iframe id="buddyDocFrame" class="buddy-doc-frame" title="Buddy canvas" sandbox="allow-same-origin allow-scripts allow-popups allow-forms"></iframe>
+        <iframe id="buddyDocFrame" class="buddy-doc-frame" title="Monet canvas" sandbox="allow-same-origin allow-scripts allow-popups allow-forms"></iframe>
       </aside>
     </div>
     <div class="buddy-resize-handle" id="buddyResizeHandle" title="Drag to resize" aria-hidden="true"></div>
