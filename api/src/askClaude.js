@@ -562,7 +562,24 @@ function envSetAny(names) {
   return { value: "", from: null };
 }
 
+/**
+ * Buddy Claude / new-project Foundry creds (preferred).
+ * Leave legacy FOUNDRY_* / AZURE_OPENAI_* for Data Lens or rollback.
+ */
+const BUDDY_FOUNDRY_KEY_ALIASES = [
+  "BUDDY_FOUNDRY_API_KEY",
+  "FOUNDRY_CLAUDE_API_KEY",
+  "FOUNDRY_API_KEY_CLAUDE"
+];
+const BUDDY_FOUNDRY_ENDPOINT_ALIASES = [
+  "BUDDY_FOUNDRY_PROJECT_ENDPOINT",
+  "FOUNDRY_PROJECT_CLAUDE_ENDPOINT",
+  "FOUNDRY_CLAUDE_PROJECT_ENDPOINT",
+  "FOUNDRY_PROJECT_ENDPOINT_CLAUDE"
+];
+
 const AZURE_KEY_ALIASES = [
+  ...BUDDY_FOUNDRY_KEY_ALIASES,
   "AZURE_OPENAI_API_KEY",
   "AZURE_OPENAI_KEY",
   "AZURE_AI_API_KEY",
@@ -573,6 +590,7 @@ const AZURE_KEY_ALIASES = [
 ];
 
 const AZURE_ENDPOINT_ALIASES = [
+  ...BUDDY_FOUNDRY_ENDPOINT_ALIASES,
   "AZURE_OPENAI_ENDPOINT",
   "AZURE_AI_ENDPOINT",
   "FOUNDRY_PROJECT_ENDPOINT",
@@ -587,19 +605,35 @@ const AZURE_DEPLOYMENT_ALIASES = [
   "OPENAI_DEPLOYMENT"
 ];
 
-const FOUNDRY_AGENT_NAME_ALIASES = ["FOUNDRY_AGENT_NAME", "AZURE_AI_AGENT_NAME", "BUDDY_AGENT_NAME"];
-const FOUNDRY_AGENT_NAME_FAST_ALIASES = ["FOUNDRY_AGENT_NAME_FAST", "BUDDY_AGENT_NAME_FAST"];
-const FOUNDRY_AGENT_NAME_DEEP_ALIASES = ["FOUNDRY_AGENT_NAME_DEEP", "BUDDY_AGENT_NAME_DEEP"];
+const FOUNDRY_AGENT_NAME_ALIASES = [
+  "BUDDY_FOUNDRY_AGENT_NAME",
+  "FOUNDRY_AGENT_NAME",
+  "AZURE_AI_AGENT_NAME",
+  "BUDDY_AGENT_NAME"
+];
+const FOUNDRY_AGENT_NAME_FAST_ALIASES = [
+  "BUDDY_FOUNDRY_AGENT_NAME_FAST",
+  "FOUNDRY_AGENT_NAME_FAST",
+  "BUDDY_AGENT_NAME_FAST"
+];
+const FOUNDRY_AGENT_NAME_DEEP_ALIASES = [
+  "BUDDY_FOUNDRY_AGENT_NAME_DEEP",
+  "FOUNDRY_AGENT_NAME_DEEP",
+  "BUDDY_AGENT_NAME_DEEP"
+];
 const FOUNDRY_AGENT_ENDPOINT_ALIASES = [
+  "BUDDY_FOUNDRY_AGENT_ENDPOINT",
   "FOUNDRY_AGENT_ENDPOINT",
   "AZURE_AI_AGENT_ENDPOINT",
   "BUDDY_AGENT_ENDPOINT"
 ];
 const FOUNDRY_AGENT_ENDPOINT_FAST_ALIASES = [
+  "BUDDY_FOUNDRY_AGENT_ENDPOINT_FAST",
   "FOUNDRY_AGENT_ENDPOINT_FAST",
   "BUDDY_AGENT_ENDPOINT_FAST"
 ];
 const FOUNDRY_AGENT_ENDPOINT_DEEP_ALIASES = [
+  "BUDDY_FOUNDRY_AGENT_ENDPOINT_DEEP",
   "FOUNDRY_AGENT_ENDPOINT_DEEP",
   "BUDDY_AGENT_ENDPOINT_DEEP"
 ];
@@ -612,7 +646,10 @@ const DEFAULT_FOUNDRY_AGENT_NAME = DEFAULT_FOUNDRY_AGENT_NAME_DEEP;
 
 /** Friendly label for UI / self-intro — not the Foundry resource id. */
 function buddyDisplayName(technicalName) {
-  const custom = envSet("FOUNDRY_AGENT_DISPLAY_NAME") || envSet("BUDDY_DISPLAY_NAME");
+  const custom =
+    envSet("BUDDY_FOUNDRY_AGENT_DISPLAY_NAME") ||
+    envSet("FOUNDRY_AGENT_DISPLAY_NAME") ||
+    envSet("BUDDY_DISPLAY_NAME");
   if (custom) return custom;
   const raw = String(technicalName || "").trim();
   const compact = raw.toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -630,10 +667,15 @@ function azureConfig() {
   const endpoint = envSetAny(AZURE_ENDPOINT_ALIASES);
   const apiKey = envSetAny(AZURE_KEY_ALIASES);
   const deployment = envSetAny(AZURE_DEPLOYMENT_ALIASES);
+  const buddyCreds = Boolean(
+    BUDDY_FOUNDRY_ENDPOINT_ALIASES.includes(endpoint.from) ||
+      BUDDY_FOUNDRY_KEY_ALIASES.includes(apiKey.from)
+  );
   return {
     endpoint: endpoint.value,
     apiKey: apiKey.value,
     deployment: deployment.value,
+    buddyFoundryCreds: buddyCreds,
     sources: {
       endpoint: endpoint.from,
       apiKey: apiKey.from,
@@ -875,28 +917,38 @@ function providerStatus() {
 
   const aliasScan = {};
   for (const name of [
+    ...BUDDY_FOUNDRY_KEY_ALIASES,
+    ...BUDDY_FOUNDRY_ENDPOINT_ALIASES,
     ...AZURE_KEY_ALIASES,
     ...AZURE_ENDPOINT_ALIASES,
     ...AZURE_DEPLOYMENT_ALIASES,
     ...FOUNDRY_AGENT_NAME_ALIASES,
-    ...FOUNDRY_AGENT_ENDPOINT_ALIASES
+    ...FOUNDRY_AGENT_NAME_FAST_ALIASES,
+    ...FOUNDRY_AGENT_NAME_DEEP_ALIASES,
+    ...FOUNDRY_AGENT_ENDPOINT_ALIASES,
+    ...FOUNDRY_AGENT_ENDPOINT_FAST_ALIASES,
+    ...FOUNDRY_AGENT_ENDPOINT_DEEP_ALIASES
   ]) {
     const status = raw(name);
     if (status !== "missing") aliasScan[name] = status;
   }
 
   return {
-    // Chat completions are not used — AZURE_OPENAI_* are Foundry project credentials only.
+    // Chat completions are not used — AZURE_OPENAI_* / BUDDY_FOUNDRY_* are Foundry project credentials.
     azureOpenAI: false,
     foundryAgent: foundryReady,
     foundryProjectCreds: Boolean(cfg.endpoint && cfg.apiKey),
+    buddyFoundryCreds: Boolean(cfg.buddyFoundryCreds),
     foundryAgentName: agent.name || null,
     foundryAgentFast: agentFast.enabled ? agentFast.name : null,
     foundryAgentDeep: agentDeep.enabled ? agentDeep.name : null,
     displayName: buddyDisplayName(agent.enabled ? agent.name : null),
     active,
     deployment: agent.enabled ? agent.name || null : null,
-    buildId: "2026-08-20-foundry-only",
+    buildId: "2026-10-01-buddy-foundry-creds",
+    note: cfg.buddyFoundryCreds
+      ? "Buddy using BUDDY_FOUNDRY_* (Claude/new project); legacy FOUNDRY_* left for Data Lens"
+      : "Buddy using legacy FOUNDRY_* / AZURE_OPENAI_* project creds",
     endpointKind: agent.enabled
       ? "foundry_agent_responses"
       : !cfg.endpoint
