@@ -9,7 +9,8 @@
  * Live mirrors:
  *   ora_veeva_study, ora_veeva_site, ora_veeva_study_country,
  *   ora_veeva_organization, ora_veeva_sponsor,
- *   ora_veeva_metric, ora_veeva_subject, ora_veeva_milestone
+ *   ora_veeva_metric, ora_veeva_subject, ora_veeva_milestone,
+ *   ora_veeva_payable_item, ora_veeva_payment, ora_veeva_fee_schedule
  * (Monitoring / trip-report CTMS objects intentionally not synced.)
  *
  * Also projects:
@@ -207,7 +208,7 @@ const VEEVA_TABLES = [
     fields: ["id", "name__v", "status__v", "modified_date__v"]
   },
   {
-    // CTMS Metrics — enrollment performance dimension of feasibility
+    // CTMS Metrics — enrollment performance (Ora tenant uses __ctms field suffixes)
     vaultObject: "metrics__ctms",
     container: "ora_veeva_metric",
     docType: "ora_veeva_metric",
@@ -215,17 +216,115 @@ const VEEVA_TABLES = [
       "id",
       "name__v",
       "status__v",
-      "metric_type__v",
-      "metrics_type__v",
-      "planned__v",
-      "actual__v",
-      "study__v",
-      "study_country__v",
-      "site__v",
+      "object_type__v",
+      "metric_type__ctms",
+      "planned__ctms",
+      "actual__ctms",
+      "forecast__ctms",
+      "study__ctms",
+      "study_country__ctms",
+      "site__ctms",
+      "ora_project_code__c",
       "modified_date__v"
     ],
     feasibilityMetricFilter: true,
-    criticalFields: ["actual__v", "study__v", "site__v"]
+    criticalFields: ["actual__ctms", "study__ctms", "site__ctms"]
+  },
+  {
+    // Site / study fee schedules (negotiated budget headers)
+    vaultObject: "fee_schedule__v",
+    container: "ora_veeva_fee_schedule",
+    docType: "ora_veeva_fee_schedule",
+    fields: [
+      "id",
+      "name__v",
+      "status__v",
+      "state__v",
+      "study__v",
+      "site__v",
+      "study_country__v",
+      "start_date__v",
+      "end_date__v",
+      "version__v",
+      "default_holdback_percentage__v",
+      "default_overhead_percentage__v",
+      "default_currency__v",
+      "primary_payee__v",
+      "modified_date__v"
+    ]
+  },
+  {
+    // Payment Request — groups payable items for a site payment
+    vaultObject: "payment__v",
+    container: "ora_veeva_payment",
+    docType: "ora_veeva_payment",
+    fields: [
+      "id",
+      "name__v",
+      "status__v",
+      "state__v",
+      "amount__v",
+      "amount_corp__sys",
+      "local_currency__sys",
+      "study__v",
+      "site__v",
+      "study_country__v",
+      "payee__v",
+      "ora_project_code__c",
+      "check_date__v",
+      "check_number__v",
+      "payment_date__v",
+      "visit_fees_total_amount__c",
+      "procedure_fees_total_amount__c",
+      "site_fees_total_amount__c",
+      "additional_fees_total_amount__c",
+      "site_invoice_number__v",
+      "site_invoice_number__c",
+      "finance_approval_date__c",
+      "pm_approval_date__c",
+      "modified_date__v"
+    ]
+  },
+  {
+    // Payable Item — visit / procedure / site-fee line amounts (largest payment table)
+    vaultObject: "payable_item__v",
+    container: "ora_veeva_payable_item",
+    docType: "ora_veeva_payable_item",
+    fields: [
+      "id",
+      "name__v",
+      "status__v",
+      "state__v",
+      "object_type__v",
+      "amount__v",
+      "amount_corp__sys",
+      "base_amount__c",
+      "local_currency__sys",
+      "study__v",
+      "site__v",
+      "study_country__v",
+      "payment__v",
+      "fee_schedule__v",
+      "visit__v",
+      "visit_name__v",
+      "visit_label__v",
+      "procedure__v",
+      "procedure_name__v",
+      "site_fee__v",
+      "site_fee_name__v",
+      "subject__v",
+      "payee__v",
+      "payee_name__v",
+      "payment_level__v",
+      "budget_category__v",
+      "item_date__v",
+      "payable_event_date__v",
+      "fee_subtype__c",
+      "holdback_amount__c",
+      "overhead_amount__c",
+      "project_code__v",
+      "modified_date__v"
+    ]
   },
   {
     // Subjects — subject counts / status under study + site
@@ -323,7 +422,9 @@ function feasibilityMetricWhere() {
   // Prefer CONTAINS on name/type — Vault picklist API names vary by tenant
   const bits = FEASIBILITY_METRIC_TYPES.map((t) => {
     const esc = String(t).replace(/'/g, "\\'");
-    return `TONAME(metric_type__v) = '${esc}' OR name__v = '${esc}'`;
+    return (
+      `TONAME(metric_type__ctms) = '${esc}' OR TONAME(metric_type__v) = '${esc}' OR name__v = '${esc}'`
+    );
   });
   return bits.join(" OR ");
 }
@@ -407,9 +508,16 @@ async function mirrorNeedsFullResync(database, table, existingCount) {
     return withSite === 0;
   }
   if (table.container === "ora_veeva_metric") {
+    const withActualCtms = await countWithField(
+      database,
+      table.container,
+      table.docType,
+      "actual__ctms"
+    );
     const withActual = await countWithField(database, table.container, table.docType, "actual__v");
+    const withSiteCtms = await countWithField(database, table.container, table.docType, "site__ctms");
     const withSite = await countWithField(database, table.container, table.docType, "site__v");
-    return withActual === 0 && withSite === 0;
+    return withActualCtms === 0 && withActual === 0 && withSiteCtms === 0 && withSite === 0;
   }
   return false;
 }
@@ -443,6 +551,20 @@ function toMirrorDoc(rec, docType, syncedAt) {
     source: "veeva_live"
   };
   // Flatten relationship labels so consumers never need dotted Vault keys.
+  if (docType === "ora_veeva_metric") {
+    // Ora tenant uses __ctms suffixes; keep __v aliases for Buddy / Lens readers.
+    if (doc.planned__v == null && doc.planned__ctms != null) doc.planned__v = doc.planned__ctms;
+    if (doc.actual__v == null && doc.actual__ctms != null) doc.actual__v = doc.actual__ctms;
+    if (doc.forecast__v == null && doc.forecast__ctms != null) doc.forecast__v = doc.forecast__ctms;
+    if (doc.study__v == null && doc.study__ctms != null) doc.study__v = doc.study__ctms;
+    if (doc.site__v == null && doc.site__ctms != null) doc.site__v = doc.site__ctms;
+    if (doc.study_country__v == null && doc.study_country__ctms != null) {
+      doc.study_country__v = doc.study_country__ctms;
+    }
+    if (doc.metric_type__v == null && doc.metric_type__ctms != null) {
+      doc.metric_type__v = doc.metric_type__ctms;
+    }
+  }
   if (docType === "ora_veeva_site") {
     const countryName =
       flat["country__vr.name__v"] ||
@@ -1019,13 +1141,19 @@ async function runVeevaTablesSync(getDb, opts = {}) {
         return 5;
       case "milestone__v":
         return 6;
-      case "site__v":
+      case "fee_schedule__v":
         return 7;
+      case "payment__v":
+        return 8;
+      case "site__v":
+        return 9;
+      case "payable_item__v":
+        return 10;
       case "subject__clin":
       case "subject__v":
-        return 8;
+        return 11;
       default:
-        return 9;
+        return 12;
     }
   };
   const countsByContainer = {};

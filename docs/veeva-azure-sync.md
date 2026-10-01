@@ -30,9 +30,12 @@ Ora categorizes feasibility like the Mike Watson Claude Reports:
 | `ora_veeva_site` | `site__v` | Site grain |
 | `ora_veeva_organization` | `organization__v` | Org / PI org |
 | `ora_veeva_sponsor` | `sponsor__c` | Sponsor |
-| `ora_veeva_metric` | `metrics__ctms` | Enrollment metrics (enrolled, screened, rates, SF%, dropout) |
+| `ora_veeva_metric` | `metrics__ctms` | Enrollment metrics (`planned__ctms` / `actual__ctms` / `forecast__ctms`; also aliased to `__v` on upsert) |
 | `ora_veeva_subject` | `subject__clin` (fallback `subject__v`) | Subjects |
 | `ora_veeva_milestone` | `milestone__v` | Startup / timeline milestones |
+| `ora_veeva_fee_schedule` | `fee_schedule__v` | Study + site fee schedules (payment budgets) |
+| `ora_veeva_payment` | `payment__v` | Payment Requests (grouped site payments) |
+| `ora_veeva_payable_item` | `payable_item__v` | Payable line items (visit / procedure / site fee $) — large |
 
 Monitoring / trip-report CTMS objects (`monitoring_event__ctms`, `trip_report_*`) are **not** synced.
 
