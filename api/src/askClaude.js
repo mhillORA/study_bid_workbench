@@ -1,6 +1,7 @@
 /**
- * Ask Monet — study context + Foundry agents only (BudgetBuddy fast, BudgetBuddy2 terra).
- * Node preloads Cosmos / TrialHub / CT.gov; AZURE_OPENAI_* env vars are Foundry project creds.
+ * Ask Monet — study context + single Foundry agent (Monet).
+ * Node preloads Cosmos / TrialHub / CT.gov; BUDDY_FOUNDRY_* (preferred) or FOUNDRY_* / AZURE_OPENAI_* project creds.
+ * Paste docs/foundry-agent-instructions-Monet.txt into the Foundry agent instructions.
  */
 
 const fs = require("fs");
@@ -654,11 +655,11 @@ const FOUNDRY_AGENT_ENDPOINT_DEEP_ALIASES = [
   "BUDDY_AGENT_ENDPOINT_DEEP"
 ];
 
-/** Fast = BudgetBuddy on gpt-5.4-mini. Deep = BudgetBuddy2 on gpt-5.6-terra. */
-const DEFAULT_FOUNDRY_AGENT_NAME_FAST = "BudgetBuddy";
-const DEFAULT_FOUNDRY_AGENT_NAME_DEEP = "BudgetBuddy2";
-/** @deprecated use tier-specific names; kept for providerStatus fallback */
-const DEFAULT_FOUNDRY_AGENT_NAME = DEFAULT_FOUNDRY_AGENT_NAME_DEEP;
+/** Single Monet Foundry agent. Legacy BudgetBuddy / BudgetBuddy2 names still work via env overrides. */
+const DEFAULT_FOUNDRY_AGENT_NAME_FAST = "Monet";
+const DEFAULT_FOUNDRY_AGENT_NAME_DEEP = "Monet";
+/** @deprecated use BUDDY_FOUNDRY_AGENT_NAME; kept for providerStatus fallback */
+const DEFAULT_FOUNDRY_AGENT_NAME = "Monet";
 
 /** Friendly label for UI / self-intro — not the Foundry resource id. */
 function buddyDisplayName(technicalName) {
@@ -791,8 +792,8 @@ function foundryAgentConfig(tier = null) {
 }
 
 /**
- * Fast-first routing: BudgetBuddy (mini) by default.
- * Deep (BudgetBuddy2 / terra) only when forced, or after escalate judgment.
+ * Fast-first routing when two agents are configured; otherwise the single Monet agent.
+ * Deep only when forced (visuals/docs), or after escalate judgment.
  * Simple PSM / site / TA / open-study / remember stay on fast.
  */
 function inferModelTier(question, body = {}, workflow = "auto") {
@@ -2404,7 +2405,7 @@ function buildAzureChatAttempts(endpoint, deployment, apiVersion) {
 /** @deprecated Chat completions removed — Monet is Foundry agents only. */
 async function askAzureOpenAI() {
   throw new Error(
-    "Azure chat completions are not used. Monet calls Foundry agents only (BudgetBuddy / BudgetBuddy2)."
+    "Azure chat completions are not used. Monet calls the Foundry agent only (BUDDY_FOUNDRY_AGENT_NAME / Monet)."
   );
 }
 
@@ -2515,7 +2516,7 @@ function foundryTimeoutMs(tier, deadlineAt = null) {
 }
 
 /**
- * Foundry Agent (e.g. BudgetBuddy2) via Responses protocol — includes web search tools.
+ * Foundry Agent (Monet) via Responses protocol — includes web search tools.
  * URL shape:
  *   {project}/agents/{name}/endpoint/protocols/openai/responses?api-version=...
  */
@@ -2530,7 +2531,7 @@ async function askFoundryAgent({
   const agent = agentOverride || foundryAgentConfig(tier);
   if (!agent.enabled) {
     throw new Error(
-      `Foundry agent not configured (${agent.reason}, tier=${tier}). Set AZURE_OPENAI_ENDPOINT to the project URL, AZURE_OPENAI_API_KEY, and FOUNDRY_AGENT_NAME_FAST=BudgetBuddy / FOUNDRY_AGENT_NAME_DEEP=BudgetBuddy2.`
+      `Foundry agent not configured (${agent.reason}, tier=${tier}). Set BUDDY_FOUNDRY_PROJECT_ENDPOINT + BUDDY_FOUNDRY_API_KEY and BUDDY_FOUNDRY_AGENT_NAME=Monet (or legacy FOUNDRY_* / BudgetBuddy names).`
     );
   }
   if (deadlineAt != null && Number(deadlineAt) - Date.now() < 3000) {
@@ -2828,7 +2829,7 @@ function extractAzureMessageText(respBody) {
   return String(msg.refusal || "").trim();
 }
 
-/** Foundry agents only (BudgetBuddy fast → BudgetBuddy2 terra). Never throws — soft-fail answer. */
+/** Foundry agent only (Monet). Never throws — soft-fail answer. */
 function slimContextForRetry(context) {
   const c = { ...(context || {}) };
   if (c.portfolio && typeof c.portfolio === "object") {
@@ -2907,7 +2908,8 @@ async function askAi(opts) {
   let tier =
     opts.tier ||
     inferModelTier(opts.question, opts.body || {}, workflow);
-  // Visuals / docs need Deep (BudgetBuddy2) — Fast truncates HTML under gateway limits
+  // Visuals / docs use Deep tier routing when a separate deep agent is configured;
+  // with a single Monet agent both tiers resolve to the same name.
   if (wantsVisual) tier = "deep";
   if (tier !== "fast" && tier !== "deep") tier = "fast";
 
@@ -2930,8 +2932,7 @@ async function askAi(opts) {
     }
   };
 
-  // Foundry only: BudgetBuddy (fast) → BudgetBuddy2 (terra).
-  // Node hunts Cosmos / TrialHub / CT.gov into context BEFORE this call.
+  // Foundry only: Monet (single agent). Node hunts Cosmos / TrialHub / CT.gov into context BEFORE this call.
 
   const callFoundry = (t, ctx) =>
     askFoundryAgent({
@@ -3045,7 +3046,7 @@ async function askAi(opts) {
   if (!status.active) {
     return buddySoftFail(
       new Error(
-        "Ask Monet is not configured. Set AZURE_OPENAI_ENDPOINT + AZURE_OPENAI_API_KEY (Foundry project) and FOUNDRY_AGENT_NAME_FAST / FOUNDRY_AGENT_NAME_DEEP (BudgetBuddy + BudgetBuddy2)."
+        "Ask Monet is not configured. Set BUDDY_FOUNDRY_PROJECT_ENDPOINT + BUDDY_FOUNDRY_API_KEY and BUDDY_FOUNDRY_AGENT_NAME=Monet (legacy FOUNDRY_* / BudgetBuddy names still accepted)."
       ),
       { attempts }
     );
