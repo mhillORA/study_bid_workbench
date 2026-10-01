@@ -1,5 +1,5 @@
 /**
- * Ask Buddy — study context + Foundry agents only (BudgetBuddy fast, BudgetBuddy2 terra).
+ * Ask Monet — study context + Foundry agents only (BudgetBuddy fast, BudgetBuddy2 terra).
  * Node preloads Cosmos / TrialHub / CT.gov; AZURE_OPENAI_* env vars are Foundry project creds.
  */
 
@@ -60,14 +60,14 @@ const PORTFOLIO_RULES =
   "When those fields are present, cite them — never say you cannot see when a study was ingested. Only say missing if importedAt and updatedAt are both null.";
 
 /**
- * Always appended — even when SWA overrides BUDDY_SYSTEM_PROMPT — so Buddy knows
+ * Always appended — even when SWA overrides BUDDY_SYSTEM_PROMPT — so Monet knows
  * Ora Clinical Intelligence / TrialHub / CT.gov and how to answer those asks.
  */
 const INTELLIGENCE_RULES = [
   " JUST DO IT (critical): Never ask permission to calculate, proceed, look up, or continue. If inputs exist in context, run the math and answer now; state assumptions in one short line. Forbidden: \"Shall I proceed\", \"Want me to calculate\", \"I can run the numbers if you'd like\", \"Let me know if I should\". Only ask when a required input is truly missing — one question, then stop.",
   " NO MAGIC WORDS (critical): Never invent a one-word trigger / passphrase / confirmation code. Natural language (yeah, yes, do it, go ahead, calculate PSM, list 40 sites) is enough. Do the work in the same turn.",
   " INTELLIGENCE DATA CATALOG (Cosmos bd-budgets — reference tables, NOT budget line items):",
-  "1) ora_veeva_study / ora_veeva_site / ora_veeva_study_country / ora_veeva_organization / ora_veeva_sponsor / ora_veeva_metric / ora_veeva_subject / ora_veeva_milestone — LIVE Vault mirrors (Ingest Veeva). Buddy feasibility uses THESE — not ora_fact_*.",
+  "1) ora_veeva_study / ora_veeva_site / ora_veeva_study_country / ora_veeva_organization / ora_veeva_sponsor / ora_veeva_metric / ora_veeva_subject / ora_veeva_milestone — LIVE Vault mirrors (Ingest Veeva). Monet feasibility uses THESE — not ora_fact_*.",
   " FEASIBILITY CATEGORIZATION (how Ora structures feasibility):",
   "• Two grains: STUDY level (Study + Metrics + Milestone; study-country blank on metrics/milestones) and SITE level (Study Site + Metrics + Milestone; site not blank).",
   "• Scope: Ora Project Code not blank (real Ora projects only).",
@@ -141,7 +141,7 @@ const INTELLIGENCE_RULES = [
   " NULL VEEVA PSM → INDUSTRY PROXY (critical): When Ora/Veeva studiesWithPsm is 0 (or site_psm all null) but studyCount > 0 OR the user asks for a PSM/enrollment rate: (1) still list the Ora studies/sites you have, (2) then give a PSM estimate from indicationBenchmark.trialhub.psmMedian (and P25/P75) and/or CT.gov enrollment/sites when computable, (3) say it once in plain English as an industry run-rate / proxy — not Ora historical PSM (do not list TrialHub/CT.gov as labeled sources in chat), (4) if the always-on playbook has an indication planning range (e.g. Stargardt ~0.12), include that as a planning range. Never invent a number with no backing pack, and never say you cannot estimate when TrialHub/CT.gov/playbook ranges are present.",
   " SITE LISTING RULE (critical): If context.intelligence.indicationBenchmark.sites.topSitesByPsm OR sites.topSites OR sites.topOusSites OR countrySites.topSites OR legacyAnterior sites/leaderboard has rows, you MUST list every site in those arrays (up to sites.returnedCount / sites.siteListLimit / the user's requested N — often 40). Never stop at 10 when more rows are present. Never say Cosmos only has ~10 sites if returnedCount is higher. Include country and site PSM or enrolled. Answer in chat from Cosmos — do NOT open Clinical Intelligence or Site Scorecard to \"look it up\". Never emit NAVIGATE:intelligence or NAVIGATE:scorecard for a site/PSM ask. Never print schema keys like org_clean / site_psm / fsi_trust — say site name, PSM, FSI trust.",
   " CALCULATE PSM NOW (critical): When the user asks for PSM / enrollment rate / how many sites: lead with a number. Prefer indicationBenchmark.sites.sitePsmMedian, then ora.psmMedian, then trialhub.psmMedian, then context.enrollmentPlan.psm (already filled from those medians when the user did not state one). If patients + months exist, compute sitesExact = patients/(psm*months) and the 20% buffer — do not ask permission. If site rows have enrolled + months but missing site PSM, compute enrolled/months yourself.",
-  " COSMOS-FIRST RULE (critical): context.intelligence is queried live from Cosmos on every relevant ask. You already have the site slate / PSM / TrialHub / milestones in Context JSON. Stay in Buddy chat. Never say you cannot see site rows because a tab is not open. Never tell the user to open a tab so you can answer.",
+  " COSMOS-FIRST RULE (critical): context.intelligence is queried live from Cosmos on every relevant ask. You already have the site slate / PSM / TrialHub / milestones in Context JSON. Stay in Monet chat. Never say you cannot see site rows because a tab is not open. Never tell the user to open a tab so you can answer.",
   " NO INVENTION (critical): Never invent PSM, enrollment rates, site counts, NCT ids, study numbers, sponsor lists, or Ora history. Numbers must come from ORA COSMOS FACTS, Context JSON (intelligence / portfolio / cosmos), or ATTACHED DOCUMENTS. Exception: when FACTS has a TREATMENT-NAÏVE / RECRUITING treatment-naïve block with NCTs, those ARE live CT.gov eligibility results attached this turn — list them; do NOT say \"not in Ora Cosmos data\". Only use that phrase when FACTS/JSON both lack the relevant rows. Chat specs from the user (e.g. 6 sites, 4 months) may be used as scenario inputs and must be labeled as user-stated.",
   " SOURCE PRIORITY: (1) ATTACHED DOCUMENTS for protocol/template/branding/narrative the user provided (2) ORA COSMOS FACTS / context.intelligence for Ora Veeva + TrialHub + CT.gov numbers — including LIVE gap-fill packs (intelligence.gapFill / recruitingTreatmentNaiveSample) when Node fetched CT.gov this turn because Cosmos was thin (3) context.portfolio only for all-studies budget rollups when asked (4) web search only for public commercial facts. Do not let a document attachment replace Cosmos for industry/Ora performance numbers. When liveGapFillPrefetch or gapFill is present, treat those NCTs as authoritative — you already \"went and got\" them.",
   " NO 'MISSING LEADERBOARD' HEDGE (critical): Never say you lack a dedicated site leaderboard, are grabbing closest matches, or only have known anchors — if trialhub.countryRank / countryRankOus.ranked has countries, THAT is the country leaderboard (cite trialMentions). If sites.topSites or topOusSites has org_clean rows (even with null site_psm), THAT is the site slate. If both are empty, say Cosmos has no Veeva site rows for that indication and lead with TrialHub/CT.gov country ranks only — still give the enrollmentPlan math.",
@@ -153,7 +153,7 @@ const INTELLIGENCE_RULES = [
 
 const LEGACY_ANTERIOR_RULES = [
   " LEGACY ANTERIOR-SEGMENT DATA (Cosmos bd-budgets — separate containers, NOT Ora Veeva and NOT budget studies):",
-  " Containers: legacy_studies, legacy_sites, legacy_study_site_outcomes (by studyId), legacy_site_study_outcomes (by siteId). dataset=legacy_anterior_segment. Buddy queries these from Cosmos — never ask the user to paste a legacy table.",
+  " Containers: legacy_studies, legacy_sites, legacy_study_site_outcomes (by studyId), legacy_site_study_outcomes (by siteId). dataset=legacy_anterior_segment. Monet queries these from Cosmos — never ask the user to paste a legacy table.",
   "When context.legacyAnterior is present:",
   "• You MAY use trust / relationship fields (relationshipPreference, advantages, disadvantages, relationshipNotes) without extra confirmation.",
   "• If legacyAnterior.indicationSites (or trust.indicationFilter) is set, prefer those sites for that indication (e.g. Dry Eye) — do not mix other indications into site suggestions.",
@@ -162,10 +162,10 @@ const LEGACY_ANTERIOR_RULES = [
   " Label this source as legacy anterior-segment overview (not Veeva PSM). Cite n. Null ≠ 0.",
   " If a named site/study has matched=0, say it was not found and ask for another spelling.",
   " Site Scorecard 'Include legacy recruitment data' is a separate UI toggle — when the user mentions they turned it on, treat enrollment as consented.",
-  " LIVE CONTEXT: context.buddyLiveContext (from the Buddy Context tab) is SME-authored additions — use with the Master Context; on conflict prefer Master for rules, live context for newest SME notes.",
+  " LIVE CONTEXT: context.buddyLiveContext (from the Monet Context tab) is SME-authored additions — use with the Master Context; on conflict prefer Master for rules, live context for newest SME notes.",
   " Live context is APPEND-ONLY (never replaced wholesale). Entries are organized by department then category (organized.byDepartment).",
   " When the user says remember / learn / save that / add to playbook: propose LEARN_CONTEXT (user confirms). Do not invent that memory was saved without the protocol line.",
-  " When the user asks what is in current/live Buddy context, what's already ingested, or summarize Buddy Context: answer from context.buddyLiveContext — list departments, categories, entry counts, and short previews from organized/text. If empty, say so and suggest the Buddy Context tab. Optionally end with NAVIGATE:buddy-context."
+  " When the user asks what is in current/live Monet context, what's already ingested, or summarize Monet Context: answer from context.buddyLiveContext — list departments, categories, entry counts, and short previews from organized/text. If empty, say so and suggest the Monet Context tab. Optionally end with NAVIGATE:buddy-context."
 ].join(" ");
 
 /** Ora Master Context (priority) + prior playbook (retained, lower priority). */
@@ -189,8 +189,8 @@ function loadOraIntelligenceContext() {
 
   const liveBridge = [
     "PLATFORM LIVE STATE (highest priority — overrides outdated Excel/file architecture notes below):",
-    "- Azure Cosmos DB (bd-budgets) IS LIVE for Buddy.",
-    "- VEEVA: Buddy feasibility reads ora_veeva_study / ora_veeva_site / ora_veeva_milestone directly.",
+    "- Azure Cosmos DB (bd-budgets) IS LIVE for Monet.",
+    "- VEEVA: Monet feasibility reads ora_veeva_study / ora_veeva_site / ora_veeva_milestone directly.",
     "  Study indication = Vault Indication picklist (indication__v), canonicalized (dry_eye__c → Dry Eye).",
     "  Site PSM = enrolled / months(FPFV→LPFV visit milestones only), min 1 month. FSI/LSI are startup/subject-in — not used for PSM. Do not use ora_fact_* for answers.",
     "  TrialHub PSM (psm_common / th_actual_psm) is study-level — do not mix with site_psm unlabeled.",
@@ -200,7 +200,7 @@ function loadOraIntelligenceContext() {
     "- TrialHub grows via app upload (Intelligence → Upload TrialHub export); upsert by NCT.",
     "- CT.gov ophthalmology feed syncs via /api/ctgov/sync.",
     "- Prefer Context JSON from this ask over stale \"query Excel\" wording in older playbook text.",
-    "- Buddy Context tab appends SME notes live without redeploy."
+    "- Monet Context tab appends SME notes live without redeploy."
   ].join("\n");
 
   const master = masterRaw
@@ -288,7 +288,7 @@ const CONVERSATION_HYGIENE_RULES =
   "Offer a follow-up path at most once per topic, and only when the user has not already been offered it in this chat history. " +
   "On follow-up turns, answer the new ask and stop — no recycled closing pitch. " +
   "Never re-ask a clarifying question you already asked unless the user still has not answered it. " +
-  "When the user asks what is in current/live Buddy context, summarize context.buddyLiveContext.organized (by department then category) or say it is empty — do not invent entries.";
+  "When the user asks what is in current/live Monet context, summarize context.buddyLiveContext.organized (by department then category) or say it is empty — do not invent entries.";
 
 /**
  * Foundry agent has web search — use it immediately for public commercial facts.
@@ -323,7 +323,7 @@ function buddyInstructionsBase() {
   const oraCtx = loadOraIntelligenceContext();
   const oraBlock = oraCtx
     ? ` ORA RULES CONTEXT (always-on):\n` +
-      `Priority order on conflict: (1) PLATFORM LIVE STATE, (2) ORA MASTER CONTEXT, (3) PRIOR ORA PLAYBOOK, (4) Buddy live context additions in Context JSON.\n` +
+      `Priority order on conflict: (1) PLATFORM LIVE STATE, (2) ORA MASTER CONTEXT, (3) PRIOR ORA PLAYBOOK, (4) Monet live context additions in Context JSON.\n` +
       `${oraCtx}\n`
     : "";
   // Always append portfolio + intelligence + format + always-respond — SWA custom prompts often omit them
@@ -363,7 +363,7 @@ function systemPromptFor(context) {
   " Machine protocols: for tab navigation end with NAVIGATE:<sectionId> ONLY if the user explicitly asked to open that tab (dashboard,buddy,hlbp,ops,studies,versions,intelligence,scorecard,buddy-context,overview,recruitment,clinops,monitoring,smo,summary,reviews,formulas,upload,data-status). Prefer dashboard over hub (Hub removed). Never NAVIGATE to answer data questions." +
     " For field fills end with APPLY:[{\"path\":\"drivers.enrolledSubjects\",\"value\":100,\"label\":\"Enrolled subjects\"}] using only context.editableFields paths; prefer activeTab for ambiguous names. The workbench writes APPLY patches immediately when a study is open." +
     " FILL FOLLOW-UP: If context.fillFollowUp is true, the user just answered your missing-field ask — emit APPLY or CREATE_STUDY this turn. Never reply with only \"thanks / I'll fill that in\" and no protocol line." +
-    " To remember/learn a durable SME note from chat end with LEARN_CONTEXT:{\"dept\":\"bd\",\"category\":\"talking-points\",\"addition\":\"…\"}; user must click Save to Buddy context — do not claim it is stored until then." +
+    " To remember/learn a durable SME note from chat end with LEARN_CONTEXT:{\"dept\":\"bd\",\"category\":\"talking-points\",\"addition\":\"…\"}; user must click Save to Monet context — do not claim it is stored until then." +
     " If context.sectionLocks shows another person on a tab, do not APPLY that tab — say who is editing it and that they must Save and Done first." +
     " To create a new study or HLBP from user-provided info end with CREATE_STUDY:{...json...} (set budgetType:\"HLBP\" and sites:[{country,coreSites}] for HLBP). On fillFollowUp the workbench creates it immediately." +
     " For cross-study / all-studies / average / client / year questions: answer from Veeva (intelligence.veevaOverview / indicationBenchmark) and Salesforce (salesforceData). Do not use uploaded bid portfolio.byClient." +
@@ -499,7 +499,7 @@ function systemPromptFor(context) {
     context?.buddyLiveContext?.text
       ? " context.buddyLiveContext has SME live additions (append-only, organized by dept/category) — treat as authoritative playbook additions. If asked for current/live context contents, summarize from organized/text."
       : context?.buddyLiveContext
-        ? " context.buddyLiveContext is empty — if asked what is in live context, say nothing has been appended yet and suggest Buddy Context tab."
+        ? " context.buddyLiveContext is empty — if asked what is in live context, say nothing has been appended yet and suggest Monet Context tab."
         : "";
   const legacyNote = context?.legacyAnterior
     ? context.legacyAnterior.enrollmentIncluded ||
@@ -563,7 +563,7 @@ function envSetAny(names) {
 }
 
 /**
- * Buddy Claude / new-project Foundry creds (preferred).
+ * Monet Claude / new-project Foundry creds (preferred).
  * Leave legacy FOUNDRY_* / AZURE_OPENAI_* for Data Lens or rollback.
  */
 const BUDDY_FOUNDRY_KEY_ALIASES = [
@@ -947,8 +947,8 @@ function providerStatus() {
     deployment: agent.enabled ? agent.name || null : null,
     buildId: "2026-10-01-buddy-foundry-creds",
     note: cfg.buddyFoundryCreds
-      ? "Buddy using BUDDY_FOUNDRY_* (Claude/new project); legacy FOUNDRY_* left for Data Lens"
-      : "Buddy using legacy FOUNDRY_* / AZURE_OPENAI_* project creds",
+      ? "Monet using BUDDY_FOUNDRY_* (Claude/new project); legacy FOUNDRY_* left for Data Lens"
+      : "Monet using legacy FOUNDRY_* / AZURE_OPENAI_* project creds",
     endpointKind: agent.enabled
       ? "foundry_agent_responses"
       : !cfg.endpoint
@@ -1980,7 +1980,7 @@ function contextJsonForModel(context) {
     ctx.portfolio &&
     typeof ctx.portfolio === "object"
   ) {
-    // Keep Buddy fast for field-fill / remember / open-study ops / feasibility asks
+    // Keep Monet fast for field-fill / remember / open-study ops / feasibility asks
     ctx.portfolio = {
       source: ctx.portfolio.source,
       databaseStudyCount: ctx.portfolio.databaseStudyCount,
@@ -2165,7 +2165,7 @@ function contextJsonForModel(context) {
             }
           }
         : undefined,
-      // Drop feed-wide dashboards on naïve asks — they tempt Buddy into unrelated portfolio HTML
+      // Drop feed-wide dashboards on naïve asks — they tempt Monet into unrelated portfolio HTML
       ctgovOverview:
         intel.query?.treatmentNaive || intel.treatmentNaiveTrials
           ? undefined
@@ -2198,7 +2198,7 @@ function contextJsonForModel(context) {
       nctLookup: intel.nctLookup,
       ctgovNct: intel.ctgovNct,
       sponsorCrosswalk: intel.sponsorCrosswalk,
-      // Never drop SF when TrialHub year lists are present — Buddy needs CRM alongside portfolio
+      // Never drop SF when TrialHub year lists are present — Monet needs CRM alongside portfolio
       salesforceData: intel.salesforceData
         ? {
             ...intel.salesforceData,
@@ -2385,17 +2385,17 @@ function buildAzureChatAttempts(endpoint, deployment, apiVersion) {
   });
 }
 
-/** @deprecated Chat completions removed — Buddy is Foundry agents only. */
+/** @deprecated Chat completions removed — Monet is Foundry agents only. */
 async function askAzureOpenAI() {
   throw new Error(
-    "Azure chat completions are not used. Buddy calls Foundry agents only (BudgetBuddy / BudgetBuddy2)."
+    "Azure chat completions are not used. Monet calls Foundry agents only (BudgetBuddy / BudgetBuddy2)."
   );
 }
 
 /**
  * Consume a Foundry Responses API SSE stream and return the assembled text.
  * Keeps the HTTP connection alive so SWA's reverse proxy doesn't 502/504
- * on long-running model calls (the #1 cause of Buddy doc-analysis timeouts).
+ * on long-running model calls (the #1 cause of Monet doc-analysis timeouts).
  *
  * SSE events we care about:
  *   response.output_text.delta  → {delta: "..."}
@@ -2523,7 +2523,7 @@ async function askFoundryAgent({
 
   // Dedicated agent URL already binds model + tools. Do NOT send model / agent_reference /
   // instructions — Foundry returns 400 "Not allowed when agent is specified".
-  // Pack Buddy system + Cosmos context into the user turn instead.
+  // Pack Monet system + Cosmos context into the user turn instead.
   const system = systemPromptFor(context);
   const input = [
     ...buildHistoryMessages(history).map((m) => ({
@@ -3029,7 +3029,7 @@ async function askAi(opts) {
   if (!status.active) {
     return buddySoftFail(
       new Error(
-        "Ask Buddy is not configured. Set AZURE_OPENAI_ENDPOINT + AZURE_OPENAI_API_KEY (Foundry project) and FOUNDRY_AGENT_NAME_FAST / FOUNDRY_AGENT_NAME_DEEP (BudgetBuddy + BudgetBuddy2)."
+        "Ask Monet is not configured. Set AZURE_OPENAI_ENDPOINT + AZURE_OPENAI_API_KEY (Foundry project) and FOUNDRY_AGENT_NAME_FAST / FOUNDRY_AGENT_NAME_DEEP (BudgetBuddy + BudgetBuddy2)."
       ),
       { attempts }
     );

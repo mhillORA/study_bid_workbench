@@ -2680,7 +2680,7 @@ async function handleAskFromPack({
     return json(200, {
       ok: false,
       answer:
-        "That Buddy prepare pack expired or was not found. Ask again — I’ll pull Ora data fresh.",
+        "That Monet prepare pack expired or was not found. Ask again — I’ll pull Ora data fresh.",
       error: "ask_pack_missing",
       provider: "error",
       modelTier: "fast",
@@ -2866,7 +2866,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       sessionGate.status || 401,
       {
         ok: false,
-        answer: "Buddy session expired or missing — refresh the page and try again.",
+        answer: "Monet session expired or missing — refresh the page and try again.",
         error: sessionGate.error,
         provider: "error",
         modelTier: "fast",
@@ -2928,7 +2928,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       });
     }
 
-    // "hi" alone — tiny Foundry-free reply (still Buddy voice). Anything more
+    // "hi" alone — tiny Foundry-free reply (still Monet voice). Anything more
     // (weather, math, "hey what's…") goes through Foundry light lane below.
     {
       const q0 = String(body?.question || "")
@@ -2951,7 +2951,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         const user = signedInUserFromRequest(request, body.user || null);
         const name = user?.firstName || "";
         const hi = name ? `Hi ${name}` : "Hi";
-        let answer = `${hi} — Buddy here. What do you need?`;
+        let answer = `${hi} — Monet here. What do you need?`;
         if (/^(thanks|thank\s+you|thx|ty|cheers)$/i.test(q0)) answer = "Anytime — what else do you need?";
         else if (/^(bye|goodbye|see\s+ya)$/i.test(q0)) answer = "Later — I’m here when you need me.";
         else if (/^(ok|okay|cool|great|got\s+it)$/i.test(q0)) answer = "Got it. What’s next?";
@@ -2960,7 +2960,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
           answer,
           provider: "instant",
           modelTier: "fast",
-          agent: "Buddy",
+          agent: "Monet",
           answerFocus: "chat",
           greetedAs: name || null
         });
@@ -3051,7 +3051,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
           workflow: "auto",
           buddyMode: "chat",
           askedAt: new Date().toISOString(),
-          note: "Everyday AI ask — answer as Buddy; use web search if needed; no Cosmos packs."
+          note: "Everyday AI ask — answer as Monet; use web search if needed; no Cosmos packs."
         }
       });
       return json(200, {
@@ -3605,7 +3605,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
               organized: buddyLiveContext.organized || null,
               text: String(buddyLiveContext.text).slice(0, 60000),
               note:
-                "Append-only SME live context from Buddy Context tab, grouped by department then category. When asked what is in current/live context, summarize organized by dept/category from this object — do not invent entries."
+                "Append-only SME live context from Monet Context tab, grouped by department then category. When asked what is in current/live context, summarize organized by dept/category from this object — do not invent entries."
             }
           : buddyLiveContext
             ? {
@@ -3613,7 +3613,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
                 empty: true,
                 appendOnly: true,
                 organized: { byDepartment: [], entryCount: 0, charCount: 0 },
-                note: "No live additions yet — use Buddy Context tab to append by department + category."
+                note: "No live additions yet — use Monet Context tab to append by department + category."
               }
             : null,
       workingStudy:
@@ -3748,7 +3748,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         },
         statusHint: visualAsk
           ? "Ora data ready — answering, then building your visual…"
-          : "Ora data ready — asking Buddy…"
+          : "Ora data ready — asking Monet…"
       });
     }
 
@@ -3980,7 +3980,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       error: msg,
       provider: "error",
       deployment: llm.deployment || null,
-      displayName: llm.displayName || "Buddy",
+      displayName: llm.displayName || "Monet",
       modelTier: "fast",
       escalated: false,
       answerFocus: "error"
