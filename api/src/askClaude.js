@@ -1,7 +1,7 @@
 /**
  * Ask Monet — study context + single Foundry agent (Monet).
  * Node preloads Cosmos / TrialHub / CT.gov; BUDDY_FOUNDRY_* (preferred) or FOUNDRY_* / AZURE_OPENAI_* project creds.
- * Paste docs/foundry-agent-instructions-Monet.txt into the Foundry agent instructions.
+ * Paste docs/foundry-agent-instructions-Monet.txt into the Foundry agent (id: Ora-Claude; display: Monet).
  */
 
 const fs = require("fs");
@@ -655,11 +655,11 @@ const FOUNDRY_AGENT_ENDPOINT_DEEP_ALIASES = [
   "BUDDY_AGENT_ENDPOINT_DEEP"
 ];
 
-/** Single Monet Foundry agent. Legacy BudgetBuddy / BudgetBuddy2 names still work via env overrides. */
-const DEFAULT_FOUNDRY_AGENT_NAME_FAST = "Monet";
-const DEFAULT_FOUNDRY_AGENT_NAME_DEEP = "Monet";
+/** Technical Foundry agent id. Display name stays Monet via buddyDisplayName(). */
+const DEFAULT_FOUNDRY_AGENT_NAME_FAST = "Ora-Claude";
+const DEFAULT_FOUNDRY_AGENT_NAME_DEEP = "Ora-Claude";
 /** @deprecated use BUDDY_FOUNDRY_AGENT_NAME; kept for providerStatus fallback */
-const DEFAULT_FOUNDRY_AGENT_NAME = "Monet";
+const DEFAULT_FOUNDRY_AGENT_NAME = "Ora-Claude";
 
 /** Friendly label for UI / self-intro — not the Foundry resource id. */
 function buddyDisplayName(technicalName) {
@@ -670,7 +670,7 @@ function buddyDisplayName(technicalName) {
   if (custom) return custom;
   const raw = String(technicalName || "").trim();
   const compact = raw.toLowerCase().replace(/[^a-z0-9]/g, "");
-  if (!compact || compact === "buddy" || compact === "monet" || compact.startsWith("budgetbuddy") || compact.startsWith("claude")) return "Monet";
+  if (!compact || compact === "buddy" || compact === "monet" || compact.startsWith("budgetbuddy") || compact.startsWith("claude") || compact === "oraclaude" || compact.startsWith("ora")) return "Monet";
   if (compact.startsWith("askbuddy") || compact.startsWith("askmonet")) return "Monet";
   // Soft-format other CamelCase names: FooBar2 → Foo Bar
   return raw
@@ -2531,7 +2531,7 @@ async function askFoundryAgent({
   const agent = agentOverride || foundryAgentConfig(tier);
   if (!agent.enabled) {
     throw new Error(
-      `Foundry agent not configured (${agent.reason}, tier=${tier}). Set BUDDY_FOUNDRY_PROJECT_ENDPOINT + BUDDY_FOUNDRY_API_KEY and BUDDY_FOUNDRY_AGENT_NAME=Monet (or legacy FOUNDRY_* / BudgetBuddy names).`
+      `Foundry agent not configured (${agent.reason}, tier=${tier}). Set BUDDY_FOUNDRY_PROJECT_ENDPOINT + BUDDY_FOUNDRY_API_KEY and BUDDY_FOUNDRY_AGENT_NAME=Ora-Claude (display name Monet; legacy FOUNDRY_* / BudgetBuddy names still accepted).`
     );
   }
   if (deadlineAt != null && Number(deadlineAt) - Date.now() < 3000) {
@@ -3046,7 +3046,7 @@ async function askAi(opts) {
   if (!status.active) {
     return buddySoftFail(
       new Error(
-        "Ask Monet is not configured. Set BUDDY_FOUNDRY_PROJECT_ENDPOINT + BUDDY_FOUNDRY_API_KEY and BUDDY_FOUNDRY_AGENT_NAME=Monet (legacy FOUNDRY_* / BudgetBuddy names still accepted)."
+        "Ask Monet is not configured. Set BUDDY_FOUNDRY_PROJECT_ENDPOINT + BUDDY_FOUNDRY_API_KEY and BUDDY_FOUNDRY_AGENT_NAME=Ora-Claude (display Monet; legacy FOUNDRY_* / BudgetBuddy names still accepted)."
       ),
       { attempts }
     );
