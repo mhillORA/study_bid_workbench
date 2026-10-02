@@ -38,6 +38,7 @@ const {
   buildLegacyAnteriorContext,
   userConsentedLegacyEnrollment,
   wantsHtmlVisual,
+  wantsHtmlRevise,
   isLegacyTableAsk
 } = require("./legacyAnterior");
 const {
@@ -3140,10 +3141,19 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       attachmentDriven,
       fillFollowUp,
       needsFullIntel,
-      visualAsk,
+      visualAsk: routeVisualAsk,
       docExportAsk,
       suggestedPendingTask
     } = route;
+
+    const priorHtmlBody = body.priorHtmlReport;
+    const hasPriorHtml = Boolean(
+      (priorHtmlBody && typeof priorHtmlBody === "object" && priorHtmlBody.html) ||
+        (typeof priorHtmlBody === "string" && priorHtmlBody.trim())
+    );
+    const visualAsk =
+      Boolean(routeVisualAsk) ||
+      (hasPriorHtml && (wantsHtmlRevise(question) || wantsHtmlVisual(question)));
 
     const user = signedInUserFromRequest(request, body.user || null);
     const activeTab = body.activeTab ? String(body.activeTab) : null;
@@ -3537,6 +3547,17 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       wantsHtmlVisual: visualAsk,
       wantsDocumentExport: docExportAsk,
       fillFollowUp,
+      priorHtmlReport: (() => {
+        const raw = body.priorHtmlReport;
+        if (!raw) return null;
+        const html = typeof raw === "string" ? raw : raw.html;
+        if (!html || !String(html).trim()) return null;
+        return {
+          title: (typeof raw === "object" && raw.title) || "canvas",
+          html: String(html).slice(0, 120000),
+          revise: true
+        };
+      })(),
       dataSources: {
         cosmosPortfolioQueried: Boolean(!compareAsk && portfolio && portfolio.source === "cosmos_portfolio"),
         studyComparisonAttached: Boolean(studyComparison && !studyComparison.needIds && !studyComparison.error),

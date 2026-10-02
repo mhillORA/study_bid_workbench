@@ -18,7 +18,7 @@ const {
   wantsTreatmentNaivePopulation,
   wantsTreatmentNaiveInConversation
 } = require("./intelligence");
-const { wantsHtmlVisual, isLegacyTableAsk, isLegacyAnteriorQuestion, isLegacyOverviewQuestion, userConsentedLegacyEnrollment } = require("./legacyAnterior");
+const { wantsHtmlVisual, wantsHtmlRevise, isLegacyTableAsk, isLegacyAnteriorQuestion, isLegacyOverviewQuestion, userConsentedLegacyEnrollment } = require("./legacyAnterior");
 const { isFeasibilityArtemisQuestion, wantsSiteMatchReport } = require("./feasibilityArtemis");
 const { wantsDocumentExport } = require("./buddyDocExport");
 
@@ -540,17 +540,25 @@ function routeBuddyAsk(input) {
       pendingTask?.type === "fill" ||
       pendingTask?.type === "hlbp");
 
+  const priorHtmlAttached = Boolean(
+    body?.priorHtmlReport?.html ||
+      (typeof body?.priorHtmlReport === "string" && body.priorHtmlReport.trim())
+  );
+  const reviseHtmlAsk = priorHtmlAttached && wantsHtmlRevise(question);
   const visualAsk =
     !attachmentAnalyzeVerb &&
     !(
       wantsTreatmentNaivePopulation(question) &&
       !/\b(visual|html|chart|graph|dashboard|slide|deck|pdf|docx|report|one[- ]pager)\b/i.test(
         question
-      )
+      ) &&
+      !reviseHtmlAsk
     ) &&
     (wantsHtmlVisual(question) ||
       wantsDocumentExport(question) ||
+      reviseHtmlAsk ||
       (hasOkUpload && /\b(create|make|produce|build|generate|draft|export|write)\b/i.test(question)));
+  if (reviseHtmlAsk) reasons.push("html_revise_prior_canvas");
   const docExportAsk =
     !attachmentAnalyzeVerb && (wantsDocumentExport(question) || Boolean(visualAsk && hasOkUpload));
   const generalKnowledgeAsk = isGeneralKnowledgeAsk(question, { hasOkUpload });

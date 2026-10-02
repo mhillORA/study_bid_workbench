@@ -79,15 +79,15 @@ function isLegacyOverviewQuestion(question) {
   );
 }
 
-/** User wants a visual/document artifact — Buddy must emit HTML_REPORT. */
+/** User wants a visual/document artifact — Monet must emit HTML_REPORT. */
 function wantsHtmlVisual(question) {
   const q = String(question || "").toLowerCase();
   if (!q) return false;
   return (
-    /\b(visual|html(\s+report)?|chart|graph|graphic|dashboard|slide|deck|print(?:able)?|pdf|docx|word|heatmap|matrix|one[- ]pager|onepager|document|proposal|memo|leave[- ]behind|feasibility(\s+report)?|win\s+themes?|call\s+prep|meeting\s+prep)\b/.test(
+    /\b(visual|html(\s+report)?|chart|graph|graphic|dashboard|slide|deck|print(?:able)?|pdf|docx|word|heatmap|matrix|one[- ]pager|onepager|document|proposal|memo|leave[- ]behind|feasibility(\s+report)?|win\s+themes?|call\s+prep|meeting\s+prep|canvas)\b/.test(
       q
     ) ||
-    /\b(make|produce|build|create|generate|render|show|give|draw|draft|export|write|develop|help\s+me)\b.{0,80}\b(visual|html|chart|graph|table|report|deck|slide|doc|document|pdf|word|docx|proposal|memo|form|feasibility|win\s+themes?|template)\b/.test(
+    /\b(make|produce|build|create|generate|render|show|give|draw|draft|export|write|develop|help\s+me)\b.{0,80}\b(visual|html|chart|graph|table|report|deck|slide|doc|document|pdf|word|docx|proposal|memo|form|feasibility|win\s+themes?|template|canvas)\b/.test(
       q
     ) ||
     /\b(table|board)\b.{0,30}\b(html|visual|report|printable)\b/.test(q) ||
@@ -96,8 +96,46 @@ function wantsHtmlVisual(question) {
     ) ||
     /\b(brand|branding|style guide|template)\b.{0,40}\b(create|make|produce|build|generate|doc|document|pdf|proposal|report|feasibility)\b/.test(
       q
-    )
+    ) ||
+    wantsHtmlRevise(q)
   );
+}
+
+/**
+ * User is revising an existing Monet canvas / HTML leave-behind
+ * ("update that", "make the title shorter", "add a column", "change the colors").
+ */
+function wantsHtmlRevise(question) {
+  const q = String(question || "").toLowerCase().trim();
+  if (!q) return false;
+  if (
+    /\b(update|change|revise|edit|fix|tweak|adjust|modify|redo|regenerate|refresh|rewrite|restyle)\b/.test(q) &&
+    /\b(it|that|this|the|html|report|visual|chart|graph|dashboard|canvas|deck|slide|document|table|leave[- ]behind|one[- ]pager|kpi|header|title|color|colour|section|column|row)\b/.test(
+      q
+    )
+  ) {
+    return true;
+  }
+  if (
+    /\b(make|turn|set|swap|move|rename|recolor|recolour|restyle)\s+(it|that|this|the)\b/.test(q)
+  ) {
+    return true;
+  }
+  if (
+    /\b(add|remove|drop|delete|insert|replace)\b.{0,50}\b(column|row|section|title|header|chart|table|card|kpi|color|colour|logo|footnote|legend)\b/.test(
+      q
+    )
+  ) {
+    return true;
+  }
+  if (
+    /\b(that|this|the)\s+(html|report|visual|chart|dashboard|canvas|deck|leave[- ]behind|document|one[- ]pager)\b/.test(
+      q
+    )
+  ) {
+    return true;
+  }
+  return false;
 }
 
 /** Asking for the legacy recruitment/site table itself implies enrollment consent. */
@@ -912,6 +950,7 @@ module.exports = {
   isLegacyOverviewQuestion,
   isLegacyTableAsk,
   wantsHtmlVisual,
+  wantsHtmlRevise,
   extractLegacyNameHints,
   buildLegacyAnteriorContext,
   enrichSitesWithLegacy,

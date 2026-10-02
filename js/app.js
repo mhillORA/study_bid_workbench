@@ -4761,6 +4761,34 @@
           role: t.role,
           content: String(t.content || "").slice(0, 4000)
         }));
+      const priorCanvas =
+        state.buddyDocPreview?.html
+          ? {
+              title: state.buddyDocPreview.title || "canvas",
+              html: String(state.buddyDocPreview.html).slice(0, 120000)
+            }
+          : (() => {
+              const latest = latestBuddyHtmlReport();
+              return latest?.html
+                ? {
+                    title: latest.filename || "canvas",
+                    html: String(latest.html).slice(0, 120000)
+                  }
+                : null;
+            })();
+      const qRev = String(question || "").toLowerCase();
+      const reviseCue =
+        Boolean(priorCanvas) &&
+        (/\b(update|change|revise|edit|fix|tweak|adjust|modify|redo|regenerate|refresh|rewrite|restyle)\b/.test(
+          qRev
+        ) ||
+          /\b(make|turn|set|swap|move|rename|recolor|recolour)\s+(it|that|this|the)\b/.test(qRev) ||
+          /\b(add|remove|drop|delete|insert|replace)\b.{0,50}\b(column|row|section|title|header|chart|table|card|kpi|color|colour|logo|footnote|legend)\b/.test(
+            qRev
+          ) ||
+          /\b(that|this|the)\s+(html|report|visual|chart|dashboard|canvas|deck|leave[- ]behind|document|one[- ]pager)\b/.test(
+            qRev
+          ));
       const askController = state._askController;
       // Function App CORS is live — prefer it for all asks (SWA hard-caps ~45s → gateway).
       const session = await ensureBuddySession();
@@ -4848,6 +4876,7 @@
         },
         includeLegacyEnrollment: Boolean(state.scorecard.includeLegacy) || undefined,
         history: historyPayload,
+        priorHtmlReport: reviseCue ? priorCanvas : undefined,
         attachments: attachmentsPayload
       };
 

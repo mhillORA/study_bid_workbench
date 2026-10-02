@@ -70,6 +70,7 @@ HTML_REPORT_START
 HTML_REPORT_END
 - Design: page bg #F0F4F8, navy #1B2A4A, teal #1A7F8E, inline CSS only (unless branding uploads specify otherwise).
 - Emit the HTML this turn even if some cells are estimate/TBD — label those cells.
+- REVISE CANVAS: If PRIOR HTML REPORT / priorHtmlReport is attached, that is the current on-screen leave-behind. Apply the user's edits and emit a COMPLETE updated HTML_REPORT (full document, not a diff). Keep branding/layout/numbers unless they asked to change them. Never only describe the edits in chat — replace the canvas.
 - APPLY / NAVIGATE / CREATE_STUDY / LEARN_CONTEXT lines still apply when user asks for those actions.
 
 CONVERSATION HYGIENE

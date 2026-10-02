@@ -223,13 +223,14 @@ function loadOraIntelligenceContext() {
 }
 
 const HTML_REPORT_RULES = [
-  " HTML / DOCUMENT PROTOCOL (critical): When the user asks for a visual, chart, dashboard, slide, deck, printable/PDF, Word/DOCX, document, proposal, memo, feasibility report, BD prep, competitive landscape, ELT deck, OR attaches branding/template/guidelines + a bid/RFP and asks you to create/produce a doc:",
+  "HTML / DOCUMENT PROTOCOL (critical): When the user asks for a visual, chart, dashboard, slide, deck, printable/PDF, Word/DOCX, document, proposal, memo, feasibility report, BD prep, competitive landscape, ELT deck, OR attaches branding/template/guidelines + a bid/RFP and asks you to create/produce a doc, OR asks to update/revise/change an existing Monet canvas:",
   "(1) Give a short chat summary first using [[h]] / [[i]] (2–6 lines).",
   "(2) You MUST also emit a full single-file HTML document between exactly these markers — chat-only is not enough:",
   "HTML_REPORT_START",
   "<!DOCTYPE html>…complete document…",
   "HTML_REPORT_END",
   "The platform converts that HTML into downloadable PDF and Word (DOCX) for the user — so always emit the HTML block when they want a file/doc.",
+  "REVISE EXISTING CANVAS (critical): If context.priorHtmlReport.html is present, that IS the current leave-behind on screen. Apply the user's requested edits to THAT document and emit a COMPLETE updated HTML_REPORT (full document, not a diff). Keep branding, layout, and numbers unless they asked to change them. Never answer with only a description of what you would change — replace the canvas.",
   "BRANDING / TEMPLATE FOLLOWS (critical): If context.uploadedDocuments includes branding, style guide, template, form, sample layout, OR prior slides PLUS a protocol/bid/RFP: mirror the structure and section order from the template/standard form when they say \"my standard template\"; apply colors/fonts/tone from branding or from the attached slides when described; fill content from the protocol + chat specs + Cosmos/TrialHub — never invent numbers. If branding colors are named (hex or words), use them in inline CSS. If branding is incomplete, use Ora navy/teal (#1B2A4A / #1A7F8E, page #F0F4F8) and say what you assumed.",
   "MEETING PREP + FEASIBILITY (common BD ask): When the user prepares for a sponsor meeting (e.g. win themes + feasibility report) and attaches a protocol and/or slides: (A) In chat, give [[h]]Win themes[[/h]] (3–6 bullets: industry dry-eye / device enrollment reality + Ora strengths + site strategy). (B) In HTML_REPORT, produce the full feasibility report in their standard template (or Ora feasibility layout if no template text). Capture chat specs explicitly: sponsor, indication/device, site count scenarios (e.g. 6 vs 5 if no NIH grant), enrollment months, named academic sites vs Ora-pushed private sites (e.g. Core, Piedmont, Total Eye Care). Use intelligence/TrialHub for industry run-rate context when present.",
   "INTERNAL BD BID BRIEF (STAT / specialty CRO pattern): When the user asks for an internal brief / activation intelligence / STAT-style package: emit HTML_REPORT with teal #0d9488 / navy #04003B, Internal—Do Not Share. STRUCTURE only from the STAT pattern in Master Context. ALL site names, activation days, study counts, and Ora numbers MUST come from live context.intelligence (startupTimelines, sites, ora packs) on THIS ask — never from a golden HTML example, never from memorized Oculgen brief rows, never \"I have a file that lists…\". Industry naïve-nAMD PSM landmarks in Master Context are OK as published benchmarks. Do NOT require Salesforce. Do NOT put site-level PSM on the top-sites table. Stay in chat — do not NAVIGATE to build the brief.",
@@ -488,7 +489,9 @@ function systemPromptFor(context) {
       : context?.intelligence?.query?.enrollmentPlan?.sitesExact != null
         ? ` Enrollment plan is on intelligence.query — use those site counts with human labels.`
         : "";
-  const visualNote = context?.wantsHtmlVisual
+  const visualNote = context?.priorHtmlReport?.html
+    ? " CRITICAL: priorHtmlReport is the CURRENT Monet canvas HTML. The user wants it UPDATED. Emit a COMPLETE revised HTML_REPORT_START…END that applies their requested edits to that document. Keep branding/layout/numbers unless they asked to change them. Chat-only descriptions of edits are forbidden — replace the canvas."
+    : context?.wantsHtmlVisual
     ? context?.intelligence?.query?.treatmentNaive ||
       context?.intelligence?.treatmentNaiveTrials ||
       (context?.intelligence?.recruitingTreatmentNaiveCount || 0) > 0 ||
@@ -1931,6 +1934,15 @@ function formatCosmosFactsBlock(context) {
 /** Context JSON for the model — keep attachments OUT of the truncated blob (they're inlined above). */
 function contextJsonForModel(context) {
   const ctx = { ...(context || {}) };
+  if (ctx.priorHtmlReport && ctx.priorHtmlReport.html) {
+    ctx.priorHtmlReport = {
+      title: ctx.priorHtmlReport.title || "canvas",
+      revise: true,
+      charCount: String(ctx.priorHtmlReport.html).length,
+      htmlIncludedAbove: true,
+      note: "Full prior HTML is in the PRIOR HTML REPORT section above — revise that document and emit HTML_REPORT_START…END."
+    };
+  }
   const docs = ctx.uploadedDocuments;
   if (docs && Array.isArray(docs.files)) {
     ctx.uploadedDocuments = {
@@ -2265,12 +2277,26 @@ function contextJsonForModel(context) {
 function userBlock(question, context) {
   const attached = formatAttachedDocumentsBlock(context);
   const cosmosFacts = formatCosmosFactsBlock(context);
+  const priorHtml = context?.priorHtmlReport?.html
+    ? String(context.priorHtmlReport.html).trim()
+    : "";
   const parts = ["Question:", question, ""];
   if (context?.fillFollowUp) {
     parts.unshift(
       "FILL FOLLOW-UP: The user just answered your missing-field request. End this reply with APPLY:[...] (open study) or CREATE_STUDY:{...} (new/HLBP) using their values. Do not only acknowledge.",
       ""
     );
+  }
+  if (priorHtml) {
+    const title = context.priorHtmlReport.title || "canvas";
+    parts.push(
+      `PRIOR HTML REPORT (current Monet canvas — title: ${title}). Apply the user's edits to THIS document and emit a COMPLETE updated HTML_REPORT_START…END. Do not chat-only describe changes.`
+    );
+    parts.push("HTML_REPORT_START");
+    parts.push(priorHtml.slice(0, 120000));
+    parts.push("HTML_REPORT_END");
+    parts.push("---");
+    parts.push("");
   }
   if (attached) {
     parts.push(attached);
@@ -2287,7 +2313,11 @@ function userBlock(question, context) {
   );
   parts.push(contextJsonForModel(context));
   parts.push("");
-  if (attached || cosmosFacts) {
+  if (priorHtml) {
+    parts.push(
+      "REQUIRED: Emit a full revised HTML_REPORT that updates the PRIOR HTML REPORT above per the user's ask. Keep unchanged sections intact."
+    );
+  } else if (attached || cosmosFacts) {
     parts.push(
       "REQUIRED: Ground the answer. Cite attached file names for protocol/template points. Cite Ora/TrialHub Cosmos figures (or say missing) for performance/feasibility numbers. Do not make up medians, site lists, or win-theme stats."
     );
