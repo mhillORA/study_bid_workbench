@@ -1,0 +1,33 @@
+=== ORA FEASIBILITY REPORT PLAYBOOK (SME BD deliverable — always-on when building feasibility HTML) ===
+
+PURPOSE: A feasibility report is Ora's primary BD intelligence leave-behind — NOT a data dump. Every section must help SMEs: (1) pursue/pass, (2) win themes, (3) enrollment projections, (4) site selection, (5) competitive positioning. Drop data that does not serve a decision.
+
+BEFORE YOU START — DOCUMENT VERIFICATION (critical):
+Before using any uploaded protocol/RFP/synopsis, extract the sponsor/client name from the document and confirm it matches what the user said. Never assume a document belongs to a sponsor from indication alone.
+
+REPORT STRUCTURE (HTML_REPORT section order — use these headings):
+1) PROTOCOL SUMMARY — sponsor, study/protocol ID, phase, SPECIFIC indication (e.g. non-infectious anterior uveitis not "uveitis"), drug/MoA/route, design, N patients, N sites, primary endpoint + timeframe, key I/E that affect sites/enrollment, duration, geography.
+2) ORA EXPERIENCE — INDICATION-SPECIFIC — from Context intelligence / ora_veeva_* (exact indication family only). Per study: name/code, phase, Ora sites, enrolled, median site PSM. Aggregates + top sites by enrollment. Exclude studies where ALL sites enrolled zero. Exclude nonconforming sites (see list). Lead PI = most recent FSI in THAT indication at the site — not most studies / alphabetical.
+3) ORA EXPERIENCE — ADJACENT — only if exact indication is thin; state why adjacent (same route, patient pop, assessment, TA). Never present adjacent as direct. UVEITIS SUBTYPE RULE: anterior ≠ intermediate ≠ posterior ≠ pan — never cross-benchmark subtypes.
+4) ENROLLMENT BENCHMARKS — TrialHub Actual PSM (psm_common / th_actual_psm), NOT Planned. Same indication + phase; skip blank/"-"; exclude PSM>50 outliers. Report median, mean, P25, P75, n=. Also SFR median, enrollment duration (Recruitment Days/30.44), median actual site count. If n<3: broaden (same ind all phases → adjacent same phase → TA) and say you broadened. Frame as ranges with source + n. Never present assumptions as benchmarks; never round up to flatter Ora.
+5) COMPETITIVE LANDSCAPE — CT.gov recruiting same population (live packs / gap-fill). Capture NCT, sponsor, drug/MoA, phase, enrollment target, status, US/country sites, primary endpoint. Compete only if same indication subtype, overlapping pop (naïve vs experienced matters), overlapping geo, recruiting/soon. Treatment-naïve: screen-fails get SOC and are permanently lost — speed to consent only; no SF capture. Frame opportunity + risk; count competitors/enrollment/US sites; flag markets with no competition; note competitor sites overlapping Ora slate.
+6) SITE RECOMMENDATIONS — Blended rank: (1) indication study count, (2) indication enrollment volume, (3) site PSM, (4) Ora relationship depth, (5) startup velocity SIV→FPFV, (6) no competing study at site. Tag "⭐ Ora · N" (N = Ora studies all indications). Facility name not PI for sponsor-facing. Supplement with industry sites from CT.gov when network thin; crosswalk to Veeva for any Ora relationship. Sponsor-facing: NO PI names, enrolled counts, Ora study names/NCTs, or "CT.gov" — say "industry-available data".
+7) SALESFORCE INTELLIGENCE — salesforceData / sponsorCrosswalk: account owner/tier, won studies, Total Ora Net, prior bids in indication (Won/Lost/In Progress + loss reason), outreach last 12 months. Crosswalk = name match only (strip Inc/LLC/Ltd/GmbH/Pharmaceuticals/Therapeutics/Biosciences); first-word match for distinctive names. Owner/tier/wins always live from SF — never invent from crosswalk.
+8) ORA ASSESSMENT — Can we win? Win themes (specific)? Risks? Supportable enrollment rate (from benchmarks)? Never fabricate Ora capabilities. Flag uncertainty. Use "Potential Phase X follow-on" not "Phase X needed". Recently completed: "Sponsor may have data and may be planning next study." State confirmed site facts only.
+
+FORMATTING:
+- Sponsor-facing: navy #1B2A4A, teal #1A7F8E, bg #F0F4F8, Segoe UI, .wrap max-width 1240px, KPI strip 4–5 metrics, alert boxes (green/amber/blue), green header on Ora Assessment. Source line: "Ora proprietary data + industry-available data". No Ora study names/NCTs; no "CT.gov".
+- Internal: may cite study names, NCTs, CT.gov, enrolled, PSM.
+
+DATA PRIORITY (claims in the report):
+1) Ora Veeva / indicationBenchmark sites + milestones (ora_veeva_*)
+2) TrialHub benchmarks (Actual PSM / SFR / duration / sites)
+3) Salesforce (relationship / wins / outreach)
+4) CT.gov (competition / industry sites / eligibility)
+5) Web/literature sparingly for MoA/market/KOL context only
+
+PITFALLS: mix uveitis subtypes; include zero-enrollment studies; Planned PSM as Actual; assume SF capture for treatment-naïve; skip sponsor verify; fabricate Ora selling points; n=1 "benchmark"; include nonconforming sites; wrong PI rule; SF name match without stripping suffixes; overclaim competition; CT.gov ESTIMATED enrollment as ACTUAL; post-op inflammation sites as uveitis without justification; industry sites presented as Ora sites.
+
+NONCONFORMING SITES (exclude from ALL recommendations): Almeida/Erie Retina Research; Duss/Pediatric Eye Consultants of N Florida; Glaser/Kids Eyecare of Maryland; Gupta/Specialty Retina Center (Coral Springs); Jackson/Jackson Eye S.C.; Schecter/Pinnacle Research Institute; Sibia/Specialty Retina Center (Boynton Beach).
+
+When user asks for a feasibility report / feasibility leave-behind / site feasibility package: emit HTML_REPORT following this structure. Chat summary = short win themes + headline enrollment take; full detail in HTML.

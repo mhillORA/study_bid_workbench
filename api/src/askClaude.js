@@ -183,9 +183,11 @@ function loadOraIntelligenceContext() {
   if (_oraContextCache != null) return _oraContextCache;
   const max = Number(process.env.ORA_CONTEXT_MAX_CHARS || 72000);
   const masterBudget = Number(process.env.ORA_MASTER_CONTEXT_MAX_CHARS || 40000);
-  const priorBudget = Number(process.env.ORA_PRIOR_CONTEXT_MAX_CHARS || 28000);
+  const feasibilityBudget = Number(process.env.ORA_FEASIBILITY_CONTEXT_MAX_CHARS || 10000);
+  const priorBudget = Number(process.env.ORA_PRIOR_CONTEXT_MAX_CHARS || 22000);
 
   const masterRaw = readContextFile("oraMasterContext.txt");
+  const feasibilityRaw = readContextFile("oraFeasibilityReportContext.txt");
   const priorRaw = readContextFile("oraIntelligenceContext.txt");
 
   const liveBridge = [
@@ -201,7 +203,8 @@ function loadOraIntelligenceContext() {
     "- TrialHub grows via app upload (Intelligence → Upload TrialHub export); upsert by NCT.",
     "- CT.gov ophthalmology feed syncs via /api/ctgov/sync.",
     "- Prefer Context JSON from this ask over stale \"query Excel\" wording in older playbook text.",
-    "- Monet Context tab appends SME notes live without redeploy."
+    "- Monet Context tab appends SME notes live without redeploy.",
+    "- Site feasibility HTML leave-behinds follow ORA FEASIBILITY REPORT PLAYBOOK (8 sections) when the user asks for a feasibility report."
   ].join("\n");
 
   const master = masterRaw
@@ -210,6 +213,9 @@ function loadOraIntelligenceContext() {
         masterBudget
       )}`
     : "";
+  const feasibility = feasibilityRaw
+    ? feasibilityRaw.slice(0, feasibilityBudget)
+    : "";
   const prior = priorRaw
     ? `=== PRIOR ORA PLAYBOOK (retained; use when Master is silent; Master wins on conflict) ===\n${priorRaw.slice(
         0,
@@ -217,7 +223,7 @@ function loadOraIntelligenceContext() {
       )}`
     : "";
 
-  const parts = [liveBridge, master, prior].filter(Boolean);
+  const parts = [liveBridge, master, feasibility, prior].filter(Boolean);
   _oraContextCache = parts.join("\n\n").slice(0, max);
   return _oraContextCache;
 }
@@ -232,7 +238,7 @@ const HTML_REPORT_RULES = [
   "The platform converts that HTML into downloadable PDF and Word (DOCX) for the user — so always emit the HTML block when they want a file/doc.",
   "REVISE EXISTING CANVAS (critical): If context.priorHtmlReport.html is present, that IS the current leave-behind on screen. Apply the user's requested edits to THAT document and emit a COMPLETE updated HTML_REPORT (full document, not a diff). Keep branding, layout, and numbers unless they asked to change them. Never answer with only a description of what you would change — replace the canvas.",
   "BRANDING / TEMPLATE FOLLOWS (critical): If context.uploadedDocuments includes branding, style guide, template, form, sample layout, OR prior slides PLUS a protocol/bid/RFP: mirror the structure and section order from the template/standard form when they say \"my standard template\"; apply colors/fonts/tone from branding or from the attached slides when described; fill content from the protocol + chat specs + Cosmos/TrialHub — never invent numbers. If branding colors are named (hex or words), use them in inline CSS. If branding is incomplete, use Ora navy/teal (#1B2A4A / #1A7F8E, page #F0F4F8) and say what you assumed.",
-  "MEETING PREP + FEASIBILITY (common BD ask): When the user prepares for a sponsor meeting (e.g. win themes + feasibility report) and attaches a protocol and/or slides: (A) In chat, give [[h]]Win themes[[/h]] (3–6 bullets: industry dry-eye / device enrollment reality + Ora strengths + site strategy). (B) In HTML_REPORT, produce the full feasibility report in their standard template (or Ora feasibility layout if no template text). Capture chat specs explicitly: sponsor, indication/device, site count scenarios (e.g. 6 vs 5 if no NIH grant), enrollment months, named academic sites vs Ora-pushed private sites (e.g. Core, Piedmont, Total Eye Care). Use intelligence/TrialHub for industry run-rate context when present.",
+  "MEETING PREP + FEASIBILITY (common BD ask): When the user prepares for a sponsor meeting (e.g. win themes + feasibility report) and attaches a protocol and/or slides: (A) In chat, give [[h]]Win themes[[/h]] (3–6 bullets) + a short enrollment headline. (B) In HTML_REPORT, produce the full feasibility report. FIRST verify sponsor/client name in the upload matches what the user said. Default Ora section order when no template: (1) Protocol Summary, (2) Ora Experience — Indication-Specific, (3) Ora Experience — Adjacent (only if exact is thin; never present as direct; uveitis subtypes never cross), (4) Enrollment Benchmarks (TrialHub Actual PSM only; median/mean/P25/P75/n; broaden if n<3 and say so), (5) Competitive Landscape (same subtype/pop/geo; treatment-naïve = no SF capture), (6) Site Recommendations (blended rank; ⭐ Ora · N; facility not PI; exclude nonconforming 7 sites; sponsor-facing: no PI/enrolled/Ora NCT/CT.gov name), (7) Salesforce Intelligence (owner/tier/wins/outreach; strip Inc/LLC before name match), (8) Ora Assessment (win/risks/supportable rate; never fabricate capabilities). Capture chat specs: sponsor, indication/device, site count scenarios, enrollment months, named sites. Numbers only from Context/attachments.",
   "INTERNAL BD BID BRIEF (STAT / specialty CRO pattern): When the user asks for an internal brief / activation intelligence / STAT-style package: emit HTML_REPORT with teal #0d9488 / navy #04003B, Internal—Do Not Share. STRUCTURE only from the STAT pattern in Master Context. ALL site names, activation days, study counts, and Ora numbers MUST come from live context.intelligence (startupTimelines, sites, ora packs) on THIS ask — never from a golden HTML example, never from memorized Oculgen brief rows, never \"I have a file that lists…\". Industry naïve-nAMD PSM landmarks in Master Context are OK as published benchmarks. Do NOT require Salesforce. Do NOT put site-level PSM on the top-sites table. Stay in chat — do not NAVIGATE to build the brief.",
   "Default Ora design when no branding attached: page bg #F0F4F8, navy #1B2A4A, teal #1A7F8E, inline <style>, .header / .card / .card-hdr / .kpi / tables / alerts. Print-ready. No external CSS/JS.",
   "Apply sponsor-facing vs internal rules from Master Context. Populate numbers only from Context JSON / uploaded files — never invent PSM, enrollment, or NCT rows.",
@@ -340,7 +346,7 @@ function buddyInstructionsBase() {
   const oraCtx = loadOraIntelligenceContext();
   const oraBlock = oraCtx
     ? ` ORA RULES CONTEXT (always-on):\n` +
-      `Priority order on conflict: (1) PLATFORM LIVE STATE, (2) ORA MASTER CONTEXT, (3) PRIOR ORA PLAYBOOK, (4) Monet live context additions in Context JSON.\n` +
+      `Priority order on conflict: (1) PLATFORM LIVE STATE, (2) ORA MASTER CONTEXT, (3) FEASIBILITY REPORT PLAYBOOK, (4) PRIOR ORA PLAYBOOK, (5) Monet live context additions in Context JSON.\n` +
       `${oraCtx}\n`
     : "";
   // Always append portfolio + intelligence + format + always-respond — SWA custom prompts often omit them

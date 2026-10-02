@@ -2,6 +2,8 @@
 
 Paste **`foundry-agent-instructions-Monet.txt`** into the Azure AI Foundry agent instructions for Monet (single agent).
 
+Site feasibility leave-behinds follow **`docs/feasibility-report-model-instructions.md`** (runtime condensed as `api/src/oraFeasibilityReportContext.txt`). Re-paste Foundry instructions after updating the Monet txt.
+
 ## App settings (ora-buddy-api / SWA)
 
 Preferred:
