@@ -1417,18 +1417,72 @@ async function runVeevaTablesSync(getDb, opts = {}) {
     }
   }
   if (opts.enrichOnly === true) {
+    // Site PI ids are often V0R… (not person__v). Re-pull sites with TONAME so
+    // principal_investigator_name / organization_name land without an id join.
+    const siteTable = VEEVA_TABLES.find((t) => t.vaultObject === "site__v");
+    if (siteTable && Date.now() - started < TIME_BUDGET_MS) {
+      try {
+        await markVeevaSyncProgress(getDb, {
+          status: "running",
+          message: "Re-pulling site__v for TONAME PI/org labels…",
+          currentObject: "site__v",
+          currentContainer: "ora_veeva_site"
+        });
+        const container = await ensureContainer(database, siteTable.container);
+        const pulled = await vqlSelectResilient(session, siteTable.vaultObject, siteTable.fields, {
+          watermark: null
+        });
+        const personNameById = await loadPersonNameMap(database);
+        const orgNameById = await loadOrgNameMap(database);
+        const syncedAtSites = new Date().toISOString();
+        let siteUpserted = 0;
+        let withPiName = 0;
+        for (const rec of pulled.records || []) {
+          if (Date.now() - started > TIME_BUDGET_MS) {
+            incomplete = true;
+            break;
+          }
+          const doc = toMirrorDoc(rec, siteTable.docType, syncedAtSites, {
+            personNameById,
+            orgNameById
+          });
+          if (!doc) continue;
+          await container.items.upsert(doc);
+          siteUpserted += 1;
+          if (doc.principal_investigator_name) withPiName += 1;
+        }
+        results.push({
+          object: "site__v",
+          container: "ora_veeva_site",
+          mode: "full",
+          fetched: (pulled.records || []).length,
+          upserted: siteUpserted,
+          withPiName,
+          fieldsDropped: pulled.fieldsDropped || [],
+          note: "enrichOnly site re-pull for TONAME PI/org names"
+        });
+        upsertedTotal += siteUpserted;
+      } catch (err) {
+        results.push({
+          object: "site__v",
+          container: "ora_veeva_site",
+          ok: false,
+          error: String(err.message || err).slice(0, 240)
+        });
+      }
+    }
     const syncedAt = new Date().toISOString();
     await writeSyncState(database, {
       lastRunAt: syncedAt,
-      note: "Site org/PI enrich only",
+      note: "Site org/PI enrich + site TONAME re-pull",
       progress: {
-        status: "complete",
+        status: incomplete ? "incomplete" : "complete",
         startedAt: new Date(started).toISOString(),
         updatedAt: syncedAt,
         objectsTotal: results.length,
         objectsDone: results.length,
         upsertedTotal,
-        message: "Site name enrich finished",
+        message: incomplete ? "Site name enrich partial (time budget)" : "Site name enrich finished",
         results
       }
     });
@@ -1437,6 +1491,7 @@ async function runVeevaTablesSync(getDb, opts = {}) {
       enrichOnly: true,
       results,
       upsertedTotal,
+      incomplete,
       elapsedMs: Date.now() - started,
       sync: await readSyncState(database)
     };
