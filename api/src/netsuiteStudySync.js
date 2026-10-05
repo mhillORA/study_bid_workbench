@@ -299,12 +299,13 @@ async function getNetSuiteStudySyncStatus(getDb) {
     lastSource: sync?.lastSource || null,
     lastStudyUpserted: sync?.lastStudyUpserted ?? null,
     lastTaskUpserted: sync?.lastTaskUpserted ?? null,
+    resumeOffset: sync?.resumeOffset ?? 0,
+    resumeTotal: sync?.resumeTotal ?? null,
     sampleProjectNumbers: sync?.sampleProjectNumbers || [],
     projectNumberFormat: "YY-DEPT-SEQ (e.g. 25-150-0005 = year 2025, dept 150, study #5)",
     note:
-      "Data is pushed by netsuite-pull-job after SuiteQL (POST /api/netsuite/study-sync). " +
-      "Cosmos is primary for Ask; Excel is opt-in (WRITE_STUDY_EXCEL=1). " +
-      "lens_ns_projects remains the separate Project Profitability GM feed."
+      sync?.note ||
+      "Buddy SuiteQL → Cosmos (POST /api/netsuite/sync). Daily cron 5AM EST. Excel opt-in only."
   };
 }
 

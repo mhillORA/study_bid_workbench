@@ -2354,6 +2354,53 @@ app.http("netsuiteSync", {
 });
 
 /**
+ * Daily NetSuite SuiteQL → Cosmos at 5:00 AM Eastern.
+ * Requires WEBSITE_TIME_ZONE=America/New_York on ora-buddy-api (DST-aware).
+ * GitHub Actions netsuite-daily-sync.yml is the backup / poller.
+ */
+app.timer("netsuiteDailyTimer", {
+  schedule: "0 0 5 * * *",
+  handler: async (_timer, context) => {
+    context.log("netsuiteDailyTimer: kicking /api/netsuite/sync restart");
+    const kick = kickAsyncSync(
+      "/api/netsuite/sync",
+      { restart: true, async: true, background: true },
+      context
+    );
+    if (kick._kickPromise) {
+      await Promise.race([
+        kick._kickPromise,
+        new Promise((r) => setTimeout(r, 2000))
+      ]);
+    }
+    // Self-chain a few resume kicks so the portfolio finishes without GH Actions.
+    for (let i = 0; i < 8; i += 1) {
+      await new Promise((r) => setTimeout(r, 90_000));
+      const resume = kickAsyncSync(
+        "/api/netsuite/sync",
+        { resume: true, async: true, background: true },
+        context
+      );
+      if (resume._kickPromise) {
+        await Promise.race([
+          resume._kickPromise,
+          new Promise((r) => setTimeout(r, 1500))
+        ]);
+      }
+      try {
+        const st = await getNetSuitePullStatus(getDb);
+        const off = Number(st.resumeOffset || 0);
+        context.log(`netsuiteDailyTimer resume check offset=${off}/${st.resumeTotal || "?"}`);
+        if (off === 0 && st.lastSource === "buddy-netsuite-sync") break;
+      } catch (err) {
+        context.error("netsuiteDailyTimer status", err);
+      }
+    }
+    context.log("netsuiteDailyTimer: done");
+  }
+});
+
+/**
  * Per-PM dashboard — active ora_ns_study rows grouped by project_manager.
  * Optional ?pm=Name selects one PM; Entra/buddy session pins "your" studies.
  */

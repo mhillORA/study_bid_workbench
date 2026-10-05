@@ -1,9 +1,11 @@
-name: Intelligence daily sync (CT.gov + Veeva + Salesforce)
+name: Intelligence daily sync (CT.gov + Veeva + Salesforce + NetSuite)
 
 # BOTH modes (do not remove either):
-#   1) schedule  — daily DELTA only (full=false) at 12:00 AM Eastern (EDT).
+#   1) schedule  — daily DELTA at 12:00 AM Eastern (EDT).
 #                  cron 0 4 * * * UTC = midnight EDT / 11:00 PM EST.
 #                  (GitHub Actions is UTC-only; no DST auto-adjust.)
+#                  NetSuite primary schedule is netsuite-daily-sync.yml @ 5AM EST;
+#                  this workflow also kicks NS as a backup.
 #   2) manual    — workflow_dispatch and/or Data Status UI for delta OR full backfill.
 #
 # Hits Function App ora-buddy-api (VEEVA_*/SF_*/Cosmos live there).
@@ -36,6 +38,10 @@ on:
         default: false
       skip_salesforce:
         description: "Skip Salesforce tables + crosswalk"
+        type: boolean
+        default: false
+      skip_netsuite:
+        description: "Skip NetSuite study intel SuiteQL → Cosmos"
         type: boolean
         default: false
       enrich_only:
@@ -198,6 +204,30 @@ jobs:
             echo "HTTP $CODE"
             exit 1
           fi
+
+      - name: NetSuite study intel (SuiteQL → Cosmos)
+        if: steps.prep.outputs.skip != 'true' && (github.event_name != 'workflow_dispatch' || inputs.skip_netsuite != true)
+        env:
+          COPILOT_ASK_KEY: ${{ secrets.COPILOT_ASK_KEY }}
+          API_BASE: ${{ steps.prep.outputs.base }}
+        run: |
+          set -euo pipefail
+          # Prefer dedicated netsuite-daily-sync.yml at 5AM EST; this is a backup kick.
+          URL="$API_BASE/api/netsuite/sync"
+          BODY='{"async":true,"background":true,"restart":true}'
+          echo "POST $URL $BODY"
+          RESP=$(curl -sS -w "\n%{http_code}" --max-time 120 -X POST "$URL" \
+            -H "Content-Type: application/json" \
+            -H "x-copilot-key: $COPILOT_ASK_KEY" \
+            -d "$BODY")
+          CODE=$(echo "$RESP" | tail -n1)
+          BODY_OUT=$(echo "$RESP" | sed '$d')
+          echo "$BODY_OUT"
+          if [ "$CODE" != "202" ] && [ "$CODE" != "200" ]; then
+            echo "HTTP $CODE"
+            exit 1
+          fi
+          echo "NetSuite sync accepted (background). Primary completion watch is netsuite-daily-sync.yml."
 
       - name: Rebuild Dashboard weekly brief
         if: steps.prep.outputs.skip != 'true'

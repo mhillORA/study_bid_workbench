@@ -1,0 +1,149 @@
+name: NetSuite study intel daily sync
+
+# Daily SuiteQL → Cosmos (ora_ns_study / ora_ns_task) via Buddy /api/netsuite/sync.
+# Schedule: 5:00 AM Eastern Standard Time = 10:00 UTC.
+#   (GitHub Actions is UTC-only; during EDT this fires at 6:00 AM Eastern.
+#    For true America/New_York wall-clock year-round, also set WEBSITE_TIME_ZONE
+#    + timer on ora-buddy-api — this Actions job is the primary cron.)
+#
+# Auth: COPILOT_ASK_KEY → x-copilot-key (same as intelligence-daily-sync).
+# Kick is async + auto-resume; we re-kick until resumeOffset clears.
+
+on:
+  schedule:
+    - cron: "0 10 * * *"
+  workflow_dispatch:
+    inputs:
+      restart:
+        description: "Force full portfolio restart (clear resume cursor)"
+        type: boolean
+        default: true
+
+env:
+  DEFAULT_API_BASE: https://ora-buddy-api-hrdbgqh9cvaub5ft.eastus2-01.azurewebsites.net
+
+jobs:
+  netsuite:
+    runs-on: ubuntu-latest
+    name: POST /api/netsuite/sync (chain to completion)
+    timeout-minutes: 90
+    steps:
+      - name: Resolve API base + auth
+        id: prep
+        env:
+          COPILOT_ASK_KEY: ${{ secrets.COPILOT_ASK_KEY }}
+          ORA_BUDDY_API_URL: ${{ secrets.ORA_BUDDY_API_URL }}
+        run: |
+          set -euo pipefail
+          if [ -z "${COPILOT_ASK_KEY:-}" ]; then
+            echo "::warning::Missing Actions secret COPILOT_ASK_KEY."
+            if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+              exit 1
+            fi
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          BASE="${ORA_BUDDY_API_URL:-$DEFAULT_API_BASE}"
+          BASE="${BASE%/}"
+          echo "base=$BASE" >> "$GITHUB_OUTPUT"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "API base: $BASE"
+
+      - name: Kick + chain NetSuite SuiteQL → Cosmos
+        if: steps.prep.outputs.skip != 'true'
+        env:
+          COPILOT_ASK_KEY: ${{ secrets.COPILOT_ASK_KEY }}
+          API_BASE: ${{ steps.prep.outputs.base }}
+        run: |
+          set -euo pipefail
+          RESTART="true"
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.restart }}" != "true" ]; then
+            RESTART="false"
+          fi
+          if [ "$RESTART" = "true" ]; then
+            BODY='{"async":true,"background":true,"restart":true}'
+          else
+            BODY='{"async":true,"background":true,"resume":true}'
+          fi
+          URL="$API_BASE/api/netsuite/sync"
+          echo "POST $URL $BODY"
+          RESP=$(curl -sS -w "\n%{http_code}" --max-time 120 -X POST "$URL" \
+            -H "Content-Type: application/json" \
+            -H "x-copilot-key: $COPILOT_ASK_KEY" \
+            -d "$BODY")
+          CODE=$(echo "$RESP" | tail -n1)
+          BODY_OUT=$(echo "$RESP" | sed '$d')
+          echo "$BODY_OUT"
+          if [ "$CODE" != "202" ] && [ "$CODE" != "200" ]; then
+            echo "HTTP $CODE"
+            exit 1
+          fi
+
+          echo "Polling NetSuite sync (resumeOffset → 0), up to ~75 minutes…"
+          DEADLINE=$((SECONDS + 4500))
+          LAST=""
+          STALL=0
+          PREV_OFF=""
+          while [ "$SECONDS" -lt "$DEADLINE" ]; do
+            sleep 45
+            STATUS_JSON=$(curl -sS --max-time 60 "$API_BASE/api/netsuite/sync" \
+              -H "Accept: application/json" \
+              -H "x-copilot-key: $COPILOT_ASK_KEY" || true)
+            PARSE=$(echo "$STATUS_JSON" | jq -r '
+              [
+                (.lastSource // ""),
+                ((.resumeOffset // .sync.resumeOffset // 0) | tostring),
+                ((.resumeTotal // .sync.resumeTotal // .containers[0].count // 0) | tostring),
+                (.lastSuccessfulSync // .sync.lastSuccessfulSync // ""),
+                ((.lastStudyUpserted // .sync.lastStudyUpserted // "") | tostring),
+                ((.note // .sync.note // "") | tostring | .[0:120])
+              ] | join("|")
+            ' 2>/dev/null || echo "||||")
+            IFS='|' read -r SRC OFF TOT WHEN UP NOTE <<< "$PARSE"
+            # Prefer syncState fields when GET wraps pull status
+            OFF2=$(echo "$STATUS_JSON" | jq -r '(.resumeOffset // .sync.resumeOffset // empty)' 2>/dev/null || true)
+            if [ -n "${OFF2:-}" ] && [ "$OFF2" != "null" ]; then OFF="$OFF2"; fi
+            TOT2=$(echo "$STATUS_JSON" | jq -r '(.resumeTotal // .sync.resumeTotal // empty)' 2>/dev/null || true)
+            if [ -n "${TOT2:-}" ] && [ "$TOT2" != "null" ]; then TOT="$TOT2"; fi
+            LINE="src=${SRC:-?} offset=${OFF:-?}/${TOT:-?} up=${UP:-?} when=${WHEN:-?} ${NOTE}"
+            if [ "$LINE" != "$LAST" ]; then
+              echo "$LINE"
+              LAST="$LINE"
+            fi
+
+            # Cosmos syncState is authoritative — GET may not expose resumeOffset until we surface it.
+            # Re-kick resume while offset is advancing or stalled briefly.
+            if [ "${OFF:-1}" = "0" ] && [ "${SRC:-}" = "buddy-netsuite-sync" ] && [ "${TOT:-0}" != "0" ]; then
+              # Confirm stable (not mid-restart)
+              sleep 90
+              STATUS2=$(curl -sS --max-time 60 "$API_BASE/api/netsuite/sync" \
+                -H "Accept: application/json" \
+                -H "x-copilot-key: $COPILOT_ASK_KEY" || true)
+              OFF3=$(echo "$STATUS2" | jq -r '(.resumeOffset // .sync.resumeOffset // 0)' 2>/dev/null || echo 1)
+              SRC3=$(echo "$STATUS2" | jq -r '(.lastSource // .sync.lastSource // "")' 2>/dev/null || echo "")
+              echo "confirm offset=$OFF3 src=$SRC3"
+              if [ "$OFF3" = "0" ] && [ "$SRC3" = "buddy-netsuite-sync" ]; then
+                echo "NetSuite portfolio sync complete."
+                exit 0
+              fi
+            fi
+
+            if [ "$OFF" = "$PREV_OFF" ]; then
+              STALL=$((STALL + 1))
+            else
+              STALL=0
+            fi
+            PREV_OFF="$OFF"
+
+            # Auto-chain may drop; re-kick resume every ~3 stalled polls or always every ~3 min.
+            if [ "$STALL" -ge 2 ] || [ $((SECONDS % 180)) -lt 50 ]; then
+              echo "Re-kick resume…"
+              curl -sS --max-time 90 -X POST "$URL" \
+                -H "Content-Type: application/json" \
+                -H "x-copilot-key: $COPILOT_ASK_KEY" \
+                -d '{"async":true,"background":true,"resume":true}' >/dev/null || true
+              STALL=0
+            fi
+          done
+          echo "Timed out waiting for NetSuite resumeOffset=0"
+          exit 1
