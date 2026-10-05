@@ -735,10 +735,10 @@ async function runNetSuiteStudyPull(getDb, opts = {}) {
   const prev = (await readSyncState(database)) || {};
   let offset = 0;
   if (!projectNumber) {
-    if (opts.resume === true || opts._asyncKick === true) {
-      offset = Number(prev.resumeOffset || 0) || 0;
-    } else if (opts.restart === true || opts.full === true) {
+    if (opts.restart === true || opts.full === true) {
       offset = 0;
+    } else if (opts.resume === true || opts._asyncKick === true) {
+      offset = Number(prev.resumeOffset || 0) || 0;
     } else if (Number(prev.resumeOffset) > 0 && Number(prev.resumeOffset) < projects.length) {
       offset = Number(prev.resumeOffset);
     }
