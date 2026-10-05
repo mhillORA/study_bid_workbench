@@ -1,13 +1,20 @@
 /**
- * NetSuite study intel pull — Buddy-owned, same pattern as salesforceTables.
- * SuiteQL → ora_ns_study / ora_ns_task (Excel optional / not required).
+ * NetSuite study intel pull — Buddy-owned, 1:1 with netsuite-pull-excel-v2/runs.py
+ * build_study_cosmos_pack + SuiteQL domains (Cosmos primary).
  */
 
-const { getNetSuiteAccessToken, suiteqlAll, netsuiteConfig, notConfiguredPayload } = require("./netsuiteClient");
+const {
+  getNetSuiteAccessToken,
+  suiteqlAll,
+  netsuiteConfig,
+  notConfiguredPayload
+} = require("./netsuiteClient");
 const { upsertNetSuiteStudyIntel, getNetSuiteStudySyncStatus } = require("./netsuiteStudySync");
 
-const TIME_BUDGET_MS = Number(process.env.NS_STUDY_PULL_BUDGET_MS || 220000);
+// Function App timeout is 60m — leave headroom for upsert.
+const TIME_BUDGET_MS = Number(process.env.NS_STUDY_PULL_BUDGET_MS || 50 * 60 * 1000);
 const STUDY_PREFIX = String(process.env.STUDY_NUMBER_PREFIX || "2").trim() || "2";
+const CHUNK = Number(process.env.NS_STUDY_ID_CHUNK || 40);
 
 function num(v) {
   if (v == null || v === "") return 0;
@@ -98,7 +105,12 @@ function mapVisitType(taskName) {
   if (tn.includes("visit") && (tn.includes("report") || tn.includes("follow"))) return "Follow-up";
   if (
     tn.includes("visit") &&
-    (tn.includes("imv") || tn.includes("siv") || tn.includes("sqv") || tn.includes("sev") || tn.includes("cov") || tn.includes("away"))
+    (tn.includes("imv") ||
+      tn.includes("siv") ||
+      tn.includes("sqv") ||
+      tn.includes("sev") ||
+      tn.includes("cov") ||
+      tn.includes("away"))
   ) {
     return "Study Visit";
   }
@@ -173,16 +185,25 @@ function sqlProjects(projectNumber = null) {
   );
 }
 
+/** Exact templates from netsuite-pull-excel-v2/runs.py */
 function sqlTasksByIds(idsCsv) {
   return (
     "SELECT " +
-    "t.id AS task_id, t.project AS project_id, j.entityid AS project_number, " +
-    "t.title AS task_name, t.ismilestone AS is_milestone, t.status AS task_status, " +
-    "t.estimatedwork AS budgeted_hours, t.custevent1 AS estimate_to_complete_hours, " +
+    "t.id AS task_id, " +
+    "t.project AS project_id, " +
+    "j.entityid AS project_number, " +
+    "t.title AS task_name, " +
+    "BUILTIN.DF(t.id) AS task_name_df, " +
+    "t.ismilestone AS is_milestone, " +
+    "t.status AS task_status, " +
+    "t.estimatedwork AS budgeted_hours, " +
+    "t.custevent1 AS estimate_to_complete_hours, " +
     "t.custevent_ora_acs_original_budget AS original_budget_hours, " +
     "t.actualwork AS ns_actual_hours, " +
+    "t.enddate AS estimated_completion_date, " +
     "t.custevent_amount_projectmilestone AS milestone_amount " +
-    "FROM projecttask t JOIN job j ON j.id = t.project " +
+    "FROM projecttask t " +
+    "JOIN job j ON j.id = t.project " +
     `WHERE t.project IN (${idsCsv})`
   );
 }
@@ -190,21 +211,31 @@ function sqlTasksByIds(idsCsv) {
 function sqlActualsByIds(idsCsv) {
   return (
     "SELECT " +
-    "tb.casetaskevent AS task_id, j.id AS project_id, j.entityid AS project_number, " +
-    "SUM(tb.hours) AS actual_hours, SUM(tb.laborcost) AS actual_cost " +
+    "tb.casetaskevent AS task_id, " +
+    "j.id AS project_id, " +
+    "j.entityid AS project_number, " +
+    "tb.employee AS employee_id, " +
+    "BUILTIN.DF(tb.employee) AS employee_name, " +
+    "e.title AS job_title, " +
+    "BUILTIN.DF(tb.billingclass) AS billing_class, " +
+    "SUM(tb.hours) AS actual_hours, " +
+    "SUM(tb.laborcost) AS actual_cost " +
     "FROM timebill tb " +
     "JOIN projecttask t ON t.id = tb.casetaskevent " +
     "JOIN job j ON j.id = t.project " +
-    `WHERE t.project IN (${idsCsv}) AND tb.approvalstatus = 3 ` +
-    "GROUP BY tb.casetaskevent, j.id, j.entityid"
+    "JOIN employee e ON e.id = tb.employee " +
+    `WHERE t.project IN (${idsCsv}) ` +
+    "AND tb.approvalstatus = 3 " +
+    "GROUP BY tb.casetaskevent, j.id, j.entityid, tb.employee, " +
+    "BUILTIN.DF(tb.employee), e.title, BUILTIN.DF(tb.billingclass)"
   );
 }
 
 function sqlBillingByIds(idsCsv) {
-  // Match netsuite-pull-job SQL_BILLING_BY_IDS (CustInvc + account.accttype).
   return (
     "SELECT " +
-    "j.id AS project_id, j.entityid AS project_number, " +
+    "j.id AS project_id, " +
+    "j.entityid AS project_number, " +
     "SUM(CASE WHEN tr.type = 'CustInvc' THEN -tl.netamount ELSE 0 END) AS invoiced_amount, " +
     "SUM(CASE WHEN a.accttype = 'Income' THEN -tl.netamount ELSE 0 END) AS revenue_recognized, " +
     "SUM(CASE WHEN a.accttype = 'COGS' THEN tl.netamount ELSE 0 END) AS cost_of_sales " +
@@ -220,7 +251,8 @@ function sqlBillingByIds(idsCsv) {
 function sqlCostDetailByIds(idsCsv) {
   return (
     "SELECT " +
-    "j.id AS project_id, j.entityid AS project_number, " +
+    "j.id AS project_id, " +
+    "j.entityid AS project_number, " +
     "a.accttype AS account_type, " +
     "a.acctnumber AS account_number, " +
     "a.fullname AS account_name, " +
@@ -235,18 +267,74 @@ function sqlCostDetailByIds(idsCsv) {
   );
 }
 
+function sqlPctHistoryByIds(idsCsv) {
+  return (
+    "SELECT " +
+    "pco.project AS project_id, " +
+    "BUILTIN.DF(pco.period) AS period_name, " +
+    "pco.period AS period_id, " +
+    "pco.percent AS submitted_pct_complete, " +
+    "pco.calculatedpercentcomplete AS calculated_pct_complete, " +
+    "pco.revenueplans AS revenue_recognized, " +
+    "pco.comments AS comments " +
+    "FROM percentcompleteoverride pco " +
+    `WHERE pco.project IN (${idsCsv}) ` +
+    "ORDER BY pco.project, pco.period"
+  );
+}
+
 function sqlMonthlyTimeByIds(idsCsv) {
   return (
     "SELECT " +
-    "t.project AS project_id, j.entityid AS project_number, " +
+    "t.project AS project_id, " +
+    "j.entityid AS project_number, " +
     "TO_CHAR(tb.trandate, 'YYYY-MM') AS period, " +
-    "SUM(tb.hours) AS hours, SUM(tb.laborcost) AS cost " +
+    "tb.casetaskevent AS task_id, " +
+    "t.title AS task_name, " +
+    "tb.employee AS employee_id, " +
+    "BUILTIN.DF(tb.employee) AS employee_name, " +
+    "e.title AS job_title, " +
+    "BUILTIN.DF(tb.custcol_nsacs_site) AS site_name, " +
+    "SUM(tb.hours) AS hours, " +
+    "SUM(tb.laborcost) AS cost " +
     "FROM timebill tb " +
     "JOIN projecttask t ON t.id = tb.casetaskevent " +
     "JOIN job j ON j.id = t.project " +
-    `WHERE t.project IN (${idsCsv}) AND tb.approvalstatus = 3 ` +
-    "GROUP BY t.project, j.entityid, TO_CHAR(tb.trandate, 'YYYY-MM')"
+    "JOIN employee e ON e.id = tb.employee " +
+    `WHERE t.project IN (${idsCsv}) ` +
+    "AND tb.approvalstatus = 3 " +
+    "GROUP BY t.project, j.entityid, TO_CHAR(tb.trandate, 'YYYY-MM'), " +
+    "tb.casetaskevent, t.title, tb.employee, BUILTIN.DF(tb.employee), e.title, " +
+    "BUILTIN.DF(tb.custcol_nsacs_site)"
   );
+}
+
+const SQL_PERIOD_STATUS =
+  "SELECT BUILTIN.DF(t.postingperiod) AS period_name, " +
+  "t.postingperiod AS period_id, " +
+  "COUNT(*) AS rev_rec_journals " +
+  "FROM transaction t " +
+  "JOIN transactionline tl ON tl.transaction = t.id " +
+  "JOIN account a ON a.id = tl.account " +
+  "WHERE t.type = 'Journal' AND a.accttype = 'Income' " +
+  "GROUP BY BUILTIN.DF(t.postingperiod), t.postingperiod " +
+  "ORDER BY t.postingperiod DESC " +
+  "FETCH FIRST 2 ROWS ONLY";
+
+function normalizeTaskRow(row, pid = null) {
+  const out = { ...row };
+  if (pid) out.project_id = pid;
+  else if (rowGet(out, "project_id") != null) out.project_id = normId(rowGet(out, "project_id"));
+  const name = rowGet(out, "task_name") || rowGet(out, "task_name_df");
+  if (name) out.task_name = String(name).trim();
+  out.budgeted_hours = num(rowGet(out, "budgeted_hours"));
+  out.original_budget_hours = num(rowGet(out, "original_budget_hours"));
+  out.estimate_to_complete_hours = num(rowGet(out, "estimate_to_complete_hours"));
+  if (rowGet(out, "ns_actual_hours") != null) {
+    out.ns_actual_hours = num(rowGet(out, "ns_actual_hours"));
+  }
+  out.task_id = normId(rowGet(out, "task_id"));
+  return out;
 }
 
 function indexByProject(rows) {
@@ -276,7 +364,19 @@ function rowsForProject(project, byId, byNum) {
   return [];
 }
 
-function buildStudyCosmosPack(project, tasks, actuals, costDetail, billing, monthlyTime) {
+/**
+ * Same formulas/categories as Excel / runs.py build_study_cosmos_pack.
+ */
+function buildStudyCosmosPack(
+  project,
+  tasks,
+  actuals,
+  costDetail,
+  billing,
+  monthlyTime,
+  periodWarning = null,
+  pctHistory = null
+) {
   const taskActual = new Map();
   const taskCost = new Map();
   for (const a of actuals || []) {
@@ -286,22 +386,30 @@ function buildStudyCosmosPack(project, tasks, actuals, costDetail, billing, mont
   }
   for (const t of tasks || []) {
     const tid = normId(rowGet(t, "task_id"));
-    t.actual_hours_on_task = taskActual.get(tid) || 0;
+    t.actual_hours_on_task = taskActual.has(tid)
+      ? taskActual.get(tid)
+      : num(rowGet(t, "actual_hours_on_task"));
   }
+
   const nonMs = (tasks || []).filter((t) => !isMilestone(t));
   const totalBudgetSow = nonMs.reduce((s, t) => s + nsBudgetHours(t), 0);
   const totalBudgetCur = nonMs.reduce((s, t) => s + currentBudgetHours(t), 0);
-  const totalActual =
-    [...taskActual.values()].reduce((a, b) => a + b, 0) ||
-    (tasks || []).reduce((s, t) => s + num(t.actual_hours_on_task), 0);
+  let totalActual = 0;
+  for (const v of taskActual.values()) totalActual += v;
+  if (!totalActual) {
+    totalActual = (tasks || []).reduce((s, t) => s + num(rowGet(t, "actual_hours_on_task")), 0);
+  }
   const totalEtc = nonMs.reduce((s, t) => s + num(rowGet(t, "estimate_to_complete_hours")), 0);
   const totalProjected = totalActual + totalEtc;
+  let totalActualCost = 0;
+  for (const v of taskCost.values()) totalActualCost += v;
   const realization = totalProjected ? totalBudgetSow / totalProjected : null;
   const pctNs = totalProjected ? totalActual / totalProjected : null;
   const pctVsBudget = totalBudgetSow ? totalActual / totalBudgetSow : null;
   const budgetRemaining =
     totalBudgetSow || totalActual ? Math.round((totalBudgetSow - totalActual) * 10) / 10 : null;
   const qtlRemaining = Math.round((totalBudgetCur - totalProjected) * 10) / 10;
+  const avgRate = totalActual ? totalActualCost / totalActual : 0;
   const elapsedPct = computeElapsedPct(project);
 
   const ptcCategories = {};
@@ -321,8 +429,11 @@ function buildStudyCosmosPack(project, tasks, actuals, costDetail, billing, mont
         .trim();
       if (!cat) cat = "Other PTC";
       ptcCategories[cat] = (ptcCategories[cat] || 0) + amt;
-    } else if (acct.includes("Payroll")) laborTotal += amt;
-    else if (acct.includes("Travel") && !acct.includes("PTC")) travelTotal += amt;
+    } else if (acct.includes("Payroll")) {
+      laborTotal += amt;
+    } else if (acct.includes("Travel") && !acct.includes("PTC")) {
+      travelTotal += amt;
+    }
   }
   const ptcActual = Object.keys(ptcCategories).length
     ? Object.values(ptcCategories).reduce((a, b) => a + b, 0)
@@ -366,7 +477,8 @@ function buildStudyCosmosPack(project, tasks, actuals, costDetail, billing, mont
     const etc = vtEtc[vtype] || 0;
     const plan = orig > 0 ? orig : cur;
     const proj = act + etc;
-    const expected = elapsedPct != null && plan ? Math.round(plan * elapsedPct * 10) / 10 : null;
+    const expected =
+      elapsedPct != null && plan ? Math.round(plan * elapsedPct * 10) / 10 : null;
     return {
       visit_type: vtype,
       region,
@@ -377,8 +489,8 @@ function buildStudyCosmosPack(project, tasks, actuals, costDetail, billing, mont
       total_projected: Math.round(proj * 10) / 10,
       expected_hours_to_date: expected,
       vs_expected_hrs: expected != null ? Math.round((expected - act) * 10) / 10 : null,
-      pct_of_budget: plan ? Math.round((act / plan) * 1000) / 1000 : null,
-      pct_complete_ns: proj ? Math.round((act / proj) * 1000) / 1000 : null,
+      pct_of_budget: plan ? Math.round((act / plan) * 10000) / 10000 : null,
+      pct_complete_ns: proj ? Math.round((act / proj) * 10000) / 10000 : null,
       actual_cost: Math.round((vtCost[vtype] || 0) * 100) / 100
     };
   });
@@ -399,12 +511,24 @@ function buildStudyCosmosPack(project, tasks, actuals, costDetail, billing, mont
       cost: Math.round(hoursByMonthMap[p].cost * 100) / 100
     }));
 
+  const pctCompleteHistory = (pctHistory || [])
+    .slice()
+    .sort((a, b) => num(rowGet(a, "period_id")) - num(rowGet(b, "period_id")))
+    .map((h) => ({
+      period_id: rowGet(h, "period_id"),
+      period_name: rowGet(h, "period_name"),
+      submitted_pct_complete: numOrNull(rowGet(h, "submitted_pct_complete")),
+      calculated_pct_complete: numOrNull(rowGet(h, "calculated_pct_complete")),
+      revenue_recognized: numOrNull(rowGet(h, "revenue_recognized")),
+      comments: rowGet(h, "comments") || null
+    }));
+
   const pn = shortProjectNumber(project) || rowGet(project, "project_number");
   const inv = billing ? numOrNull(rowGet(billing, "invoiced_amount")) : null;
   const rev = billing ? numOrNull(rowGet(billing, "revenue_recognized")) : null;
   const cogs = billing ? numOrNull(rowGet(billing, "cost_of_sales")) : null;
   const gp = billing && (rev != null || cogs != null) ? (rev || 0) - (cogs || 0) : null;
-  const gm = rev ? Math.round((gp / rev) * 1000) / 1000 : null;
+  const gm = rev ? Math.round((gp / rev) * 10000) / 10000 : null;
   const atRisk = nonMs.filter((t) => {
     const tid = normId(rowGet(t, "task_id"));
     return (
@@ -433,10 +557,11 @@ function buildStudyCosmosPack(project, tasks, actuals, costDetail, billing, mont
     budget_remaining_hours: budgetRemaining,
     remaining_hours: qtlRemaining,
     at_risk_task_count: atRisk,
-    realization_rate: realization != null ? Math.round(realization * 1000) / 1000 : null,
-    percent_complete: pctNs != null ? Math.round(pctNs * 1000) / 1000 : null,
-    percent_complete_vs_budget: pctVsBudget != null ? Math.round(pctVsBudget * 1000) / 1000 : null,
-    elapsed_pct: elapsedPct != null ? Math.round(elapsedPct * 1000) / 1000 : null,
+    realization_rate: realization != null ? Math.round(realization * 10000) / 10000 : null,
+    percent_complete: pctNs != null ? Math.round(pctNs * 10000) / 10000 : null,
+    percent_complete_vs_budget: pctVsBudget != null ? Math.round(pctVsBudget * 10000) / 10000 : null,
+    elapsed_pct: elapsedPct != null ? Math.round(elapsedPct * 10000) / 10000 : null,
+    avg_labor_rate: avgRate ? Math.round(avgRate * 100) / 100 : null,
     inv_fee_budget: numOrNull(rowGet(project, "investigator_fee_budget")),
     inv_fee_actual: invFeeActual,
     ptc_budget: numOrNull(rowGet(project, "ptc_budget")),
@@ -446,19 +571,25 @@ function buildStudyCosmosPack(project, tasks, actuals, costDetail, billing, mont
     ptc_categories: Object.keys(ptcCatCompact).length ? ptcCatCompact : null,
     visit_types: visitTypes,
     hours_by_month: hoursByMonth.length ? hoursByMonth : null,
+    pct_complete_history: pctCompleteHistory.length ? pctCompleteHistory : null,
     invoiced_amount: inv,
     revenue_recognized: rev,
     cost_of_sales: cogs,
     gross_profit: gp,
     gross_margin_pct: gm,
+    period_warning: periodWarning || null,
     workbook_blob: null,
     formulas: {
-      budgeted: "original SOW when set else estimatedwork",
-      budget_remaining: "budgeted − actual",
-      qtl_remaining: "current CO − (actual + ETC)",
+      budgeted: "original SOW when set else estimatedwork (non-milestone)",
+      budget_remaining: "budgeted − actual (projection baseline)",
+      qtl_remaining: "current CO budget − (actual + ETC)",
+      percent_complete_ns: "actual ÷ (actual + ETC)",
       percent_complete_vs_budget: "actual ÷ budgeted",
-      visit_types: "task name map",
-      hours_by_month: "approved timebill by YYYY-MM"
+      expected_hours_to_date: "budgeted × elapsed calendar %",
+      ptc_categories: "COS Pass Through account name rollup",
+      visit_types: "task name → Study Visit / Prep / Follow-up / Travel",
+      hours_by_month: "approved timebill hours by YYYY-MM",
+      pct_complete_history: "percentcompleteoverride by accounting period"
     }
   };
 
@@ -488,8 +619,8 @@ function buildStudyCosmosPack(project, tasks, actuals, costDetail, billing, mont
         estimate_to_complete_hours: etc,
         total_projected: isMs ? null : proj,
         remaining_hours: isMs ? null : remainingHours(bud, act, etc),
-        percent_complete: !isMs && proj ? Math.round((act / proj) * 1000) / 1000 : null,
-        pct_of_budget: !isMs && plan ? Math.round((act / plan) * 1000) / 1000 : null,
+        percent_complete: !isMs && proj ? Math.round((act / proj) * 10000) / 10000 : null,
+        pct_of_budget: !isMs && plan ? Math.round((act / plan) * 10000) / 10000 : null,
         expected_hours_to_date: expected,
         vs_expected_hrs: expected != null ? Math.round((expected - act) * 10) / 10 : null,
         visit_type: taskVisit[tid] || null,
@@ -498,6 +629,9 @@ function buildStudyCosmosPack(project, tasks, actuals, costDetail, billing, mont
     })
     .sort((a, b) => {
       if (a.is_milestone !== b.is_milestone) return a.is_milestone ? -1 : 1;
+      const am = a.milestone_amount != null ? 0 : 1;
+      const bm = b.milestone_amount != null ? 0 : 1;
+      if (am !== bm) return am - bm;
       return String(a.task_name || "").localeCompare(String(b.task_name || ""));
     })
     .slice(0, 250);
@@ -505,29 +639,51 @@ function buildStudyCosmosPack(project, tasks, actuals, costDetail, billing, mont
   return { study, tasks: taskPayloads };
 }
 
-async function chunkedPull(token, cfg, projectIds, sqlFn, label, chunkSize = 25) {
+async function chunkedPull(token, cfg, projectIds, sqlFn, label, chunkSize = CHUNK, warnings) {
   const all = [];
   for (let i = 0; i < projectIds.length; i += chunkSize) {
     const chunk = projectIds.slice(i, i + chunkSize);
     const idsCsv = chunk.join(",");
-    const rows = await suiteqlAll(token, cfg, sqlFn(idsCsv), { label: `${label}_${i}` });
-    all.push(...rows);
+    try {
+      const rows = await suiteqlAll(token, cfg, sqlFn(idsCsv), {
+        label: `${label}_${i}`
+      });
+      all.push(...rows);
+    } catch (err) {
+      const msg = `${label}_${i}: ${String(err.message || err)}`;
+      if (warnings) warnings.push(msg);
+      else throw err;
+    }
   }
   return all;
 }
 
-async function softChunkedPull(token, cfg, projectIds, sqlFn, label, chunkSize, warnings) {
+async function resolvePeriodWarning(token, cfg) {
   try {
-    return await chunkedPull(token, cfg, projectIds, sqlFn, label, chunkSize);
-  } catch (err) {
-    warnings.push(`${label}: ${String(err.message || err)}`);
-    return [];
+    const periods = await suiteqlAll(token, cfg, SQL_PERIOD_STATUS, {
+      label: "period_status",
+      pageSize: 10
+    });
+    if (!periods.length) return null;
+    const closedName = String(rowGet(periods[0], "period_name") || "");
+    const currentMonth = new Date().toLocaleString("en-US", {
+      month: "short",
+      year: "numeric"
+    });
+    if (!closedName.includes(currentMonth)) {
+      return (
+        `Current period (${currentMonth}) has not been closed — latest closed: ${closedName}. ` +
+        "Financial data may be preliminary."
+      );
+    }
+    return null;
+  } catch (_) {
+    return "Unable to verify period closure status";
   }
 }
 
 /**
- * Pull SuiteQL study intel into Cosmos — SF-style Buddy sync.
- * opts.projectNumber — single study; else open In Progress portfolio (time-budgeted).
+ * Pull SuiteQL study intel into Cosmos — job-parity, full portfolio when budget allows.
  */
 async function runNetSuiteStudyPull(getDb, opts = {}) {
   const cfgCheck = netsuiteConfig();
@@ -568,65 +724,104 @@ async function runNetSuiteStudyPull(getDb, opts = {}) {
     };
   }
 
-  // Time budget: process in batches of project ids
   const projectIds = projects.map((p) => normId(rowGet(p, "project_id"))).filter(Boolean);
-  const batchSize = projectNumber ? projectIds.length : 20;
+  const periodWarning = await resolvePeriodWarning(accessToken, cfg);
+
+  // Job-style: pull full domains for all project ids (chunked), then pack.
+  let allTasks = [];
+  try {
+    allTasks = (await chunkedPull(accessToken, cfg, projectIds, sqlTasksByIds, "tasks", CHUNK, null)).map(
+      (r) => normalizeTaskRow(r)
+    );
+  } catch (err) {
+    return {
+      ok: false,
+      configured: true,
+      error: `tasks: ${String(err.message || err)}`,
+      projectsFound: projects.length
+    };
+  }
+
+  const soft = true;
+  const [actualRows, billingRows, costRows, pctRows, monthRows] = await Promise.all([
+    chunkedPull(accessToken, cfg, projectIds, sqlActualsByIds, "actuals", CHUNK, soft ? warnings : null),
+    chunkedPull(accessToken, cfg, projectIds, sqlBillingByIds, "billing", 15, soft ? warnings : null),
+    chunkedPull(accessToken, cfg, projectIds, sqlCostDetailByIds, "cost", 15, soft ? warnings : null),
+    chunkedPull(accessToken, cfg, projectIds, sqlPctHistoryByIds, "pct_history", CHUNK, soft ? warnings : null),
+    chunkedPull(accessToken, cfg, projectIds, sqlMonthlyTimeByIds, "monthly", 20, soft ? warnings : null)
+  ]);
+
+  if (Date.now() - started > TIME_BUDGET_MS) {
+    return {
+      ok: false,
+      configured: true,
+      error: "Time budget exhausted during SuiteQL domain pulls — raise NS_STUDY_PULL_BUDGET_MS or re-kick.",
+      projectsFound: projects.length,
+      warnings,
+      elapsedMs: Date.now() - started
+    };
+  }
+
+  const tasksIdx = indexByProject(allTasks);
+  const actualsIdx = indexByProject(actualRows);
+  const billingIdx = indexByProject(billingRows);
+  const costIdx = indexByProject(costRows);
+  const pctIdx = indexByProject(pctRows);
+  const monthIdx = indexByProject(monthRows);
+
   const studies = [];
   const tasks = [];
   let processed = 0;
   let incomplete = false;
 
-  for (let i = 0; i < projectIds.length; i += batchSize) {
+  for (const project of projects) {
     if (Date.now() - started > TIME_BUDGET_MS) {
       incomplete = true;
       break;
     }
-    const idChunk = projectIds.slice(i, i + batchSize);
-    const projChunk = projects.filter((p) => idChunk.includes(normId(rowGet(p, "project_id"))));
+    const pid = normId(rowGet(project, "project_id"));
+    let taskList = rowsForProject(project, tasksIdx.byId, tasksIdx.byNum).map((t) =>
+      normalizeTaskRow(t, pid)
+    );
+    const actuals = rowsForProject(project, actualsIdx.byId, actualsIdx.byNum);
 
-    let taskRows = [];
-    let actualRows = [];
-    let billingRows = [];
-    let costRows = [];
-    let monthRows = [];
-    try {
-      [taskRows, actualRows, billingRows, costRows, monthRows] = await Promise.all([
-        chunkedPull(accessToken, cfg, idChunk, sqlTasksByIds, "tasks", 40),
-        chunkedPull(accessToken, cfg, idChunk, sqlActualsByIds, "actuals", 40),
-        softChunkedPull(accessToken, cfg, idChunk, sqlBillingByIds, "billing", 10, warnings),
-        softChunkedPull(accessToken, cfg, idChunk, sqlCostDetailByIds, "cost", 10, warnings),
-        softChunkedPull(accessToken, cfg, idChunk, sqlMonthlyTimeByIds, "monthly", 20, warnings)
-      ]);
-    } catch (err) {
-      return {
-        ok: false,
-        configured: true,
-        error: `SuiteQL batch: ${String(err.message || err)}`,
-        processed,
-        projectsFound: projects.length,
-        warnings
-      };
+    // Job fallback: stub tasks from actuals if metadata missing
+    if (!taskList.length && actuals.length) {
+      const seen = new Set();
+      for (const a of actuals) {
+        const tid = normId(rowGet(a, "task_id"));
+        if (!tid || seen.has(tid)) continue;
+        seen.add(tid);
+        taskList.push(
+          normalizeTaskRow(
+            {
+              task_id: tid,
+              project_id: pid,
+              task_name: `Task ${tid}`,
+              task_status: null,
+              is_milestone: "F",
+              budgeted_hours: 0,
+              estimate_to_complete_hours: 0
+            },
+            pid
+          )
+        );
+      }
     }
 
-    const tasksIdx = indexByProject(taskRows);
-    const actualsIdx = indexByProject(actualRows);
-    const billingIdx = indexByProject(billingRows);
-    const costIdx = indexByProject(costRows);
-    const monthIdx = indexByProject(monthRows);
-
-    for (const project of projChunk) {
-      const pack = buildStudyCosmosPack(
-        project,
-        rowsForProject(project, tasksIdx.byId, tasksIdx.byNum),
-        rowsForProject(project, actualsIdx.byId, actualsIdx.byNum),
-        rowsForProject(project, costIdx.byId, costIdx.byNum),
-        rowsForProject(project, billingIdx.byId, billingIdx.byNum)[0] || null,
-        rowsForProject(project, monthIdx.byId, monthIdx.byNum)
-      );
-      studies.push(pack.study);
-      tasks.push(...pack.tasks);
-      processed += 1;
-    }
+    const pack = buildStudyCosmosPack(
+      project,
+      taskList,
+      actuals,
+      rowsForProject(project, costIdx.byId, costIdx.byNum),
+      rowsForProject(project, billingIdx.byId, billingIdx.byNum)[0] || null,
+      rowsForProject(project, monthIdx.byId, monthIdx.byNum),
+      periodWarning,
+      rowsForProject(project, pctIdx.byId, pctIdx.byNum)
+    );
+    studies.push(pack.study);
+    tasks.push(...pack.tasks);
+    processed += 1;
   }
 
   const upsert = await upsertNetSuiteStudyIntel(getDb, {
@@ -638,21 +833,31 @@ async function runNetSuiteStudyPull(getDb, opts = {}) {
   });
 
   return {
-    ok: upsert.ok !== false,
+    ok: upsert.ok !== false && !incomplete,
     configured: true,
     mode: "buddy_suiteql",
+    parity: "netsuite-pull-excel-v2/build_study_cosmos_pack",
     projectsFound: projects.length,
     processed,
     incomplete,
+    domainRows: {
+      tasks: allTasks.length,
+      actuals: actualRows.length,
+      billing: billingRows.length,
+      cost: costRows.length,
+      pct_history: pctRows.length,
+      monthly: monthRows.length
+    },
     studyUpserted: upsert.studyUpserted,
     taskUpserted: upsert.taskUpserted,
     sampleProjectNumbers: upsert.sampleProjectNumbers,
     errors: upsert.errors,
-    warnings: warnings.length ? warnings.slice(0, 12) : undefined,
+    warnings: warnings.length ? warnings.slice(0, 20) : undefined,
+    periodWarning,
     elapsedMs: Date.now() - started,
     note: incomplete
       ? `Time budget hit after ${processed}/${projects.length} studies — click Sync NetSuite again to continue.`
-      : `Pulled ${processed} studies via SuiteQL → Cosmos (same path as Salesforce sync).`
+      : `Pulled ${processed}/${projects.length} studies SuiteQL → Cosmos (job-parity pack + hours_by_month + pct_complete_history).`
   };
 }
 
@@ -664,7 +869,7 @@ async function getNetSuitePullStatus(getDb) {
     configured: cfg.configured,
     pullMode: "buddy_suiteql",
     note: cfg.configured
-      ? "Buddy can SuiteQL → Cosmos like Salesforce. Lens Sync NetSuite hits /api/netsuite/sync."
+      ? "Buddy SuiteQL → Cosmos (1:1 with netsuite-pull-job study pack). Lens Sync NetSuite → /api/netsuite/sync."
       : notConfiguredPayload().error
   };
 }

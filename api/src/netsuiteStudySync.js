@@ -139,6 +139,9 @@ function studyDocFromPayload(row, meta = {}) {
     ptc_categories: row.ptc_categories ?? null,
     visit_types: Array.isArray(row.visit_types) ? row.visit_types : null,
     hours_by_month: Array.isArray(row.hours_by_month) ? row.hours_by_month : null,
+    pct_complete_history: Array.isArray(row.pct_complete_history)
+      ? row.pct_complete_history
+      : null,
     formulas: row.formulas && typeof row.formulas === "object" ? row.formulas : null,
     period_warning: row.period_warning ?? null,
     invoiced_amount: row.invoiced_amount ?? null,
