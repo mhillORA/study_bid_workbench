@@ -116,12 +116,20 @@ function studyDocFromPayload(row, meta = {}) {
     project_status: row.project_status ?? row.projectStatus ?? null,
     start_date: row.start_date ?? null,
     calculated_end_date: row.calculated_end_date ?? null,
+    region: row.region ?? null,
     total_budgeted: row.total_budgeted ?? null,
+    total_budgeted_current: row.total_budgeted_current ?? null,
     total_actual: row.total_actual ?? null,
     total_etc: row.total_etc ?? null,
     total_projected: row.total_projected ?? null,
+    budget_remaining_hours: row.budget_remaining_hours ?? null,
+    remaining_hours: row.remaining_hours ?? null,
+    at_risk_task_count: row.at_risk_task_count ?? null,
     realization_rate: row.realization_rate ?? null,
     percent_complete: row.percent_complete ?? null,
+    percent_complete_vs_budget: row.percent_complete_vs_budget ?? null,
+    elapsed_pct: row.elapsed_pct ?? null,
+    avg_labor_rate: row.avg_labor_rate ?? null,
     inv_fee_budget: row.inv_fee_budget ?? row.investigator_fee_budget ?? null,
     inv_fee_actual: row.inv_fee_actual ?? null,
     ptc_budget: row.ptc_budget ?? null,
@@ -129,6 +137,10 @@ function studyDocFromPayload(row, meta = {}) {
     oopc_labor_actual: row.oopc_labor_actual ?? null,
     oopc_travel_actual: row.oopc_travel_actual ?? null,
     ptc_categories: row.ptc_categories ?? null,
+    visit_types: Array.isArray(row.visit_types) ? row.visit_types : null,
+    hours_by_month: Array.isArray(row.hours_by_month) ? row.hours_by_month : null,
+    formulas: row.formulas && typeof row.formulas === "object" ? row.formulas : null,
+    period_warning: row.period_warning ?? null,
     invoiced_amount: row.invoiced_amount ?? null,
     revenue_recognized: row.revenue_recognized ?? null,
     cost_of_sales: row.cost_of_sales ?? null,
@@ -157,8 +169,16 @@ function taskDocFromPayload(row, meta = {}) {
     current_budget_hrs: row.current_budget_hrs ?? row.budgeted_hours ?? null,
     actual_hours: row.actual_hours ?? null,
     estimate_to_complete: row.estimate_to_complete ?? row.estimate_to_complete_hours ?? null,
+    estimate_to_complete_hours: row.estimate_to_complete_hours ?? row.estimate_to_complete ?? null,
     total_projected: row.total_projected ?? null,
+    remaining_hours: row.remaining_hours ?? null,
     pct_complete: row.pct_complete ?? row.percent_complete ?? null,
+    percent_complete: row.percent_complete ?? row.pct_complete ?? null,
+    pct_of_budget: row.pct_of_budget ?? null,
+    expected_hours_to_date: row.expected_hours_to_date ?? null,
+    vs_expected_hrs: row.vs_expected_hrs ?? null,
+    visit_type: row.visit_type ?? null,
+    actual_cost: row.actual_cost ?? null,
     is_milestone: row.is_milestone ?? null,
     milestone_amount: row.milestone_amount ?? row.milestoneAmount ?? null,
     source: meta.source || "netsuite-pull-job",
@@ -232,7 +252,7 @@ async function upsertNetSuiteStudyIntel(getDb, body = {}) {
     taskCount: typeof taskCount === "number" ? taskCount : null,
     sampleProjectNumbers: sample,
     note:
-      "YY-DEPT-SEQ project numbers. Join Veeva on project_number. Excel still written by netsuite-pull-job."
+      "YY-DEPT-SEQ. Cosmos is primary (Excel optional via WRITE_STUDY_EXCEL). Join Veeva on project_number."
   });
 
   return {
@@ -279,8 +299,8 @@ async function getNetSuiteStudySyncStatus(getDb) {
     sampleProjectNumbers: sync?.sampleProjectNumbers || [],
     projectNumberFormat: "YY-DEPT-SEQ (e.g. 25-150-0005 = year 2025, dept 150, study #5)",
     note:
-      "Data is pushed by netsuite-pull-job after SuiteQL + Excel build (POST /api/netsuite/study-sync). " +
-      "Daily/Monday study runs keep Excel for PMs and Cosmos for Buddy/Data Lens. " +
+      "Data is pushed by netsuite-pull-job after SuiteQL (POST /api/netsuite/study-sync). " +
+      "Cosmos is primary for Ask; Excel is opt-in (WRITE_STUDY_EXCEL=1). " +
       "lens_ns_projects remains the separate Project Profitability GM feed."
   };
 }
