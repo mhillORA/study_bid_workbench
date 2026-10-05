@@ -163,6 +163,10 @@ const VEEVA_TABLES = [
       "study_number__v",
       "study_name__v",
       "organization__clin",
+      "organization__vr.name__v",
+      "organization__vr.full_name__v",
+      "organization__clinr.name__v",
+      "organization__clinr.full_name__v",
       "country__v",
       "country__vr.name__v",
       "study_country__v",
@@ -574,15 +578,47 @@ async function loadPersonNameMap(database) {
   try {
     const rows = await queryAll(
       database.container("ora_veeva_person"),
-      `SELECT c.id, c.name__v, c.first_name__v, c.last_name__v FROM c WHERE c.docType = @t`,
+      `SELECT c.id, c.veevaId, c.name__v, c.first_name__v, c.last_name__v, c.display_name FROM c WHERE c.docType = @t`,
       [{ name: "@t", value: "ora_veeva_person" }]
     );
     for (const r of rows || []) {
-      const name = personDisplayName(r);
-      if (r.id && name) map.set(String(r.id), name);
+      const name = personDisplayName(r) || personDisplayName({ name__v: r.display_name });
+      if (!name) continue;
+      for (const key of [r.id, r.veevaId]) {
+        if (!key) continue;
+        const id = String(key).trim();
+        map.set(id, name);
+        map.set(id.toUpperCase(), name);
+        map.set(id.toLowerCase(), name);
+      }
     }
   } catch (_) {
     /* person mirror optional until first sync */
+  }
+  return map;
+}
+
+async function loadOrgNameMap(database) {
+  const map = new Map();
+  try {
+    const rows = await queryAll(
+      database.container("ora_veeva_organization"),
+      `SELECT c.id, c.veevaId, c.name__v, c.full_name__v, c.organization__clin FROM c WHERE c.docType = @t`,
+      [{ name: "@t", value: "ora_veeva_organization" }]
+    );
+    for (const r of rows || []) {
+      const name = String(r.full_name__v || r.name__v || "").trim();
+      if (!name || looksLikeVaultId(name)) continue;
+      for (const key of [r.id, r.veevaId, r.organization__clin]) {
+        if (!key) continue;
+        const id = String(key).trim();
+        map.set(id, name);
+        map.set(id.toUpperCase(), name);
+        map.set(id.toLowerCase(), name);
+      }
+    }
+  } catch (_) {
+    /* org mirror optional */
   }
   return map;
 }
@@ -604,7 +640,10 @@ async function enrichExistingSitePiNames(database, started, budgetMs) {
     if (Date.now() - started > budgetMs) break;
     const piId = site.principal_investigator__v != null ? String(site.principal_investigator__v).trim() : "";
     if (!piId) continue;
-    const name = personNameById.get(piId);
+    const name =
+      personNameById.get(piId) ||
+      personNameById.get(piId.toUpperCase()) ||
+      personNameById.get(piId.toLowerCase());
     if (!name) continue;
     const cur = site.principal_investigator_name != null ? String(site.principal_investigator_name).trim() : "";
     if (cur && !looksLikeVaultId(cur) && cur === name) continue;
@@ -620,6 +659,53 @@ async function enrichExistingSitePiNames(database, started, budgetMs) {
     }
   }
   return { patched, scanned: (sites || []).length, personNames: personNameById.size };
+}
+
+/** Patch sites that still show Vault org/site ids instead of institution names. */
+async function enrichExistingSiteOrgNames(database, started, budgetMs) {
+  const orgNameById = await loadOrgNameMap(database);
+  if (!orgNameById.size) return { patched: 0, scanned: 0, orgNames: 0 };
+  await ensureContainer(database, "ora_veeva_site");
+  const sites = await queryAll(
+    database.container("ora_veeva_site"),
+    `SELECT TOP 5000 c.id, c.organization__clin, c.organization__v, c.organization_name, c.site_name__v, c.name__v
+     FROM c WHERE c.docType = @t`,
+    [{ name: "@t", value: "ora_veeva_site" }]
+  );
+  let patched = 0;
+  const container = database.container("ora_veeva_site");
+  for (const site of sites || []) {
+    if (Date.now() - started > budgetMs) break;
+    const orgId =
+      site.organization__clin != null
+        ? String(site.organization__clin).trim()
+        : site.organization__v != null
+          ? String(site.organization__v).trim()
+          : "";
+    if (!orgId) continue;
+    const name =
+      orgNameById.get(orgId) ||
+      orgNameById.get(orgId.toUpperCase()) ||
+      orgNameById.get(orgId.toLowerCase());
+    if (!name) continue;
+    const curOrg = site.organization_name != null ? String(site.organization_name).trim() : "";
+    const curSite = site.site_name__v != null ? String(site.site_name__v).trim() : "";
+    const needsOrg = !curOrg || looksLikeVaultId(curOrg);
+    const needsSite = !curSite || looksLikeVaultId(curSite);
+    if (!needsOrg && !needsSite) continue;
+    try {
+      const { resource } = await container.item(String(site.id), String(site.id)).read();
+      if (!resource) continue;
+      if (needsOrg) resource.organization_name = name;
+      if (needsSite) resource.site_name__v = name;
+      resource.veevaOrgEnrichedAt = new Date().toISOString();
+      await container.items.upsert(resource);
+      patched += 1;
+    } catch (_) {
+      /* skip stubborn rows */
+    }
+  }
+  return { patched, scanned: (sites || []).length, orgNames: orgNameById.size };
 }
 
 function toMirrorDoc(rec, docType, syncedAt, opts = {}) {
@@ -658,8 +744,38 @@ function toMirrorDoc(rec, docType, syncedAt, opts = {}) {
       (typeof flat.country__vr === "string" ? flat.country__vr : null) ||
       flat.country_name ||
       null;
-    if (countryName && !/^00C/i.test(String(countryName))) {
+    if (countryName && !looksLikeVaultId(countryName) && !/^00C/i.test(String(countryName))) {
       doc.country_name = String(countryName).trim();
+    }
+    const orgFromRel =
+      flat["organization__vr.full_name__v"] ||
+      flat["organization__vr.name__v"] ||
+      flat["organization__clinr.full_name__v"] ||
+      flat["organization__clinr.name__v"] ||
+      (typeof flat.organization__vr === "string" ? flat.organization__vr : null) ||
+      flat.organization_name ||
+      null;
+    const orgId =
+      flat.organization__clin != null
+        ? String(flat.organization__clin).trim()
+        : flat.organization__v != null
+          ? String(flat.organization__v).trim()
+          : "";
+    const orgFromMap =
+      orgId && opts.orgNameById && opts.orgNameById.get ? opts.orgNameById.get(orgId) : null;
+    const orgName =
+      orgFromRel && !looksLikeVaultId(orgFromRel) ? orgFromRel : orgFromMap || null;
+    if (orgName && !looksLikeVaultId(orgName)) {
+      doc.organization_name = String(orgName).trim();
+      // Prefer institution name over Vault site id for site_name__v consumers.
+      if (!doc.site_name__v || looksLikeVaultId(doc.site_name__v)) {
+        doc.site_name__v = doc.organization_name;
+      }
+    } else if (doc.organization_name && looksLikeVaultId(doc.organization_name)) {
+      delete doc.organization_name;
+    }
+    if (doc.site_name__v && looksLikeVaultId(doc.site_name__v)) {
+      delete doc.site_name__v;
     }
     const piFirst = flat["principal_investigator__vr.first_name__v"];
     const piLast = flat["principal_investigator__vr.last_name__v"];
@@ -672,7 +788,9 @@ function toMirrorDoc(rec, docType, syncedAt, opts = {}) {
     const piId = flat.principal_investigator__v != null ? String(flat.principal_investigator__v).trim() : "";
     const fromPerson =
       piId && opts.personNameById && opts.personNameById.get
-        ? opts.personNameById.get(piId)
+        ? opts.personNameById.get(piId) ||
+          opts.personNameById.get(piId.toUpperCase()) ||
+          opts.personNameById.get(piId.toLowerCase())
         : null;
     const piName = fromRel && !looksLikeVaultId(fromRel) ? fromRel : fromPerson || null;
     if (piName && !looksLikeVaultId(piName)) {
@@ -1368,14 +1486,18 @@ async function runVeevaTablesSync(getDb, opts = {}) {
       let upserted = 0;
       const errors = [];
       const mirrors = [];
-      const personNameById =
-        table.docType === "ora_veeva_site" ? await loadPersonNameMap(database) : null;
+      let personNameById = null;
+      let orgNameById = null;
+      if (table.docType === "ora_veeva_site") {
+        personNameById = await loadPersonNameMap(database);
+        orgNameById = await loadOrgNameMap(database);
+      }
       for (const rec of pulled.records) {
         if (Date.now() - started > TIME_BUDGET_MS) {
           incomplete = true;
           break;
         }
-        const doc = toMirrorDoc(rec, table.docType, syncedAt, { personNameById });
+        const doc = toMirrorDoc(rec, table.docType, syncedAt, { personNameById, orgNameById });
         if (!doc) continue;
         try {
           await container.items.upsert(doc);
@@ -1537,11 +1659,31 @@ async function runVeevaTablesSync(getDb, opts = {}) {
     }
   }
 
-  // Backfill PI display names on existing site docs (relationship fields often drop from VQL).
-  let piEnrich = null;
+  // Backfill institution + PI display names on existing site docs (relationship fields often drop from VQL).
   if (Date.now() - started < TIME_BUDGET_MS) {
     try {
-      piEnrich = await enrichExistingSitePiNames(database, started, TIME_BUDGET_MS);
+      const orgEnrich = await enrichExistingSiteOrgNames(database, started, TIME_BUDGET_MS);
+      if (orgEnrich && orgEnrich.patched) {
+        results.push({
+          object: "site_org_enrich",
+          container: "ora_veeva_site",
+          upserted: orgEnrich.patched,
+          scanned: orgEnrich.scanned,
+          orgNames: orgEnrich.orgNames,
+          note: "organization__clin → organization__v name"
+        });
+      }
+    } catch (err) {
+      results.push({
+        object: "site_org_enrich",
+        ok: false,
+        error: String(err.message || err).slice(0, 200)
+      });
+    }
+  }
+  if (Date.now() - started < TIME_BUDGET_MS) {
+    try {
+      const piEnrich = await enrichExistingSitePiNames(database, started, TIME_BUDGET_MS);
       if (piEnrich && piEnrich.patched) {
         results.push({
           object: "site_pi_enrich",
