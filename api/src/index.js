@@ -2318,9 +2318,33 @@ app.http("netsuiteSync", {
         null;
       const result = await runNetSuiteStudyPull(getDb, {
         projectNumber,
-        triggeredBy
+        triggeredBy,
+        resume: body.resume === true || request.query.get("resume") === "true",
+        restart: body.restart === true || body.full === true,
+        _asyncKick: body._asyncKick === true
       });
-      const status = result.ok === false && !result.configured ? 503 : result.ok ? 200 : 500;
+      // Auto-chain until full portfolio lands (gateway kills ~230s requests).
+      if (result.needsContinue) {
+        const kick = kickAsyncSync(
+          "/api/netsuite/sync",
+          { resume: true, async: true, background: true },
+          context
+        );
+        if (kick._kickPromise) {
+          await Promise.race([
+            kick._kickPromise,
+            new Promise((r) => setTimeout(r, 1500))
+          ]);
+        }
+        result.chained = true;
+        result.chainMessage = kick.message;
+      }
+      const status =
+        result.ok === false && !result.configured
+          ? 503
+          : result.ok || result.needsContinue
+            ? 200
+            : 500;
       return json(status, result, request);
     } catch (err) {
       context.error(err);

@@ -314,5 +314,7 @@ module.exports = {
   TASK_CONTAINER,
   parseProjectNumber,
   upsertNetSuiteStudyIntel,
-  getNetSuiteStudySyncStatus
+  getNetSuiteStudySyncStatus,
+  readSyncState,
+  writeSyncState
 };

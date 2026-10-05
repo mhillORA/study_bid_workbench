@@ -9,12 +9,18 @@ const {
   netsuiteConfig,
   notConfiguredPayload
 } = require("./netsuiteClient");
-const { upsertNetSuiteStudyIntel, getNetSuiteStudySyncStatus } = require("./netsuiteStudySync");
+const {
+  upsertNetSuiteStudyIntel,
+  getNetSuiteStudySyncStatus,
+  readSyncState,
+  writeSyncState
+} = require("./netsuiteStudySync");
 
 // Function App timeout is 60m — leave headroom for upsert.
-const TIME_BUDGET_MS = Number(process.env.NS_STUDY_PULL_BUDGET_MS || 50 * 60 * 1000);
+const TIME_BUDGET_MS = Number(process.env.NS_STUDY_PULL_BUDGET_MS || 170000);
 const STUDY_PREFIX = String(process.env.STUDY_NUMBER_PREFIX || "2").trim() || "2";
 const CHUNK = Number(process.env.NS_STUDY_ID_CHUNK || 40);
+const BATCH_PROJECTS = Number(process.env.NS_STUDY_BATCH || 12);
 
 function num(v) {
   if (v == null || v === "") return 0;
@@ -683,7 +689,8 @@ async function resolvePeriodWarning(token, cfg) {
 }
 
 /**
- * Pull SuiteQL study intel into Cosmos — job-parity, full portfolio when budget allows.
+ * Pull SuiteQL study intel into Cosmos — job-parity packs.
+ * Batched under App Gateway ~230s limit; auto-resume via syncState.resumeOffset.
  */
 async function runNetSuiteStudyPull(getDb, opts = {}) {
   const cfgCheck = netsuiteConfig();
@@ -693,6 +700,7 @@ async function runNetSuiteStudyPull(getDb, opts = {}) {
   const projectNumber = opts.projectNumber ? String(opts.projectNumber).trim() : null;
   const triggeredBy = opts.triggeredBy || "buddy_api";
   const warnings = [];
+  const database = getDb();
 
   let tokenPack;
   try {
@@ -724,140 +732,199 @@ async function runNetSuiteStudyPull(getDb, opts = {}) {
     };
   }
 
-  const projectIds = projects.map((p) => normId(rowGet(p, "project_id"))).filter(Boolean);
+  const prev = (await readSyncState(database)) || {};
+  let offset = 0;
+  if (!projectNumber) {
+    if (opts.resume === true || opts._asyncKick === true) {
+      offset = Number(prev.resumeOffset || 0) || 0;
+    } else if (opts.restart === true || opts.full === true) {
+      offset = 0;
+    } else if (Number(prev.resumeOffset) > 0 && Number(prev.resumeOffset) < projects.length) {
+      offset = Number(prev.resumeOffset);
+    }
+  }
+  if (offset >= projects.length) offset = 0;
+
   const periodWarning = await resolvePeriodWarning(accessToken, cfg);
 
-  // Job-style: pull full domains for all project ids (chunked), then pack.
-  let allTasks = [];
-  try {
-    allTasks = (await chunkedPull(accessToken, cfg, projectIds, sqlTasksByIds, "tasks", CHUNK, null)).map(
-      (r) => normalizeTaskRow(r)
-    );
-  } catch (err) {
-    return {
-      ok: false,
-      configured: true,
-      error: `tasks: ${String(err.message || err)}`,
-      projectsFound: projects.length
-    };
-  }
-
-  const soft = true;
-  const [actualRows, billingRows, costRows, pctRows, monthRows] = await Promise.all([
-    chunkedPull(accessToken, cfg, projectIds, sqlActualsByIds, "actuals", CHUNK, soft ? warnings : null),
-    chunkedPull(accessToken, cfg, projectIds, sqlBillingByIds, "billing", 15, soft ? warnings : null),
-    chunkedPull(accessToken, cfg, projectIds, sqlCostDetailByIds, "cost", 15, soft ? warnings : null),
-    chunkedPull(accessToken, cfg, projectIds, sqlPctHistoryByIds, "pct_history", CHUNK, soft ? warnings : null),
-    chunkedPull(accessToken, cfg, projectIds, sqlMonthlyTimeByIds, "monthly", 20, soft ? warnings : null)
-  ]);
-
-  if (Date.now() - started > TIME_BUDGET_MS) {
-    return {
-      ok: false,
-      configured: true,
-      error: "Time budget exhausted during SuiteQL domain pulls — raise NS_STUDY_PULL_BUDGET_MS or re-kick.",
-      projectsFound: projects.length,
-      warnings,
-      elapsedMs: Date.now() - started
-    };
-  }
-
-  const tasksIdx = indexByProject(allTasks);
-  const actualsIdx = indexByProject(actualRows);
-  const billingIdx = indexByProject(billingRows);
-  const costIdx = indexByProject(costRows);
-  const pctIdx = indexByProject(pctRows);
-  const monthIdx = indexByProject(monthRows);
-
-  const studies = [];
-  const tasks = [];
+  let studyUpserted = 0;
+  let taskUpserted = 0;
   let processed = 0;
   let incomplete = false;
+  const sample = [];
+  const domainTotals = {
+    tasks: 0,
+    actuals: 0,
+    billing: 0,
+    cost: 0,
+    pct_history: 0,
+    monthly: 0
+  };
 
-  for (const project of projects) {
+  for (let i = offset; i < projects.length; i += BATCH_PROJECTS) {
     if (Date.now() - started > TIME_BUDGET_MS) {
       incomplete = true;
+      offset = i;
       break;
     }
-    const pid = normId(rowGet(project, "project_id"));
-    let taskList = rowsForProject(project, tasksIdx.byId, tasksIdx.byNum).map((t) =>
-      normalizeTaskRow(t, pid)
-    );
-    const actuals = rowsForProject(project, actualsIdx.byId, actualsIdx.byNum);
 
-    // Job fallback: stub tasks from actuals if metadata missing
-    if (!taskList.length && actuals.length) {
-      const seen = new Set();
-      for (const a of actuals) {
-        const tid = normId(rowGet(a, "task_id"));
-        if (!tid || seen.has(tid)) continue;
-        seen.add(tid);
-        taskList.push(
-          normalizeTaskRow(
-            {
-              task_id: tid,
-              project_id: pid,
-              task_name: `Task ${tid}`,
-              task_status: null,
-              is_milestone: "F",
-              budgeted_hours: 0,
-              estimate_to_complete_hours: 0
-            },
-            pid
-          )
-        );
-      }
+    const projChunk = projects.slice(i, i + BATCH_PROJECTS);
+    const idChunk = projChunk.map((p) => normId(rowGet(p, "project_id"))).filter(Boolean);
+
+    let allTasks = [];
+    try {
+      allTasks = (
+        await chunkedPull(accessToken, cfg, idChunk, sqlTasksByIds, "tasks", CHUNK, null)
+      ).map((r) => normalizeTaskRow(r));
+    } catch (err) {
+      warnings.push(`tasks@${i}: ${String(err.message || err)}`);
+      // don't abort whole sync — skip this batch
+      continue;
     }
 
-    const pack = buildStudyCosmosPack(
-      project,
-      taskList,
-      actuals,
-      rowsForProject(project, costIdx.byId, costIdx.byNum),
-      rowsForProject(project, billingIdx.byId, billingIdx.byNum)[0] || null,
-      rowsForProject(project, monthIdx.byId, monthIdx.byNum),
-      periodWarning,
-      rowsForProject(project, pctIdx.byId, pctIdx.byNum)
-    );
-    studies.push(pack.study);
-    tasks.push(...pack.tasks);
-    processed += 1;
+    const soft = true;
+    const [actualRows, billingRows, costRows, pctRows, monthRows] = await Promise.all([
+      chunkedPull(accessToken, cfg, idChunk, sqlActualsByIds, "actuals", CHUNK, soft ? warnings : null),
+      chunkedPull(accessToken, cfg, idChunk, sqlBillingByIds, "billing", 10, soft ? warnings : null),
+      chunkedPull(accessToken, cfg, idChunk, sqlCostDetailByIds, "cost", 10, soft ? warnings : null),
+      chunkedPull(accessToken, cfg, idChunk, sqlPctHistoryByIds, "pct_history", CHUNK, soft ? warnings : null),
+      chunkedPull(accessToken, cfg, idChunk, sqlMonthlyTimeByIds, "monthly", 12, soft ? warnings : null)
+    ]);
+
+    domainTotals.tasks += allTasks.length;
+    domainTotals.actuals += actualRows.length;
+    domainTotals.billing += billingRows.length;
+    domainTotals.cost += costRows.length;
+    domainTotals.pct_history += pctRows.length;
+    domainTotals.monthly += monthRows.length;
+
+    const tasksIdx = indexByProject(allTasks);
+    const actualsIdx = indexByProject(actualRows);
+    const billingIdx = indexByProject(billingRows);
+    const costIdx = indexByProject(costRows);
+    const pctIdx = indexByProject(pctRows);
+    const monthIdx = indexByProject(monthRows);
+
+    const studies = [];
+    const tasks = [];
+
+    for (const project of projChunk) {
+      const pid = normId(rowGet(project, "project_id"));
+      let taskList = rowsForProject(project, tasksIdx.byId, tasksIdx.byNum).map((t) =>
+        normalizeTaskRow(t, pid)
+      );
+      const actuals = rowsForProject(project, actualsIdx.byId, actualsIdx.byNum);
+
+      if (!taskList.length && actuals.length) {
+        const seen = new Set();
+        for (const a of actuals) {
+          const tid = normId(rowGet(a, "task_id"));
+          if (!tid || seen.has(tid)) continue;
+          seen.add(tid);
+          taskList.push(
+            normalizeTaskRow(
+              {
+                task_id: tid,
+                project_id: pid,
+                task_name: `Task ${tid}`,
+                task_status: null,
+                is_milestone: "F",
+                budgeted_hours: 0,
+                estimate_to_complete_hours: 0
+              },
+              pid
+            )
+          );
+        }
+      }
+
+      const pack = buildStudyCosmosPack(
+        project,
+        taskList,
+        actuals,
+        rowsForProject(project, costIdx.byId, costIdx.byNum),
+        rowsForProject(project, billingIdx.byId, billingIdx.byNum)[0] || null,
+        rowsForProject(project, monthIdx.byId, monthIdx.byNum),
+        periodWarning,
+        rowsForProject(project, pctIdx.byId, pctIdx.byNum)
+      );
+      studies.push(pack.study);
+      tasks.push(...pack.tasks);
+      processed += 1;
+    }
+
+    const upsert = await upsertNetSuiteStudyIntel(getDb, {
+      studies,
+      tasks,
+      source: "buddy-netsuite-sync",
+      pulledAt: new Date().toISOString(),
+      triggeredBy
+    });
+    studyUpserted += upsert.studyUpserted || 0;
+    taskUpserted += upsert.taskUpserted || 0;
+    for (const pn of upsert.sampleProjectNumbers || []) {
+      if (sample.length < 5) sample.push(pn);
+    }
+
+    offset = i + BATCH_PROJECTS;
+    await writeSyncState(database, {
+      resumeOffset: incomplete ? offset : Math.min(offset, projects.length),
+      resumeTotal: projects.length,
+      lastBatchAt: new Date().toISOString(),
+      lastTriggeredBy: triggeredBy,
+      lastSource: "buddy-netsuite-sync"
+    });
   }
 
-  const upsert = await upsertNetSuiteStudyIntel(getDb, {
-    studies,
-    tasks,
-    source: "buddy-netsuite-sync",
-    pulledAt: new Date().toISOString(),
-    triggeredBy
-  });
+  if (!incomplete) {
+    offset = projects.length;
+    await writeSyncState(database, {
+      resumeOffset: 0,
+      resumeTotal: projects.length,
+      lastSuccessfulSync: new Date().toISOString(),
+      lastTriggeredBy: triggeredBy,
+      lastSource: "buddy-netsuite-sync",
+      lastStudyUpserted: studyUpserted,
+      lastTaskUpserted: taskUpserted,
+      sampleProjectNumbers: sample,
+      note:
+        "Buddy SuiteQL → Cosmos (job-parity pack: hours_by_month + pct_complete_history + formulas)."
+    });
+  } else {
+    await writeSyncState(database, {
+      resumeOffset: offset,
+      resumeTotal: projects.length,
+      lastTriggeredBy: triggeredBy,
+      lastSource: "buddy-netsuite-sync",
+      lastStudyUpserted: studyUpserted,
+      lastTaskUpserted: taskUpserted,
+      sampleProjectNumbers: sample,
+      note: `In progress ${offset}/${projects.length} — auto-resume will continue.`
+    });
+  }
+
+  const needsContinue = incomplete && !projectNumber && offset < projects.length;
 
   return {
-    ok: upsert.ok !== false && !incomplete,
+    ok: studyUpserted > 0 || processed > 0,
     configured: true,
     mode: "buddy_suiteql",
     parity: "netsuite-pull-excel-v2/build_study_cosmos_pack",
     projectsFound: projects.length,
     processed,
+    resumeOffset: incomplete ? offset : 0,
     incomplete,
-    domainRows: {
-      tasks: allTasks.length,
-      actuals: actualRows.length,
-      billing: billingRows.length,
-      cost: costRows.length,
-      pct_history: pctRows.length,
-      monthly: monthRows.length
-    },
-    studyUpserted: upsert.studyUpserted,
-    taskUpserted: upsert.taskUpserted,
-    sampleProjectNumbers: upsert.sampleProjectNumbers,
-    errors: upsert.errors,
+    needsContinue,
+    domainRows: domainTotals,
+    studyUpserted,
+    taskUpserted,
+    sampleProjectNumbers: sample,
     warnings: warnings.length ? warnings.slice(0, 20) : undefined,
     periodWarning,
     elapsedMs: Date.now() - started,
-    note: incomplete
-      ? `Time budget hit after ${processed}/${projects.length} studies — click Sync NetSuite again to continue.`
-      : `Pulled ${processed}/${projects.length} studies SuiteQL → Cosmos (job-parity pack + hours_by_month + pct_complete_history).`
+    note: needsContinue
+      ? `Batched ${processed} studies (${offset}/${projects.length}) — chaining next kick.`
+      : `Pulled ${processed}/${projects.length} studies SuiteQL → Cosmos (job-parity + history).`
   };
 }
 
