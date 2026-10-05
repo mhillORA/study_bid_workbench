@@ -163,8 +163,7 @@ const VEEVA_TABLES = [
       "study_number__v",
       "study_name__v",
       "organization__clin",
-      "organization__vr.name__v",
-      "organization__vr.full_name__v",
+      // Ora CTMS uses organization__clin — organization__vr is not a valid relationship here
       "organization__clinr.name__v",
       "organization__clinr.full_name__v",
       "country__v",
@@ -181,7 +180,7 @@ const VEEVA_TABLES = [
       "principal_investigator__vr.name__v",
       "principal_investigator__vr.first_name__v",
       "principal_investigator__vr.last_name__v",
-      // Direct label when relationship fields are stripped by Vault
+      // Direct labels when inbound relationship fields are unavailable
       "TONAME(principal_investigator__v)",
       "TONAME(organization__clin)",
       "no_subjects_enrolled__v",
@@ -418,16 +417,36 @@ async function vqlSelectResilient(session, vaultObject, fields, { whereExtra = "
       return { ...pulled, fieldsUsed: active, fieldsDropped: dropped };
     } catch (err) {
       const msg = String(err.message || err);
+      // Unknown relationship [organization__vr] → drop all fields on that relationship
+      const rel = msg.match(/Unknown relationship\s*\[([a-z0-9_]+)\]/i);
+      if (rel) {
+        const prefix = `${rel[1]}.`;
+        const before = active.length;
+        active = active.filter((f) => !f.startsWith(prefix) && f !== rel[1]);
+        if (active.length < before) {
+          dropped.push(...Array.from({ length: before - active.length }, () => `${rel[1]}.*`));
+          continue;
+        }
+      }
       const m =
-        msg.match(/Unknown (?:field|Field)\s+['`]?([a-z0-9_.]+)['`]?/i) ||
-        msg.match(/Invalid (?:field|Field)\s+['`]?([a-z0-9_.]+)['`]?/i) ||
-        msg.match(/field\s+['`]([a-z0-9_.]+)['`]\s+(?:not found|does not exist|unknown)/i) ||
+        msg.match(/Unknown (?:field|Field)\s+['`]?([a-z0-9_.()]+)['`]?/i) ||
+        msg.match(/Invalid (?:field|Field)\s+['`]?([a-z0-9_.()]+)['`]?/i) ||
+        msg.match(/field\s+['`]([a-z0-9_.()]+)['`]\s+(?:not found|does not exist|unknown)/i) ||
         msg.match(/\b([a-z][a-z0-9_]*(?:__v|__c|__clin|__ctms|__vs)(?:\.[a-z][a-z0-9_]*(?:__v|__c))?)\b\s+(?:not found|does not exist)/i);
       const bad = m && active.includes(m[1]) ? m[1] : null;
       if (bad) {
         active = active.filter((f) => f !== bad);
         dropped.push(bad);
         continue;
+      }
+      // TONAME(...) not supported on this field — drop those expressions
+      if (/TONAME/i.test(msg)) {
+        const before = active.length;
+        active = active.filter((f) => !/^TONAME\(/i.test(f));
+        if (active.length < before) {
+          dropped.push("TONAME(*)");
+          continue;
+        }
       }
       // If WHERE references a missing field (e.g. metric_type), clear filter once
       if (whereExtra && !whereCleared && /WHERE|metric_type|metrics_type|TONAME|modified_date/i.test(msg)) {
@@ -774,11 +793,9 @@ function toMirrorDoc(rec, docType, syncedAt, opts = {}) {
       null;
     const orgFromRel =
       tonameOrg ||
-      flat["organization__vr.full_name__v"] ||
-      flat["organization__vr.name__v"] ||
       flat["organization__clinr.full_name__v"] ||
       flat["organization__clinr.name__v"] ||
-      (typeof flat.organization__vr === "string" ? flat.organization__vr : null) ||
+      (typeof flat.organization__clinr === "string" ? flat.organization__clinr : null) ||
       flat.organization_name ||
       null;
     const orgId =
