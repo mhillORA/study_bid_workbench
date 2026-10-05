@@ -10,7 +10,8 @@
  *   ora_veeva_study, ora_veeva_site, ora_veeva_study_country,
  *   ora_veeva_organization, ora_veeva_sponsor,
  *   ora_veeva_metric, ora_veeva_subject, ora_veeva_milestone,
- *   ora_veeva_payable_item, ora_veeva_payment, ora_veeva_fee_schedule
+ *   ora_veeva_payable_item, ora_veeva_payment, ora_veeva_fee_schedule,
+ *   ora_veeva_person (PI name lookup for site.principal_investigator__v)
  * (Monitoring / trip-report CTMS objects intentionally not synced.)
  *
  * Also projects:
@@ -133,6 +134,22 @@ const VEEVA_TABLES = [
       "modified_date__v"
     ],
     projectFact: "study"
+  },
+  {
+    // Person — resolve site.principal_investigator__v → display name
+    vaultObject: "person__v",
+    container: "ora_veeva_person",
+    docType: "ora_veeva_person",
+    fields: [
+      "id",
+      "name__v",
+      "first_name__v",
+      "last_name__v",
+      "status__v",
+      "email__v",
+      "modified_date__v"
+    ],
+    optional: true
   },
   {
     vaultObject: "site__v",
@@ -535,7 +552,77 @@ async function countDocType(database, containerId, docType) {
   }
 }
 
-function toMirrorDoc(rec, docType, syncedAt) {
+function looksLikeVaultId(raw) {
+  const s = String(raw || "").trim();
+  if (!s || /\s/.test(s)) return false;
+  if (/^00[A-Za-z][0-9A-Za-z]{8,}$/i.test(s)) return true;
+  if (/^[A-Z]{2,4}[0-9A-Za-z]{10,}$/i.test(s)) return true;
+  if (/^person__v\./i.test(s)) return true;
+  return false;
+}
+
+function personDisplayName(row) {
+  if (!row) return null;
+  const combined = [row.first_name__v, row.last_name__v].filter(Boolean).join(" ").trim();
+  const name = String(row.name__v || combined || "").trim();
+  if (!name || looksLikeVaultId(name)) return null;
+  return name;
+}
+
+async function loadPersonNameMap(database) {
+  const map = new Map();
+  try {
+    const rows = await queryAll(
+      database.container("ora_veeva_person"),
+      `SELECT c.id, c.name__v, c.first_name__v, c.last_name__v FROM c WHERE c.docType = @t`,
+      [{ name: "@t", value: "ora_veeva_person" }]
+    );
+    for (const r of rows || []) {
+      const name = personDisplayName(r);
+      if (r.id && name) map.set(String(r.id), name);
+    }
+  } catch (_) {
+    /* person mirror optional until first sync */
+  }
+  return map;
+}
+
+/** Patch sites that still have PI ids / blank names once person__v is mirrored. */
+async function enrichExistingSitePiNames(database, started, budgetMs) {
+  const personNameById = await loadPersonNameMap(database);
+  if (!personNameById.size) return { patched: 0, scanned: 0, personNames: 0 };
+  await ensureContainer(database, "ora_veeva_site");
+  const sites = await queryAll(
+    database.container("ora_veeva_site"),
+    `SELECT TOP 5000 c.id, c.principal_investigator__v, c.principal_investigator_name
+     FROM c WHERE c.docType = @t AND IS_DEFINED(c.principal_investigator__v)`,
+    [{ name: "@t", value: "ora_veeva_site" }]
+  );
+  let patched = 0;
+  const container = database.container("ora_veeva_site");
+  for (const site of sites || []) {
+    if (Date.now() - started > budgetMs) break;
+    const piId = site.principal_investigator__v != null ? String(site.principal_investigator__v).trim() : "";
+    if (!piId) continue;
+    const name = personNameById.get(piId);
+    if (!name) continue;
+    const cur = site.principal_investigator_name != null ? String(site.principal_investigator_name).trim() : "";
+    if (cur && !looksLikeVaultId(cur) && cur === name) continue;
+    try {
+      const { resource } = await container.item(String(site.id), String(site.id)).read();
+      if (!resource) continue;
+      resource.principal_investigator_name = name;
+      resource.veevaPiEnrichedAt = new Date().toISOString();
+      await container.items.upsert(resource);
+      patched += 1;
+    } catch (_) {
+      /* skip stubborn rows */
+    }
+  }
+  return { patched, scanned: (sites || []).length, personNames: personNameById.size };
+}
+
+function toMirrorDoc(rec, docType, syncedAt, opts = {}) {
   const flat = flattenVeevaRecord(rec);
   const id = String(flat.id || "").trim();
   if (!id) return null;
@@ -576,15 +663,27 @@ function toMirrorDoc(rec, docType, syncedAt) {
     }
     const piFirst = flat["principal_investigator__vr.first_name__v"];
     const piLast = flat["principal_investigator__vr.last_name__v"];
-    const piName =
+    const fromRel =
       flat["principal_investigator__vr.name__v"] ||
       (typeof flat.principal_investigator__vr === "string" ? flat.principal_investigator__vr : null) ||
       [piFirst, piLast].filter(Boolean).join(" ").trim() ||
       flat.principal_investigator_name ||
       null;
-    if (piName && !/^00[A-Za-z]/i.test(String(piName)) && !/^[A-Z]{2,4}[0-9A-Za-z]{10,}$/i.test(String(piName))) {
+    const piId = flat.principal_investigator__v != null ? String(flat.principal_investigator__v).trim() : "";
+    const fromPerson =
+      piId && opts.personNameById && opts.personNameById.get
+        ? opts.personNameById.get(piId)
+        : null;
+    const piName = fromRel && !looksLikeVaultId(fromRel) ? fromRel : fromPerson || null;
+    if (piName && !looksLikeVaultId(piName)) {
       doc.principal_investigator_name = String(piName).trim();
+    } else if (doc.principal_investigator_name && looksLikeVaultId(doc.principal_investigator_name)) {
+      delete doc.principal_investigator_name;
     }
+  }
+  if (docType === "ora_veeva_person") {
+    const n = personDisplayName(doc);
+    if (n) doc.display_name = n;
   }
   if (docType === "ora_veeva_country") {
     const name = flat.name__v || flat.abbreviation__v;
@@ -1269,12 +1368,14 @@ async function runVeevaTablesSync(getDb, opts = {}) {
       let upserted = 0;
       const errors = [];
       const mirrors = [];
+      const personNameById =
+        table.docType === "ora_veeva_site" ? await loadPersonNameMap(database) : null;
       for (const rec of pulled.records) {
         if (Date.now() - started > TIME_BUDGET_MS) {
           incomplete = true;
           break;
         }
-        const doc = toMirrorDoc(rec, table.docType, syncedAt);
+        const doc = toMirrorDoc(rec, table.docType, syncedAt, { personNameById });
         if (!doc) continue;
         try {
           await container.items.upsert(doc);
@@ -1432,6 +1533,30 @@ async function runVeevaTablesSync(getDb, opts = {}) {
         ok: false,
         error: msg,
         elapsedMs: Date.now() - t0
+      });
+    }
+  }
+
+  // Backfill PI display names on existing site docs (relationship fields often drop from VQL).
+  let piEnrich = null;
+  if (Date.now() - started < TIME_BUDGET_MS) {
+    try {
+      piEnrich = await enrichExistingSitePiNames(database, started, TIME_BUDGET_MS);
+      if (piEnrich && piEnrich.patched) {
+        results.push({
+          object: "site_pi_enrich",
+          container: "ora_veeva_site",
+          upserted: piEnrich.patched,
+          scanned: piEnrich.scanned,
+          personNames: piEnrich.personNames,
+          note: "principal_investigator__v → person__v name"
+        });
+      }
+    } catch (err) {
+      results.push({
+        object: "site_pi_enrich",
+        ok: false,
+        error: String(err.message || err).slice(0, 200)
       });
     }
   }
