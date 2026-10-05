@@ -2181,12 +2181,15 @@ app.http("veevaSync", {
         request.query.get("resume") === "true";
       const enrichOnly =
         body.enrichOnly === true || request.query.get("enrichOnly") === "true";
+      const projectSitesOnly =
+        body.projectSitesOnly === true || request.query.get("projectSitesOnly") === "true";
       const result = await runVeevaTablesSync(getDb, {
         full,
         delta: !full,
         only,
         prioritizeEmpty,
         enrichOnly,
+        projectSitesOnly,
         triggeredBy
       });
       const errSummary = (result.results || [])

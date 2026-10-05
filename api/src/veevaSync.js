@@ -467,12 +467,24 @@ async function vqlSelectResilient(session, vaultObject, fields, { whereExtra = "
           continue;
         }
       }
-      // TONAME(...) not supported on this field — drop those expressions
-      if (/TONAME/i.test(msg)) {
+      // TONAME(...) not supported on this field — drop only the failing expression(s).
+      // Do not wipe every TONAME() because one field rejected the function.
+      if (/TONAME\s*\(/i.test(msg)) {
+        const mentioned = [...msg.matchAll(/TONAME\s*\(\s*([a-z0-9_]+)\s*\)/gi)].map((m) =>
+          m[1].toLowerCase()
+        );
         const before = active.length;
-        active = active.filter((f) => !/^TONAME\(/i.test(f));
+        if (mentioned.length) {
+          active = active.filter((f) => {
+            const m = /^TONAME\s*\(\s*([a-z0-9_]+)\s*\)/i.exec(f);
+            if (!m) return true;
+            return !mentioned.includes(m[1].toLowerCase());
+          });
+        } else {
+          active = active.filter((f) => !/^TONAME\s*\(/i.test(f));
+        }
         if (active.length < before) {
-          dropped.push("TONAME(*)");
+          dropped.push(...Array.from({ length: before - active.length }, () => "TONAME"));
           continue;
         }
       }
@@ -924,13 +936,27 @@ function projectFactStudy(mirror, sponsorNameById) {
 }
 
 function projectFactSite(mirror, orgNameById, countryNameById, studyIndicationById = null) {
+  const orgId =
+    mirror.organization__clin != null
+      ? String(mirror.organization__clin).trim()
+      : mirror.organization__v != null
+        ? String(mirror.organization__v).trim()
+        : "";
+  const orgFromMap =
+    orgId && orgNameById && orgNameById.get ? orgNameById.get(orgId) : null;
   const org =
-    (mirror.organization__clin && orgNameById.get(mirror.organization__clin)) ||
-    mirror.site_name__v ||
+    (mirror.organization_name && !looksLikeVaultId(mirror.organization_name)
+      ? mirror.organization_name
+      : null) ||
+    orgFromMap ||
+    (mirror.site_name__v && !looksLikeVaultId(mirror.site_name__v) ? mirror.site_name__v : null) ||
     mirror.name__v ||
     null;
   const country =
-    (mirror.country__v && countryNameById.get(mirror.country__v)) ||
+    mirror.country_name ||
+    (mirror.country__v && countryNameById && countryNameById.get
+      ? countryNameById.get(mirror.country__v)
+      : null) ||
     mirror.country__v ||
     "_unknown";
   const fromSite = mirror.indication__c ? vaultIndicationLabel(mirror.indication__c) : null;
@@ -952,6 +978,7 @@ function projectFactSite(mirror, orgNameById, countryNameById, studyIndicationBy
     study_name: mirror.study_name__v || mirror.study_number__v || mirror.study__v || null,
     org_clean: org,
     organization: org,
+    principal_investigator: mirror.principal_investigator_name || null,
     country: country || "_unknown",
     indication,
     site_psm: null,
@@ -964,6 +991,51 @@ function projectFactSite(mirror, orgNameById, countryNameById, studyIndicationBy
     importedAt: mirror.veevaSyncedAt,
     veevaSyncedAt: mirror.veevaSyncedAt
   };
+}
+
+/** Rebuild ora_fact_site from current ora_veeva_site mirrors (no Vault call). */
+async function projectAllSiteFacts(database, opts = {}) {
+  const started = opts.started != null ? opts.started : Date.now();
+  const budgetMs = opts.budgetMs != null ? opts.budgetMs : TIME_BUDGET_MS;
+  const siteContainer = database.container("ora_veeva_site");
+  const fact = await ensureContainer(database, "ora_fact_site", "/country");
+  const maps = await loadNameMaps(database);
+  const studyInd = new Map();
+  try {
+    const studies = await queryAll(
+      database.container("ora_veeva_study"),
+      `SELECT c.id, c.indication__v, c.indication__c FROM c WHERE c.docType = @t`,
+      [{ name: "@t", value: "ora_veeva_study" }]
+    );
+    for (const s of studies) {
+      const ind = vaultIndicationLabel(s.indication__v || s.indication__c);
+      if (ind && ind !== "_unknown") studyInd.set(s.id, ind);
+    }
+  } catch (_) {
+    /* optional */
+  }
+  const sites = await queryAll(
+    siteContainer,
+    `SELECT * FROM c WHERE c.docType = @t`,
+    [{ name: "@t", value: "ora_veeva_site" }]
+  );
+  let projected = 0;
+  let incomplete = false;
+  for (const site of sites) {
+    if (Date.now() - started > budgetMs) {
+      incomplete = true;
+      break;
+    }
+    try {
+      await fact.items.upsert(
+        projectFactSite(site, maps.orgNameById, maps.countryNameById || new Map(), studyInd)
+      );
+      projected += 1;
+    } catch (_) {
+      /* continue */
+    }
+  }
+  return { projected, scanned: sites.length, incomplete };
 }
 
 /** Classify milestone name/type into startup gap keys used by Mike Watson pack. */
@@ -1351,6 +1423,7 @@ async function projectStudyPsmFromSites(database, opts = {}) {
 async function loadNameMaps(database) {
   const sponsorNameById = new Map();
   const orgNameById = new Map();
+  const countryNameById = new Map();
   try {
     const sponsors = await queryAll(
       database.container("ora_veeva_sponsor"),
@@ -1367,7 +1440,18 @@ async function loadNameMaps(database) {
     );
     for (const o of orgs) orgNameById.set(o.id, o.full_name__v || o.name__v);
   } catch (_) {}
-  return { sponsorNameById, orgNameById };
+  try {
+    const countries = await queryAll(
+      database.container("ora_veeva_country"),
+      `SELECT c.id, c.name__v, c.abbreviation__v FROM c WHERE c.docType = @t`,
+      [{ name: "@t", value: "ora_veeva_country" }]
+    );
+    for (const c of countries) {
+      const label = c.name__v || c.abbreviation__v;
+      if (label) countryNameById.set(c.id, label);
+    }
+  } catch (_) {}
+  return { sponsorNameById, orgNameById, countryNameById };
 }
 
 /**
@@ -1401,6 +1485,50 @@ async function runVeevaTablesSync(getDb, opts = {}) {
   const results = [];
   let upsertedTotal = 0;
   let incomplete = false;
+  const objectWatermarks = {
+    ...(prev.objectWatermarks && typeof prev.objectWatermarks === "object"
+      ? prev.objectWatermarks
+      : {})
+  };
+  const forceFullObjects = new Set(
+    Array.isArray(prev.forceFullObjects) ? prev.forceFullObjects.map(String) : []
+  );
+
+  // Rebuild ora_fact_site from mirrors only (no Vault) — closes projection lag after enrich.
+  if (opts.projectSitesOnly === true) {
+    await markVeevaSyncProgress(getDb, {
+      status: "running",
+      message: "Projecting ora_fact_site from ora_veeva_site mirrors…",
+      currentObject: "ora_fact_site",
+      currentContainer: "ora_fact_site"
+    });
+    const projected = await projectAllSiteFacts(database, { started, budgetMs: TIME_BUDGET_MS });
+    const syncedAt = new Date().toISOString();
+    await writeSyncState(database, {
+      lastRunAt: syncedAt,
+      incomplete: Boolean(projected.incomplete),
+      note: "Projected ora_fact_site from site mirrors",
+      progress: {
+        status: projected.incomplete ? "incomplete" : "complete",
+        startedAt: new Date(started).toISOString(),
+        updatedAt: syncedAt,
+        objectsTotal: 1,
+        objectsDone: 1,
+        upsertedTotal: projected.projected,
+        message: projected.incomplete
+          ? "Site fact projection partial (time budget)"
+          : `Projected ${projected.projected} ora_fact_site rows`,
+        results: [{ object: "ora_fact_site", ...projected }]
+      }
+    });
+    return {
+      ok: true,
+      projectSitesOnly: true,
+      ...projected,
+      elapsedMs: Date.now() - started,
+      sync: await readSyncState(database)
+    };
+  }
 
   // Run name backfills FIRST — milestones/payables often burn the budget before enrich.
   if (opts.enrichOnly === true || opts.prioritizeEmpty === true || opts.full === true || !deltaMode) {
@@ -1490,6 +1618,7 @@ async function runVeevaTablesSync(getDb, opts = {}) {
           note: "enrichOnly site re-pull for TONAME PI/org names"
         });
         upsertedTotal += siteUpserted;
+        if (siteUpserted > 0) objectWatermarks["site__v"] = syncedAtSites;
       } catch (err) {
         results.push({
           object: "site__v",
@@ -1499,10 +1628,36 @@ async function runVeevaTablesSync(getDb, opts = {}) {
         });
       }
     }
+    let siteProjection = null;
+    if (Date.now() - started < TIME_BUDGET_MS) {
+      try {
+        await markVeevaSyncProgress(getDb, {
+          status: "running",
+          message: "Projecting ora_fact_site from enriched mirrors…",
+          currentObject: "ora_fact_site",
+          currentContainer: "ora_fact_site"
+        });
+        siteProjection = await projectAllSiteFacts(database, {
+          started,
+          budgetMs: TIME_BUDGET_MS
+        });
+        results.push({ object: "ora_fact_site", ...siteProjection });
+        if (siteProjection.incomplete) incomplete = true;
+      } catch (err) {
+        results.push({
+          object: "ora_fact_site",
+          ok: false,
+          error: String(err.message || err).slice(0, 240)
+        });
+      }
+    }
     const syncedAt = new Date().toISOString();
+    // Explicitly clear sticky incomplete when enrich finishes — merge used to leave it true forever.
     await writeSyncState(database, {
       lastRunAt: syncedAt,
-      note: "Site org/PI enrich + site TONAME re-pull",
+      incomplete: Boolean(incomplete),
+      objectWatermarks,
+      note: "Site org/PI enrich + site TONAME re-pull + fact projection",
       progress: {
         status: incomplete ? "incomplete" : "complete",
         startedAt: new Date(started).toISOString(),
@@ -1510,7 +1665,9 @@ async function runVeevaTablesSync(getDb, opts = {}) {
         objectsTotal: results.length,
         objectsDone: results.length,
         upsertedTotal,
-        message: incomplete ? "Site name enrich partial (time budget)" : "Site name enrich finished",
+        message: incomplete
+          ? "Site name enrich partial (time budget)"
+          : "Site name enrich finished",
         results
       }
     });
@@ -1519,6 +1676,7 @@ async function runVeevaTablesSync(getDb, opts = {}) {
       enrichOnly: true,
       results,
       upsertedTotal,
+      siteProjection,
       incomplete,
       elapsedMs: Date.now() - started,
       sync: await readSyncState(database)
@@ -1583,8 +1741,12 @@ async function runVeevaTablesSync(getDb, opts = {}) {
     opts.resume === true ||
     opts.full === true ||
     Boolean(prev.incomplete) ||
+    forceFullObjects.size > 0 ||
     Object.values(countsByContainer).some((c) => typeof c === "number" && c === 0);
   tables.sort((a, b) => {
+    const aForce = forceFullObjects.has(a.vaultObject) ? 0 : 1;
+    const bForce = forceFullObjects.has(b.vaultObject) ? 0 : 1;
+    if (aForce !== bForce) return aForce - bForce;
     if (prioritizeEmpty) {
       const aEmpty = (countsByContainer[a.container] || 0) === 0 ? 0 : 1;
       const bEmpty = (countsByContainer[b.container] || 0) === 0 ? 0 : 1;
@@ -1618,11 +1780,15 @@ async function runVeevaTablesSync(getDb, opts = {}) {
   for (const table of tables) {
     if (Date.now() - started > TIME_BUDGET_MS) {
       incomplete = true;
+      if ((countsByContainer[table.container] || 0) > 0) {
+        forceFullObjects.add(table.vaultObject);
+      }
       results.push({
         object: table.vaultObject,
         container: table.container,
         skipped: true,
-        reason: "time_budget"
+        reason: "time_budget",
+        resumeNext: (countsByContainer[table.container] || 0) > 0
       });
       continue;
     }
@@ -1648,9 +1814,13 @@ async function runVeevaTablesSync(getDb, opts = {}) {
       const container = await ensureContainer(database, table.container);
       const whereExtra = table.feasibilityMetricFilter ? feasibilityMetricWhere() : "";
       // Empty mirrors must full-pull even in delta mode — watermark would skip history.
+      // Per-object watermarks + forceFullObjects break the Sep-8 global-watermark death spiral.
       const existing = countsByContainer[table.container] || 0;
       const needsFull = await mirrorNeedsFullResync(database, table, existing);
-      const tableWatermark = existing === 0 || needsFull ? null : watermark;
+      const forceFull = forceFullObjects.has(table.vaultObject) || opts.full === true;
+      const objectWm = objectWatermarks[table.vaultObject] || null;
+      const tableWatermark =
+        existing === 0 || needsFull || forceFull ? null : objectWm || watermark;
       const pulled = await vqlSelectResilient(session, table.vaultObject, table.fields, {
         watermark: tableWatermark,
         whereExtra
@@ -1765,6 +1935,12 @@ async function runVeevaTablesSync(getDb, opts = {}) {
 
       countsByContainer[table.container] = (countsByContainer[table.container] || 0) + upserted;
       upsertedTotal += upserted;
+      // Mark object complete when we finished its pages (not mid-budget truncate on this table).
+      const tableTruncated = Boolean(pulled.truncated);
+      if (!tableTruncated && !criticalDropped.length) {
+        objectWatermarks[table.vaultObject] = syncedAt;
+        forceFullObjects.delete(table.vaultObject);
+      }
       results.push({
         object: table.vaultObject,
         container: table.container,
@@ -1774,7 +1950,7 @@ async function runVeevaTablesSync(getDb, opts = {}) {
         projected,
         totalHint: pulled.total,
         pages: pulled.pages,
-        truncated: pulled.truncated || incomplete,
+        truncated: tableTruncated || incomplete,
         fieldsDropped: pulled.fieldsDropped || [],
         criticalFieldsDropped: criticalDropped.length ? criticalDropped : undefined,
         degraded: criticalDropped.length > 0 || needsFull,
@@ -1949,14 +2125,29 @@ async function runVeevaTablesSync(getDb, opts = {}) {
     !hardFail &&
     results.length > 0 &&
     results.every((r) => r.optional === true && (r.error || r.ok === false));
-  // Do not advance the watermark while incomplete — otherwise empty mirrors
-  // (metrics/subjects/milestones) never get a historical full pull on delta.
-  const advanceWatermark = !hardFail && !incomplete && !onlyOptionalFailed;
+  // Empty-mirror time skips still block the global watermark. Populated skips go into
+  // forceFullObjects and use per-object watermarks so we escape the Sep-8 death spiral.
+  const emptyMirrorSkip = results.some(
+    (r) =>
+      r.optional !== true &&
+      r.skipped &&
+      r.reason === "time_budget" &&
+      !(countsByContainer[r.container] > 0)
+  );
+  const coreError = results.some(
+    (r) => r.optional !== true && (r.error || r.ok === false) && !r.skipped
+  );
+  const advanceWatermark = !hardFail && !onlyOptionalFailed && !emptyMirrorSkip && !coreError;
+  const resumeObjects = [...forceFullObjects];
   const progressStatus = hardFail ? "failed" : incomplete ? "incomplete" : "complete";
   const progressMessage = hardFail
     ? "Veeva sync failed — see last object errors."
     : incomplete
-      ? "Time budget hit — re-run Ingest Veeva (empty mirrors fill first)."
+      ? resumeObjects.length
+        ? `Time budget hit — resume next (${resumeObjects.slice(0, 4).join(", ")}${
+            resumeObjects.length > 4 ? "…" : ""
+          }).`
+        : "Time budget hit — re-run Ingest Veeva (empty mirrors fill first)."
       : onlyOptionalFailed
         ? "Core Veeva objects OK — optional monitoring/trip-report tables need field mapping."
         : watermark
@@ -1966,11 +2157,22 @@ async function runVeevaTablesSync(getDb, opts = {}) {
     lastRunAt: syncedAt,
     lastSuccessfulSync: advanceWatermark ? syncedAt : prev.lastSuccessfulSync || null,
     incomplete: Boolean(incomplete),
+    objectWatermarks,
+    forceFullObjects: resumeObjects,
     mode: watermark ? "delta" : "full",
     triggeredBy: opts.triggeredBy || "api",
-    lastDeltas: { results, incomplete, milestoneWide, sitePsmProjection, prioritizeEmpty },
+    lastDeltas: {
+      results,
+      incomplete,
+      milestoneWide,
+      sitePsmProjection,
+      prioritizeEmpty,
+      resumeObjects
+    },
     note: incomplete
-      ? "Time budget hit — re-run Ingest Veeva (budget default 55 min). Empty mirrors fill first."
+      ? resumeObjects.length
+        ? `Time budget hit — next run force-fulls: ${resumeObjects.join(", ")}.`
+        : "Time budget hit — re-run Ingest Veeva (budget default 55 min). Empty mirrors fill first."
       : onlyOptionalFailed
         ? "Optional CTMS monitoring/trip-report objects failed schema checks — core ora_veeva_* mirrors are unchanged."
         : watermark
@@ -2102,5 +2304,6 @@ module.exports = {
   runVeevaTablesSync,
   getVeevaSyncStatus,
   markVeevaSyncProgress,
-  projectWideMilestones
+  projectWideMilestones,
+  projectAllSiteFacts
 };
