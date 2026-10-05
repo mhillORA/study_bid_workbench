@@ -428,6 +428,19 @@ async function vqlSelectResilient(session, vaultObject, fields, { whereExtra = "
           continue;
         }
       }
+      // e.g. Unknown field 'first_name__v' in 'select fields' (from principal_investigator__vr.first_name__v)
+      const shortUnknown = msg.match(/Unknown field\s+'([a-z0-9_]+)'\s+in\s+'select fields'/i);
+      if (shortUnknown) {
+        const short = shortUnknown[1];
+        const before = active.length;
+        active = active.filter(
+          (f) => f !== short && !f.endsWith(`.${short}`) && !f.includes(`.${short}`)
+        );
+        if (active.length < before) {
+          dropped.push(short);
+          continue;
+        }
+      }
       const m =
         msg.match(/Unknown (?:field|Field)\s+['`]?([a-z0-9_.()]+)['`]?/i) ||
         msg.match(/Invalid (?:field|Field)\s+['`]?([a-z0-9_.()]+)['`]?/i) ||
@@ -438,6 +451,21 @@ async function vqlSelectResilient(session, vaultObject, fields, { whereExtra = "
         active = active.filter((f) => f !== bad);
         dropped.push(bad);
         continue;
+      }
+      // Relationship leaf unknown → drop entire principal_investigator__vr.* / organization__clinr.*
+      if (/unknown field|invalid field|select fields/i.test(msg)) {
+        const before = active.length;
+        active = active.filter(
+          (f) =>
+            !f.startsWith("principal_investigator__vr.") &&
+            !f.startsWith("organization__clinr.") &&
+            !f.startsWith("organization__vr.") &&
+            !f.startsWith("country__vr.")
+        );
+        if (active.length < before) {
+          dropped.push("relationship.*");
+          continue;
+        }
       }
       // TONAME(...) not supported on this field — drop those expressions
       if (/TONAME/i.test(msg)) {
