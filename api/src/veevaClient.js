@@ -144,7 +144,15 @@ async function vqlQuery(session, query, opts = {}) {
       method === "POST" ? body : null
     );
 
-    if (res.json?.responseStatus !== "SUCCESS") {
+    const status = String(res.json?.responseStatus || "");
+    // Vault often returns WARNING + DUPLICATE on identical re-queries but still
+    // includes a full data page — treat that as success when rows are present.
+    const hasData = Array.isArray(res.json?.data);
+    const warningOk =
+      status === "WARNING" &&
+      hasData &&
+      !(Array.isArray(res.json?.errors) && res.json.errors.length);
+    if (status !== "SUCCESS" && !warningOk) {
       const err =
         res.json?.errors?.[0]?.message ||
         res.json?.errorType ||
