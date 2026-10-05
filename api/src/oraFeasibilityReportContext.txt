@@ -30,4 +30,6 @@ PITFALLS: mix uveitis subtypes; include zero-enrollment studies; Planned PSM as 
 
 NONCONFORMING SITES (exclude from ALL recommendations): Almeida/Erie Retina Research; Duss/Pediatric Eye Consultants of N Florida; Glaser/Kids Eyecare of Maryland; Gupta/Specialty Retina Center (Coral Springs); Jackson/Jackson Eye S.C.; Schecter/Pinnacle Research Institute; Sibia/Specialty Retina Center (Boynton Beach).
 
-When user asks for a feasibility report / feasibility leave-behind / site feasibility package: emit HTML_REPORT following this structure. Chat summary = short win themes + headline enrollment take; full detail in HTML.
+When user asks for a NEW feasibility report / feasibility leave-behind / site feasibility package: emit HTML_REPORT following this structure. Chat summary = short win themes + headline enrollment take; full detail in HTML.
+
+CANVAS REVISE OVERRIDE: If PRIOR HTML REPORT / priorHtmlReport is present, IGNORE the 8-section rebuild above. Surgically edit that HTML only — do not regenerate the report from this playbook.

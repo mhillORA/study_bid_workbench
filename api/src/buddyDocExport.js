@@ -256,7 +256,16 @@ async function htmlToDocxBuffer(html, title) {
  */
 async function buildBuddyDocExports(answerText, question, context = null) {
   let { answer, html } = extractHtmlReport(answerText);
-  if (!html && context && (context.wantsHtmlVisual || context.wantsDocumentExport)) {
+  const priorHtml =
+    context?.priorHtmlReport?.html ||
+    (typeof context?.priorHtmlReport === "string" ? context.priorHtmlReport : null);
+  if (!html && priorHtml && String(priorHtml).trim()) {
+    // Canvas revise with no model HTML — keep the existing leave-behind, never a fresh shell
+    html = String(priorHtml).trim();
+    answer =
+      String(answer || answerText || "").trim() ||
+      "Kept the current canvas — I could not apply that edit cleanly. Try a more specific change (e.g. “make the title teal”).";
+  } else if (!html && context && (context.wantsHtmlVisual || context.wantsDocumentExport)) {
     html = synthesizeFallbackHtmlReport(question, context);
     answer =
       String(answer || answerText || "").trim() ||

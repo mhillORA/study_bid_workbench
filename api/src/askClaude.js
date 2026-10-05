@@ -236,9 +236,9 @@ const HTML_REPORT_RULES = [
   "<!DOCTYPE html>…complete document…",
   "HTML_REPORT_END",
   "The platform converts that HTML into downloadable PDF and Word (DOCX) for the user — so always emit the HTML block when they want a file/doc.",
-  "REVISE EXISTING CANVAS (critical): If context.priorHtmlReport.html is present, that IS the current leave-behind on screen. Apply the user's requested edits to THAT document and emit a COMPLETE updated HTML_REPORT (full document, not a diff). Keep branding, layout, and numbers unless they asked to change them. Never answer with only a description of what you would change — replace the canvas.",
-  "BRANDING / TEMPLATE FOLLOWS (critical): If context.uploadedDocuments includes branding, style guide, template, form, sample layout, OR prior slides PLUS a protocol/bid/RFP: mirror the structure and section order from the template/standard form when they say \"my standard template\"; apply colors/fonts/tone from branding or from the attached slides when described; fill content from the protocol + chat specs + Cosmos/TrialHub — never invent numbers. If branding colors are named (hex or words), use them in inline CSS. If branding is incomplete, use Ora navy/teal (#1B2A4A / #1A7F8E, page #F0F4F8) and say what you assumed.",
-  "MEETING PREP + FEASIBILITY (common BD ask): When the user prepares for a sponsor meeting (e.g. win themes + feasibility report) and attaches a protocol and/or slides: (A) In chat, give [[h]]Win themes[[/h]] (3–6 bullets) + a short enrollment headline. (B) In HTML_REPORT, produce the full feasibility report. FIRST verify sponsor/client name in the upload matches what the user said. Default Ora section order when no template: (1) Protocol Summary, (2) Ora Experience — Indication-Specific, (3) Ora Experience — Adjacent (only if exact is thin; never present as direct; uveitis subtypes never cross), (4) Enrollment Benchmarks (TrialHub Actual PSM only; median/mean/P25/P75/n; broaden if n<3 and say so), (5) Competitive Landscape (same subtype/pop/geo; treatment-naïve = no SF capture), (6) Site Recommendations (blended rank; ⭐ Ora · N; facility not PI; exclude nonconforming 7 sites; sponsor-facing: no PI/enrolled/Ora NCT/CT.gov name), (7) Salesforce Intelligence (owner/tier/wins/outreach; strip Inc/LLC before name match), (8) Ora Assessment (win/risks/supportable rate; never fabricate capabilities). Capture chat specs: sponsor, indication/device, site count scenarios, enrollment months, named sites. Numbers only from Context/attachments.",
+  "REVISE EXISTING CANVAS (critical — surgical, not a rebuild): If priorHtmlReport / PRIOR HTML REPORT is present, that document IS the source of truth. Copy it as the base. Apply ONLY the user's requested edit(s). Emit a COMPLETE HTML_REPORT (full document, not a diff). Examples that MUST stay surgical: \"include sites with X\", \"add a column\", \"fix the typo\", \"make the header teal\", \"exclude site Y\" — patch the existing tables/sections; do NOT start a new feasibility report. DO NOT redesign the layout. DO NOT reorder sections. DO NOT regenerate from Context JSON, Cosmos facts, TrialHub, CT.gov, Salesforce, or the feasibility 8-section playbook. When adding sites/rows, append or filter within the existing site table/section using prior HTML + Context only for the new rows — keep every other section byte-stable in substance. DO NOT refresh unrelated numbers. Preserve CSS, branding, KPIs, tables, and wording everywhere else. Chat summary = 1–3 lines naming what changed. Chat-only descriptions of edits are forbidden.",
+  "BRANDING / TEMPLATE FOLLOWS (critical): If context.uploadedDocuments includes branding, style guide, template, form, sample layout, OR prior slides PLUS a protocol/bid/RFP: mirror the structure and section order from the template/standard form when they say \"my standard template\"; apply colors/fonts/tone from branding or from the attached slides when described; fill content from the protocol + chat specs + Cosmos/TrialHub — never invent numbers. If branding colors are named (hex or words), use them in inline CSS. If branding is incomplete, use Ora navy/teal (#1B2A4A / #1A7F8E, page #F0F4F8) and say what you assumed. (Skip this rebuild path when PRIOR HTML REPORT is present — surgical revise wins.)",
+  "MEETING PREP + FEASIBILITY (common BD ask — NEW reports only): When there is NO priorHtmlReport and the user prepares for a sponsor meeting (e.g. win themes + feasibility report) and attaches a protocol and/or slides: (A) In chat, give [[h]]Win themes[[/h]] (3–6 bullets) + a short enrollment headline. (B) In HTML_REPORT, produce the full feasibility report. FIRST verify sponsor/client name in the upload matches what the user said. Default Ora section order when no template: (1) Protocol Summary, (2) Ora Experience — Indication-Specific, (3) Ora Experience — Adjacent (only if exact is thin; never present as direct; uveitis subtypes never cross), (4) Enrollment Benchmarks (TrialHub Actual PSM only; median/mean/P25/P75/n; broaden if n<3 and say so), (5) Competitive Landscape (same subtype/pop/geo; treatment-naïve = no SF capture), (6) Site Recommendations (blended rank; ⭐ Ora · N; facility not PI; exclude nonconforming 7 sites; sponsor-facing: no PI/enrolled/Ora NCT/CT.gov name), (7) Salesforce Intelligence (owner/tier/wins/outreach; strip Inc/LLC before name match), (8) Ora Assessment (win/risks/supportable rate; never fabricate capabilities). Capture chat specs: sponsor, indication/device, site count scenarios, enrollment months, named sites. Numbers only from Context/attachments. If PRIOR HTML REPORT is present, ignore this new-report structure and surgically edit the prior HTML instead.",
   "INTERNAL BD BID BRIEF (STAT / specialty CRO pattern): When the user asks for an internal brief / activation intelligence / STAT-style package: emit HTML_REPORT with teal #0d9488 / navy #04003B, Internal—Do Not Share. STRUCTURE only from the STAT pattern in Master Context. ALL site names, activation days, study counts, and Ora numbers MUST come from live context.intelligence (startupTimelines, sites, ora packs) on THIS ask — never from a golden HTML example, never from memorized Oculgen brief rows, never \"I have a file that lists…\". Industry naïve-nAMD PSM landmarks in Master Context are OK as published benchmarks. Do NOT require Salesforce. Do NOT put site-level PSM on the top-sites table. Stay in chat — do not NAVIGATE to build the brief.",
   "Default Ora design when no branding attached: page bg #F0F4F8, navy #1B2A4A, teal #1A7F8E, inline <style>, .header / .card / .card-hdr / .kpi / tables / alerts. Print-ready. No external CSS/JS.",
   "Apply sponsor-facing vs internal rules from Master Context. Populate numbers only from Context JSON / uploaded files — never invent PSM, enrollment, or NCT rows.",
@@ -495,8 +495,8 @@ function systemPromptFor(context) {
       : context?.intelligence?.query?.enrollmentPlan?.sitesExact != null
         ? ` Enrollment plan is on intelligence.query — use those site counts with human labels.`
         : "";
-  const visualNote = context?.priorHtmlReport?.html
-    ? " CRITICAL: priorHtmlReport is the CURRENT Monet canvas HTML. The user wants it UPDATED. Emit a COMPLETE revised HTML_REPORT_START…END that applies their requested edits to that document. Keep branding/layout/numbers unless they asked to change them. Chat-only descriptions of edits are forbidden — replace the canvas."
+  const visualNote = context?.priorHtmlReport?.html || context?.htmlRevise
+    ? " CRITICAL SURGICAL REVISE: PRIOR HTML REPORT is the current Monet canvas and the ONLY source of truth. Copy that HTML, apply ONLY the user's requested change(s), emit COMPLETE HTML_REPORT_START…END. Do NOT rebuild from Context/Cosmos/feasibility playbook. Do NOT redesign, reorder sections, or refresh numbers unless asked. Chat = 1–3 lines on what changed."
     : context?.wantsHtmlVisual
     ? context?.intelligence?.query?.treatmentNaive ||
       context?.intelligence?.treatmentNaiveTrials ||
@@ -2296,7 +2296,12 @@ function userBlock(question, context) {
   if (priorHtml) {
     const title = context.priorHtmlReport.title || "canvas";
     parts.push(
-      `PRIOR HTML REPORT (current Monet canvas — title: ${title}). Apply the user's edits to THIS document and emit a COMPLETE updated HTML_REPORT_START…END. Do not chat-only describe changes.`
+      `SURGICAL CANVAS EDIT — title: ${title}.`,
+      "The PRIOR HTML below is the ONLY source of truth for content, numbers, layout, CSS, and section order.",
+      "Copy it as the base. Apply ONLY the user's Question edits. Emit a COMPLETE HTML_REPORT_START…END.",
+      "If they ask to include/exclude/add sites, change wording, tweak colors, add a column, or any other small ask — patch the existing document only. Never delete the report and start over.",
+      "Do NOT rebuild from Context JSON, ORA COSMOS FACTS, TrialHub, CT.gov, Salesforce, or the feasibility playbook.",
+      "Do NOT redesign, reorder sections, or refresh numbers unless the user explicitly asked for data changes."
     );
     parts.push("HTML_REPORT_START");
     parts.push(priorHtml.slice(0, 120000));
@@ -2304,24 +2309,26 @@ function userBlock(question, context) {
     parts.push("---");
     parts.push("");
   }
-  if (attached) {
+  if (attached && !priorHtml) {
     parts.push(attached);
     parts.push("---");
     parts.push("");
   }
-  if (cosmosFacts) {
+  if (cosmosFacts && !priorHtml) {
     parts.push(cosmosFacts);
     parts.push("---");
     parts.push("");
   }
   parts.push(
-    "Context (JSON) — supporting detail. For numbers: ORA COSMOS FACTS above win. For protocol/template text: ATTACHED DOCUMENTS win. Never invent."
+    priorHtml
+      ? "Context (JSON) — REFERENCE ONLY for this revise. PRIOR HTML wins for all numbers and wording unless the user asked to change data."
+      : "Context (JSON) — supporting detail. For numbers: ORA COSMOS FACTS above win. For protocol/template text: ATTACHED DOCUMENTS win. Never invent."
   );
   parts.push(contextJsonForModel(context));
   parts.push("");
   if (priorHtml) {
     parts.push(
-      "REQUIRED: Emit a full revised HTML_REPORT that updates the PRIOR HTML REPORT above per the user's ask. Keep unchanged sections intact."
+      "REQUIRED: Surgical revise only. Emit full HTML_REPORT from the PRIOR HTML with the user's asked edits applied. Unchanged sections must stay intact byte-for-byte in substance."
     );
   } else if (attached || cosmosFacts) {
     parts.push(

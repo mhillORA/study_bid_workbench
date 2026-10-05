@@ -4776,19 +4776,44 @@
                   }
                 : null;
             })();
-      const qRev = String(question || "").toLowerCase();
-      const reviseCue =
-        Boolean(priorCanvas) &&
-        (/\b(update|change|revise|edit|fix|tweak|adjust|modify|redo|regenerate|refresh|rewrite|restyle)\b/.test(
+      const qRev = String(question || "").toLowerCase().trim();
+      // Broad surgical revise while a canvas exists — only opt out for explicit "new report / start over".
+      const freshReportAsk =
+        /\b(start\s+over|from\s+scratch|brand[- ]new|throw\s+(it|that)\s+(away|out)|scrap\s+(it|that|the\s+report)|discard\s+(it|that|the\s+report))\b/.test(
           qRev
         ) ||
-          /\b(make|turn|set|swap|move|rename|recolor|recolour)\s+(it|that|this|the)\b/.test(qRev) ||
-          /\b(add|remove|drop|delete|insert|replace)\b.{0,50}\b(column|row|section|title|header|chart|table|card|kpi|color|colour|logo|footnote|legend)\b/.test(
-            qRev
-          ) ||
-          /\b(that|this|the)\s+(html|report|visual|chart|dashboard|canvas|deck|leave[- ]behind|document|one[- ]pager)\b/.test(
-            qRev
-          ));
+        /\b(new|fresh|another|different|separate)\s+(feasibility\s+)?(report|leave[- ]behind|canvas|deck|visual|html|document|one[- ]pager)\b/.test(
+          qRev
+        ) ||
+        /\b(build|create|generate|produce|draft|make)\s+(me\s+)?(a\s+)?(new|fresh|another|different|separate)\b.{0,40}\b(report|feasibility|leave[- ]behind|canvas|deck|visual|html|document)\b/.test(
+          qRev
+        ) ||
+        /\b(rebuild|regenerate)\s+(the\s+)?(whole|entire|full)\b/.test(qRev);
+      const pureDataAsk =
+        /^(?:please\s+)?(?:what|who|when|where|why|which|how\s+many|how\s+much|how's|how\s+is|tell\s+me|explain|summarize|define|look\s+up|search|find)\b/.test(
+          qRev
+        ) &&
+        !/\b(report|canvas|html|leave[- ]behind|deck|one[- ]pager|in\s+the\s+(report|table|section|canvas)|on\s+the\s+canvas)\b/.test(
+          qRev
+        );
+      const editVerb =
+        /\b(update|change|revise|edit|fix|tweak|adjust|modify|correct|patch|redo|regenerate|refresh|rewrite|restyle|rebuild|make|turn|set|swap|move|rename|recolor|recolour|add|remove|drop|delete|insert|replace|include|exclude|keep|show|hide|list|put|append|fold|cut|trim|shorten|lengthen|expand|widen|narrow|bump|raise|lower|bold|highlight|mention|note|call\s+out|use|bring|pull|switch|flip|toggle|color|colour|teal|navy|crimson|tighten|loosen|clarify|reword|rephrase|relabel|retitle|reorder|sort|filter|broaden|can\s+you|could\s+you|please|also|instead|should|need(?:s)?|want(?:s)?)\b/.test(
+          qRev
+        );
+      const reportRef =
+        /\b(html|report|visual|chart|dashboard|canvas|deck|leave[- ]behind|document|one[- ]pager|table|section|kpi|header|title|sites?|investigators?|sponsors?|competitors?|benchmarks?)\b/.test(
+          qRev
+        ) ||
+        /\b(it|that|this|the)\b.{0,20}\b(html|report|visual|chart|dashboard|canvas|deck|document|table|leave[- ]behind|section|title|header)\b/.test(
+          qRev
+        );
+      const reviseCue =
+        Boolean(priorCanvas) &&
+        !freshReportAsk &&
+        (editVerb ||
+          reportRef ||
+          /\b(typo|misspell|spelling|wording|should\s+(be|say|read)|instead\s+of)\b/.test(qRev) ||
+          (!pureDataAsk && qRev.length <= 240));
       const askController = state._askController;
       // Function App CORS is live — prefer it for all asks (SWA hard-caps ~45s → gateway).
       const session = await ensureBuddySession();
@@ -4876,7 +4901,9 @@
         },
         includeLegacyEnrollment: Boolean(state.scorecard.includeLegacy) || undefined,
         history: historyPayload,
-        priorHtmlReport: reviseCue ? priorCanvas : undefined,
+        priorHtmlReport: reviseCue
+          ? { ...priorCanvas, revise: true }
+          : undefined,
         attachments: attachmentsPayload
       };
 
@@ -5145,7 +5172,9 @@
       }
 
       // Light asks (2+2, weather, etc.): one-shot — skip prepare/Cosmos entirely.
+      // Canvas revises are never "light" — they need prior HTML + Deep surgical edit.
       const lightAsk =
+        !reviseCue &&
         !pendingFiles.length &&
         !deepCue &&
         !compareAsk &&
@@ -5251,7 +5280,14 @@
           );
         } else if (data.answer) {
           applyAskResult(data, res);
-          if (data.visualPending && data.contextId) {
+          const alreadyHasHtml =
+            Boolean(data.htmlReport) || /HTML_REPORT_START/i.test(String(data.answer || ""));
+          if (
+            !reviseCue &&
+            !alreadyHasHtml &&
+            data.visualPending &&
+            data.contextId
+          ) {
             await runVisualHop(data.contextId, data.answer);
           }
         } else if (!res.ok) {
@@ -5271,7 +5307,9 @@
       } else {
         // Hop 2: Foundry chat answer
         const contextId = data.contextId;
-        const wantVisual = Boolean(data.visualAsk || data.docExportAsk);
+        const reviseHop = Boolean(reviseCue || data.htmlRevise);
+        const wantVisual =
+          !reviseHop && Boolean(data.visualAsk || data.docExportAsk);
         if (data.attachmentSessionId) {
           state.buddyAttachmentSessionId = data.attachmentSessionId;
         }
@@ -5281,7 +5319,12 @@
         ({ res, rawText, data } = await buddyHop(
           "/api/ask",
           { askPhase: "answer", contextId },
-          data.statusHint || (deepCue ? "Deep · asking Monet…" : "Fast · asking Monet…")
+          data.statusHint ||
+            (reviseHop
+              ? "Deep · updating canvas…"
+              : deepCue
+                ? "Deep · asking Monet…"
+                : "Fast · asking Monet…")
         ));
         if (/sign in to your account|login\.microsoftonline|AADSTS/i.test(rawText)) {
           pushAssistant(
@@ -5289,7 +5332,14 @@
           );
         } else if (data.answer) {
           applyAskResult(data, res);
-          if ((wantVisual || data.visualPending) && (data.contextId || contextId)) {
+          const alreadyHasHtml =
+            Boolean(data.htmlReport) || /HTML_REPORT_START/i.test(String(data.answer || ""));
+          if (
+            !reviseHop &&
+            !alreadyHasHtml &&
+            (wantVisual || data.visualPending) &&
+            (data.contextId || contextId)
+          ) {
             await runVisualHop(data.contextId || contextId, data.answer);
           }
         } else if (!res.ok) {

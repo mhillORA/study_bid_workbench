@@ -102,39 +102,79 @@ function wantsHtmlVisual(question) {
 }
 
 /**
- * User is revising an existing Monet canvas / HTML leave-behind
- * ("update that", "make the title shorter", "add a column", "change the colors").
+ * Explicit "throw away the canvas and make a new report" — opt out of surgical revise.
  */
-function wantsHtmlRevise(question) {
+function isFreshHtmlReportAsk(question) {
+  const q = String(question || "").toLowerCase().trim();
+  if (!q) return false;
+  return (
+    /\b(start\s+over|from\s+scratch|brand[- ]new|throw\s+(it|that)\s+(away|out)|scrap\s+(it|that|the\s+report)|discard\s+(it|that|the\s+report))\b/.test(
+      q
+    ) ||
+    /\b(new|fresh|another|different|separate)\s+(feasibility\s+)?(report|leave[- ]behind|canvas|deck|visual|html|document|one[- ]pager)\b/.test(
+      q
+    ) ||
+    /\b(build|create|generate|produce|draft|make)\s+(me\s+)?(a\s+)?(new|fresh|another|different|separate)\b.{0,40}\b(report|feasibility|leave[- ]behind|canvas|deck|visual|html|document)\b/.test(
+      q
+    ) ||
+    /\b(rebuild|regenerate)\s+(the\s+)?(whole|entire|full)\b.{0,30}\b(report|canvas|document|leave[- ]behind|html)?\b/.test(
+      q
+    )
+  );
+}
+
+/**
+ * Pure data / research chat — do not force a canvas revise just because a leave-behind is open.
+ */
+function looksLikePureDataQuestion(question) {
   const q = String(question || "").toLowerCase().trim();
   if (!q) return false;
   if (
-    /\b(update|change|revise|edit|fix|tweak|adjust|modify|redo|regenerate|refresh|rewrite|restyle)\b/.test(q) &&
-    /\b(it|that|this|the|html|report|visual|chart|graph|dashboard|canvas|deck|slide|document|table|leave[- ]behind|one[- ]pager|kpi|header|title|color|colour|section|column|row)\b/.test(
+    /\b(report|canvas|html|leave[- ]behind|deck|one[- ]pager|in\s+the\s+(report|table|section|canvas)|on\s+the\s+canvas)\b/.test(
       q
     )
   ) {
-    return true;
+    return false;
   }
-  if (
-    /\b(make|turn|set|swap|move|rename|recolor|recolour|restyle)\s+(it|that|this|the)\b/.test(q)
-  ) {
-    return true;
-  }
-  if (
-    /\b(add|remove|drop|delete|insert|replace)\b.{0,50}\b(column|row|section|title|header|chart|table|card|kpi|color|colour|logo|footnote|legend)\b/.test(
+  return /^(?:please\s+)?(?:what|who|when|where|why|which|how\s+many|how\s+much|how's|how\s+is|tell\s+me|explain|summarize|define|look\s+up|search|find)\b/.test(
+    q
+  );
+}
+
+/**
+ * User is revising an existing Monet canvas / HTML leave-behind.
+ * Broad by design: with a prior canvas, almost any edit/follow-up is surgical unless they ask for a fresh report.
+ * @param {string} question
+ * @param {{ hasPriorHtml?: boolean }} [opts]
+ */
+function wantsHtmlRevise(question, opts = {}) {
+  const q = String(question || "").toLowerCase().trim();
+  if (!q) return false;
+  if (isFreshHtmlReportAsk(q)) return false;
+
+  const hasPrior = Boolean(opts.hasPriorHtml);
+  const editVerb =
+    /\b(update|change|revise|edit|fix|tweak|adjust|modify|correct|patch|redo|regenerate|refresh|rewrite|restyle|rebuild|make|turn|set|swap|move|rename|recolor|recolour|add|remove|drop|delete|insert|replace|include|exclude|keep|show|hide|list|put|append|fold|cut|trim|shorten|lengthen|expand|widen|narrow|bump|raise|lower|bold|highlight|mention|note|call\s+out|use|bring|pull|swap|switch|flip|toggle|color|colour|teal|navy|crimson|tighten|loosen|clarify|reword|rephrase|relabel|retitle|reorder|sort|filter|narrow|broaden|can\s+you|could\s+you|please|also|instead|should|need(?:s)?|want(?:s)?)\b/.test(
       q
-    )
-  ) {
-    return true;
-  }
-  if (
-    /\b(that|this|the)\s+(html|report|visual|chart|dashboard|canvas|deck|leave[- ]behind|document|one[- ]pager)\b/.test(
+    );
+  const reportRef =
+    /\b(it|that|this|the)\b.{0,20}\b(html|report|visual|chart|graph|dashboard|canvas|deck|slide|document|table|leave[- ]behind|one[- ]pager|kpi|header|title|section|column|row)\b/.test(
       q
-    )
-  ) {
-    return true;
-  }
+    ) ||
+    /\b(html|report|visual|chart|dashboard|canvas|deck|leave[- ]behind|document|one[- ]pager|table|section|kpi|header|title)\b/.test(
+      q
+    ) ||
+    /\b(sites?|investigators?|sponsors?|competitors?|benchmarks?|ncts?|trials?)\b/.test(q);
+  const typoOrWording =
+    /\b(typo|misspell|spelling|wording|wrong\s+(number|figure|title|header|color|colour|site|name)|should\s+(be|say|read)|instead\s+of|on\s+the\s+canvas|in\s+the\s+report)\b/.test(
+      q
+    );
+
+  if (typoOrWording || reportRef || editVerb) return true;
+
+  // With a live canvas: short follow-ups are almost always edits ("sites with xyz", "more teal", "Piedmont too")
+  if (hasPrior && !looksLikePureDataQuestion(q) && q.length <= 240) return true;
+
   return false;
 }
 
@@ -951,6 +991,8 @@ module.exports = {
   isLegacyTableAsk,
   wantsHtmlVisual,
   wantsHtmlRevise,
+  isFreshHtmlReportAsk,
+  looksLikePureDataQuestion,
   extractLegacyNameHints,
   buildLegacyAnteriorContext,
   enrichSitesWithLegacy,

@@ -70,7 +70,7 @@ HTML_REPORT_START
 HTML_REPORT_END
 - Design: page bg #F0F4F8, navy #1B2A4A, teal #1A7F8E, inline CSS only (unless branding uploads specify otherwise).
 - Emit the HTML this turn even if some cells are estimate/TBD — label those cells.
-- REVISE CANVAS: If PRIOR HTML REPORT / priorHtmlReport is attached, that is the current on-screen leave-behind. Apply the user's edits and emit a COMPLETE updated HTML_REPORT (full document, not a diff). Keep branding/layout/numbers unless they asked to change them. Never only describe the edits in chat — replace the canvas.
+- REVISE CANVAS (surgical — not a rebuild): If PRIOR HTML REPORT / priorHtmlReport is attached, that document is the ONLY source of truth. Copy it as the base, apply ONLY the user's requested edit(s), emit a COMPLETE HTML_REPORT. Covers broad asks: include/exclude sites, add a column, fix wording, recolor, “sites with xyz”, etc. Do NOT redesign, reorder sections, regenerate from Context/Cosmos/feasibility playbook, or refresh numbers unless asked. Preserve CSS/branding/tables/wording everywhere else. Only start a brand-new report if they explicitly say new/fresh/start over/from scratch. Chat = 1–3 lines on what changed. Never only describe the edits in chat.
 - APPLY / NAVIGATE / CREATE_STUDY / LEARN_CONTEXT lines still apply when user asks for those actions.
 
 SITE FEASIBILITY REPORT (primary BD leave-behind — follow always when asked for feasibility / site feasibility / feasibility leave-behind)

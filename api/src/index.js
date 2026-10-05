@@ -2708,10 +2708,15 @@ async function handleAskFromPack({
   const visualAsk = askPhase === "visual" || Boolean(meta.visualAsk);
   const docExportAsk = askPhase === "visual" || Boolean(meta.docExportAsk);
 
+  const htmlRevise = Boolean(meta.htmlRevise || pack.context?.htmlRevise || pack.context?.priorHtmlReport?.html);
+
   let contextPayload = {
     ...pack.context,
-    wantsHtmlVisual: askPhase === "visual" ? true : false,
+    // Canvas revise: do HTML on the answer hop (no deferred rebuild). New visuals still defer.
+    wantsHtmlVisual:
+      askPhase === "visual" || (askPhase === "answer" && htmlRevise) ? true : false,
     wantsDocumentExport: askPhase === "visual" ? Boolean(meta.docExportAsk) : false,
+    htmlRevise,
     askPhase,
     priorChatAnswer: body.priorAnswer ? String(body.priorAnswer).slice(0, 12000) : null
   };
@@ -2722,19 +2727,29 @@ async function handleAskFromPack({
       wantsHtmlVisual: true,
       note:
         (contextPayload.note || "") +
-        " VISUAL PHASE: Emit HTML_REPORT_START…END with a complete leave-behind after a 2–4 line chat summary. priorChatAnswer may already cover the narrative."
+        (htmlRevise || contextPayload.priorHtmlReport?.html
+          ? " SURGICAL REVISE PHASE: PRIOR HTML REPORT is the source of truth. Copy it, apply ONLY the user's edits, emit HTML_REPORT. Do NOT rebuild from Context or the feasibility playbook."
+          : " VISUAL PHASE: Emit HTML_REPORT_START…END with a complete leave-behind after a 2–4 line chat summary. priorChatAnswer may already cover the narrative.")
+    };
+  } else if (askPhase === "answer" && htmlRevise) {
+    contextPayload = {
+      ...contextPayload,
+      wantsHtmlVisual: true,
+      note:
+        (contextPayload.note || "") +
+        " SURGICAL REVISE: Emit revised HTML_REPORT from PRIOR HTML this turn — do not defer or rebuild."
     };
   }
 
   const modelTier =
-    askPhase === "visual" || visualAsk && askPhase !== "answer"
+    askPhase === "visual" || htmlRevise || (visualAsk && askPhase !== "answer")
       ? "deep"
       : meta.modelTier === "deep"
         ? "deep"
         : "fast";
-  // Chat answer hop stays Fast unless user explicitly asked deep and this isn't a deferred visual.
+  // Chat answer hop stays Fast unless user explicitly asked deep / revise — revises need Deep for HTML.
   const tier =
-    askPhase === "visual"
+    askPhase === "visual" || htmlRevise
       ? "deep"
       : meta.forceDeepChat || meta.modelTier === "deep"
         ? "deep"
@@ -2780,16 +2795,18 @@ async function handleAskFromPack({
   let reportTitle = null;
   const runExport =
     askPhase === "visual" ||
-    (/HTML_REPORT_START/i.test(String(answer || "")) && askPhase === "answer");
+    (askPhase === "answer" &&
+      (htmlRevise || /HTML_REPORT_START/i.test(String(answer || ""))));
 
   if (result.provider !== "error" && runExport) {
     try {
       const built = await buildBuddyDocExports(answer, question, {
-        wantsHtmlVisual: askPhase === "visual" || Boolean(meta.visualAsk),
+        wantsHtmlVisual: askPhase === "visual" || Boolean(meta.visualAsk) || htmlRevise,
         wantsDocumentExport: Boolean(meta.docExportAsk),
         intelligence: contextPayload.intelligence,
         portfolio: contextPayload.portfolio,
         priorChatAnswer: contextPayload.priorChatAnswer || null,
+        priorHtmlReport: contextPayload.priorHtmlReport || null,
         clientStudy: contextPayload.workingStudy || null
       });
       if (built.html) {
@@ -2804,8 +2821,12 @@ async function handleAskFromPack({
 
   const actionParse = parseBuddyActions(answer);
   const llm = providerStatus();
+  // Revise already emitted HTML on the answer hop — do not schedule a second visual rebuild.
   const visualPending =
-    askPhase === "answer" && Boolean(meta.visualAsk || meta.docExportAsk);
+    askPhase === "answer" &&
+    !htmlRevise &&
+    Boolean(meta.visualAsk || meta.docExportAsk) &&
+    !actionParse.htmlReport;
 
   return json(200, {
     ok: result.provider !== "error",
@@ -3157,8 +3178,11 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       (priorHtmlBody && typeof priorHtmlBody === "object" && priorHtmlBody.html) ||
         (typeof priorHtmlBody === "string" && priorHtmlBody.trim())
     );
+    // Client only attaches priorHtmlReport on canvas-revise cues — treat that as surgical edit.
+    const htmlRevise = hasPriorHtml;
     const visualAsk =
       Boolean(routeVisualAsk) ||
+      htmlRevise ||
       (hasPriorHtml && (wantsHtmlRevise(question) || wantsHtmlVisual(question)));
 
     const user = signedInUserFromRequest(request, body.user || null);
@@ -3553,6 +3577,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       wantsHtmlVisual: visualAsk,
       wantsDocumentExport: docExportAsk,
       fillFollowUp,
+      htmlRevise: Boolean(htmlRevise),
       priorHtmlReport: (() => {
         const raw = body.priorHtmlReport;
         if (!raw) return null;
@@ -3726,8 +3751,9 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         meta: {
           visualAsk: Boolean(visualAsk),
           docExportAsk: Boolean(docExportAsk),
-          modelTier,
-          forceDeepChat: Boolean(forceDeepChat),
+          htmlRevise: Boolean(htmlRevise),
+          modelTier: htmlRevise ? "deep" : modelTier,
+          forceDeepChat: Boolean(forceDeepChat) || Boolean(htmlRevise),
           answerFocus,
           workflow: buddyWorkflow,
           routerIntent,
@@ -3755,9 +3781,11 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         ok: true,
         phase: "prepare",
         contextId: stored.contextId,
-        visualAsk: Boolean(visualAsk),
-        docExportAsk: Boolean(docExportAsk),
-        modelTier,
+        // Revises emit HTML on the answer hop — do not schedule a second visual rebuild.
+        visualAsk: htmlRevise ? false : Boolean(visualAsk),
+        docExportAsk: htmlRevise ? false : Boolean(docExportAsk),
+        htmlRevise: Boolean(htmlRevise),
+        modelTier: htmlRevise ? "deep" : modelTier,
         answerFocus,
         workflow: buddyWorkflow,
         attachmentSessionId: attachmentSessionId || null,
@@ -3771,18 +3799,22 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
           routerIntent,
           routerTools,
           phase: "prepare",
+          htmlRevise: Boolean(htmlRevise),
           msLeft: msLeft()
         },
-        statusHint: visualAsk
-          ? "Ora data ready — answering, then building your visual…"
-          : "Ora data ready — asking Monet…"
+        statusHint: htmlRevise
+          ? "Ora data ready — surgically updating your canvas…"
+          : visualAsk
+            ? "Ora data ready — answering, then building your visual…"
+            : "Ora data ready — asking Monet…"
       });
     }
 
     if (msLeft() < 5000) return buddyDeadlineReply("ask_deadline_after_prepare");
 
     // Legacy one-shot: one Foundry call; defer HTML visuals to a follow-up hop.
-    const deferVisual = Boolean(visualAsk || docExportAsk);
+    // Canvas revises must NOT defer — a second "visual" hop tends to rebuild from Context and trash the leave-behind.
+    const deferVisual = Boolean(visualAsk || docExportAsk) && !htmlRevise;
     const chatContext = deferVisual
       ? { ...contextPayload, wantsHtmlVisual: false, wantsDocumentExport: false }
       : contextPayload;
@@ -3854,6 +3886,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
           intelligence,
           portfolio,
           priorChatAnswer: contextPayload.priorChatAnswer || null,
+          priorHtmlReport: contextPayload.priorHtmlReport || null,
           clientStudy: contextPayload.clientStudy || contextPayload.workingStudy || null
         });
         if (built.html) {
@@ -3870,6 +3903,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
           meta: {
             visualAsk: true,
             docExportAsk: Boolean(docExportAsk),
+            htmlRevise: Boolean(htmlRevise),
             modelTier: "deep",
             answerFocus,
             workflow: buddyWorkflow,

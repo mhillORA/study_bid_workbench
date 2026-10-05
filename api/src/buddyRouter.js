@@ -544,7 +544,8 @@ function routeBuddyAsk(input) {
     body?.priorHtmlReport?.html ||
       (typeof body?.priorHtmlReport === "string" && body.priorHtmlReport.trim())
   );
-  const reviseHtmlAsk = priorHtmlAttached && wantsHtmlRevise(question);
+  const reviseHtmlAsk =
+    priorHtmlAttached && wantsHtmlRevise(question, { hasPriorHtml: true });
   const visualAsk =
     !attachmentAnalyzeVerb &&
     !(
