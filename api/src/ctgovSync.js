@@ -38,18 +38,19 @@ const COND_QUERY =
   "\"retinal neuroprotection\" OR \"ocular neuroprotection\" OR \"optic nerve neuroprotection\" OR " +
   "NAION OR LHON OR \"Fuchs endothelial\" OR \"Fuchs dystrophy\" OR meibomian OR \"macular hole\" OR epiretinal OR " +
   "\"central serous\" OR \"uveal melanoma\" OR \"ocular melanoma\" OR \"Best disease\" OR \"cone dystrophy\" OR " +
-  "\"rod dystrophy\" OR \"X-linked retinoschisis\" OR retinoblastoma OR Usher OR \"Hermansky-Pudlak\")";
+  "\"rod dystrophy\" OR \"X-linked retinoschisis\" OR retinoblastoma OR Usher OR \"Hermansky-Pudlak\" OR " +
+  "pterygium OR pterygia OR pinguecula OR pingueculae)";
 
 /** Strong ocular anchors — study must match at least one (conditions + title). */
 const CORE_OCULAR_RE =
-  /ophthalm|ocular|\beyes?\b|retina|retinal|cornea|glaucoma|cataract|uveit|macular|conjunctiv|dry\s*eye|optic\s*(nerve|neuropath|neuritis)|blephar|strabismus|amblyopia|keratocon|keratit|myopia|presbyopia|stargardt|vitreous|intraocular|nystagmus|thyroid\s*eye|meibomian|uveal\s*melanoma|ocular\s*melanoma|retinoblastoma|fuchs|naion|\blhon\b|retinitis|choroid|epiretinal|geographic\s*atrophy|diabetic\s*(macular|retinopath)|neurotrophic\s*kerat|orbitopath|graves\.?\s*(ophthalm|orbit)|best\s*disease|achromatopsia|choroideremia|usher|hermansky|albinism|visual\s*acuity|anterior\s*segment|posterior\s*segment|sclera|iris\b|lens\b|pupil/i;
+  /ophthalm|ocular|\beyes?\b|retina|retinal|cornea|glaucoma|cataract|uveit|macular|conjunctiv|dry\s*eye|optic\s*(nerve|neuropath|neuritis)|blephar|strabismus|amblyopia|keratocon|keratit|myopia|presbyopia|stargardt|vitreous|intraocular|nystagmus|thyroid\s*eye|meibomian|uveal\s*melanoma|ocular\s*melanoma|retinoblastoma|fuchs|naion|\blhon\b|retinitis|choroid|epiretinal|geographic\s*atrophy|diabetic\s*(macular|retinopath)|neurotrophic\s*kerat|orbitopath|graves\.?\s*(ophthalm|orbit)|best\s*disease|achromatopsia|choroideremia|usher|hermansky|albinism|visual\s*acuity|anterior\s*segment|posterior\s*segment|sclera|iris\b|lens\b|pupil|pterygium|pterygia|pinguecula/i;
 
 /** Hearing / pulmonary noise without a strong eye disease → drop. */
 const HEARING_PULM_RE =
   /\b(hearing\s*(loss|impair)|deafness|otolog|cochlear|pulmonary|copd|\blungs?\b|asthma|respiratory\s*(disease|fail)|bronchitis|emphysema|otitis)\b/i;
 
 const STRONG_EYE_DISEASE_RE =
-  /ophthalm|ocular|retina|retinal|cornea|glaucoma|cataract|uveit|macular\s*degeneration|dry\s*eye|optic\s*neuropath|retinoblastoma|stargardt|kerat|strabismus|amblyopia|thyroid\s*eye|meibomian|uveal\s*melanoma|usher|hermansky|choroid|epiretinal|geographic\s*atrophy|diabetic\s*(macular|retinopath)|fuchs|naion|\blhon\b|neurotrophic/i;
+  /ophthalm|ocular|retina|retinal|cornea|glaucoma|cataract|uveit|macular\s*degeneration|dry\s*eye|optic\s*neuropath|retinoblastoma|stargardt|kerat|strabismus|amblyopia|thyroid\s*eye|meibomian|uveal\s*melanoma|usher|hermansky|choroid|epiretinal|geographic\s*atrophy|diabetic\s*(macular|retinopath)|fuchs|naion|\blhon\b|neurotrophic|pterygium|pinguecula/i;
 
 function isOcularTrial(doc) {
   const blob = [...(doc.conditions || []), doc.title, doc.officialTitle]
@@ -62,6 +63,8 @@ function isOcularTrial(doc) {
 
 const INDICATION_RULES = [
   [/neurotrophic kerat/i, "Neurotrophic Keratitis"],
+  [/pterygium|pterygia/i, "Pterygium"],
+  [/pinguecula|pingueculae/i, "Pinguecula"],
   [/neuroprotection/i, "Neuroprotection"],
   [/retinal neuroprotect/i, "Neuroprotection"],
   [/optic nerve neuroprotect/i, "Neuroprotection"],

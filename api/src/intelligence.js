@@ -86,6 +86,18 @@ const INDICATION_GROUPS = [
   ["Neurotrophic Keratitis", "Neurotrophic Keratopathy"],
   ["Meibomian Gland Dysfunction", "MGD"],
   [
+    "Pterygium",
+    "Pterygia",
+    "Conjunctival Pterygium",
+    "Primary Pterygium",
+    "Recurrent Pterygium"
+  ],
+  [
+    "Pinguecula",
+    "Pingueculae",
+    "Conjunctival Pinguecula"
+  ],
+  [
     "Stargardt's Disease",
     "Stargardt",
     "Stargardt Disease",
@@ -147,6 +159,8 @@ const INDICATION_UI_LABELS = [
   "Blepharitis",
   "Meibomian Gland Dysfunction",
   "Neurotrophic Keratitis",
+  "Pterygium",
+  "Pinguecula",
   "Keratoconus",
   "Ocular Surface / Cornea",
   "Macular Hole / ERM",
@@ -1143,6 +1157,49 @@ function preferredIndicationLabel(matchedAlias) {
   return raw;
 }
 
+function looksLikeFillerIndication(raw) {
+  const s = String(raw || "").trim();
+  if (!s || s.length < 3) return true;
+  if (AMBIGUOUS_INDICATION_TOKENS.has(normText(s))) return true;
+  return /^(our|the|a|an|this|that|these|those|cosmos|veeva|trialhub|ct\.?gov|dashboard|overview|global|worldwide|us|usa|uk|eu|emea|apac|phase\s*[i1-4]+|ora|monet|buddy|sponsor|client|meeting|call|prep|sheet|report|feasibility|landscape|enrollment|benchmark|sites?|trials?|studies?|patients?|subjects?)\b/i.test(
+    s
+  );
+}
+
+function titleCaseIndication(raw) {
+  return String(raw || "")
+    .trim()
+    .replace(/\s+/g, " ")
+    .replace(/\b[a-z]/g, (ch) => ch.toUpperCase());
+}
+
+/**
+ * Pull disease-like free text when the catalog has no hit — so unfamiliar TAs still drive CT.gov/Veeva packs.
+ * Prefer explicit cue phrases; refuse geo/source/filler nouns.
+ */
+function extractFreeTextIndication(question) {
+  const q = String(question || "");
+  const patterns = [
+    /\bindication\s*[:=]?\s+([A-Za-z][A-Za-z0-9' /()-]{2,60})/i,
+    /\b(?:for|about|regarding|on)\s+([A-Za-z][A-Za-z0-9' /-]{2,50}?)(?:\s+(?:study|trial|phase|prep|meeting|call|indication|patients?|subjects?|feasibility|landscape|benchmark|enrollment|sites?|report)|[,.?!]|$)/i,
+    /\b([A-Za-z][A-Za-z0-9' -]{2,40}?)\s+(?:prep(?:\s*sheet)?|feasibility|landscape|enrollment|benchmark|meeting\s+prep|site\s+list)\b/i,
+    /\b(?:phase\s*[i1-4ivx]+|recruiting|open)\s+([A-Za-z][A-Za-z0-9' /-]{2,40}?)\s+(?:trial|study|studies)\b/i
+  ];
+  for (const re of patterns) {
+    const m = q.match(re);
+    if (!m) continue;
+    let raw = m[1].trim().replace(/[?.!,;:]+$/, "");
+    // Strip trailing junk: "pterygium in the US" → pterygium
+    raw = raw.replace(/\s+(?:in|across|within|from|for|with)\s+.+$/i, "").trim();
+    if (looksLikeFillerIndication(raw)) continue;
+    const preferred = preferredIndicationLabel(raw);
+    if (preferred && preferred !== raw && resolveIndicationGroup(preferred)) return preferred;
+    // Unknown TA — keep free-text so live CT.gov / Cosmos CONTAINS still fire
+    return titleCaseIndication(preferred || raw);
+  }
+  return null;
+}
+
 function extractIndicationFromQuestion(question) {
   const q = String(question || "");
   const qNorm = normText(q);
@@ -1170,22 +1227,7 @@ function extractIndicationFromQuestion(question) {
       return label;
     }
   }
-  // Only explicit "indication …" — bare "in …" false-positives (in Cosmos, in the US, in our feed)
-  const m = q.match(/\bindication\s*[:=]?\s+([A-Za-z][A-Za-z0-9 /()-]{2,60})/i);
-  if (!m) return null;
-  const raw = m[1].trim().replace(/[?.!,;]+$/, "");
-  if (AMBIGUOUS_INDICATION_TOKENS.has(normText(raw))) return null;
-  const preferred = preferredIndicationLabel(raw);
-  // Prefer known labels; refuse free-text that looks like filler/geo/source names
-  if (preferred && preferred !== raw) return preferred;
-  if (
-    /^(our|the|a|an|this|cosmos|veeva|trialhub|ct\.?gov|dashboard|overview|global|worldwide)\b/i.test(
-      raw
-    )
-  ) {
-    return null;
-  }
-  return preferred || raw;
+  return extractFreeTextIndication(q);
 }
 
 function parseCountryList(raw) {
@@ -2684,6 +2726,23 @@ async function ctgovByIndication(database, indication, country = null, opts = {}
         }
       } catch (liveErr) {
         liveSearch = { error: String(liveErr.message || liveErr) };
+      }
+    } else if (enriched.length === 0) {
+      // Unfamiliar / not-yet-synced indication — go get recruiting CT.gov now (not limited to catalog sync)
+      try {
+        const { searchCtgovRecruitingLive } = require("./gapFill");
+        liveSearch = await searchCtgovRecruitingLive(preferred, {
+          limit: sampleLimit,
+          maxPages: 2
+        });
+        if (liveSearch?.recruitingSample?.length) {
+          enriched = liveSearch.recruitingSample.map((row) => ({
+            ...row,
+            oraIndication: preferred
+          }));
+        }
+      } catch (liveErr) {
+        liveSearch = { error: String(liveErr.message || liveErr), searched: false };
       }
     }
     const recruitingNaive = naiveTrials.filter((t) => /^RECRUITING$/i.test(String(t.status || "")));

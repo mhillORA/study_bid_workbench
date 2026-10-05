@@ -78,6 +78,12 @@ const {
 } = require("./rfpPricing");
 const { normalizeBuddyAttachments } = require("./buddyAttachments");
 const { buildBuddyDocExports, wantsDocumentExport } = require("./buddyDocExport");
+const { scrapePagesForAsk, wantsPageScrape } = require("./webScrape");
+const {
+  pickHtmlTemplate,
+  wantsTemplateClone,
+  formatHtmlTemplateBlock
+} = require("./htmlReportTemplate");
 const { routeBuddyAsk, isCompareTwoStudiesQuestion, isCrossStudyQuestion, isGeneralKnowledgeAsk } = require("./buddyRouter");
 const { fetchBuddyIntelligence, fetchBuddyPortfolio } = require("./buddyCosmosFetch");
 const { prefetchLiveGapFill } = require("./buddyTools");
@@ -3180,7 +3186,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       }
     }
 
-    // Persist new uploads into vault for multi-turn reconcile
+    // Persist new uploads into vault for multi-turn template reuse / reconcile
     if (hasOkUpload && (uploaded.files || []).some((f) => f.ok && f.text && !f.fromVault)) {
       try {
         const stored = await storeAttachments(getDb, uploaded, {
@@ -3195,6 +3201,8 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         /* vault optional — base64 replay still works */
       }
     }
+
+    // Sticky HTML prep-sheet / report template (Sunhawk / Cloudbreak style)
     let question = String(body.question || "").trim();
     if (!question && hasOkUpload) {
       question =
@@ -3202,8 +3210,28 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
     }
     if (!question) return json(400, { error: "question is required (or attach a file)" });
 
+    let htmlTemplate = pickHtmlTemplate(uploaded.files || [], question);
+    if (
+      !htmlTemplate &&
+      body.pendingTask?.type === "report_template" &&
+      body.pendingTask?.htmlSnippet
+    ) {
+      htmlTemplate = {
+        name: body.pendingTask.name || "template.html",
+        title: body.pendingTask.title || "prep sheet template",
+        html: String(body.pendingTask.htmlSnippet).slice(0, 100000),
+        style: "",
+        sections: body.pendingTask.sections || [],
+        charCount: String(body.pendingTask.htmlSnippet).length,
+        sticky: true,
+        role: "html_report_template",
+        fromPendingTask: true
+      };
+    }
+    const templateCloneAsk = Boolean(htmlTemplate) && wantsTemplateClone(question);
+
     // Everyday AI (weather, math, news, chitchat+) — Foundry Fast, zero Cosmos
-    if (!hasOkUpload && isGeneralKnowledgeAsk(question, { hasOkUpload: false, body })) {
+    if (!hasOkUpload && !htmlTemplate && isGeneralKnowledgeAsk(question, { hasOkUpload: false, body })) {
       const user = signedInUserFromRequest(request, body.user || null);
       const historyLite = Array.isArray(history) ? history.slice(-6) : [];
       if (msLeft() < 4000) return buddyDeadlineReply("ask_deadline_light");
@@ -3324,7 +3352,22 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
     const visualAsk =
       Boolean(routeVisualAsk) ||
       htmlRevise ||
+      templateCloneAsk ||
+      Boolean(htmlTemplate && /\b(prep|report|leave[- ]behind|meeting|call)\b/i.test(question)) ||
       (hasPriorHtml && (wantsHtmlRevise(question) || wantsHtmlVisual(question)));
+
+    let suggestedPendingTaskOut = suggestedPendingTask || null;
+    if (htmlTemplate) {
+      suggestedPendingTaskOut = {
+        type: "report_template",
+        name: htmlTemplate.name,
+        title: htmlTemplate.title,
+        sections: (htmlTemplate.sections || []).slice(0, 16),
+        // Keep a trimmed skeleton sticky in the UI pending task for follow-up sponsors
+        htmlSnippet: String(htmlTemplate.html || "").slice(0, 90000),
+        at: Date.now()
+      };
+    }
 
     const user = signedInUserFromRequest(request, body.user || null);
     const activeTab = body.activeTab ? String(body.activeTab) : null;
@@ -3681,7 +3724,23 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       !docExportAsk &&
       (routerDepth === "deep" ||
         /\b(go deeper|think harder|deep dive|terra)\b/i.test(question));
-    const modelTier = forceDeepChat ? "deep" : "fast";
+    const modelTier =
+      forceDeepChat || templateCloneAsk || Boolean(htmlTemplate && visualAsk) ? "deep" : "fast";
+
+    let scrapedPages = null;
+    if (wantsPageScrape(question)) {
+      try {
+        scrapedPages = await scrapePagesForAsk(question);
+      } catch (scrapeErr) {
+        scrapedPages = {
+          pages: [],
+          scrapedAt: new Date().toISOString(),
+          requested: true,
+          error: String(scrapeErr.message || scrapeErr).slice(0, 200)
+        };
+      }
+    }
+
     const contextPayload = {
       askedAt: new Date().toISOString(),
       source: requireCopilotKey ? "copilot_studio" : "workbench",
@@ -3745,8 +3804,21 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
         pricingScenariosAttached: Boolean(pricingScenarios && pricingScenarios.tiers),
         buddyLiveContextAttached: Boolean(buddyLiveContext && buddyLiveContext.text),
         buddyDeptContextsAttached: Boolean(buddyDeptContexts && !buddyDeptContexts.error),
-        note: "studyComparison = two-study bid diff. portfolio = budget studies. pricingScenarios = past-bid RFP tiers. intelligence = Ora Veeva + TrialHub + CT.gov. legacyAnterior = anterior-segment overview. feasibilityArtemis = Artemis feasibility sites/surveys (with duplicate-site clusters). buddyLiveContext = SME append notes. buddyDeptContexts = department playbook lens (Ops/BD/Recruitment…)."
+        scrapedPagesAttached: Boolean(scrapedPages && scrapedPages.okCount > 0),
+        note: "studyComparison = two-study bid diff. portfolio = budget studies. pricingScenarios = past-bid RFP tiers. intelligence = Ora Veeva + TrialHub + CT.gov. legacyAnterior = anterior-segment overview. feasibilityArtemis = Artemis feasibility sites/surveys (with duplicate-site clusters). buddyLiveContext = SME append notes. buddyDeptContexts = department playbook lens (Ops/BD/Recruitment…). scrapedPages = HTTP-fetched public URLs from this ask."
       },
+      scrapedPages: scrapedPages || undefined,
+      htmlTemplate: htmlTemplate
+        ? {
+            name: htmlTemplate.name,
+            title: htmlTemplate.title,
+            sections: htmlTemplate.sections,
+            charCount: htmlTemplate.charCount,
+            sticky: true,
+            cloneRequested: Boolean(templateCloneAsk),
+            html: htmlTemplate.html
+          }
+        : undefined,
       buddyDept: buddyDeptLens,
       buddyDeptContexts,
       user,
@@ -3871,6 +3943,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       pricingScenarios,
       buddyLiveContext,
       buddyDeptContexts,
+      scrapedPages,
       routerTools
     });
 
@@ -3899,10 +3972,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
           workflow: buddyWorkflow,
           routerIntent,
           routerTools,
-          suggestedPendingTask: suggestedPendingTask || null,
-          attachmentSessionId: attachmentSessionId || null,
-          attachmentIds: (vaultFileMeta.filter((f) => f.id) || []).map((f) => f.id),
-          initialToolTrace,
+          suggestedPendingTask: suggestedPendingTaskOut || null,
           portfolioMatched: portfolio?.matchedStudyCount ?? null,
           databaseStudyCount: portfolio?.databaseStudyCount ?? null
         }
@@ -4049,7 +4119,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
             answerFocus,
             workflow: buddyWorkflow,
             routerIntent,
-            suggestedPendingTask: suggestedPendingTask || null,
+            suggestedPendingTask: suggestedPendingTaskOut || null,
             attachmentSessionId: attachmentSessionId || null,
             attachmentIds: (vaultFileMeta.filter((f) => f.id) || []).map((f) => f.id)
           }
@@ -4071,7 +4141,7 @@ async function handleAskRequest(request, context, { requireCopilotKey }) {
       huntReason: huntOut.huntReason || null,
       attachmentSessionId: attachmentSessionId || null,
       attachmentIds: (vaultFileMeta.filter((f) => f.id) || []).map((f) => f.id),
-      suggestedPendingTask: suggestedPendingTask || null,
+      suggestedPendingTask: suggestedPendingTaskOut || null,
       ok: result.provider !== "error",
       model: result.model,
       deployment: llm.deployment || result.model || null,

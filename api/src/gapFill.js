@@ -216,16 +216,26 @@ async function searchCtgovRecruitingLive(indication, opts = {}) {
       const nct = ps.identificationModule?.nctId;
       if (!nct) continue;
       const elig = ps.eligibilityModule?.eligibilityCriteria || "";
+      const title = ps.identificationModule?.briefTitle || null;
+      const conditions = ps.conditionsModule?.conditions || [];
+      const needle = String(indication || "")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, " ")
+        .trim();
+      if (needle.length >= 4) {
+        const blob = [...conditions, title || ""].join(" ").toLowerCase();
+        if (!blob.includes(needle.split(/\s+/)[0])) continue;
+      }
       studies.push(
         applyAvegfNaiveFields({
           nct: String(nct).toUpperCase(),
-          title: ps.identificationModule?.briefTitle || null,
+          title,
           status: ps.statusModule?.overallStatus || null,
           phase: (ps.designModule?.phases || [])[0] || null,
           sponsor: ps.sponsorCollaboratorsModule?.leadSponsor?.name || null,
           enrollment: ps.designModule?.enrollmentInfo?.count ?? null,
           startDate: ps.statusModule?.startDateStruct?.date || null,
-          conditions: ps.conditionsModule?.conditions || [],
+          conditions,
           eligibilityCriteria: elig ? String(elig).slice(0, 6000) : null,
           source: "clinicaltrials.gov/api/v2/gap-fill/recruiting"
         })

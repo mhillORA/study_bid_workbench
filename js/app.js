@@ -2568,7 +2568,9 @@
               ? "HLBP pending"
               : state.buddyPendingTask.type === "report"
                 ? "report pending"
-                : "task pending";
+                : state.buddyPendingTask.type === "report_template"
+                  ? "prep template sticky"
+                  : "task pending";
       el.textContent += ` · ${taskLabel}`;
     }
   }
@@ -4863,7 +4865,7 @@
         priorAttachments: priorAttachmentsPayload,
         attachmentSessionId: state.buddyAttachmentSessionId || undefined,
         attachmentIds:
-          reconcileFollowUp && !pendingFiles.length && state.buddyAttachmentIds?.length
+          !pendingFiles.length && state.buddyAttachmentIds?.length
             ? state.buddyAttachmentIds
             : undefined,
         user: state.entraUser || undefined,

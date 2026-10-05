@@ -21,6 +21,7 @@ const {
 const { wantsHtmlVisual, wantsHtmlRevise, isLegacyTableAsk, isLegacyAnteriorQuestion, isLegacyOverviewQuestion, userConsentedLegacyEnrollment } = require("./legacyAnterior");
 const { isFeasibilityArtemisQuestion, wantsSiteMatchReport } = require("./feasibilityArtemis");
 const { wantsDocumentExport } = require("./buddyDocExport");
+const { wantsPageScrape } = require("./webScrape");
 
 function reconcileVerbInQuestion(question) {
   const q = String(question || "").toLowerCase();
@@ -278,6 +279,13 @@ function isGeneralKnowledgeAsk(question, { hasOkUpload = false, body = null } = 
     /* ignore */
   }
 
+  // URL / page scrape needs Node HTTP fetch before Foundry
+  try {
+    if (wantsPageScrape(q)) return false;
+  } catch (_) {
+    /* ignore */
+  }
+
   const lower = q.toLowerCase();
 
   // Known indication (nAMD, Dry Eye, …) or treatment-naïve population ask → pull Cosmos
@@ -416,9 +424,11 @@ function pickTools(ctx) {
     generalKnowledgeAsk
   } = ctx;
 
-  // General knowledge / math — Foundry only, no Cosmos packs
+  // General knowledge / math — Foundry + optional page scrape when URL present
   if (intent === "general_chat" || generalKnowledgeAsk) {
-    return ["web_search"];
+    const tools = ["web_search"];
+    if (wantsPageScrape(ctx.question)) tools.push("web_scrape");
+    return tools;
   }
 
   const tools = new Set(["cosmos_default"]);
@@ -467,6 +477,10 @@ function pickTools(ctx) {
     tools.add("live_context");
   }
   if (moneyIntent === "public_company") tools.add("web_search");
+  if (wantsPageScrape(ctx.question)) {
+    tools.add("web_scrape");
+    tools.add("web_search"); // fallback if HTTP fetch is thin/empty
+  }
   tools.add("dept_context");
 
   return [...tools];

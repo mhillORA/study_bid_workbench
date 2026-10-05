@@ -276,6 +276,7 @@ function toolTraceFromPrefetch({
   pricingScenarios,
   buddyLiveContext,
   buddyDeptContexts,
+  scrapedPages = null,
   routerTools = []
 }) {
   const trace = [];
@@ -376,6 +377,19 @@ function toolTraceFromPrefetch({
       label: "Web search (public)",
       ok: true,
       detail: "planned for Foundry agent",
+      round: 1
+    });
+  }
+
+  if (tools.has("web_scrape") || scrapedPages) {
+    const scrape = scrapedPages;
+    trace.push({
+      tool: "web_scrape",
+      label: "HTTP page scrape (URL)",
+      ok: Boolean(scrape?.okCount),
+      detail: scrape?.okCount
+        ? `fetched ${scrape.okCount}/${scrape.pages?.length || 0}`
+        : scrape?.error || "no pages / fetch failed",
       round: 1
     });
   }

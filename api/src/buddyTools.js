@@ -27,6 +27,7 @@ const TOOL_LABELS = {
   live_context: "Buddy live context",
   dept_context: "Department playbook",
   web_search: "Web search (public)",
+  web_scrape: "HTTP page scrape (URL)",
   attachments: "Attached documents",
   query_intelligence: "Indication intelligence",
   query_portfolio: "Portfolio query",
@@ -311,6 +312,28 @@ async function runBuddyTool(name, deps, args = {}) {
           )
         };
       }
+      case "web_scrape": {
+        const { scrapePagesForAsk } = require("./webScrape");
+        const pack = await scrapePagesForAsk(args.question || "");
+        return {
+          result: { scrapedPages: pack },
+          trace: traceStep(
+            "web_scrape",
+            Boolean(pack?.okCount),
+            pack?.okCount
+              ? `fetched ${pack.okCount}/${pack.pages?.length || 0} page(s)`
+              : pack?.pages?.length
+                ? `fetch failed (${pack.pages.map((p) => p.error).filter(Boolean).join(", ") || "empty"})`
+                : "no URL in ask",
+            {
+              elapsedMs: Date.now() - started,
+              round,
+              n: pack?.okCount ?? 0,
+              resultKey: "scrapedPages"
+            }
+          )
+        };
+      }
       case "live_ctgov_naive": {
         if (!getDb) throw new Error("getDb missing");
         const indication =
@@ -475,15 +498,23 @@ function planGapFillTools({ context, question, huntReason, history = [] }) {
     tools.push("extract_indication");
   }
 
-  // Claude-like: go live to CT.gov when naïve/recruiting ask has empty Cosmos pack
-  if (naiveAsk) {
-    if (recruitNaiveN === 0) tools.push("live_ctgov_naive");
-  } else if (
-    /\b(recruiting|open\s+trials?)\b/i.test(q) &&
+  const ctgovN =
+    Number(intel?.ctgov?.matchedIndicationCount) ||
+    Number(intel?.ctgov?.trialCount) ||
+    (intel?.ctgov?.sample || []).length ||
+    0;
+  const hasIndication = Boolean(intel?.query?.indication);
+  const thinCtgov =
+    ctgovN === 0 &&
     !(intel?.ctgov?.recruitingSample || []).length &&
     !(intel?.ctgov?.recruitingCount > 0) &&
-    !(intel?.ctgov?.recruitingTreatmentNaiveSample || []).length
-  ) {
+    !(intel?.ctgov?.recruitingTreatmentNaiveSample || []).length;
+
+  // Claude-like: go live to CT.gov when naïve/recruiting ask has empty Cosmos pack,
+  // OR when we know the indication but Cosmos has nothing yet (unfamiliar TA).
+  if (naiveAsk) {
+    if (recruitNaiveN === 0) tools.push("live_ctgov_naive");
+  } else if (thinCtgov && (hasIndication || /\b(recruiting|open\s+trials?)\b/i.test(q))) {
     tools.push("live_ctgov_recruiting");
   }
 

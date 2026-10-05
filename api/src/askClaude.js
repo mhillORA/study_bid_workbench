@@ -238,6 +238,7 @@ const HTML_REPORT_RULES = [
   "The platform converts that HTML into downloadable PDF and Word (DOCX) for the user — so always emit the HTML block when they want a file/doc.",
   "REVISE EXISTING CANVAS (critical — surgical, not a rebuild): If priorHtmlReport / PRIOR HTML REPORT is present, that document IS the source of truth. Copy it as the base. Apply ONLY the user's requested edit(s). Emit a COMPLETE HTML_REPORT (full document, not a diff). Examples that MUST stay surgical: \"include sites with X\", \"add a column\", \"fix the typo\", \"make the header teal\", \"exclude site Y\" — patch the existing tables/sections; do NOT start a new feasibility report. DO NOT redesign the layout. DO NOT reorder sections. DO NOT regenerate from Context JSON, Cosmos facts, TrialHub, CT.gov, Salesforce, or the feasibility 8-section playbook. When adding sites/rows, append or filter within the existing site table/section using prior HTML + Context only for the new rows — keep every other section byte-stable in substance. DO NOT refresh unrelated numbers. Preserve CSS, branding, KPIs, tables, and wording everywhere else. Chat summary = 1–3 lines naming what changed. Chat-only descriptions of edits are forbidden.",
   "BRANDING / TEMPLATE FOLLOWS (critical): If context.uploadedDocuments includes branding, style guide, template, form, sample layout, OR prior slides PLUS a protocol/bid/RFP: mirror the structure and section order from the template/standard form when they say \"my standard template\"; apply colors/fonts/tone from branding or from the attached slides when described; fill content from the protocol + chat specs + Cosmos/TrialHub — never invent numbers. If branding colors are named (hex or words), use them in inline CSS. If branding is incomplete, use Ora navy/teal (#1B2A4A / #1A7F8E, page #F0F4F8) and say what you assumed. (Skip this rebuild path when PRIOR HTML REPORT is present — surgical revise wins.)",
+  "HTML PREP-SHEET TEMPLATE CLONE (critical — Mike / BD leave-behind): If TEMPLATE_HTML / context.htmlTemplate is present (e.g. SunHawk or Cloudbreak meeting-prep HTML), that file is the sticky format for THIS chat. When the user asks to build a prep sheet / call prep / meeting prep / report \"like this\" for a NEW sponsor: (1) COPY the template's <style>, .wrap/.header/.card/.card-hdr/.kpi/.alert classes, section order, and footer pattern; (2) REPLACE company-specific content with the new sponsor using Cosmos/SF/CT.gov/web; (3) emit a COMPLETE HTML_REPORT — never return the template unchanged; (4) keep the template sticky for follow-ups (\"now do Aldeyra\") until they attach a different HTML. Chat = 2–4 line summary; full detail in HTML.",
   "MEETING PREP + FEASIBILITY (common BD ask — NEW reports only): When there is NO priorHtmlReport and the user prepares for a sponsor meeting (e.g. win themes + feasibility report) and attaches a protocol and/or slides: (A) In chat, give [[h]]Win themes[[/h]] (3–6 bullets) + a short enrollment headline. (B) In HTML_REPORT, produce the full feasibility report. FIRST verify sponsor/client name in the upload matches what the user said. Default Ora section order when no template: (1) Protocol Summary, (2) Ora Experience — Indication-Specific, (3) Ora Experience — Adjacent (only if exact is thin; never present as direct; uveitis subtypes never cross), (4) Enrollment Benchmarks (TrialHub Actual PSM only; median/mean/P25/P75/n; broaden if n<3 and say so), (5) Competitive Landscape (same subtype/pop/geo; treatment-naïve = no SF capture), (6) Site Recommendations (blended rank; ⭐ Ora · N; facility not PI; exclude nonconforming 7 sites; sponsor-facing: no PI/enrolled/Ora NCT/CT.gov name), (7) Salesforce Intelligence (owner/tier/wins/outreach; strip Inc/LLC before name match), (8) Ora Assessment (win/risks/supportable rate; never fabricate capabilities). Capture chat specs: sponsor, indication/device, site count scenarios, enrollment months, named sites. Numbers only from Context/attachments. If PRIOR HTML REPORT is present, ignore this new-report structure and surgically edit the prior HTML instead.",
   "INTERNAL BD BID BRIEF (STAT / specialty CRO pattern): When the user asks for an internal brief / activation intelligence / STAT-style package: emit HTML_REPORT with teal #0d9488 / navy #04003B, Internal—Do Not Share. STRUCTURE only from the STAT pattern in Master Context. ALL site names, activation days, study counts, and Ora numbers MUST come from live context.intelligence (startupTimelines, sites, ora packs) on THIS ask — never from a golden HTML example, never from memorized Oculgen brief rows, never \"I have a file that lists…\". Industry naïve-nAMD PSM landmarks in Master Context are OK as published benchmarks. Do NOT require Salesforce. Do NOT put site-level PSM on the top-sites table. Stay in chat — do not NAVIGATE to build the brief.",
   "Default Ora design when no branding attached: page bg #F0F4F8, navy #1B2A4A, teal #1A7F8E, inline <style>, .header / .card / .card-hdr / .kpi / tables / alerts. Print-ready. No external CSS/JS.",
@@ -306,6 +307,9 @@ const WEB_SEARCH_RULES = [
   " WEB SEARCH (critical — Foundry agent has live web tools; use them liberally when packs are thin):",
   "When the ask needs public/external facts OR Cosmos/TrialHub/CT.gov packs do not answer the question,",
   "CALL WEB SEARCH ON THIS TURN and deliver a best-effort answer (~80% with assumptions labeled is OK).",
+  "PAGE SCRAPE: When SCRAPED WEB PAGES / context.scrapedPages is present, Node already fetched the URL(s).",
+  "Ground on that page text first. Web search is secondary for those URLs. Do not invent page content.",
+  "If the user pastes a URL or asks to scrape/read a page and scrapedPages is missing/failed, say the fetch failed and search/fallback.",
   "Examples: sponsor COMPANY revenue, market size, news, filings, weather, competitor financials,",
   " \"biggest pharma by revenue\", SEC/10-K numbers, published enrollment norms, disease epidemiology, device landscape.",
   "Do NOT ask the user to clarify definitions first. Do NOT say \"I can look it up\" or \"if you want I can…\" — just look it up and answer.",
@@ -1132,6 +1136,38 @@ function formatAttachedDocumentsBlock(context) {
   return parts.join("\n");
 }
 
+function formatScrapedPagesBlock(context) {
+  const pack = context?.scrapedPages;
+  const pages = Array.isArray(pack?.pages) ? pack.pages : [];
+  if (!pages.length && !pack?.requested) return "";
+
+  const parts = [
+    "SCRAPED WEB PAGES — Node fetched these public URLs for this ask (HTTP HTML→text).",
+    "Ground answers about the page in this text. Do NOT invent page content. If a page failed, say so and use Foundry web search only as a fallback.",
+    ""
+  ];
+  if (!pages.length) {
+    parts.push("(No URL found to fetch — ask the user for a full https:// link.)");
+    parts.push("");
+    return parts.join("\n");
+  }
+  for (const p of pages) {
+    const label = p.title ? `${p.title} · ${p.url}` : p.url || "page";
+    if (!p.ok) {
+      parts.push(`=== PAGE (FAILED): ${label} ===`);
+      parts.push(`Error: ${p.error || "fetch failed"}`);
+      parts.push(`=== END PAGE ===`);
+      parts.push("");
+      continue;
+    }
+    parts.push(`=== PAGE: ${label} (${p.charCount || 0} chars${p.truncated ? ", truncated" : ""}) ===`);
+    parts.push(String(p.text || ""));
+    parts.push(`=== END PAGE ===`);
+    parts.push("");
+  }
+  return parts.join("\n");
+}
+
 function formatMoney(n) {
   if (n == null || typeof n !== "number" || Number.isNaN(n)) return "—";
   if (Math.abs(n) >= 1e6) return `$${(n / 1e6).toFixed(2)}M`;
@@ -1949,6 +1985,42 @@ function contextJsonForModel(context) {
       note: "Full prior HTML is in the PRIOR HTML REPORT section above — revise that document and emit HTML_REPORT_START…END."
     };
   }
+  if (ctx.htmlTemplate && ctx.htmlTemplate.html) {
+    ctx.htmlTemplate = {
+      name: ctx.htmlTemplate.name,
+      title: ctx.htmlTemplate.title,
+      sections: ctx.htmlTemplate.sections,
+      charCount: ctx.htmlTemplate.charCount,
+      sticky: true,
+      cloneRequested: ctx.htmlTemplate.cloneRequested,
+      htmlIncludedAbove: true,
+      note: "Full template HTML is in the TEMPLATE_HTML section above — clone structure/CSS for the new sponsor."
+    };
+  }
+  if (ctx.scrapedPages && Array.isArray(ctx.scrapedPages.pages)) {
+    ctx.scrapedPages = {
+      scrapedAt: ctx.scrapedPages.scrapedAt,
+      okCount: ctx.scrapedPages.okCount,
+      requested: ctx.scrapedPages.requested,
+      pages: ctx.scrapedPages.pages.map((p) =>
+        p && p.ok
+          ? {
+              url: p.url,
+              title: p.title,
+              ok: true,
+              charCount: p.charCount,
+              truncated: p.truncated,
+              textIncludedAbove: true
+            }
+          : {
+              url: p?.url,
+              ok: false,
+              error: p?.error || "failed"
+            }
+      ),
+      note: "Full page text is in the SCRAPED WEB PAGES section above."
+    };
+  }
   const docs = ctx.uploadedDocuments;
   if (docs && Array.isArray(docs.files)) {
     ctx.uploadedDocuments = {
@@ -2282,6 +2354,15 @@ function contextJsonForModel(context) {
 
 function userBlock(question, context) {
   const attached = formatAttachedDocumentsBlock(context);
+  const scraped = formatScrapedPagesBlock(context);
+  const templateBlock = (() => {
+    try {
+      const { formatHtmlTemplateBlock } = require("./htmlReportTemplate");
+      return formatHtmlTemplateBlock(context?.htmlTemplate);
+    } catch (_) {
+      return "";
+    }
+  })();
   const cosmosFacts = formatCosmosFactsBlock(context);
   const priorHtml = context?.priorHtmlReport?.html
     ? String(context.priorHtmlReport.html).trim()
@@ -2309,7 +2390,22 @@ function userBlock(question, context) {
     parts.push("---");
     parts.push("");
   }
-  if (attached && !priorHtml) {
+  if (templateBlock && !priorHtml) {
+    parts.push(templateBlock);
+    parts.push("---");
+    parts.push("");
+  }
+  if (scraped && !priorHtml) {
+    parts.push(scraped);
+    parts.push("---");
+    parts.push("");
+  }
+  if (attached && !priorHtml && !templateBlock) {
+    parts.push(attached);
+    parts.push("---");
+    parts.push("");
+  } else if (attached && !priorHtml && templateBlock) {
+    // Still include non-HTML attachments (protocol etc.) when a template is sticky
     parts.push(attached);
     parts.push("---");
     parts.push("");
@@ -2322,7 +2418,11 @@ function userBlock(question, context) {
   parts.push(
     priorHtml
       ? "Context (JSON) — REFERENCE ONLY for this revise. PRIOR HTML wins for all numbers and wording unless the user asked to change data."
-      : "Context (JSON) — supporting detail. For numbers: ORA COSMOS FACTS above win. For protocol/template text: ATTACHED DOCUMENTS win. Never invent."
+      : templateBlock
+        ? "Context (JSON) — fill the TEMPLATE above for the NEW sponsor/meeting. SCRAPED pages / Cosmos facts win for numbers. Never invent Ora stats."
+        : scraped
+          ? "Context (JSON) — supporting detail. SCRAPED WEB PAGES above win for URL content. ORA COSMOS FACTS win for Ora numbers. Never invent."
+          : "Context (JSON) — supporting detail. For numbers: ORA COSMOS FACTS above win. For protocol/template text: ATTACHED DOCUMENTS win. Never invent."
   );
   parts.push(contextJsonForModel(context));
   parts.push("");
@@ -2330,9 +2430,13 @@ function userBlock(question, context) {
     parts.push(
       "REQUIRED: Surgical revise only. Emit full HTML_REPORT from the PRIOR HTML with the user's asked edits applied. Unchanged sections must stay intact byte-for-byte in substance."
     );
-  } else if (attached || cosmosFacts) {
+  } else if (templateBlock) {
     parts.push(
-      "REQUIRED: Ground the answer. Cite attached file names for protocol/template points. Cite Ora/TrialHub Cosmos figures (or say missing) for performance/feasibility numbers. Do not make up medians, site lists, or win-theme stats."
+      "REQUIRED: Emit HTML_REPORT that CLONES the TEMPLATE_HTML structure/CSS for the user's new sponsor or meeting. Short chat summary first. Do not return the template unchanged."
+    );
+  } else if (scraped || attached || cosmosFacts) {
+    parts.push(
+      "REQUIRED: Ground the answer. Use scraped page text for URL asks. Cite attached file names for protocol/template points. Cite Ora/TrialHub Cosmos figures (or say missing) for performance/feasibility numbers. Do not make up medians, site lists, or win-theme stats."
     );
   } else {
     parts.push(
