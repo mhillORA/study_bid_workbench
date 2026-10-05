@@ -2179,11 +2179,14 @@ app.http("veevaSync", {
         body.resume === true ||
         request.query.get("prioritizeEmpty") === "true" ||
         request.query.get("resume") === "true";
+      const enrichOnly =
+        body.enrichOnly === true || request.query.get("enrichOnly") === "true";
       const result = await runVeevaTablesSync(getDb, {
         full,
         delta: !full,
         only,
         prioritizeEmpty,
+        enrichOnly,
         triggeredBy
       });
       const errSummary = (result.results || [])

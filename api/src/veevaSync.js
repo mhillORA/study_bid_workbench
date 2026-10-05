@@ -181,6 +181,9 @@ const VEEVA_TABLES = [
       "principal_investigator__vr.name__v",
       "principal_investigator__vr.first_name__v",
       "principal_investigator__vr.last_name__v",
+      // Direct label when relationship fields are stripped by Vault
+      "TONAME(principal_investigator__v)",
+      "TONAME(organization__clin)",
       "no_subjects_enrolled__v",
       "site_selected_date__v",
       "ora_project_code__c",
@@ -635,6 +638,8 @@ async function enrichExistingSitePiNames(database, started, budgetMs) {
     [{ name: "@t", value: "ora_veeva_site" }]
   );
   let patched = 0;
+  let missed = 0;
+  const sampleMiss = [];
   const container = database.container("ora_veeva_site");
   for (const site of sites || []) {
     if (Date.now() - started > budgetMs) break;
@@ -644,7 +649,11 @@ async function enrichExistingSitePiNames(database, started, budgetMs) {
       personNameById.get(piId) ||
       personNameById.get(piId.toUpperCase()) ||
       personNameById.get(piId.toLowerCase());
-    if (!name) continue;
+    if (!name) {
+      missed += 1;
+      if (sampleMiss.length < 8) sampleMiss.push(piId);
+      continue;
+    }
     const cur = site.principal_investigator_name != null ? String(site.principal_investigator_name).trim() : "";
     if (cur && !looksLikeVaultId(cur) && cur === name) continue;
     try {
@@ -658,7 +667,13 @@ async function enrichExistingSitePiNames(database, started, budgetMs) {
       /* skip stubborn rows */
     }
   }
-  return { patched, scanned: (sites || []).length, personNames: personNameById.size };
+  return {
+    patched,
+    scanned: (sites || []).length,
+    personNames: personNameById.size,
+    missed,
+    sampleMiss
+  };
 }
 
 /** Patch sites that still show Vault org/site ids instead of institution names. */
@@ -747,7 +762,18 @@ function toMirrorDoc(rec, docType, syncedAt, opts = {}) {
     if (countryName && !looksLikeVaultId(countryName) && !/^00C/i.test(String(countryName))) {
       doc.country_name = String(countryName).trim();
     }
+    const tonameOrg =
+      flat["toname(organization__clin)"] ||
+      flat["TONAME(organization__clin)"] ||
+      flat.toname_organization__clin ||
+      null;
+    const tonamePi =
+      flat["toname(principal_investigator__v)"] ||
+      flat["TONAME(principal_investigator__v)"] ||
+      flat.toname_principal_investigator__v ||
+      null;
     const orgFromRel =
+      tonameOrg ||
       flat["organization__vr.full_name__v"] ||
       flat["organization__vr.name__v"] ||
       flat["organization__clinr.full_name__v"] ||
@@ -780,6 +806,7 @@ function toMirrorDoc(rec, docType, syncedAt, opts = {}) {
     const piFirst = flat["principal_investigator__vr.first_name__v"];
     const piLast = flat["principal_investigator__vr.last_name__v"];
     const fromRel =
+      tonamePi ||
       flat["principal_investigator__vr.name__v"] ||
       (typeof flat.principal_investigator__vr === "string" ? flat.principal_investigator__vr : null) ||
       [piFirst, piLast].filter(Boolean).join(" ").trim() ||
@@ -1326,6 +1353,77 @@ async function runVeevaTablesSync(getDb, opts = {}) {
   const prev = (await readSyncState(database)) || {};
   const deltaMode = opts.full === true ? false : opts.delta !== false && Boolean(prev.lastSuccessfulSync);
   const watermark = deltaMode ? prev.lastSuccessfulSync : null;
+  const results = [];
+  let upsertedTotal = 0;
+  let incomplete = false;
+
+  // Run name backfills FIRST — milestones/payables often burn the budget before enrich.
+  if (opts.enrichOnly === true || opts.prioritizeEmpty === true || opts.full === true || !deltaMode) {
+    try {
+      await markVeevaSyncProgress(getDb, {
+        status: "running",
+        message: "Enriching site org + PI display names…",
+        currentObject: "site_enrich",
+        currentContainer: "ora_veeva_site"
+      });
+      const orgEnrich = await enrichExistingSiteOrgNames(database, started, TIME_BUDGET_MS);
+      if (orgEnrich && (orgEnrich.patched || orgEnrich.orgNames)) {
+        results.push({
+          object: "site_org_enrich",
+          container: "ora_veeva_site",
+          upserted: orgEnrich.patched || 0,
+          scanned: orgEnrich.scanned,
+          orgNames: orgEnrich.orgNames,
+          note: "organization__clin → organization__v name (early)"
+        });
+        upsertedTotal += orgEnrich.patched || 0;
+      }
+      const piEnrich = await enrichExistingSitePiNames(database, started, TIME_BUDGET_MS);
+      if (piEnrich && (piEnrich.patched || piEnrich.personNames)) {
+        results.push({
+          object: "site_pi_enrich",
+          container: "ora_veeva_site",
+          upserted: piEnrich.patched || 0,
+          scanned: piEnrich.scanned,
+          personNames: piEnrich.personNames,
+          note: "principal_investigator__v → person__v name (early)",
+          sampleMiss: piEnrich.sampleMiss || undefined
+        });
+        upsertedTotal += piEnrich.patched || 0;
+      }
+    } catch (err) {
+      results.push({
+        object: "site_enrich_early",
+        ok: false,
+        error: String(err.message || err).slice(0, 200)
+      });
+    }
+  }
+  if (opts.enrichOnly === true) {
+    const syncedAt = new Date().toISOString();
+    await writeSyncState(database, {
+      lastRunAt: syncedAt,
+      note: "Site org/PI enrich only",
+      progress: {
+        status: "complete",
+        startedAt: new Date(started).toISOString(),
+        updatedAt: syncedAt,
+        objectsTotal: results.length,
+        objectsDone: results.length,
+        upsertedTotal,
+        message: "Site name enrich finished",
+        results
+      }
+    });
+    return {
+      ok: true,
+      enrichOnly: true,
+      results,
+      upsertedTotal,
+      elapsedMs: Date.now() - started,
+      sync: await readSyncState(database)
+    };
+  }
 
   const only = Array.isArray(opts.only) && opts.only.length
     ? opts.only.map((s) => String(s).toLowerCase())
@@ -1350,27 +1448,30 @@ async function runVeevaTablesSync(getDb, opts = {}) {
         return 1;
       case "organization__v":
         return 2;
-      case "study__v":
+      case "person__v":
         return 3;
-      case "study_country__v":
+      case "study__v":
         return 4;
-      case "metrics__ctms":
+      case "study_country__v":
         return 5;
-      case "milestone__v":
-        return 6;
-      case "fee_schedule__v":
-        return 7;
-      case "payment__v":
-        return 8;
       case "site__v":
+        // Sites early so TONAME + person/org maps stamp names before heavy tables burn budget
+        return 6;
+      case "metrics__ctms":
+        return 7;
+      case "milestone__v":
+        return 8;
+      case "fee_schedule__v":
         return 9;
-      case "payable_item__v":
+      case "payment__v":
         return 10;
+      case "payable_item__v":
+        return 11;
       case "subject__clin":
       case "subject__v":
-        return 11;
-      default:
         return 12;
+      default:
+        return 13;
     }
   };
   const countsByContainer = {};
@@ -1392,10 +1493,7 @@ async function runVeevaTablesSync(getDb, opts = {}) {
     return rank(a) - rank(b);
   });
 
-  const results = [];
-  let incomplete = false;
   const syncedAt = new Date().toISOString();
-  let upsertedTotal = 0;
 
   await writeSyncState(database, {
     lastRunAt: syncedAt,
