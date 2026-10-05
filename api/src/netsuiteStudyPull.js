@@ -201,15 +201,17 @@ function sqlActualsByIds(idsCsv) {
 }
 
 function sqlBillingByIds(idsCsv) {
+  // Match netsuite-pull-job SQL_BILLING_BY_IDS (CustInvc + account.accttype).
   return (
     "SELECT " +
     "j.id AS project_id, j.entityid AS project_number, " +
-    "SUM(CASE WHEN tl.accounttype = 'Income' THEN ABS(tl.netamount) ELSE 0 END) AS revenue_recognized, " +
-    "SUM(CASE WHEN BUILTIN.DF(t.type) = 'Invoice' THEN ABS(tl.netamount) ELSE 0 END) AS invoiced_amount, " +
-    "SUM(CASE WHEN tl.accounttype = 'COGS' THEN ABS(tl.netamount) ELSE 0 END) AS cost_of_sales " +
+    "SUM(CASE WHEN tr.type = 'CustInvc' THEN -tl.netamount ELSE 0 END) AS invoiced_amount, " +
+    "SUM(CASE WHEN a.accttype = 'Income' THEN -tl.netamount ELSE 0 END) AS revenue_recognized, " +
+    "SUM(CASE WHEN a.accttype = 'COGS' THEN tl.netamount ELSE 0 END) AS cost_of_sales " +
     "FROM transactionline tl " +
-    "JOIN transaction t ON t.id = tl.transaction " +
+    "JOIN transaction tr ON tr.id = tl.transaction " +
     "JOIN job j ON j.id = tl.entity " +
+    "LEFT JOIN account a ON a.id = tl.account " +
     `WHERE j.id IN (${idsCsv}) ` +
     "GROUP BY j.id, j.entityid"
   );
@@ -219,12 +221,17 @@ function sqlCostDetailByIds(idsCsv) {
   return (
     "SELECT " +
     "j.id AS project_id, j.entityid AS project_number, " +
-    "BUILTIN.DF(tl.account) AS account_name, " +
-    "SUM(ABS(tl.netamount)) AS amount " +
+    "a.accttype AS account_type, " +
+    "a.acctnumber AS account_number, " +
+    "a.fullname AS account_name, " +
+    "SUM(tl.netamount) AS amount " +
     "FROM transactionline tl " +
+    "JOIN transaction tr ON tr.id = tl.transaction " +
     "JOIN job j ON j.id = tl.entity " +
+    "JOIN account a ON a.id = tl.account " +
     `WHERE j.id IN (${idsCsv}) ` +
-    "GROUP BY j.id, j.entityid, BUILTIN.DF(tl.account)"
+    "AND a.accttype = 'COGS' " +
+    "GROUP BY j.id, j.entityid, a.accttype, a.acctnumber, a.fullname"
   );
 }
 
@@ -498,9 +505,8 @@ function buildStudyCosmosPack(project, tasks, actuals, costDetail, billing, mont
   return { study, tasks: taskPayloads };
 }
 
-async function chunkedPull(token, cfg, projectIds, sqlFn, label) {
+async function chunkedPull(token, cfg, projectIds, sqlFn, label, chunkSize = 25) {
   const all = [];
-  const chunkSize = 40;
   for (let i = 0; i < projectIds.length; i += chunkSize) {
     const chunk = projectIds.slice(i, i + chunkSize);
     const idsCsv = chunk.join(",");
@@ -508,6 +514,15 @@ async function chunkedPull(token, cfg, projectIds, sqlFn, label) {
     all.push(...rows);
   }
   return all;
+}
+
+async function softChunkedPull(token, cfg, projectIds, sqlFn, label, chunkSize, warnings) {
+  try {
+    return await chunkedPull(token, cfg, projectIds, sqlFn, label, chunkSize);
+  } catch (err) {
+    warnings.push(`${label}: ${String(err.message || err)}`);
+    return [];
+  }
 }
 
 /**
@@ -521,6 +536,7 @@ async function runNetSuiteStudyPull(getDb, opts = {}) {
   const started = Date.now();
   const projectNumber = opts.projectNumber ? String(opts.projectNumber).trim() : null;
   const triggeredBy = opts.triggeredBy || "buddy_api";
+  const warnings = [];
 
   let tokenPack;
   try {
@@ -554,7 +570,7 @@ async function runNetSuiteStudyPull(getDb, opts = {}) {
 
   // Time budget: process in batches of project ids
   const projectIds = projects.map((p) => normId(rowGet(p, "project_id"))).filter(Boolean);
-  const batchSize = projectNumber ? projectIds.length : 25;
+  const batchSize = projectNumber ? projectIds.length : 20;
   const studies = [];
   const tasks = [];
   let processed = 0;
@@ -575,11 +591,11 @@ async function runNetSuiteStudyPull(getDb, opts = {}) {
     let monthRows = [];
     try {
       [taskRows, actualRows, billingRows, costRows, monthRows] = await Promise.all([
-        chunkedPull(accessToken, cfg, idChunk, sqlTasksByIds, "tasks"),
-        chunkedPull(accessToken, cfg, idChunk, sqlActualsByIds, "actuals"),
-        chunkedPull(accessToken, cfg, idChunk, sqlBillingByIds, "billing"),
-        chunkedPull(accessToken, cfg, idChunk, sqlCostDetailByIds, "cost"),
-        chunkedPull(accessToken, cfg, idChunk, sqlMonthlyTimeByIds, "monthly")
+        chunkedPull(accessToken, cfg, idChunk, sqlTasksByIds, "tasks", 40),
+        chunkedPull(accessToken, cfg, idChunk, sqlActualsByIds, "actuals", 40),
+        softChunkedPull(accessToken, cfg, idChunk, sqlBillingByIds, "billing", 10, warnings),
+        softChunkedPull(accessToken, cfg, idChunk, sqlCostDetailByIds, "cost", 10, warnings),
+        softChunkedPull(accessToken, cfg, idChunk, sqlMonthlyTimeByIds, "monthly", 20, warnings)
       ]);
     } catch (err) {
       return {
@@ -587,7 +603,8 @@ async function runNetSuiteStudyPull(getDb, opts = {}) {
         configured: true,
         error: `SuiteQL batch: ${String(err.message || err)}`,
         processed,
-        projectsFound: projects.length
+        projectsFound: projects.length,
+        warnings
       };
     }
 
@@ -631,6 +648,7 @@ async function runNetSuiteStudyPull(getDb, opts = {}) {
     taskUpserted: upsert.taskUpserted,
     sampleProjectNumbers: upsert.sampleProjectNumbers,
     errors: upsert.errors,
+    warnings: warnings.length ? warnings.slice(0, 12) : undefined,
     elapsedMs: Date.now() - started,
     note: incomplete
       ? `Time budget hit after ${processed}/${projects.length} studies — click Sync NetSuite again to continue.`
