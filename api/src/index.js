@@ -59,10 +59,11 @@ const {
   runtimeHostHint
 } = require("./salesforceClient");
 const { runVeevaTablesSync, getVeevaSyncStatus, markVeevaSyncProgress } = require("./veevaSync");
+const { upsertNetSuiteStudyIntel } = require("./netsuiteStudySync");
 const {
-  upsertNetSuiteStudyIntel,
-  getNetSuiteStudySyncStatus
-} = require("./netsuiteStudySync");
+  runNetSuiteStudyPull,
+  getNetSuitePullStatus
+} = require("./netsuiteStudyPull");
 const { buildPmDashboard } = require("./pmDashboard");
 const { ingestTrialHubUpload } = require("./trialhubIngest");
 const {
@@ -2211,7 +2212,7 @@ app.http("veevaSync", {
   }
 });
 
-/** NetSuite study intel (SuiteQL → Excel + Cosmos). Push from netsuite-pull-job; status for Data Status. */
+/** NetSuite study intel upsert (legacy job push) — status for Data Status. */
 app.http("netsuiteStudySync", {
   methods: ["GET", "POST", "OPTIONS"],
   authLevel: "anonymous",
@@ -2222,7 +2223,7 @@ app.http("netsuiteStudySync", {
     }
     try {
       if (request.method === "GET") {
-        const status = await getNetSuiteStudySyncStatus(getDb);
+        const status = await getNetSuitePullStatus(getDb);
         return json(200, status, request);
       }
 
@@ -2252,6 +2253,75 @@ app.http("netsuiteStudySync", {
         triggeredBy
       });
       return json(result.ok ? 200 : 400, result, request);
+    } catch (err) {
+      context.error(err);
+      return json(500, { ok: false, error: String(err.message || err) }, request);
+    }
+  }
+});
+
+/**
+ * NetSuite SuiteQL → Cosmos (SF-parity). Lens Sync NetSuite + Buddy Data Status.
+ * POST async:true background-kicks; sync POST runs the pull (time-budgeted chunks).
+ */
+app.http("netsuiteSync", {
+  methods: ["GET", "POST", "OPTIONS"],
+  authLevel: "anonymous",
+  route: "netsuite/sync",
+  handler: async (request, context) => {
+    if (request.method === "OPTIONS") {
+      return optionsOk(request);
+    }
+    try {
+      if (request.method === "GET") {
+        const status = await getNetSuitePullStatus(getDb);
+        return json(200, status, request);
+      }
+
+      const auth = authorizeCtgovSync(request);
+      if (!auth.ok) {
+        return json(
+          401,
+          {
+            error: "Unauthorized — sign in, or pass x-copilot-key (same as Copilot Ask key)"
+          },
+          request
+        );
+      }
+
+      let body = {};
+      try {
+        body = (await request.json()) || {};
+      } catch (_) {
+        body = {};
+      }
+      if (wantsAsyncSync(request, body)) {
+        const kick = kickAsyncSync("/api/netsuite/sync", body, context);
+        if (kick._kickPromise) {
+          await Promise.race([
+            kick._kickPromise,
+            new Promise((r) => setTimeout(r, 1500))
+          ]);
+        }
+        const { _kickPromise, ...publicKick } = kick;
+        return json(publicKick.ok ? 202 : 500, publicKick, request);
+      }
+      const triggeredBy =
+        auth.via === "copilot_key"
+          ? "scheduler_or_key"
+          : `ui:${auth.user?.email || auth.user?.userId || "user"}`;
+      const projectNumber =
+        body.projectNumber ||
+        body.project ||
+        request.query.get("projectNumber") ||
+        request.query.get("project") ||
+        null;
+      const result = await runNetSuiteStudyPull(getDb, {
+        projectNumber,
+        triggeredBy
+      });
+      const status = result.ok === false && !result.configured ? 503 : result.ok ? 200 : 500;
+      return json(status, result, request);
     } catch (err) {
       context.error(err);
       return json(500, { ok: false, error: String(err.message || err) }, request);
