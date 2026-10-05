@@ -185,7 +185,10 @@ function sqlProjects(projectNumber = null) {
     "j.startdate AS start_date, " +
     "j.calculatedenddate AS calculated_end_date, " +
     "j.custentity_nsacs_ptc_budget AS ptc_budget, " +
-    "j.custentity_nsacs_inv_budget AS investigator_fee_budget " +
+    "j.custentity_nsacs_inv_budget AS investigator_fee_budget, " +
+    "j.custentity_nsacs_budg_gm_percent AS budgeted_gm_pct, " +
+    "j.custentity61 AS actual_gm_pct_prior_month, " +
+    "j.custentity15 AS projected_eos_gm_pct_prior_month " +
     "FROM job j " +
     `WHERE ${filter}`
   );
@@ -534,7 +537,13 @@ function buildStudyCosmosPack(
   const rev = billing ? numOrNull(rowGet(billing, "revenue_recognized")) : null;
   const cogs = billing ? numOrNull(rowGet(billing, "cost_of_sales")) : null;
   const gp = billing && (rev != null || cogs != null) ? (rev || 0) - (cogs || 0) : null;
-  const gm = rev ? Math.round((gp / rev) * 10000) / 10000 : null;
+  // NetSuite Project Profitability GM (custentity61 / custentity15) — matches NS UI.
+  // Billing income−COGS is a separate P&L rollup and often diverges from the report.
+  const actualGm = numOrNull(rowGet(project, "actual_gm_pct_prior_month"));
+  const eosGm = numOrNull(rowGet(project, "projected_eos_gm_pct_prior_month"));
+  const budgetedGm = numOrNull(rowGet(project, "budgeted_gm_pct"));
+  const billingGm = rev ? Math.round((gp / rev) * 10000) / 10000 : null;
+  const gm = actualGm != null ? actualGm : billingGm;
   const atRisk = nonMs.filter((t) => {
     const tid = normId(rowGet(t, "task_id"));
     return (
@@ -583,6 +592,10 @@ function buildStudyCosmosPack(
     cost_of_sales: cogs,
     gross_profit: gp,
     gross_margin_pct: gm,
+    budgeted_gm_pct: budgetedGm,
+    actual_gm_pct_prior_month: actualGm,
+    projected_eos_gm_pct_prior_month: eosGm,
+    billing_gross_margin_pct: billingGm,
     period_warning: periodWarning || null,
     workbook_blob: null,
     formulas: {
@@ -595,7 +608,9 @@ function buildStudyCosmosPack(
       ptc_categories: "COS Pass Through account name rollup",
       visit_types: "task name → Study Visit / Prep / Follow-up / Travel",
       hours_by_month: "approved timebill hours by YYYY-MM",
-      pct_complete_history: "percentcompleteoverride by accounting period"
+      pct_complete_history: "percentcompleteoverride by accounting period",
+      gross_margin_pct: "job.custentity61 (NS actual GM prior month); fallback billing income−COGS",
+      projected_eos_gm: "job.custentity15 (NS projected EOS GM prior month)"
     }
   };
 
