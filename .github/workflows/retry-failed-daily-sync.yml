@@ -1,0 +1,42 @@
+name: Retry failed daily sync
+
+# If Intelligence or NetSuite daily sync fails (Cosmos DNS, 500, runner miss),
+# wait a few minutes and rerun the same run (failed jobs only).
+# Caps at 3 attempts total (original + 2 reruns) so a hard outage does not loop.
+
+on:
+  workflow_run:
+    workflows:
+      - Intelligence daily sync (CT.gov + Veeva + Salesforce + NetSuite)
+      - NetSuite study intel daily sync
+    types:
+      - completed
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  rerun:
+    if: github.event.workflow_run.conclusion == 'failure'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Rerun failed jobs after short backoff
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_ID: ${{ github.event.workflow_run.id }}
+          ATTEMPT: ${{ github.event.workflow_run.run_attempt }}
+          WORKFLOW: ${{ github.event.workflow_run.name }}
+          HTML_URL: ${{ github.event.workflow_run.html_url }}
+        run: |
+          set -euo pipefail
+          echo "Failed: $WORKFLOW attempt=$ATTEMPT $HTML_URL"
+          if [ "${ATTEMPT:-1}" -ge 3 ]; then
+            echo "::warning::$WORKFLOW already attempted $ATTEMPT times — not rerunning. Inspect $HTML_URL"
+            exit 0
+          fi
+          echo "Waiting 180s for Cosmos / DNS / Functions to recover…"
+          sleep 180
+          gh run rerun "$RUN_ID" --failed --repo "${{ github.repository }}"
+          echo "Rerun requested (attempt $((ATTEMPT + 1)) of 3)."
