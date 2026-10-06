@@ -193,20 +193,26 @@ jobs:
           BODY='{"tables":true,"thenCrosswalk":true}'
           URL="$API_BASE/api/salesforce/sync"
           echo "POST $URL $BODY"
-          RESP=$(curl -sS -w "\n%{http_code}" -X POST "$URL" \
-            -H "Content-Type: application/json" \
-            -H "x-copilot-key: $COPILOT_ASK_KEY" \
-            -d "$BODY")
-          CODE=$(echo "$RESP" | tail -n1)
-          BODY_OUT=$(echo "$RESP" | sed '$d')
-          echo "$BODY_OUT"
-          if [ "$CODE" -lt 200 ] || [ "$CODE" -ge 300 ]; then
-            echo "HTTP $CODE"
-            exit 1
-          fi
+          for i in 1 2 3 4; do
+            RESP=$(curl -sS -w "\n%{http_code}" --max-time 180 -X POST "$URL" \
+              -H "Content-Type: application/json" \
+              -H "x-copilot-key: $COPILOT_ASK_KEY" \
+              -d "$BODY")
+            CODE=$(echo "$RESP" | tail -n1)
+            BODY_OUT=$(echo "$RESP" | sed '$d')
+            echo "$BODY_OUT"
+            if [ "$CODE" -ge 200 ] && [ "$CODE" -lt 300 ]; then
+              exit 0
+            fi
+            echo "Salesforce attempt $i HTTP ${CODE:-none}"
+            if [ "$i" -eq 4 ]; then
+              exit 1
+            fi
+            sleep $((i * 20))
+          done
 
       - name: NetSuite study intel (SuiteQL → Cosmos)
-        if: steps.prep.outputs.skip != 'true' && (github.event_name != 'workflow_dispatch' || inputs.skip_netsuite != true)
+        if: ${{ always() && steps.prep.outputs.skip != 'true' && (github.event_name != 'workflow_dispatch' || inputs.skip_netsuite != true) }}
         env:
           COPILOT_ASK_KEY: ${{ secrets.COPILOT_ASK_KEY }}
           API_BASE: ${{ steps.prep.outputs.base }}
@@ -230,7 +236,7 @@ jobs:
           echo "NetSuite sync accepted (background). Primary completion watch is netsuite-daily-sync.yml."
 
       - name: Rebuild Dashboard weekly brief
-        if: steps.prep.outputs.skip != 'true'
+        if: ${{ always() && steps.prep.outputs.skip != 'true' }}
         env:
           COPILOT_ASK_KEY: ${{ secrets.COPILOT_ASK_KEY }}
           API_BASE: ${{ steps.prep.outputs.base }}
